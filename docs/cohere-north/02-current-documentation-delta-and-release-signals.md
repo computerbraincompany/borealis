@@ -8,6 +8,8 @@
 
 The current converged crawl contains 435 unique in-scope URLs: 421 read pages, 14 explicit soft-not-found aliases, and no auth-gated page. Compared with the July manifest, 91 URLs are added, 37 removed from the current scope, 218 common URLs have different content hashes, and 2 changed read/failure status. See [`research/CRAWL_DELTA.json`](research/CRAWL_DELTA.json).
 
+A narrower canonical-index comparison produces a different, complementary number: the current `north/llms.txt` contains 342 canonical URLs, of which **65** were absent from the July manifest.[2] The 91-URL full-crawl delta also includes aliases, index/discovery routes, and other converged in-scope records. Neither number means that the same number of product features launched during the interval.
+
 A content-hash change does not identify the semantic edit. The table below limits conclusions to current page text and the v1.14 release note.
 
 ## 2. v1.14.0 release identity and upgrade constraint
@@ -157,13 +159,19 @@ Notable additions in the current manifest include:
 
 This list means the pages are present in the current crawl; it does not prove every feature was absent from the product in July.
 
-## 5. Removed/stale route signals
+## 5. Important non-deltas
+
+The July manifest already contained the canonical pages for Notifications, Memory, custom-agent creation/versioning, MCP elicitations/prompts/resources, North Large 01-2026, and Open Responses compatibility. Their current wording may have changed, and the v1.14 release note may explicitly announce some behavior, but page presence itself is **not** evidence that these capabilities first appeared after July 21.[18][19][24]
+
+This distinction is why agent evaluations, MCP Apps, and Conversation History are described above as newly indexed.[25][36][74] Local-library and v2 conversation/background-task routes are likewise newly indexed in the comparison, while the pre-existing pages are described as currently documented or as v1.14 release-note claims.[11]
+
+## 6. Removed/stale route signals
 
 Current scope no longer includes several older aliases and external references, including NFS-drive documentation and the old library job endpoints. The v1.14 note explicitly removes External Drive/NFS and `POST /v1/libraries/jobs` plus `GET /v1/libraries/jobs/{job_id}`.[109]
 
 **Rebuild implication:** preserve a deprecation ledger, publish replacement operations, emit machine-readable sunset metadata, and test old client behavior before removal.
 
-## 6. Architecture clues from the release manifest
+## 7. Architecture clues from the release manifest
 
 The v1.14 image list publicly names deployables for toolkit frontend/backend, admin frontend/backend, agent, MCP router, tables backend, Compass API/parser/pipelines/Atlas, guardrails service, Inngest, OpenFGA, Valkey, sandbox components, reader, Envoy/XDS, s3proxy, and support tooling.[109]
 
@@ -171,10 +179,16 @@ These names corroborate the deployment-component guide, but they still do not di
 
 ## Sources
 
+[2] https://private.docs.cohere.com/north/llms.txt
+[11] https://private.docs.cohere.com/openapi/north.yaml
 [12] https://private.docs.cohere.com/docs/get-started/north-user-guide
 [18] https://private.docs.cohere.com/docs/get-started/notifications
+[19] https://private.docs.cohere.com/docs/get-started/memory
 [21] https://private.docs.cohere.com/docs/get-started/north-table-mode
+[24] https://private.docs.cohere.com/docs/get-started/agents/creating-custom-agents
+[25] https://private.docs.cohere.com/docs/get-started/agents/evaluating-agents
 [34] https://private.docs.cohere.com/docs/get-started/tools/libraries
+[36] https://private.docs.cohere.com/docs/get-started/tools/mcp-servers/mcp-apps
 [73] https://private.docs.cohere.com/docs/get-started/tools/code-sandbox/home
 [74] https://private.docs.cohere.com/docs/get-started/tools/conversation-history/home
 [76] https://private.docs.cohere.com/docs/admin/oauth-applications

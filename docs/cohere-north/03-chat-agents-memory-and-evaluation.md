@@ -42,7 +42,7 @@ The documented interface previews attached/selected sources, renders files under
 
 ### 1.4 Background execution and notifications
 
-Long prompts and deep-research work may continue after navigation. A background task needs a stable identifier, owning conversation, status, cancellation route, started/completed timestamps, error, and completion notification. The inbox separates read/unread notifications and user preferences control delivery.[13][18]
+Long prompts and deep-research work may continue after navigation. A background task needs a stable identifier, owning conversation, status, cancellation route, started/completed timestamps, error, and completion notification.[13][18] The notification guide distinguishes transient in-app/browser-push delivery for chat, Deep Research, and automation completion from durable Inbox records, which are documented for automation failures and Human Review requests; alerts may be suppressed when the user is already on the relevant task page.[18]
 
 Recommended state model:
 
@@ -80,6 +80,12 @@ Message
 ```
 
 Conversations support list/search, rename/title generation, retrieve, delete, message retrieval, file listing, and background tasks in the published API.[11]
+
+### 2.1 Sharing snapshots
+
+North's share action creates a unique, read-only, point-in-time link for authenticated colleagues in the same North environment. The documented snapshot includes the title, messages, citations, and displayed trace; later conversation changes do not update an old link, and sharing again creates another snapshot while older links remain active.[16]
+
+A clean-room `ConversationShareSnapshot` should therefore record the exact terminal message/revision, immutable rendered payload, creator/time, tenant-authenticated audience, citation authorization policy, safe-trace visibility, expiry, and revocation. Do not copy raw prompts, generations, hidden reasoning, or privileged debug fields into ordinary shares; a new snapshot should not silently invalidate or mutate an older one.
 
 ## 3. Citation experience and data contract
 
@@ -293,6 +299,7 @@ Memory is documented as Alpha and opt-in. North exposes three editable personal 
 [11] https://private.docs.cohere.com/openapi/north.yaml
 [13] https://private.docs.cohere.com/docs/get-started/north-chat
 [15] https://private.docs.cohere.com/docs/get-started/using-citations
+[16] https://private.docs.cohere.com/docs/get-started/sharing-collaborating-chat
 [18] https://private.docs.cohere.com/docs/get-started/notifications
 [19] https://private.docs.cohere.com/docs/get-started/memory
 [23] https://private.docs.cohere.com/docs/get-started/agents

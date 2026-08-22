@@ -221,7 +221,7 @@ Use structure-aware segmentation with bounded token/character size and overlap o
 ### 7.3 Embed/retrieve/rerank
 
 - pluggable embedding and reranking profiles;
-- lexical + semantic candidates;
+- lexical + dense + sparse semantic candidates;
 - ACL/source/library filters before content return;
 - rerank top candidates;
 - dedupe/diversity/freshness;

@@ -696,6 +696,36 @@
       "url": "https://www.elastic.co/pricing/faq/licensing",
       "title": "",
       "accessed": "2026-08-22"
+    },
+    {
+      "id": 117,
+      "url": "https://private.docs.cohere.com/docs/compass/architecture",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 118,
+      "url": "https://private.docs.cohere.com/docs/compass/security",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 119,
+      "url": "https://private.docs.cohere.com/reference/mcp-development/citations",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 120,
+      "url": "https://private.docs.cohere.com/docs/get-started/tools/websearch/home",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 121,
+      "url": "https://private.docs.cohere.com/docs/admin/tools/configurations",
+      "title": "",
+      "accessed": "2026-08-22"
     }
   ]
 }

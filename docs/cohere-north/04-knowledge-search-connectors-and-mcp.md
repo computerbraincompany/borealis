@@ -49,11 +49,13 @@ The current official matrix documents the following states, auth/storage pattern
 | Slack legacy | connector | Deprecated | live | no file search/member listing; migration path required |
 | Custom MCP | custom | varies | generally live | implementation-dependent auth and permissions |
 
+Sharing semantics differ by data path. The data-sharing docs treat Gmail, Outlook, and Exchange agent configurations as private-only; API/MCP-backed shared agents such as Slack, Jira, and Salesforce share configuration rather than another user's data, so each runner authenticates and sees only provider-authorized content.[43] GitHub and Salesforce are documented read-only, while Jira writes depend on both admin enablement/tool policy and the runner's Jira permission.[24][33]
+
 The rebuild should treat state as metadata (`preview/alpha/beta/ga/deprecated`), never as hard-coded presentation logic.
 
 ## 3. File ingestion
 
-North's current upload list includes CSV, TXT, Markdown, HTML/HTM, DOC/DOCX, PPTX, PDF, XLS/XLSX, and HWP. The documented aggregate My Files limit is 100 MB, SharePoint/OneDrive use a 500 MB limit, admin controls tabular-file limits, and spreadsheet row data is not searchable without Data Interpreter.[66]
+North's upload list includes CSV, TXT, Markdown, HTML/HTM, DOC/DOCX, PPTX, PDF, XLS/XLSX, and HWP. The public pages describe limits at different layers: the supported-files page cites a 100 MB aggregate MyDrive/Compass limit and 500 MB for SharePoint/OneDrive, while My Files/tool configuration documents a configurable per-file limit with a 50 MB default.[66][71][121] The rebuild must model per-file, per-user, and per-source limits separately rather than hard-code one contradictory global number. Spreadsheet row data is not searchable without Data Interpreter.[66]
 
 ### 3.1 Open ingestion pipeline
 
@@ -89,7 +91,7 @@ Segment
 - id, file_version_id
 - page/sheet/section/cell coordinates
 - text or structured representation
-- embedding vector ref, lexical fields
+- dense embedding ref, sparse-vector ref, lexical fields
 - content classification
 ```
 
@@ -172,14 +174,16 @@ LibraryGrant
 
 ## 6. Retrieval service requirements
 
-The docs establish Compass as the embedded retrieval system for multilingual/multimodal processing and real-time search, but do not disclose enough detail to reconstruct exact ranking/chunking algorithms.[12]
+The Compass architecture docs describe a hybrid search pipeline with lexical retrieval, dense semantic vectors, sparse term-weighted vectors, and reranking. Parsed documents retain searchable text/metadata and may expose rich assets such as Markdown, extracted text, and PDF/presentation page screenshots.[117] Compass security documentation describes the service as an internal North component with bearer-authenticated index/document authorization; text/vectors live in OpenSearch and rich assets use time-limited presigned URLs.[118]
+
+Those pages establish the public component shape, but not scoring fusion weights, candidate counts, chunking rules, production embedding/rerank model selection, or every authorization-cache detail. An independent reconstruction should preserve the documented lexical+dense+sparse+rerank stages while benchmarking its own algorithms rather than claiming exact Compass parity.
 
 A clean-room retrieval contract should support:
 
 1. query normalization and language detection;
 2. source/library/file/agent/conversation filters;
 3. mandatory principal and upstream ACL filtering;
-4. lexical + vector candidate retrieval;
+4. lexical, dense-vector, and sparse-vector candidate retrieval;
 5. optional reranking through a pluggable open model;
 6. deduplication and diversity;
 7. snippet/span construction;
@@ -214,6 +218,8 @@ North documents the following MCP feature support:[35][36][37]
 | Elicitations | Preview | Chat-loop form mode; admin enablement. |
 | Apps | Preview | Interactive `ui://` cards in chat/agents; not automations/external API. |
 
+Documented MCP transport is HTTP (`streamable-http` and SSE); stdio servers require an HTTP proxy. Resources are discovered dynamically and injected through list/fetch tools; current limits include 1,000 listed resources per server, 50 per page, 50 MB per fetch, an approximately one-hour default lifetime for fetched temporary files, and rejection of binary image resources.[35][39] Apps render a tool-declared `ui://` HTML resource in a sandboxed null-origin iframe, are interactive only in chat/agents, do not restore client state merely by reopening a conversation, and require confirmation for external links.[36] Elicitations are flat form-mode requests for the invoking user, admin-disabled by default, with a documented default response timeout of 240 seconds.[37]
+
 ### 7.1 MCP server registry
 
 ```text
@@ -243,6 +249,16 @@ Tool
 - Store a content-minimized tool event plus request/trace IDs.
 - Render MCP Apps in a sandboxed origin with restrictive CSP and explicit bridge APIs.
 - Treat elicitations as typed UI requests; prevent a tool from spoofing platform login or approval dialogs.
+
+### 7.3 MCP citation metadata
+
+North's MCP developer contract separates model-readable tool `text` from per-result `_north_metadata`; the metadata is rendered in citation UI and is not returned to model context. Documented renderers are `document`, `thread`, `code`, `metadata_table`, and `tool_reference`, with renderer-specific required fields plus shared title/URL/author/update/page metadata. Invalid metadata is dropped rather than partially trusted.[119]
+
+An independent gateway should validate that metadata against a strict schema, bind it to the exact tool result and call ID, authorize any URL/resource at render time, and never treat presentation metadata as model evidence unless the corresponding readable content is present.
+
+### 7.4 Web Search
+
+Web Search is a live model-invoked search/URL-scrape capability rather than an ingested knowledge source. The docs identify Tavily as the GA/default provider and Brave and LinkUp as Alpha alternatives, with one provider active at a time; authenticated pages are unsupported and returned text requires inline source links/citations.[120]
 
 ## 8. Connector SDK contract
 
@@ -283,13 +299,20 @@ Deleting a file, revoking a connection, removing a library grant, or losing upst
 
 ## Sources
 
-[12] https://private.docs.cohere.com/docs/get-started/north-user-guide
+[24] https://private.docs.cohere.com/docs/get-started/agents/creating-custom-agents
 [33] https://private.docs.cohere.com/docs/get-started/tools-overview
 [34] https://private.docs.cohere.com/docs/get-started/tools/libraries
 [35] https://private.docs.cohere.com/docs/get-started/tools/mcp-servers/mcp-overview
 [36] https://private.docs.cohere.com/docs/get-started/tools/mcp-servers/mcp-apps
 [37] https://private.docs.cohere.com/docs/get-started/tools/mcp-servers/mcp-elicitation
+[39] https://private.docs.cohere.com/docs/get-started/tools/mcp-servers/mcp-resources
 [43] https://private.docs.cohere.com/docs/security/data-sharing
 [66] https://private.docs.cohere.com/docs/get-started/supported-files
 [67] https://private.docs.cohere.com/docs/security/data-syncing
 [70] https://private.docs.cohere.com/docs/security/data-deletion
+[71] https://private.docs.cohere.com/docs/get-started/tools/my-files/home
+[117] https://private.docs.cohere.com/docs/compass/architecture
+[118] https://private.docs.cohere.com/docs/compass/security
+[119] https://private.docs.cohere.com/reference/mcp-development/citations
+[120] https://private.docs.cohere.com/docs/get-started/tools/websearch/home
+[121] https://private.docs.cohere.com/docs/admin/tools/configurations
