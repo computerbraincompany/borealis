@@ -1,0 +1,33 @@
+[project]
+name = "north-report-service"
+version = "0.1.0"
+description = "North analysis, chart and report service (DuckDB + matplotlib + WeasyPrint)"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "pydantic>=2.7",
+    "pandas>=2.2",
+    "numpy>=1.26",
+    "duckdb>=1.1",
+    "matplotlib>=3.9",
+    "jinja2>=3.1",
+    "weasyprint>=62",
+    "httpx>=0.27",
+    "openpyxl>=3.1",
+    "Markdown>=3.6",
+    "litellm[proxy]>=1.45",
+]
+
+[tool.uv]
+package = false
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"app" = "app"

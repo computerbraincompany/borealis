@@ -1,0 +1,60 @@
+import { config } from "./config.js";
+
+async function post<T = any>(path: string, body: unknown): Promise<T> {
+  const res = await fetch(`${config.pythonServiceUrl}${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const text = await res.text();
+  let data: any = text;
+  try {
+    data = text ? JSON.parse(text) : {};
+  } catch {
+    /* non-JSON (e.g. PDF bytes handled separately) */
+  }
+  if (!res.ok) {
+    const detail = typeof data === "object" ? data?.detail || text : text;
+    throw new Error(`${path}: ${res.status} ${detail}`);
+  }
+  return data as T;
+}
+
+export const py = {
+  registerDataset(accountId: string, name: string, location?: string, kind = "path", url?: string, originalName?: string) {
+    return post<any[]>("/datasets/register", { account_id: accountId, name, location, kind, url, original_name: originalName });
+  },
+  resync(accountId: string, name: string, url?: string) {
+    return post<any[]>("/datasets/resync", { account_id: accountId, name, url });
+  },
+  listDatasets(accountId: string) {
+    return fetch(`${config.pythonServiceUrl}/datasets?account_id=${accountId}`).then((r) => r.json());
+  },
+  deleteDataset(accountId: string, name: string) {
+    return fetch(`${config.pythonServiceUrl}/datasets/${name}?account_id=${accountId}`, { method: "DELETE" }).then((r) => r.json());
+  },
+  query(accountId: string, sql: string) {
+    return post<{ columns: string[]; rows: any[][]; row_count: number }>("/query", { account_id: accountId, sql });
+  },
+  describe(accountId: string, table: string) {
+    return post("/describe", { account_id: accountId, table });
+  },
+  chart(accountId: string, spec: any) {
+    return post<{ png_base64: string; echarts: any; spec: any }>("/chart", { account_id: accountId, spec });
+  },
+  buildReport(payload: any) {
+    return post<{ title: string; html: string }>("/reports/build", payload);
+  },
+  async pdf(payload: any): Promise<Buffer> {
+    const res = await fetch(`${config.pythonServiceUrl}/reports/pdf`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) throw new Error(`/reports/pdf ${res.status}: ${await res.text()}`);
+    return Buffer.from(await res.arrayBuffer());
+  },
+  restoreManifest(accountId: string, datasets: any[]) {
+    return post("/manifest/restore", { account_id: accountId, datasets });
+  },
+};

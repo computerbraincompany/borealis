@@ -1,0 +1,36 @@
+version: "3.9"
+
+# North MVP infrastructure. Only Postgres with pgvector is required.
+# Zitadel/Redpanda are commented out as optional add-ons per the objective.
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: north-postgres
+    environment:
+      POSTGRES_USER: north
+      POSTGRES_PASSWORD: north_password
+      POSTGRES_DB: north
+    ports:
+      - "5432:5432"
+    volumes:
+      - north_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U north"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # LiteLLM proxy is run locally via `uv run litellm` (see scripts/dev.sh) so it
+  # shares the Python env with the report service. The Docker route is optional:
+  #
+  #   litellm:
+  #     image: ghcr.io/berriai/liteLLM:main-latest
+  #     ports: ["4000:4000"]
+  #     volumes: ["./python/litellm.yaml:/app/config.yaml"]
+  #     command: ["--config", "/app/config.yaml"]
+  #
+  # Optional connect-and-go IAM for SSO-style auth (not required for MVP):
+  #   zitadel / redpanda — see README.
+
+volumes:
+  north_pgdata:

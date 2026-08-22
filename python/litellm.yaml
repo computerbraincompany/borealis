@@ -1,0 +1,28 @@
+# LiteLLM proxy config — routes any OpenAI-compatible backend (LM Studio locally).
+# Change api_base / model_name per the objective: "works with any litellm compatible api".
+model_list:
+  - model_name: qwen-chat
+    litellm_params:
+      model: openai/qwen/qwen3.6-35b-a3b
+      api_base: http://localhost:1234/v1
+      api_key: local-key
+      rpm: 100
+  - model_name: qwen-27b
+    litellm_params:
+      model: openai/qwen3.8-27b-obliterated
+      api_base: http://localhost:1234/v1
+      api_key: local-key
+  - model_name: nemotron
+    litellm_params:
+      model: openai/nvidia/nemotron-3-nano
+      api_base: http://localhost:1234/v1
+      api_key: local-key
+  - model_name: nomic-embed
+    litellm_params:
+      model: openai/text-embedding-nomic-embed-text-v1.5
+      api_base: http://localhost:1234/v1
+      api_key: local-key
+
+general_settings:
+  master_key: sk-north-local
+  drop_params: true

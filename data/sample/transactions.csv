@@ -1,0 +1,698 @@
+date,payee,category,amount,account,type
+2025-01-03,Riverside Properties,Rent,-1900,Checking,expense
+2025-01-03,Riverside Properties,Rent,-7.76,Credit card,expense
+2025-01-03,Riverside Properties,Rent,-2.11,Credit card,expense
+2025-01-04,Auto Insurance,Insurance,-130,Checking,expense
+2025-01-04,Fitness Planet,Gym,-45,Checking,expense
+2025-01-04,Riverside Properties,Rent,-3.51,Checking,expense
+2025-01-05,Payroll,Salary,6200,Checking,income
+2025-01-05,Riverside Properties,Rent,-1.52,Credit card,expense
+2025-01-06,Netflix,Subscriptions,-15.49,Credit card,expense
+2025-01-06,Riverside Properties,Rent,-5.78,Credit card,expense
+2025-01-06,Spotify,Subscriptions,-11.99,Credit card,expense
+2025-01-07,Riverside Properties,Rent,-2.16,Credit card,expense
+2025-01-07,Safeway,Groceries,-22.7,Checking,expense
+2025-01-08,Hydro Co,Utilities,-138.01,Credit card,expense
+2025-01-08,Riverside Properties,Rent,-7.63,Credit card,expense
+2025-01-08,Trader Joe's,Groceries,-134.07,Checking,expense
+2025-01-09,Pizza Place,Dining out,-114.68,Credit card,expense
+2025-01-09,Riverside Properties,Rent,-6.7,Checking,expense
+2025-01-09,Riverside Properties,Rent,-3.73,Credit card,expense
+2025-01-10,Riverside Properties,Rent,-0.08,Credit card,expense
+2025-01-11,Cinema,Entertainment,-42.82,Credit card,expense
+2025-01-11,Mobile Carrier,Utilities,-48.7,Credit card,expense
+2025-01-12,Costco,Groceries,-45.49,Checking,expense
+2025-01-12,Sushi Bar,Dining out,-68.14,Checking,expense
+2025-01-13,Best Buy,Shopping,-63.02,Credit card,expense
+2025-01-13,Costco,Groceries,-128.4,Checking,expense
+2025-01-13,Riverside Properties,Rent,-1.95,Credit card,expense
+2025-01-15,Internet Co,Utilities,-24.96,Checking,expense
+2025-01-15,Riverside Properties,Rent,-3.77,Credit card,expense
+2025-01-15,Riverside Properties,Rent,-2.55,Checking,expense
+2025-01-16,Riverside Properties,Rent,-0.22,Credit card,expense
+2025-01-18,Riverside Properties,Rent,-3.21,Checking,expense
+2025-01-18,Steam,Entertainment,-31.23,Credit card,expense
+2025-01-19,Payroll,Salary,6200,Checking,income
+2025-01-21,Amazon,Shopping,-21.02,Checking,expense
+2025-01-21,Uniqlo,Shopping,-44.4,Credit card,expense
+2025-01-23,Safeway,Groceries,-151.92,Credit card,expense
+2025-01-24,EV Charging,Transport,-159.26,Checking,expense
+2025-01-24,Riverside Properties,Rent,-0.29,Credit card,expense
+2025-01-25,Best Buy,Shopping,-26.39,Credit card,expense
+2025-01-25,Riverside Properties,Rent,-7.43,Credit card,expense
+2025-01-25,Whole Foods,Groceries,-97.42,Credit card,expense
+2025-01-26,Whole Foods,Groceries,-138.66,Credit card,expense
+2025-01-27,Riverside Properties,Rent,-6.29,Credit card,expense
+2025-01-28,Riverside Properties,Rent,-2.61,Credit card,expense
+2025-01-28,Riverside Properties,Rent,-1.54,Credit card,expense
+2025-01-28,Safeway,Groceries,-61.85,Checking,expense
+2025-01-30,Riverside Properties,Rent,-4.62,Checking,expense
+2025-01-30,Riverside Properties,Rent,-4.45,Credit card,expense
+2025-01-30,Shell,Transport,-45.8,Credit card,expense
+2025-02-03,Riverside Properties,Rent,-1900,Checking,expense
+2025-02-03,Sushi Bar,Dining out,-81.17,Checking,expense
+2025-02-04,Auto Insurance,Insurance,-130,Checking,expense
+2025-02-04,Fitness Planet,Gym,-45,Checking,expense
+2025-02-05,Payroll,Salary,6200,Checking,income
+2025-02-05,Riverside Properties,Rent,-5.88,Checking,expense
+2025-02-06,Chipotle,Dining out,-96.04,Credit card,expense
+2025-02-06,Netflix,Subscriptions,-15.49,Credit card,expense
+2025-02-06,Riverside Properties,Rent,-6.76,Checking,expense
+2025-02-06,Spotify,Subscriptions,-11.99,Credit card,expense
+2025-02-07,Lidl,Groceries,-80.47,Credit card,expense
+2025-02-07,Lidl,Groceries,-20.18,Credit card,expense
+2025-02-10,Riverside Properties,Rent,-3.37,Credit card,expense
+2025-02-12,Riverside Properties,Rent,-6.09,Checking,expense
+2025-02-12,Riverside Properties,Rent,-0.52,Credit card,expense
+2025-02-12,Trader Joe's,Groceries,-77.5,Credit card,expense
+2025-02-14,Riverside Properties,Rent,-7.41,Credit card,expense
+2025-02-14,Riverside Properties,Rent,-0.53,Credit card,expense
+2025-02-14,Uniqlo,Shopping,-51.32,Checking,expense
+2025-02-15,Amazon,Shopping,-150.72,Credit card,expense
+2025-02-15,Riverside Properties,Rent,-2.66,Checking,expense
+2025-02-16,Riverside Properties,Rent,-2.26,Credit card,expense
+2025-02-16,Whole Foods,Groceries,-120.85,Credit card,expense
+2025-02-17,Riverside Properties,Rent,-0.76,Credit card,expense
+2025-02-17,Safeway,Groceries,-134.06,Credit card,expense
+2025-02-19,Internet Co,Utilities,-32.56,Checking,expense
+2025-02-19,Payroll,Salary,6200,Checking,income
+2025-02-19,Riverside Properties,Rent,-3.51,Credit card,expense
+2025-02-21,Riverside Properties,Rent,-3.34,Credit card,expense
+2025-02-22,Nike,Shopping,-111.67,Credit card,expense
+2025-02-22,Riverside Properties,Rent,-0.21,Credit card,expense
+2025-02-22,Trader Joe's,Groceries,-63.43,Credit card,expense
+2025-02-23,Pharmacy,Health,-141.98,Credit card,expense
+2025-02-24,City Transit,Transport,-126.92,Checking,expense
+2025-02-25,Riverside Properties,Rent,-4.94,Credit card,expense
+2025-02-26,Dental Clinic,Health,-61.37,Checking,expense
+2025-02-26,Riverside Properties,Rent,-5.2,Credit card,expense
+2025-02-26,Riverside Properties,Rent,-4.81,Checking,expense
+2025-02-27,Amazon,Shopping,-141.31,Checking,expense
+2025-02-27,Pizza Place,Dining out,-13.82,Checking,expense
+2025-02-28,City Transit,Transport,-74.33,Credit card,expense
+2025-02-28,Riverside Properties,Rent,-5.96,Checking,expense
+2025-03-02,Riverside Properties,Rent,-0.41,Checking,expense
+2025-03-03,Riverside Properties,Rent,-1900,Checking,expense
+2025-03-03,Riverside Properties,Rent,-5.39,Checking,expense
+2025-03-03,Riverside Properties,Rent,-2.24,Checking,expense
+2025-03-04,Auto Insurance,Insurance,-130,Checking,expense
+2025-03-04,Fitness Planet,Gym,-45,Checking,expense
+2025-03-04,Sushi Bar,Dining out,-110.95,Credit card,expense
+2025-03-05,Payroll,Salary,6200,Checking,income
+2025-03-05,Riverside Properties,Rent,-5.57,Credit card,expense
+2025-03-05,Riverside Properties,Rent,-4.28,Checking,expense
+2025-03-06,Netflix,Subscriptions,-15.49,Credit card,expense
+2025-03-06,Riverside Properties,Rent,-2.73,Checking,expense
+2025-03-06,Spotify,Subscriptions,-11.99,Credit card,expense
+2025-03-07,Costco,Groceries,-110.26,Credit card,expense
+2025-03-07,Gas Co,Utilities,-11.71,Credit card,expense
+2025-03-08,EV Charging,Transport,-83.15,Credit card,expense
+2025-03-08,Riverside Properties,Rent,-4.36,Credit card,expense
+2025-03-08,Whole Foods,Groceries,-143.68,Credit card,expense
+2025-03-09,Amazon,Shopping,-77.38,Checking,expense
+2025-03-09,Coffee Shop,Dining out,-78.61,Credit card,expense
+2025-03-09,Riverside Properties,Rent,-0.4,Checking,expense
+2025-03-10,Concert Hall,Entertainment,-144.38,Checking,expense
+2025-03-10,Mobile Carrier,Utilities,-103.27,Checking,expense
+2025-03-10,Riverside Properties,Rent,-1.28,Checking,expense
+2025-03-11,Riverside Properties,Rent,-6.89,Credit card,expense
+2025-03-11,Riverside Properties,Rent,-2.35,Credit card,expense
+2025-03-11,Trader Joe's,Groceries,-43.64,Checking,expense
+2025-03-12,Concert Hall,Entertainment,-145.54,Credit card,expense
+2025-03-12,Riverside Properties,Rent,-4.67,Credit card,expense
+2025-03-12,Walk-in Clinic,Health,-65.82,Credit card,expense
+2025-03-13,Riverside Properties,Rent,-4.09,Checking,expense
+2025-03-13,Riverside Properties,Rent,-1.17,Checking,expense
+2025-03-14,EV Charging,Transport,-147.77,Credit card,expense
+2025-03-14,IKEA,Shopping,-93.79,Credit card,expense
+2025-03-14,Riverside Properties,Rent,-5.31,Checking,expense
+2025-03-15,IRS Refund,Tax refund,840.5,Checking,income
+2025-03-16,Mobile Carrier,Utilities,-50.3,Checking,expense
+2025-03-16,Riverside Properties,Rent,-4.36,Checking,expense
+2025-03-16,Safeway,Groceries,-35.62,Checking,expense
+2025-03-17,Concert Hall,Entertainment,-10.95,Credit card,expense
+2025-03-17,Fitness Planet,Gym,-42.08,Credit card,expense
+2025-03-19,Payroll,Salary,6200,Checking,income
+2025-03-20,Chipotle,Dining out,-102.44,Credit card,expense
+2025-03-21,Riverside Properties,Rent,-3.49,Credit card,expense
+2025-03-22,Gas Co,Utilities,-154.64,Credit card,expense
+2025-03-22,Riverside Properties,Rent,-6.66,Credit card,expense
+2025-03-22,Riverside Properties,Rent,-3.39,Checking,expense
+2025-03-23,Hydro Co,Utilities,-60.77,Checking,expense
+2025-03-23,Netflix,Subscriptions,-19.55,Credit card,expense
+2025-03-23,Trader Joe's,Groceries,-137.24,Credit card,expense
+2025-03-24,Cinema,Entertainment,-73.9,Checking,expense
+2025-03-24,Trader Joe's,Groceries,-9.92,Checking,expense
+2025-03-25,EV Charging,Transport,-34.77,Checking,expense
+2025-03-25,Riverside Properties,Rent,-4.28,Checking,expense
+2025-03-25,Riverside Properties,Rent,-1.35,Credit card,expense
+2025-03-26,Nike,Shopping,-122.07,Checking,expense
+2025-03-26,Riverside Properties,Rent,-1.19,Credit card,expense
+2025-03-27,Pizza Place,Dining out,-59.73,Checking,expense
+2025-03-27,Riverside Properties,Rent,-7.32,Checking,expense
+2025-03-27,Riverside Properties,Rent,-2.48,Checking,expense
+2025-03-28,Hydro Co,Utilities,-52.72,Checking,expense
+2025-03-28,Riverside Properties,Rent,-4.6,Checking,expense
+2025-03-28,Riverside Properties,Rent,-2.69,Checking,expense
+2025-03-29,Costco,Groceries,-55.96,Credit card,expense
+2025-03-29,Riverside Properties,Rent,-5.55,Credit card,expense
+2025-03-30,Sushi Bar,Dining out,-50.03,Checking,expense
+2025-04-01,Riverside Properties,Rent,-6.56,Credit card,expense
+2025-04-02,Riverside Properties,Rent,-3.57,Credit card,expense
+2025-04-03,Riverside Properties,Rent,-1900,Checking,expense
+2025-04-03,Riverside Properties,Rent,-7.09,Credit card,expense
+2025-04-03,Riverside Properties,Rent,-6.53,Credit card,expense
+2025-04-03,Whole Foods,Groceries,-95.26,Checking,expense
+2025-04-04,Auto Insurance,Insurance,-130,Checking,expense
+2025-04-04,Costco,Groceries,-26.0,Checking,expense
+2025-04-04,Fitness Planet,Gym,-45,Checking,expense
+2025-04-04,Riverside Properties,Rent,-6.79,Checking,expense
+2025-04-04,Riverside Properties,Rent,-1.79,Checking,expense
+2025-04-05,Netflix,Subscriptions,-103.08,Checking,expense
+2025-04-05,Payroll,Salary,6200,Checking,income
+2025-04-05,Riverside Properties,Rent,-3.12,Credit card,expense
+2025-04-05,Uniqlo,Shopping,-138.75,Checking,expense
+2025-04-06,Netflix,Subscriptions,-15.49,Credit card,expense
+2025-04-06,Spotify,Subscriptions,-11.99,Credit card,expense
+2025-04-07,Riverside Properties,Rent,-6.75,Checking,expense
+2025-04-08,Costco,Groceries,-148.43,Credit card,expense
+2025-04-08,Riverside Properties,Rent,-5.67,Credit card,expense
+2025-04-08,Riverside Properties,Rent,-2.38,Checking,expense
+2025-04-09,Cinema,Entertainment,-17.06,Checking,expense
+2025-04-09,Costco,Groceries,-106.44,Checking,expense
+2025-04-09,Riverside Properties,Rent,-4.49,Checking,expense
+2025-04-10,Riverside Properties,Rent,-4.0,Checking,expense
+2025-04-10,Riverside Properties,Rent,-0.88,Checking,expense
+2025-04-11,Costco,Groceries,-154.21,Credit card,expense
+2025-04-11,Fitness Planet,Gym,-95.59,Credit card,expense
+2025-04-12,Fitness Planet,Gym,-104.49,Checking,expense
+2025-04-12,Renters Insurance,Insurance,-60.89,Checking,expense
+2025-04-12,Riverside Properties,Rent,-0.67,Credit card,expense
+2025-04-13,Riverside Properties,Rent,-5.36,Checking,expense
+2025-04-13,Riverside Properties,Rent,-1.49,Credit card,expense
+2025-04-14,Pharmacy,Health,-107.96,Checking,expense
+2025-04-14,Riverside Properties,Rent,-3.85,Checking,expense
+2025-04-14,Trader Joe's,Groceries,-57.14,Checking,expense
+2025-04-15,Best Buy,Shopping,-141.89,Checking,expense
+2025-04-15,Lidl,Groceries,-129.5,Credit card,expense
+2025-04-15,Uber,Transport,-48.59,Credit card,expense
+2025-04-16,Riverside Properties,Rent,-7.25,Credit card,expense
+2025-04-16,Riverside Properties,Rent,-2.82,Credit card,expense
+2025-04-17,Riverside Properties,Rent,-4.93,Credit card,expense
+2025-04-17,Riverside Properties,Rent,-0.16,Credit card,expense
+2025-04-17,Uniqlo,Shopping,-85.35,Checking,expense
+2025-04-19,Mobile Carrier,Utilities,-59.66,Checking,expense
+2025-04-19,Payroll,Salary,6200,Checking,income
+2025-04-19,Spotify,Entertainment,-118.36,Checking,expense
+2025-04-20,Riverside Properties,Rent,-5.24,Checking,expense
+2025-04-21,Nike,Shopping,-157.08,Credit card,expense
+2025-04-21,Riverside Properties,Rent,-1.15,Checking,expense
+2025-04-21,Safeway,Groceries,-115.19,Checking,expense
+2025-04-22,Auto Insurance,Insurance,-83.29,Credit card,expense
+2025-04-22,Dental Clinic,Health,-23.16,Checking,expense
+2025-04-22,Lidl,Groceries,-58.46,Credit card,expense
+2025-04-24,Riverside Properties,Rent,-7.4,Checking,expense
+2025-04-25,Riverside Properties,Rent,-2.8,Checking,expense
+2025-04-25,Walk-in Clinic,Health,-65.76,Checking,expense
+2025-04-26,Pharmacy,Health,-101.85,Credit card,expense
+2025-04-26,Riverside Properties,Rent,-1.92,Credit card,expense
+2025-04-26,Riverside Properties,Rent,-0.02,Credit card,expense
+2025-04-27,Pizza Place,Dining out,-145.32,Credit card,expense
+2025-04-27,Riverside Properties,Rent,-5.65,Checking,expense
+2025-04-27,Riverside Properties,Rent,-3.75,Credit card,expense
+2025-04-28,Coffee Shop,Dining out,-140.37,Credit card,expense
+2025-04-29,IKEA,Shopping,-32.01,Checking,expense
+2025-04-29,Nike,Shopping,-43.29,Checking,expense
+2025-04-29,Riverside Properties,Rent,-0.81,Checking,expense
+2025-04-30,Renters Insurance,Insurance,-105.12,Checking,expense
+2025-04-30,Riverside Properties,Rent,-1.24,Credit card,expense
+2025-05-01,Pharmacy,Health,-44.06,Checking,expense
+2025-05-01,Riverside Properties,Rent,-7.82,Checking,expense
+2025-05-01,Riverside Properties,Rent,-0.72,Checking,expense
+2025-05-02,Gas Co,Utilities,-100.27,Checking,expense
+2025-05-02,Local Bistro,Dining out,-102.38,Credit card,expense
+2025-05-03,Riverside Properties,Rent,-1900,Checking,expense
+2025-05-04,Auto Insurance,Insurance,-130,Checking,expense
+2025-05-04,Fitness Planet,Gym,-45,Checking,expense
+2025-05-05,Hydro Co,Utilities,-96.1,Credit card,expense
+2025-05-05,Payroll,Salary,6200,Checking,income
+2025-05-05,Trader Joe's,Groceries,-57.66,Checking,expense
+2025-05-06,Coffee Shop,Dining out,-141.22,Checking,expense
+2025-05-06,Netflix,Subscriptions,-15.49,Credit card,expense
+2025-05-06,Spotify,Subscriptions,-11.99,Credit card,expense
+2025-05-07,Renters Insurance,Insurance,-121.48,Checking,expense
+2025-05-07,Spotify,Entertainment,-146.94,Checking,expense
+2025-05-09,Auto Insurance,Insurance,-122.63,Credit card,expense
+2025-05-09,Renters Insurance,Insurance,-21.73,Checking,expense
+2025-05-09,Walk-in Clinic,Health,-110.51,Checking,expense
+2025-05-11,Riverside Properties,Rent,-7.13,Credit card,expense
+2025-05-11,Riverside Properties,Rent,-5.05,Checking,expense
+2025-05-12,Lidl,Groceries,-57.86,Credit card,expense
+2025-05-12,Riverside Properties,Rent,-6.88,Credit card,expense
+2025-05-12,Riverside Properties,Rent,-0.72,Checking,expense
+2025-05-13,Fitness Planet,Gym,-22.77,Credit card,expense
+2025-05-13,Riverside Properties,Rent,-2.64,Checking,expense
+2025-05-14,Amazon,Shopping,-134.72,Checking,expense
+2025-05-15,Trader Joe's,Groceries,-41.02,Checking,expense
+2025-05-15,iCloud,Subscriptions,-23.1,Checking,expense
+2025-05-16,Notion,Subscriptions,-21.93,Credit card,expense
+2025-05-16,Trader Joe's,Groceries,-36.85,Credit card,expense
+2025-05-19,Lidl,Groceries,-39.49,Credit card,expense
+2025-05-19,Payroll,Salary,6200,Checking,income
+2025-05-19,Riverside Properties,Rent,-1.7,Credit card,expense
+2025-05-20,Riverside Properties,Rent,-1.69,Credit card,expense
+2025-05-21,Hydro Co,Utilities,-108.48,Credit card,expense
+2025-05-21,Pharmacy,Health,-158.1,Checking,expense
+2025-05-22,Costco,Groceries,-97.51,Credit card,expense
+2025-05-23,Riverside Properties,Rent,-2.07,Credit card,expense
+2025-05-25,City Transit,Transport,-77.62,Credit card,expense
+2025-05-25,Riverside Properties,Rent,-3.89,Credit card,expense
+2025-05-25,Riverside Properties,Rent,-0.44,Credit card,expense
+2025-05-27,Dental Clinic,Health,-112.29,Checking,expense
+2025-05-27,EV Charging,Transport,-19.17,Credit card,expense
+2025-05-27,Riverside Properties,Rent,-7.47,Checking,expense
+2025-05-28,Riverside Properties,Rent,-4.37,Checking,expense
+2025-05-28,Whole Foods,Groceries,-137.62,Credit card,expense
+2025-05-29,Riverside Properties,Rent,-5.5,Checking,expense
+2025-05-29,Riverside Properties,Rent,-4.69,Checking,expense
+2025-05-29,Riverside Properties,Rent,-0.37,Checking,expense
+2025-06-02,Cinema,Entertainment,-97.14,Checking,expense
+2025-06-02,Riverside Properties,Rent,-5.17,Checking,expense
+2025-06-03,Riverside Properties,Rent,-1900,Checking,expense
+2025-06-04,Auto Insurance,Insurance,-130,Checking,expense
+2025-06-04,Fitness Planet,Gym,-45,Checking,expense
+2025-06-04,Riverside Properties,Rent,-6.76,Checking,expense
+2025-06-04,Riverside Properties,Rent,-5.2,Checking,expense
+2025-06-05,Airbnb,Travel,-720.85,Credit card,expense
+2025-06-05,Payroll,Salary,6200,Checking,income
+2025-06-05,Riverside Properties,Rent,-7.77,Checking,expense
+2025-06-05,Riverside Properties,Rent,-0.63,Checking,expense
+2025-06-05,Walk-in Clinic,Health,-101.26,Credit card,expense
+2025-06-06,Netflix,Subscriptions,-15.49,Credit card,expense
+2025-06-06,Railway,Travel,-1359.45,Credit card,expense
+2025-06-06,Spotify,Subscriptions,-11.99,Credit card,expense
+2025-06-07,Airline,Travel,-1103.83,Credit card,expense
+2025-06-08,Riverside Properties,Rent,-5.27,Checking,expense
+2025-06-09,Airline,Travel,-770.33,Credit card,expense
+2025-06-10,Airline,Travel,-1234.79,Credit card,expense
+2025-06-11,Railway,Travel,-1134.89,Credit card,expense
+2025-06-11,Riverside Properties,Rent,-7.64,Checking,expense
+2025-06-11,Riverside Properties,Rent,-5.73,Checking,expense
+2025-06-11,Riverside Properties,Rent,-1.96,Credit card,expense
+2025-06-13,Airbnb,Travel,-745.53,Credit card,expense
+2025-06-13,Internet Co,Utilities,-57.87,Credit card,expense
+2025-06-14,Riverside Properties,Rent,-7.42,Credit card,expense
+2025-06-14,Riverside Properties,Rent,-0.63,Checking,expense
+2025-06-14,Sushi Bar,Dining out,-88.95,Credit card,expense
+2025-06-15,Bank,Interest,29.39397901842078,Savings,income
+2025-06-15,Coffee Shop,Dining out,-77.93,Checking,expense
+2025-06-15,Riverside Properties,Rent,-7.83,Checking,expense
+2025-06-15,Whole Foods,Groceries,-44.98,Checking,expense
+2025-06-16,Hydro Co,Utilities,-85.59,Credit card,expense
+2025-06-16,Riverside Properties,Rent,-0.75,Checking,expense
+2025-06-16,Walk-in Clinic,Health,-59.61,Checking,expense
+2025-06-17,Riverside Properties,Rent,-5.95,Credit card,expense
+2025-06-19,EV Charging,Transport,-111.53,Checking,expense
+2025-06-19,Payroll,Salary,6200,Checking,income
+2025-06-19,Railway,Travel,-1254.68,Credit card,expense
+2025-06-19,Safeway,Groceries,-103.97,Checking,expense
+2025-06-19,Walk-in Clinic,Health,-56.05,Checking,expense
+2025-06-20,Riverside Properties,Rent,-4.31,Credit card,expense
+2025-06-20,Trader Joe's,Groceries,-19.66,Credit card,expense
+2025-06-21,Riverside Properties,Rent,-4.4,Credit card,expense
+2025-06-21,Riverside Properties,Rent,-3.99,Credit card,expense
+2025-06-21,Riverside Properties,Rent,-0.14,Credit card,expense
+2025-06-22,Safeway,Groceries,-158.63,Credit card,expense
+2025-06-23,Internet Co,Utilities,-18.02,Credit card,expense
+2025-06-23,Riverside Properties,Rent,-2.57,Credit card,expense
+2025-06-24,Riverside Properties,Rent,-5.33,Credit card,expense
+2025-06-24,Uniqlo,Shopping,-155.09,Checking,expense
+2025-06-24,Whole Foods,Groceries,-55.06,Checking,expense
+2025-06-25,Cinema,Entertainment,-106.2,Checking,expense
+2025-06-25,Riverside Properties,Rent,-5.1,Credit card,expense
+2025-06-26,Notion,Subscriptions,-37.18,Credit card,expense
+2025-06-26,Trader Joe's,Groceries,-136.35,Credit card,expense
+2025-06-28,Riverside Properties,Rent,-6.7,Credit card,expense
+2025-06-30,Renters Insurance,Insurance,-122.36,Checking,expense
+2025-07-01,Riverside Properties,Rent,-0.28,Checking,expense
+2025-07-02,Riverside Properties,Rent,-4.31,Checking,expense
+2025-07-03,Gas Co,Utilities,-140.7,Credit card,expense
+2025-07-03,Riverside Properties,Rent,-1900,Checking,expense
+2025-07-03,Riverside Properties,Rent,-3.56,Credit card,expense
+2025-07-03,Riverside Properties,Rent,-0.27,Credit card,expense
+2025-07-04,Auto Insurance,Insurance,-130,Checking,expense
+2025-07-04,Fitness Planet,Gym,-45,Checking,expense
+2025-07-05,Cinema,Entertainment,-151.85,Credit card,expense
+2025-07-05,Costco,Groceries,-49.46,Credit card,expense
+2025-07-05,Payroll,Salary,6200,Checking,income
+2025-07-06,Amazon,Shopping,-71.06,Checking,expense
+2025-07-06,Netflix,Subscriptions,-15.49,Credit card,expense
+2025-07-06,Riverside Properties,Rent,-5.45,Credit card,expense
+2025-07-06,Riverside Properties,Rent,-4.91,Credit card,expense
+2025-07-06,Spotify,Subscriptions,-11.99,Credit card,expense
+2025-07-07,Gas Co,Utilities,-13.82,Checking,expense
+2025-07-07,Riverside Properties,Rent,-1.93,Checking,expense
+2025-07-08,Concert Hall,Entertainment,-24.9,Checking,expense
+2025-07-08,Riverside Properties,Rent,-7.85,Credit card,expense
+2025-07-08,Riverside Properties,Rent,-7.62,Checking,expense
+2025-07-09,Riverside Properties,Rent,-6.08,Checking,expense
+2025-07-09,Riverside Properties,Rent,-2.25,Checking,expense
+2025-07-09,Safeway,Groceries,-98.7,Credit card,expense
+2025-07-10,Riverside Properties,Rent,-3.81,Checking,expense
+2025-07-13,Pharmacy,Health,-104.62,Checking,expense
+2025-07-13,Riverside Properties,Rent,-5.14,Credit card,expense
+2025-07-13,Riverside Properties,Rent,-1.83,Checking,expense
+2025-07-14,Lidl,Groceries,-59.46,Credit card,expense
+2025-07-15,Costco,Groceries,-142.64,Checking,expense
+2025-07-15,Renters Insurance,Insurance,-104.02,Credit card,expense
+2025-07-15,Safeway,Groceries,-13.62,Credit card,expense
+2025-07-16,Riverside Properties,Rent,-5.97,Credit card,expense
+2025-07-16,Riverside Properties,Rent,-1.07,Checking,expense
+2025-07-17,EV Charging,Transport,-59.53,Credit card,expense
+2025-07-17,Trader Joe's,Groceries,-74.42,Checking,expense
+2025-07-18,Mobile Carrier,Utilities,-20.0,Credit card,expense
+2025-07-18,Riverside Properties,Rent,-7.18,Checking,expense
+2025-07-18,Riverside Properties,Rent,-0.61,Checking,expense
+2025-07-19,Payroll,Salary,6200,Checking,income
+2025-07-19,Riverside Properties,Rent,-6.67,Checking,expense
+2025-07-19,Riverside Properties,Rent,-2.19,Checking,expense
+2025-07-20,Riverside Properties,Rent,-7.4,Checking,expense
+2025-07-20,Riverside Properties,Rent,-0.38,Credit card,expense
+2025-07-20,Walk-in Clinic,Health,-126.76,Credit card,expense
+2025-07-21,Trader Joe's,Groceries,-63.05,Credit card,expense
+2025-07-22,Riverside Properties,Rent,-5.02,Credit card,expense
+2025-07-23,Riverside Properties,Rent,-5.48,Checking,expense
+2025-07-24,Auto Insurance,Insurance,-119.82,Checking,expense
+2025-07-25,Amazon,Shopping,-47.79,Checking,expense
+2025-07-25,Riverside Properties,Rent,-6.4,Credit card,expense
+2025-07-25,Riverside Properties,Rent,-0.03,Checking,expense
+2025-07-27,Nike,Shopping,-116.19,Credit card,expense
+2025-07-27,Riverside Properties,Rent,-3.6,Checking,expense
+2025-07-27,Sushi Bar,Dining out,-159.58,Checking,expense
+2025-07-28,Riverside Properties,Rent,-7.79,Checking,expense
+2025-07-28,Riverside Properties,Rent,-0.12,Credit card,expense
+2025-07-29,Gas Co,Utilities,-101.02,Credit card,expense
+2025-07-29,Riverside Properties,Rent,-1.41,Credit card,expense
+2025-07-29,Safeway,Groceries,-159.94,Checking,expense
+2025-07-30,Auto Insurance,Insurance,-76.4,Checking,expense
+2025-07-31,IKEA,Shopping,-105.25,Credit card,expense
+2025-08-01,Riverside Properties,Rent,-1.35,Credit card,expense
+2025-08-02,Pizza Place,Dining out,-150.08,Credit card,expense
+2025-08-02,Riverside Properties,Rent,-1.23,Checking,expense
+2025-08-03,Riverside Properties,Rent,-1900,Checking,expense
+2025-08-03,Riverside Properties,Rent,-7.0,Checking,expense
+2025-08-04,Auto Insurance,Insurance,-130,Checking,expense
+2025-08-04,Fitness Planet,Gym,-45,Checking,expense
+2025-08-05,Payroll,Salary,6200,Checking,income
+2025-08-05,Riverside Properties,Rent,-6.63,Checking,expense
+2025-08-06,Netflix,Subscriptions,-15.49,Credit card,expense
+2025-08-06,Spotify,Subscriptions,-11.99,Credit card,expense
+2025-08-10,Riverside Properties,Rent,-3.06,Credit card,expense
+2025-08-10,Riverside Properties,Rent,-2.86,Checking,expense
+2025-08-11,Riverside Properties,Rent,-5.62,Credit card,expense
+2025-08-11,Riverside Properties,Rent,-4.48,Checking,expense
+2025-08-11,Riverside Properties,Rent,-3.15,Checking,expense
+2025-08-12,City Transit,Transport,-156.26,Credit card,expense
+2025-08-12,Hydro Co,Utilities,-56.51,Checking,expense
+2025-08-14,Notion,Subscriptions,-45.74,Credit card,expense
+2025-08-14,Riverside Properties,Rent,-7.23,Checking,expense
+2025-08-15,Riverside Properties,Rent,-4.01,Checking,expense
+2025-08-15,Uniqlo,Shopping,-36.85,Credit card,expense
+2025-08-16,Pizza Place,Dining out,-15.4,Checking,expense
+2025-08-16,Riverside Properties,Rent,-5.71,Credit card,expense
+2025-08-16,Safeway,Groceries,-84.83,Credit card,expense
+2025-08-18,Riverside Properties,Rent,-7.59,Credit card,expense
+2025-08-18,Riverside Properties,Rent,-7.41,Checking,expense
+2025-08-18,Trader Joe's,Groceries,-118.58,Checking,expense
+2025-08-19,Cinema,Entertainment,-27.56,Credit card,expense
+2025-08-19,Payroll,Salary,6200,Checking,income
+2025-08-19,Riverside Properties,Rent,-3.54,Checking,expense
+2025-08-20,Coffee Shop,Dining out,-69.01,Credit card,expense
+2025-08-23,EV Charging,Transport,-86.94,Credit card,expense
+2025-08-24,Riverside Properties,Rent,-6.7,Checking,expense
+2025-08-25,Riverside Properties,Rent,-5.05,Credit card,expense
+2025-08-25,Riverside Properties,Rent,-2.33,Checking,expense
+2025-08-26,Auto Insurance,Insurance,-117.65,Checking,expense
+2025-08-26,Coffee Shop,Dining out,-125.74,Checking,expense
+2025-08-26,Riverside Properties,Rent,-3.22,Checking,expense
+2025-08-27,Steam,Entertainment,-12.8,Credit card,expense
+2025-08-28,Trader Joe's,Groceries,-71.65,Checking,expense
+2025-08-29,Riverside Properties,Rent,-1.02,Credit card,expense
+2025-08-30,Riverside Properties,Rent,-0.02,Checking,expense
+2025-08-31,Renters Insurance,Insurance,-92.83,Credit card,expense
+2025-08-31,Riverside Properties,Rent,-4.32,Checking,expense
+2025-08-31,Riverside Properties,Rent,-3.12,Credit card,expense
+2025-09-01,Gas Co,Utilities,-112.92,Checking,expense
+2025-09-01,Riverside Properties,Rent,-3.52,Checking,expense
+2025-09-02,Lidl,Groceries,-65.71,Checking,expense
+2025-09-02,Steam,Entertainment,-52.15,Checking,expense
+2025-09-03,Riverside Properties,Rent,-1900,Checking,expense
+2025-09-04,Auto Insurance,Insurance,-130,Checking,expense
+2025-09-04,Coffee Shop,Dining out,-49.21,Checking,expense
+2025-09-04,Fitness Planet,Gym,-45,Checking,expense
+2025-09-04,Uniqlo,Shopping,-121.6,Credit card,expense
+2025-09-05,Lidl,Groceries,-44.37,Credit card,expense
+2025-09-05,Payroll,Salary,6200,Checking,income
+2025-09-06,Netflix,Subscriptions,-15.49,Credit card,expense
+2025-09-06,Riverside Properties,Rent,-7.2,Checking,expense
+2025-09-06,Spotify,Subscriptions,-11.99,Credit card,expense
+2025-09-07,City Transit,Transport,-56.82,Credit card,expense
+2025-09-07,Costco,Groceries,-8.79,Credit card,expense
+2025-09-07,Riverside Properties,Rent,-4.18,Credit card,expense
+2025-09-09,Riverside Properties,Rent,-0.69,Credit card,expense
+2025-09-10,Fitness Planet,Gym,-127.77,Credit card,expense
+2025-09-10,Nike,Shopping,-149.96,Credit card,expense
+2025-09-10,Uniqlo,Shopping,-141.26,Credit card,expense
+2025-09-11,Riverside Properties,Rent,-0.89,Credit card,expense
+2025-09-11,Riverside Properties,Rent,-0.57,Checking,expense
+2025-09-12,Gas Co,Utilities,-34.68,Checking,expense
+2025-09-12,Riverside Properties,Rent,-7.89,Checking,expense
+2025-09-12,Riverside Properties,Rent,-5.35,Checking,expense
+2025-09-13,Local Bistro,Dining out,-80.57,Credit card,expense
+2025-09-13,Riverside Properties,Rent,-4.79,Credit card,expense
+2025-09-13,Safeway,Groceries,-43.8,Checking,expense
+2025-09-14,Riverside Properties,Rent,-5.91,Checking,expense
+2025-09-14,Riverside Properties,Rent,-2.66,Checking,expense
+2025-09-15,Coffee Shop,Dining out,-148.31,Checking,expense
+2025-09-15,Riverside Properties,Rent,-5.06,Credit card,expense
+2025-09-16,Renters Insurance,Insurance,-31.28,Checking,expense
+2025-09-17,Hydro Co,Utilities,-87.88,Checking,expense
+2025-09-17,Lidl,Groceries,-25.06,Credit card,expense
+2025-09-17,Riverside Properties,Rent,-1.94,Credit card,expense
+2025-09-18,Coffee Shop,Dining out,-75.16,Credit card,expense
+2025-09-19,Lidl,Groceries,-75.71,Credit card,expense
+2025-09-19,Payroll,Salary,6200,Checking,income
+2025-09-19,Riverside Properties,Rent,-4.35,Credit card,expense
+2025-09-19,Riverside Properties,Rent,-2.21,Checking,expense
+2025-09-20,Riverside Properties,Rent,-3.67,Credit card,expense
+2025-09-20,Steam,Entertainment,-95.9,Credit card,expense
+2025-09-22,Mobile Carrier,Utilities,-64.92,Checking,expense
+2025-09-22,Riverside Properties,Rent,-4.99,Credit card,expense
+2025-09-22,Safeway,Groceries,-35.36,Credit card,expense
+2025-09-23,Lidl,Groceries,-67.74,Credit card,expense
+2025-09-23,Uber,Transport,-134.89,Credit card,expense
+2025-09-24,Riverside Properties,Rent,-6.76,Credit card,expense
+2025-09-24,Riverside Properties,Rent,-3.74,Credit card,expense
+2025-09-27,Riverside Properties,Rent,-6.07,Credit card,expense
+2025-09-27,Riverside Properties,Rent,-4.78,Credit card,expense
+2025-09-27,Whole Foods,Groceries,-75.86,Credit card,expense
+2025-09-28,Shell,Transport,-29.3,Checking,expense
+2025-09-29,Spotify,Entertainment,-95.78,Checking,expense
+2025-09-30,Riverside Properties,Rent,-0.11,Credit card,expense
+2025-10-01,Renters Insurance,Insurance,-127.44,Checking,expense
+2025-10-01,Riverside Properties,Rent,-3.55,Credit card,expense
+2025-10-01,Riverside Properties,Rent,-3.55,Credit card,expense
+2025-10-02,Hydro Co,Utilities,-93.48,Checking,expense
+2025-10-02,Riverside Properties,Rent,-5.59,Credit card,expense
+2025-10-02,Riverside Properties,Rent,-4.99,Checking,expense
+2025-10-03,Riverside Properties,Rent,-1900,Checking,expense
+2025-10-03,Riverside Properties,Rent,-6.37,Credit card,expense
+2025-10-04,Auto Insurance,Insurance,-130,Checking,expense
+2025-10-04,Fitness Planet,Gym,-45,Checking,expense
+2025-10-04,Pharmacy,Health,-130.31,Credit card,expense
+2025-10-04,Pharmacy,Health,-89.42,Credit card,expense
+2025-10-04,Safeway,Groceries,-110.4,Credit card,expense
+2025-10-05,EV Charging,Transport,-147.0,Credit card,expense
+2025-10-05,Local Bistro,Dining out,-154.24,Credit card,expense
+2025-10-05,Payroll,Salary,6200,Checking,income
+2025-10-05,Pizza Place,Dining out,-54.08,Credit card,expense
+2025-10-06,IKEA,Shopping,-56.89,Checking,expense
+2025-10-06,Netflix,Subscriptions,-15.49,Credit card,expense
+2025-10-06,Riverside Properties,Rent,-5.53,Checking,expense
+2025-10-06,Riverside Properties,Rent,-4.27,Checking,expense
+2025-10-06,Spotify,Subscriptions,-11.99,Credit card,expense
+2025-10-07,Riverside Properties,Rent,-2.07,Credit card,expense
+2025-10-07,Uniqlo,Shopping,-55.56,Credit card,expense
+2025-10-08,Riverside Properties,Rent,-5.64,Credit card,expense
+2025-10-08,Riverside Properties,Rent,-3.44,Credit card,expense
+2025-10-09,Coffee Shop,Dining out,-82.22,Credit card,expense
+2025-10-09,Renters Insurance,Insurance,-78.05,Checking,expense
+2025-10-09,Riverside Properties,Rent,-5.94,Checking,expense
+2025-10-14,Costco,Groceries,-18.33,Credit card,expense
+2025-10-14,Lidl,Groceries,-77.31,Credit card,expense
+2025-10-14,Riverside Properties,Rent,-2.73,Credit card,expense
+2025-10-16,Lidl,Groceries,-117.77,Checking,expense
+2025-10-16,Safeway,Groceries,-130.54,Credit card,expense
+2025-10-16,Whole Foods,Groceries,-87.71,Credit card,expense
+2025-10-17,Riverside Properties,Rent,-1.48,Checking,expense
+2025-10-18,Fitness Planet,Gym,-53.6,Credit card,expense
+2025-10-18,Riverside Properties,Rent,-7.25,Checking,expense
+2025-10-18,Safeway,Groceries,-77.77,Credit card,expense
+2025-10-19,Payroll,Salary,6200,Checking,income
+2025-10-19,Riverside Properties,Rent,-2.91,Credit card,expense
+2025-10-19,Riverside Properties,Rent,-0.84,Credit card,expense
+2025-10-19,Safeway,Groceries,-106.03,Checking,expense
+2025-10-20,Coffee Shop,Dining out,-80.28,Credit card,expense
+2025-10-22,IKEA,Shopping,-108.03,Credit card,expense
+2025-10-22,Uniqlo,Shopping,-10.38,Credit card,expense
+2025-10-23,EV Charging,Transport,-149.19,Checking,expense
+2025-10-24,Riverside Properties,Rent,-2.58,Checking,expense
+2025-10-25,Riverside Properties,Rent,-7.57,Checking,expense
+2025-10-25,Riverside Properties,Rent,-5.28,Checking,expense
+2025-10-25,Uber,Transport,-128.16,Credit card,expense
+2025-10-26,Riverside Properties,Rent,-3.58,Checking,expense
+2025-10-26,Trader Joe's,Groceries,-127.1,Checking,expense
+2025-10-27,Coffee Shop,Dining out,-108.42,Credit card,expense
+2025-10-27,Costco,Groceries,-65.76,Credit card,expense
+2025-10-27,Internet Co,Utilities,-129.3,Credit card,expense
+2025-10-28,Riverside Properties,Rent,-7.27,Checking,expense
+2025-10-28,Riverside Properties,Rent,-7.18,Credit card,expense
+2025-10-28,Sushi Bar,Dining out,-92.66,Checking,expense
+2025-11-01,Riverside Properties,Rent,-1.77,Credit card,expense
+2025-11-01,Riverside Properties,Rent,-1.09,Credit card,expense
+2025-11-02,Riverside Properties,Rent,-6.89,Checking,expense
+2025-11-03,Riverside Properties,Rent,-1900,Checking,expense
+2025-11-03,Riverside Properties,Rent,-6.66,Checking,expense
+2025-11-03,Riverside Properties,Rent,-1.74,Checking,expense
+2025-11-04,Auto Insurance,Insurance,-130,Checking,expense
+2025-11-04,Fitness Planet,Gym,-45,Checking,expense
+2025-11-04,Notion,Subscriptions,-98.26,Credit card,expense
+2025-11-04,Riverside Properties,Rent,-5.56,Checking,expense
+2025-11-05,Concert Hall,Entertainment,-130.22,Checking,expense
+2025-11-05,Payroll,Salary,6200,Checking,income
+2025-11-05,Riverside Properties,Rent,-1.48,Credit card,expense
+2025-11-06,Netflix,Subscriptions,-15.49,Credit card,expense
+2025-11-06,Renters Insurance,Insurance,-52.3,Checking,expense
+2025-11-06,Riverside Properties,Rent,-4.17,Credit card,expense
+2025-11-06,Spotify,Subscriptions,-11.99,Credit card,expense
+2025-11-07,Riverside Properties,Rent,-1.47,Checking,expense
+2025-11-08,Lidl,Groceries,-38.37,Credit card,expense
+2025-11-08,Riverside Properties,Rent,-0.38,Checking,expense
+2025-11-09,Riverside Properties,Rent,-1.35,Credit card,expense
+2025-11-10,Lidl,Groceries,-80.84,Checking,expense
+2025-11-10,Riverside Properties,Rent,-2.93,Credit card,expense
+2025-11-10,Riverside Properties,Rent,-2.28,Checking,expense
+2025-11-11,Coffee Shop,Dining out,-14.73,Checking,expense
+2025-11-11,Costco,Groceries,-107.96,Checking,expense
+2025-11-11,Riverside Properties,Rent,-2.39,Credit card,expense
+2025-11-12,Renters Insurance,Insurance,-24.1,Credit card,expense
+2025-11-12,Riverside Properties,Rent,-4.43,Checking,expense
+2025-11-13,Costco,Groceries,-60.95,Checking,expense
+2025-11-13,Gas Co,Utilities,-60.44,Credit card,expense
+2025-11-13,Riverside Properties,Rent,-4.67,Credit card,expense
+2025-11-14,Mobile Carrier,Utilities,-60.94,Credit card,expense
+2025-11-14,Riverside Properties,Rent,-5.45,Checking,expense
+2025-11-14,Whole Foods,Groceries,-11.43,Checking,expense
+2025-11-16,Nike,Shopping,-86.43,Credit card,expense
+2025-11-17,Riverside Properties,Rent,-6.15,Checking,expense
+2025-11-17,Riverside Properties,Rent,-2.88,Checking,expense
+2025-11-18,Chipotle,Dining out,-95.76,Credit card,expense
+2025-11-18,Lidl,Groceries,-142.23,Checking,expense
+2025-11-18,Riverside Properties,Rent,-7.96,Credit card,expense
+2025-11-19,Payroll,Salary,6200,Checking,income
+2025-11-19,Riverside Properties,Rent,-7.09,Checking,expense
+2025-11-19,Riverside Properties,Rent,-3.22,Checking,expense
+2025-11-21,IKEA,Shopping,-20.88,Credit card,expense
+2025-11-21,Riverside Properties,Rent,-3.06,Checking,expense
+2025-11-22,Riverside Properties,Rent,-4.65,Credit card,expense
+2025-11-22,Trader Joe's,Groceries,-25.78,Checking,expense
+2025-11-23,Riverside Properties,Rent,-5.69,Credit card,expense
+2025-11-23,Riverside Properties,Rent,-3.04,Checking,expense
+2025-11-23,Riverside Properties,Rent,-2.92,Credit card,expense
+2025-11-25,Riverside Properties,Rent,-4.67,Checking,expense
+2025-11-25,Riverside Properties,Rent,-3.48,Credit card,expense
+2025-11-25,Safeway,Groceries,-154.5,Checking,expense
+2025-11-26,Costco,Groceries,-89.72,Credit card,expense
+2025-11-26,Mobile Carrier,Utilities,-91.56,Credit card,expense
+2025-11-28,EV Charging,Transport,-91.05,Checking,expense
+2025-11-28,Internet Co,Utilities,-90.39,Credit card,expense
+2025-11-30,Riverside Properties,Rent,-4.4,Checking,expense
+2025-12-03,Coffee Shop,Dining out,-112.75,Checking,expense
+2025-12-03,Riverside Properties,Rent,-1900,Checking,expense
+2025-12-04,Airbnb,Travel,-570.37,Credit card,expense
+2025-12-04,Auto Insurance,Insurance,-130,Checking,expense
+2025-12-04,Fitness Planet,Gym,-45,Checking,expense
+2025-12-04,Internet Co,Utilities,-88.91,Credit card,expense
+2025-12-05,Booking.com,Travel,-1180.38,Credit card,expense
+2025-12-05,Payroll,Salary,6200,Checking,income
+2025-12-05,Spotify,Subscriptions,-28.61,Checking,expense
+2025-12-05,Uniqlo,Shopping,-139.79,Credit card,expense
+2025-12-06,Netflix,Subscriptions,-15.49,Credit card,expense
+2025-12-06,Riverside Properties,Rent,-1.37,Checking,expense
+2025-12-06,Spotify,Subscriptions,-11.99,Credit card,expense
+2025-12-07,Riverside Properties,Rent,-4.38,Credit card,expense
+2025-12-07,Riverside Properties,Rent,-2.44,Checking,expense
+2025-12-08,EV Charging,Transport,-104.5,Checking,expense
+2025-12-08,Riverside Properties,Rent,-1.05,Credit card,expense
+2025-12-08,Walk-in Clinic,Health,-68.45,Checking,expense
+2025-12-09,Riverside Properties,Rent,-5.3,Credit card,expense
+2025-12-09,Riverside Properties,Rent,-1.69,Credit card,expense
+2025-12-09,Safeway,Groceries,-10.47,Credit card,expense
+2025-12-11,Local Bistro,Dining out,-142.09,Checking,expense
+2025-12-11,Pizza Place,Dining out,-22.19,Checking,expense
+2025-12-11,Riverside Properties,Rent,-2.68,Credit card,expense
+2025-12-12,Airbnb,Travel,-1095.65,Credit card,expense
+2025-12-12,Lidl,Groceries,-42.38,Checking,expense
+2025-12-12,Riverside Properties,Rent,-7.99,Checking,expense
+2025-12-12,Trader Joe's,Groceries,-132.2,Checking,expense
+2025-12-13,Riverside Properties,Rent,-2.87,Credit card,expense
+2025-12-13,Safeway,Groceries,-21.58,Credit card,expense
+2025-12-13,Trader Joe's,Groceries,-141.91,Credit card,expense
+2025-12-14,Airbnb,Travel,-1028.35,Credit card,expense
+2025-12-14,IKEA,Shopping,-112.36,Credit card,expense
+2025-12-14,Riverside Properties,Rent,-2.98,Credit card,expense
+2025-12-14,Whole Foods,Groceries,-29.28,Credit card,expense
+2025-12-15,Hydro Co,Utilities,-136.88,Checking,expense
+2025-12-15,Riverside Properties,Rent,-6.01,Checking,expense
+2025-12-15,Riverside Properties,Rent,-5.48,Credit card,expense
+2025-12-16,Airbnb,Travel,-1075.48,Credit card,expense
+2025-12-16,Riverside Properties,Rent,-6.07,Credit card,expense
+2025-12-16,Riverside Properties,Rent,-1.73,Credit card,expense
+2025-12-16,Riverside Properties,Rent,-0.1,Checking,expense
+2025-12-17,Railway,Travel,-1349.68,Credit card,expense
+2025-12-17,Riverside Properties,Rent,-1.9,Credit card,expense
+2025-12-17,Whole Foods,Groceries,-10.1,Credit card,expense
+2025-12-18,Lidl,Groceries,-89.72,Credit card,expense
+2025-12-18,Railway,Travel,-485.31,Credit card,expense
+2025-12-18,Riverside Properties,Rent,-4.61,Checking,expense
+2025-12-19,Airbnb,Travel,-754.7,Credit card,expense
+2025-12-19,Payroll,Salary,6200,Checking,income
+2025-12-19,Riverside Properties,Rent,-3.31,Credit card,expense
+2025-12-20,Airbnb,Travel,-892.48,Credit card,expense
+2025-12-21,Airline,Travel,-1418.6,Credit card,expense
+2025-12-21,Costco,Groceries,-114.63,Credit card,expense
+2025-12-21,Riverside Properties,Rent,-5.53,Credit card,expense
+2025-12-21,Riverside Properties,Rent,-3.82,Checking,expense
+2025-12-22,Booking.com,Travel,-557.09,Credit card,expense
+2025-12-24,Airline,Travel,-883.67,Credit card,expense
+2025-12-24,Lidl,Groceries,-33.37,Credit card,expense
+2025-12-24,Shell,Transport,-83.41,Checking,expense
+2025-12-25,Airline,Travel,-531.14,Credit card,expense
+2025-12-25,Shell,Transport,-14.69,Credit card,expense
+2025-12-26,Chipotle,Dining out,-92.04,Checking,expense
+2025-12-26,Railway,Travel,-929.51,Credit card,expense
+2025-12-27,Booking.com,Travel,-688.12,Credit card,expense
+2025-12-27,Coffee Shop,Dining out,-157.17,Checking,expense
+2025-12-27,Spotify,Entertainment,-26.15,Credit card,expense
+2025-12-28,Booking.com,Travel,-922.3,Credit card,expense
+2025-12-28,Riverside Properties,Rent,-7.94,Credit card,expense
+2025-12-28,Riverside Properties,Rent,-2.08,Credit card,expense
+2025-12-29,Fitness Planet,Gym,-119.33,Credit card,expense
+2025-12-29,Riverside Properties,Rent,-0.39,Credit card,expense
+2025-12-29,Safeway,Groceries,-11.63,Checking,expense
+2025-12-30,Auto Insurance,Insurance,-116.17,Credit card,expense
+2025-12-30,Riverside Properties,Rent,-4.64,Credit card,expense
+2025-12-30,Walk-in Clinic,Health,-54.74,Credit card,expense
+2025-12-31,Railway,Travel,-669.99,Credit card,expense
+2025-12-31,Riverside Properties,Rent,-7.4,Credit card,expense
+2025-12-31,Riverside Properties,Rent,-3.35,Credit card,expense

@@ -1,0 +1,22 @@
+import Fastify from "fastify";
+import cors from "@fastify/cors";
+import { config } from "./config.js";
+import { initDb } from "./db.js";
+import { authRoutes } from "./auth.js";
+import { routes } from "./routes.js";
+
+async function main() {
+  await initDb();
+  const app = Fastify({ logger: true, bodyLimit: 20 * 1024 * 1024 });
+  await app.register(cors, { origin: true, credentials: true });
+  app.get("/health", async () => ({ status: "ok", llm: config.llmBaseUrl, model: config.chatModel }));
+  await authRoutes(app);
+  await routes(app);
+  await app.listen({ port: config.port, host: "0.0.0.0" });
+  console.log(`North server listening on :${config.port}`);
+}
+
+main().catch((e) => {
+  console.error(e);
+  process.exit(1);
+});
