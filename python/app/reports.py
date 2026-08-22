@@ -41,6 +41,19 @@ def _render_markdown(md: str) -> str:
     return markdown.markdown(md, extensions=["tables", "fenced_code", "nl2br"])
 
 
+# LLMs sometimes reference charts inline as `:::chart:id:::` or `![alt](chart:id)`;
+# charts are attached separately as rendered chart blocks, so strip those tokens.
+_CHART_TOKEN = re.compile(r":::[A-Za-z0-9_-]+:[A-Za-z0-9_.-]+:::|!\[[^\]]*\]\(chart:[^)]*\)")
+
+
+def _clean_markdown(md: str) -> str:
+    return _CHART_TOKEN.sub("", md or "")
+
+
+def _render_section_markdown(md: str) -> str:
+    return _render_markdown(_clean_markdown(md))
+
+
 def _render_tables(tables: list[dict[str, Any]]) -> str:
     out = []
     for t in tables:
@@ -84,9 +97,9 @@ def build_html(report: dict[str, Any]) -> str:
         h = sec.get("heading") or ""
         md = sec.get("markdown") or ""
         if h:
-            sections_html += f'<div class="section"><h2>{h}</h2>{_render_markdown(md)}</div>'
+            sections_html += f'<div class="section"><h2>{h}</h2>{_render_section_markdown(md)}</div>'
         else:
-            sections_html += f'<div class="section">{_render_markdown(md)}</div>'
+            sections_html += f'<div class="section">{_render_section_markdown(md)}</div>'
 
     charts_html = _render_chart_divs([(c["id"], c["spec"]) for c in report.get("charts", [])])
     tables_html = _render_tables(report.get("tables", []))

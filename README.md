@@ -16,7 +16,8 @@ to leave your machine.
 ## Architecture
 
 ```
-web/        React + Vite + Tailwind + shadcn UI (in progress)
+web/        React + Vite + Tailwind + shadcn UI · port 5173
+            auth, chat (SSE streaming), sources, URL connectors, reports
 server/     Node.js (TypeScript, ESM) Fastify API · port 3000
             agent loop, uploads, RAG chunks (pgvector), chat SSE, reports
 python/     FastAPI report service (uv) · port 8000
@@ -52,18 +53,28 @@ docker compose up -d postgres
 cd python
 uv sync
 uv run litellm --config litellm.yaml --port 4000 &   # LLM proxy → LM Studio
-uv run uvicorn app.main:app --reload --port 8000 &      # report service
+
+# macOS: this DYLD var is REQUIRED so WeasyPrint finds glib/pango (brew install pango glib)
+env DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/lib .venv/bin/uvicorn app.main:app --port 8000 &
 
 # 3. Node server
 cd ../server
 npm install
 cp .env.example .env
 npm run dev                                            # http://localhost:3000
+
+# 4. Frontend
+cd ../web
+npm install
+npm run dev                                            # http://localhost:5173
 ```
 
 > The LiteLLM **proxy must run from the uv environment**, not Docker (the compose
 > entry is commented out by design). If you don't need a proxy, point
 > `LITELLM_BASE_URL` at any OpenAI-compatible API directly.
+>
+> The Node server re-registers tabular sources with the Python service on boot; if
+> you restart the Python service, restart the Node server afterwards.
 
 ## Verify end to end
 

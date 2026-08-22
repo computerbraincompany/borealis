@@ -16,3 +16,4 @@ reports_storage/*
 *.log
 coverage/
 .python-version
+.playwright-mcp/

@@ -17,13 +17,20 @@ const MAX_ITERATIONS = 8;
 /** Qwen-style models sometimes prefix answers with a "Thinking:" block. */
 function cleanFinal(text: string): string {
   let t = text.trim();
-  const rm = /^\s*(Thinking Process|Thinking|Thought|Reasoning)[:\-]?\s*$/im;
-  if (rm.test(t.split("\n")[0])) {
+  // Strip a leading "Thinking Process/Thought/Reasoning: ..." block up to the
+  // first blank line (the first line may carry intro text after the colon).
+  const first = t.split("\n")[0] || "";
+  if (/^\s*(Thinking Process|Thinking|Thought Process|Thought|Reasoning)[:\-]?\s*/i.test(first)) {
     const nl = t.search(/\n\s*\n/);
     t = nl >= 0 ? t.slice(nl) : "";
   }
-  const fa = t.match(/^\s*(Final Answer|Answer)[:\-]\s*/im);
-  if (fa && fa.index === 0) t = t.slice(fa[0].length);
+  // Repeatedly strip leading "Final Answer:" / "Answer:" labels (loop-safe).
+  let prev: string;
+  do {
+    prev = t;
+    const fa = t.match(/^\s*(Final Answer|Answer)[:\-]\s*/i);
+    if (fa) t = t.slice(fa[0].length);
+  } while (t !== prev);
   return t.trim();
 }
 
@@ -53,6 +60,10 @@ async function buildSystemPrompt(accountId: string): Promise<string> {
 - Produce a professional report (create_report) whenever the user asks for a report, summary document, PDF or analysis — or when you have enough analysis for one.
 - Answer from data; if data is missing be explicit about it. Cite document passages as [source] when using retrieve.
 - Use markdown for the chat answer. Keep it structured: key numbers first, then interpretation.
+
+## Tool usage rules (hard requirements)
+- NEVER describe in prose a tool you are about to call. If you intend to use a tool — including at the very end of the turn — you MUST emit its function call instead of announcing it in text. Announces-without-calling are not allowed.
+- When the user asks for a report, PDF, deliverable or "final document", you MUST call create_report with the title, sections (markdown, including the key numbers), the chart ids from render_chart in THIS conversation, and any data tables. Then briefly summarize the created report in your answer.
 
 ## Connected data sources (exact DuckDB catalog — quote table/column names exactly, SQL identifiers are case-insensitive via read of schema here)
 ${catalog}
@@ -90,13 +101,24 @@ export async function runAgent(opts: {
 
   let guard = 0;
   while (guard++ < MAX_ITERATIONS) {
-    const res = await chatOnce([system, ...messages], { maxTokens: 1400 });
+    const res = await chatOnce([system, ...messages], { maxTokens: 2400, tools: TOOL_DEFS });
     const msg = res.choices[0].message;
-    const toolCalls = (msg.tool_calls as any[]) || [];
+    let toolCalls = (msg.tool_calls as any[]) || [];
     if (!toolCalls.length) {
-      // final answer — stream to the user
-      const streamed = await streamingChat([system, ...messages], { maxTokens: 2400 }, (t) => emit({ type: "delta", text: t }));
-      const final = cleanFinal(streamed.choices[0].message.content || "");
+      // final answer — stream to the user; a tool call may still arrive in the stream
+      const streamed = await streamingChat([system, ...messages], { maxTokens: 2400, tools: TOOL_DEFS }, (t) => emit({ type: "delta", text: t }));
+      const smsg = streamed.choices[0].message;
+      toolCalls = (smsg.tool_calls as any[]) || [];
+      if (toolCalls.length) {
+        // the "final answer" was actually a tool round — run it like one
+        const roundMsg = { ...smsg, content: smsg.content || "" };
+        messages.push(roundMsg as any);
+        for (const tc of toolCalls) {
+          await runToolRound(accountId, chatId, tc, messages, context, emit);
+        }
+        continue;
+      }
+      const final = cleanFinal(smsg.content || "");
       const meta = {
         charts: context.chartIds,
         report: context.reportId || null,
@@ -114,34 +136,51 @@ export async function runAgent(opts: {
     // tool round
     messages.push(msg as any);
     for (const tc of toolCalls) {
-      const name = tc.function.name;
-      let parsedArgs: any = {};
-      try {
-        parsedArgs = JSON.parse(tc.function.arguments || "{}");
-      } catch {
-        parsedArgs = {};
-      }
-      emit({ type: "step-start", name, args: parsedArgs });
-      let result: any;
-      try {
-        result = await executeTool(accountId, name, parsedArgs, context);
-      } catch (e: any) {
-        result = { error: String(e?.message || e) };
-      }
-      emit({ type: "step-end", name, result });
-      messages.push({
-        role: "tool",
-        tool_call_id: tc.id,
-        content: JSON.stringify(result).slice(0, 12000),
-      } as any);
+      await runToolRound(accountId, chatId, tc, messages, context, emit);
     }
   }
   // exhausted guard
-  const msg2 = (await chatOnce([system, ...messages], { maxTokens: 1400 })).choices[0].message;
+  const msg2 = (
+    await chatOnce([system, ...messages], { maxTokens: 2400, tools: TOOL_DEFS })
+  ).choices[0].message;
   const final = msg2.content || "I ran into too many steps — try again with a more specific request.";
   const meta = { charts: context.chartIds, report: context.reportId || null };
   await q(`INSERT INTO messages (chat_id, role, content, meta) VALUES ($1,'assistant',$2,$3)`, [chatId, final, JSON.stringify(meta)]);
   emit({ type: "delta", text: final });
   emit({ type: "message", roles: [], content: final, meta });
   emit({ type: "done" });
+}
+
+async function runToolRound(
+  accountId: string,
+  chatId: string,
+  tc: any,
+  messages: ChatMessage[],
+  context: { chartIds: string[]; reportId?: string },
+  emit: (event: AgentEvent) => void,
+  maxMs = 120000
+): Promise<void> {
+  const name = tc.function.name;
+  let parsedArgs: any = {};
+  try {
+    parsedArgs = JSON.parse(tc.function.arguments || "{}");
+  } catch {
+    parsedArgs = {};
+  }
+  emit({ type: "step-start", name, args: parsedArgs });
+  let result: any;
+  try {
+    result = await Promise.race([
+      executeTool(accountId, name, parsedArgs, context),
+      new Promise((_, rej) => setTimeout(() => rej(new Error("tool timed out")), maxMs)),
+    ]);
+  } catch (e: any) {
+    result = { error: String(e?.message || e) };
+  }
+  emit({ type: "step-end", name, result });
+  messages.push({
+    role: "tool",
+    tool_call_id: tc.id,
+    content: JSON.stringify(result).slice(0, 12000),
+  } as any);
 }

@@ -116,3 +116,23 @@ export async function ingestSource(opts: {
     throw e;
   }
 }
+
+/**
+ * Re-register every ready tabular source with the Python service.
+ *
+ * Python keeps an in-memory DuckDB registry; calling this at boot makes the
+ * service durable across restarts (the sources table is the source of truth).
+ */
+export async function restoreDatasets(): Promise<void> {
+  const sources = await q(
+    `SELECT account_id, name, file_path, display_name FROM sources WHERE kind='tabular' AND status='ready' AND file_path IS NOT NULL`
+  );
+  for (const s of sources) {
+    try {
+      await py.registerDataset(s.account_id, s.name, s.file_path, "path", s.display_name);
+    } catch (e) {
+      console.warn("dataset restore failed:", s.name, String(e));
+    }
+  }
+  if (sources.length) console.log(`restored ${sources.length} dataset(s) in python service`);
+}

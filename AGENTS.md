@@ -12,8 +12,10 @@ Repo: `computerbraincompany/borealis` on GitHub (formerly *north-clone*).
 - `python/` — FastAPI "report service" (uv-managed, port 8000): DuckDB query layer,
   chart rendering (matplotlib PNG / ECharts option), HTML + PDF report building
   (WeasyPrint), and the LiteLLM proxy (port 4000) used by the agent.
-- `web/` — frontend. **Not built yet**: `web/src/` is empty, no package.json.
-  Target stack is Vite + React + Tailwind + shadcn; do not assume any frontend exists.
+- `web/` — Vite + React + TS + Tailwind + shadcn-style UI, port 5173 (dev proxy
+  `/api` → 3000). Pages: auth, chat (SSE streaming, tool feed, ECharts charts,
+  report link), sources, URL connectors, reports (preview + PDF download).
+  Build with `npm run build` (tsc -b + vite), run with `npm run dev`.
 - `docker-compose.yml` — Postgres with pgvector (required). Zitadel/Redpanda are
   intentional non-goals for the MVP.
 - `data/` — `generate_sample.py` + `data/sample/*.csv` (personal finance sample
@@ -24,12 +26,16 @@ Repo: `computerbraincompany/borealis` on GitHub (formerly *north-clone*).
 
 ```bash
 docker compose up -d postgres                  # database (only service required)
-cd python && uv run uvicorn app.main:app --port 8000   # report service (8000)
-cd python && uv run litellm --config litellm.yaml --port 4000   # LLM proxy (4000); has to run from uv env, Docker route is commented out in compose
+cd python && uv sync                           # first time; installs deps (fastapi pinned, see gotchas)
+cd python && env DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/lib .venv/bin/uvicorn app.main:app --port 8000
+                                               # report service (8000); on macOS the DYLD var is REQUIRED so WeasyPrint finds glib/pango
+cd python && uv run litellm --config litellm.yaml --port 4000   # LLM proxy (4000); must run from uv env (Docker route commented out)
 cd server && npm install && cp .env.example .env   # server setup
-cd server && npm run dev                       # server (3000)
+cd server && npm run dev                       # server (3000); on boot it re-registers tabular sources with the python service
 cd server && npm run typecheck                 # tsc --noEmit
 cd server && npm run build                     # tsc
+cd web && npm install && npm run dev           # frontend (5173)
+cd web && npm run build                        # frontend typecheck + production build
 ```
 
 There are no tests yet. The docker-compose comment references `scripts/dev.sh`
@@ -58,9 +64,19 @@ but that script does not exist.
   by the `onError` hook in `routes.ts`.
 - Chart canonical spec is defined in `python/app/charts.py` docstring and mirrored
   in `tools.ts` — a single spec drives ECharts (UI/HTML) and matplotlib (PDF).
-- Python service keeps an in-memory DuckDB dataset registry; datasets are re-loaded
-  from the files on disk at each boot. If you add CSVs manually, restart the python
-  service or register via the API — don't expect file drops to hot-reload.
+- Python service keeps an in-memory DuckDB dataset registry. Durable re-registration
+  now happens on **server boot**: `restoreDatasets()` in `ingest.ts` re-registers every
+  `ready` tabular source from the DB. So after restarting the python service, restart
+  the server (or re-upload) to repopulate the registry. Manual CSVs still need a
+  register via the API (or a server restart) — files don't hot-reload.
+- `python/pyproject.toml` pins `fastapi>=0.140.6,<0.140.7`: fastapi 0.140.7 removed
+  `get_flat_dependant`, which litellm 1.97.0's proxy still imports. Don't bump fastapi.
+- openai-node (>=4.104) defaults `encoding_format` to `base64` and blindly decodes
+  the response — with litellm/LM Studio returning plain floats this corrupts vectors
+  (768 floats → 192). `server/src/llm.ts` sends `encoding_format: "float"` explicitly.
+- Agent tools are wired via `TOOL_DEFS` in `chatOnce`/`streamingChat` (`agent.ts`).
+  The model sometimes garbles long chart uuids — `makeReportPayload` falls back to a
+  12-char prefix match, and Python's `reports.py` strips inline `chart:`/`:::` tokens.
 - Embedding dimension is set at DB init time (schema uses `vector(${dim})`); changing
   `EMBEDDING_DIM` or the embed model after tables exist breaks queries.
 - OpenAI-compatible everywhere: `server/src/llm.ts` points at
@@ -84,5 +100,9 @@ but that script does not exist.
 
 Goal use case: `data/generate_sample.py` → upload CSVs → chat asks for a personal
 finance analysis → agent queries DuckDB, renders charts, creates a report → open
-HTML/PDF from `reports_storage/` or the `/api/reports/:id` endpoints. Also verify
-PDF downloads (WeasyPrint needs system libs; if PDF fails, check WeasyPrint deps).
+HTML/PDF from `reports_storage/` or the `/api/reports/:id` endpoints, or from the
+web UI (Reports page / chat report link). Verified end-to-end on 2026-08-22 with
+`data/sample/*.csv` (4 tables, 697 transactions) producing two charts and an HTML+PDF
+report (`has_html`/`has_pdf` true, PDF downloads as a valid v1.7 document).
+PDF depends on WeasyPrint system libs: on macOS run uvicorn with
+`DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/lib` (`brew install pango glib`).

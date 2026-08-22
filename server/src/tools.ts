@@ -137,7 +137,8 @@ export const TOOL_DEFS: ToolDef[] = [
           },
           charts: {
             type: "array",
-            description: "Chart ids previously returned by render_chart from THIS conversation",
+            description:
+              "Exact chart id UUIDs previously returned by render_chart in THIS conversation — copy them precisely (e.g. a1111111-2222-3333-4444-555555555555). Do not invent or alter them.",
             items: { type: "string" },
           },
           tables: {
@@ -198,6 +199,11 @@ export async function executeTool(accountId: string, name: string, args: any, co
     }
     case "create_report": {
       const reportPayload = await makeReportPayload(accountId, args, context);
+      if (!reportPayload.title || !reportPayload.sections.length)
+        return {
+          error:
+            "create_report requires a title and at least one section with markdown content. Call it again with a proper title, complete markdown sections, and the chart ids from render_chart.",
+        };
       const html = await py.buildReport(reportPayload);
       const pdfBuf = await py.pdf(reportPayload);
       const htmlName = `report_${reportPayload.title.replace(/[^a-z0-9]+/gi, "_").slice(0, 40)}_${Date.now()}.html`.replace(/^_+|_+$/g, "");
@@ -235,14 +241,25 @@ async function makeReportPayload(accountId: string, args: any, context: { chartI
   const title = args.title;
   const sections = (args.sections || []).map((s: any) => ({ heading: s.heading || "", markdown: s.markdown || "" }));
   const charts: any[] = [];
-  const ids = args.charts || [];
+  const ids = (args.charts || []).filter((s: any) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(s)));
   // resolve inline chart ids from this conversation (spec lookup)
   for (const cid of ids) {
-    const [row] = await q(`SELECT spec FROM charts WHERE id=$1 AND account_id=$2`, [cid, accountId]);
-    if (row) charts.push({ id: cid, spec: row.spec });
+    try {
+      const [row] = await q(`SELECT spec FROM charts WHERE id=$1 AND account_id=$2`, [cid, accountId]);
+      if (row) charts.push({ id: cid, spec: row.spec });
+      else {
+        // model sometimes garbles/excerpts a long uuid — match by 12-char prefix
+        const [fuzzy] = await q(
+          `SELECT spec FROM charts WHERE account_id=$1 AND left(id::text,12)=left($2::text,12) ORDER BY created_at DESC LIMIT 1`,
+          [accountId, cid]
+        );
+        if (fuzzy) charts.push({ id: cid, spec: fuzzy.spec });
+      }
+    } catch {}
   }
   const tables = (args.tables || []).filter((t: any) => Array.isArray(t.columns) && Array.isArray(t.rows));
   return {
+    account_id: accountId,
     title,
     subtitle: args.subtitle || "",
     sections,

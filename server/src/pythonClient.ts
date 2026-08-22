@@ -14,7 +14,7 @@ async function post<T = any>(path: string, body: unknown): Promise<T> {
     /* non-JSON (e.g. PDF bytes handled separately) */
   }
   if (!res.ok) {
-    const detail = typeof data === "object" ? data?.detail || text : text;
+    const detail = typeof data === "object" && data !== null ? JSON.stringify(data.detail ?? data) : text;
     throw new Error(`${path}: ${res.status} ${detail}`);
   }
   return data as T;

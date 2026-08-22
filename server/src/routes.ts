@@ -306,7 +306,10 @@ async function syncConnector(account: string, conn: any): Promise<any> {
   const configVal = typeof conn.config === "string" ? JSON.parse(conn.config) : conn.config;
   let dset: any;
   if (conn.type === "url_csv") {
-    dset = await py.resync(account, conn.target_table, configVal.url);
+    const existing = (await py.listDatasets(account).catch(() => [])).find((d: any) => d.table === conn.target_table);
+    dset = existing
+      ? await py.resync(account, conn.target_table, configVal.url)
+      : await py.registerDataset(account, conn.target_table, undefined, "url", configVal.url, configVal.name || conn.name);
   } else {
     dset = await py.registerDataset(account, conn.target_table, undefined, "url", configVal.url, configVal.name || conn.name);
   }
@@ -329,8 +332,8 @@ async function syncConnector(account: string, conn: any): Promise<any> {
   } else {
     const [created] = await q(
       `INSERT INTO sources (id, account_id, name, kind, connector, display_name, file_path, url, mime, status)
-       VALUES ($1,$2,$3,'tabular',$4,$5,$6,'text/csv','ready') RETURNING *`,
-      [uuid(), account, conn.target_table, conn.id, display, dset && dset.location || ""]
+       VALUES ($1,$2,$3,'tabular',$4,$5,$6,$7,'text/csv','ready') RETURNING *`,
+      [uuid(), account, conn.target_table, conn.id, display, (dset && dset.location) || "", configVal.url]
     );
     await ingestSource({
       accountId: account,
