@@ -57,7 +57,4 @@ export const py = {
     if (!res.ok) throw new Error(`/reports/pdf ${res.status}: ${await res.text()}`);
     return Buffer.from(await res.arrayBuffer());
   },
-  restoreManifest(accountId: string, datasets: any[]) {
-    return post("/manifest/restore", { account_id: accountId, datasets });
-  },
 };

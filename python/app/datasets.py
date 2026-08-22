@@ -9,7 +9,6 @@ re-registered from disk on startup.
 
 from __future__ import annotations
 
-import json
 import os
 import re
 import threading
@@ -132,18 +131,6 @@ def resync(account_id: str, name: str, fetcher) -> dict[str, Any]:
         return register(account_id, name, meta["location"], meta["kind"], meta["original_name"], meta.get("url")) | {
             "table": name
         }
-
-
-def restore_from_manifest(account_id: str, manifest: list[dict[str, Any]]) -> None:
-    with LOCK:
-        _REGISTRY[account_id] = {}
-        for item in manifest:
-            loc = item.get("location")
-            if loc and Path(loc).exists():
-                try:
-                    register(account_id, item["name"], loc, item.get("kind", "path"), item.get("original_name", item["name"]), item.get("url"))
-                except Exception:  # noqa: BLE001
-                    continue
 
 
 def query(account_id: str, sql: str) -> dict[str, Any]:

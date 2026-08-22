@@ -12,6 +12,7 @@ Both come from one canonical spec, so the PKG is guaranteed consistent.
 from __future__ import annotations
 
 import base64
+import html
 import io
 import json
 import re
@@ -50,6 +51,19 @@ def _clean_markdown(md: str) -> str:
     return _CHART_TOKEN.sub("", md or "")
 
 
+def _sanitize_html(fragment: str) -> str:
+    """Neutralize script/iframe/object/embed and event-handler attributes
+    in the rendered report fragment (stdlib-only scrub)."""
+    fragment = re.sub(r"(?is)<script\b[^>]*>.*?</script\s*>", "&lt;script&gt;", fragment)
+    for tag in ("iframe", "object", "embed", "link", "meta", "base", "form", "img", "svg",
+                "picture", "video", "audio", "source", "canvas", "template"):
+        fragment = re.sub(rf"(?is)<{tag}\b[^>]*>.*?</{tag}\s*>", f"&lt;{tag}&gt;", fragment)
+        fragment = re.sub(rf"(?i)<{tag}\b[^>]*/?>", "", fragment)
+    fragment = re.sub(r'(?i)\bon\w+\s*=\s*("[^"]*"|\'[^\']*\'|[^\s>]+)', "", fragment)
+    fragment = re.sub(r"(?i)\bjavascript\s*:", "", fragment)
+    return fragment
+
+
 def _render_section_markdown(md: str) -> str:
     return _render_markdown(_clean_markdown(md))
 
@@ -61,13 +75,13 @@ def _render_tables(tables: list[dict[str, Any]]) -> str:
         rows = t.get("rows", [])
         if not cols or not rows or len(cols) != len(rows[0]):
             continue
-        head = "".join(f"<th>{c}</th>" for c in cols)
+        head = "".join(f"<th>{html.escape(c)}</th>" for c in cols)
         body = ""
         for row in rows[:60]:
-            body += "<tr>" + "".join(f"<td>{v if v is not None else ''}</td>" for v in row) + "</tr>"
+            body += "<tr>" + "".join(f"<td>{html.escape(str(v)) if v is not None else ''}</td>" for v in row) + "</tr>"
         out.append(
             f'<div class="data-table"><table><thead><tr>{head}</tr></thead><tbody>{body}</tbody>'
-            f"<tfoot><tr><td colspan='{len(cols)}'>{len(tables[0]['rows'])} rows</td></tr></tfoot></table></div>"
+            f"<tfoot><tr><td colspan='{len(cols)}'>{len(t['rows'])} rows</td></tr></tfoot></table></div>"
         )
     return "".join(out)
 
@@ -90,16 +104,16 @@ def build_html(report: dict[str, Any]) -> str:
     report: { title, subtitle, generated_at, sections: [{heading, markdown}],
               charts: [{id, spec}], tables: [{columns, rows}] }
     """
-    title = report.get("title") or "North Report"
-    subtitle = report.get("subtitle") or ""
+    title = html.escape(report.get("title") or "North Report")
+    subtitle = html.escape(report.get("subtitle") or "")
     sections_html = ""
     for sec in report.get("sections", []):
-        h = sec.get("heading") or ""
+        h = html.escape(sec.get("heading") or "")
         md = sec.get("markdown") or ""
         if h:
-            sections_html += f'<div class="section"><h2>{h}</h2>{_render_section_markdown(md)}</div>'
+            sections_html += f'<div class="section"><h2>{h}</h2>{_sanitize_html(_render_section_markdown(md))}</div>'
         else:
-            sections_html += f'<div class="section">{_render_section_markdown(md)}</div>'
+            sections_html += f'<div class="section">{_sanitize_html(_render_section_markdown(md))}</div>'
 
     charts_html = _render_chart_divs([(c["id"], c["spec"]) for c in report.get("charts", [])])
     tables_html = _render_tables(report.get("tables", []))

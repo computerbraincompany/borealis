@@ -101,12 +101,15 @@ export async function ingestSource(opts: {
 
     const chunks = chunkText(srcdoc, 800, 110);
     const embeddings = await embed(chunks);
-    // insert in batches bypassing vector type param issues
-    for (let i = 0; i < chunks.length; i++) {
+    const rows = chunks.map((c, i) => ({
+      content: c,
+      embedding: `[${embeddings[i].join(",")}]`,
+    }));
+    if (rows.length) {
       await q(
         `INSERT INTO chunks (account_id, source_id, source_name, content, embedding, meta)
-         VALUES ($1, $2, $3, $4, $5::vector, $6)`,
-        [accountId, sourceId, displayName, chunks[i], `[${embeddings[i].join(",")}]`, meta]
+         SELECT $1, $2, $3, unnest($4::text[]), unnest($5::vector[]), $6::jsonb`,
+        [accountId, sourceId, displayName, rows.map((r) => r.content), rows.map((r) => r.embedding), JSON.stringify(meta)]
       );
     }
     await q(`UPDATE sources SET status='ready', size_bytes=$2 WHERE id=$1`, [sourceId, await fs.stat(filePath).then((s) => s.size)]);

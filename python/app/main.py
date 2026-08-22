@@ -111,13 +111,6 @@ def run_describe(req: DescribeRequest) -> dict[str, Any]:
     return datasets.describe(req.account_id, req.table)
 
 
-@app.post("/manifest/restore")
-def restore_manifest(account_id: str, names: dict[str, Any]) -> dict[str, str]:
-    dataset = names
-    datasets.restore_from_manifest(account_id, dataset.get("datasets", []))
-    return {"status": "restored", "count": len(datasets.list_datasets(account_id))}
-
-
 # --------------------------------------------------------------------------
 # chart endpoints
 # --------------------------------------------------------------------------

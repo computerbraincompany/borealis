@@ -13,10 +13,6 @@ import { py } from "./pythonClient.js";
 
 export async function routes(app: FastifyInstance) {
   await app.register(import("@fastify/multipart"), { limits: { fileSize: 150 * 1024 * 1024 } });
-  await app.register(import("@fastify/static"), {
-    root: config.uploadDir,
-    prefix: "/uploads/",
-  });
 
   app.addHook("onError", (req, reply, err, done) => {
     if (err.message === "unauthorized") reply.code(401).send({ error: "unauthorized" });
@@ -206,13 +202,11 @@ export async function routes(app: FastifyInstance) {
     const account = getAccountId(req);
     const [conn] = await q(`SELECT * FROM connectors WHERE id=$1 AND account_id=$2`, [(req.params as any).id, account]);
     if (!conn) return reply.code(404).send({ error: "connector not found" });
+    // remove file artifacts (capture paths before the source rows are deleted)
+    const paths = await q(`SELECT file_path FROM sources WHERE connector=$1`, [conn.id]).catch(() => []);
+    for (const r of paths) if (r.file_path) await fs.unlink(r.file_path).catch(() => {});
     await q(`DELETE FROM chunks WHERE source_id IN (SELECT id FROM sources WHERE connector=$1)`, [conn.id]);
     await q(`DELETE FROM sources WHERE connector=$1`, [conn.id]);
-    try {
-      // remove file artifacts
-      const rows = await q(`SELECT file_path FROM sources WHERE id=(SELECT id FROM sources WHERE connector=$1 LIMIT 1)`, [conn.id]).catch(() => []);
-      for (const r of rows) if (r.file_path) await fs.unlink(r.file_path).catch(() => {});
-    } catch {}
     try {
       await py.deleteDataset(account, conn.target_table);
     } catch {}

@@ -6,9 +6,19 @@ import { fileURLToPath } from "node:url";
 // repo root = two levels up from server/src
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
+const JWT_SECRET = process.env.JWT_SECRET ?? "";
+// Running with the default or a template secret makes every JWT forgeable.
+// Refuse to boot rather than silently shipping broken auth.
+const WEAK_JWT_SECRETS = new Set(["", "dev-secret-change-me", "please-change-me", "change-me"]);
+if (WEAK_JWT_SECRETS.has(JWT_SECRET) || JWT_SECRET.length < 32) {
+  throw new Error(
+    "JWT_SECRET must be set to a random value of at least 32 chars (generate with: openssl rand -base64 32). Refusing to start with a weak/default secret."
+  );
+}
+
 export const config = {
   port: Number(process.env.PORT || 3000),
-  jwtSecret: process.env.JWT_SECRET || "dev-secret-change-me",
+  jwtSecret: JWT_SECRET,
   databaseUrl: process.env.DATABASE_URL || "postgres://north:north_password@localhost:5433/north",
 
   // LiteLLM / any OpenAI-compatible endpoint
