@@ -17,3 +17,8 @@ reports_storage/*
 coverage/
 .python-version
 .playwright-mcp/
+
+# tsc build artifacts
+*.tsbuildinfo
+web/vite.config.js
+web/vite.config.d.ts
