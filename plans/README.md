@@ -25,11 +25,11 @@ row when done.
 
 | Plan | Title | Priority | Effort | Depends on | Status |
 |------|-------|----------|--------|------------|--------|
-| 008  | Add test baselines — pytest (python) + vitest (server pure fns) | P1 | L | — | TODO |
-| 009  | Close report HTML XSS bypass: escape raw HTML in markdown + CSP/nosniff on the report route | P1 | M | — | TODO |
-| 010  | Fix connector "Sync now" no-op: force fresh fetch on resync | P1 | S | — | TODO |
-| 011  | Stop DuckDB register/drop re-reading every dataset (bare connection) | P2 | S | — | TODO |
-| 012  | Wire report→chat link (persist chat_id) + fix dead chat auto-title | P2 | S | — | TODO |
+| 008  | Add test baselines — pytest (python) + vitest (server pure fns) | P1 | L | — | DONE (impl e82c75c) |
+| 009  | Close report HTML XSS bypass: escape raw HTML in markdown + CSP/nosniff on the report route | P1 | M | — | DONE (impl 90ac2f3) |
+| 010  | Fix connector "Sync now" no-op: force fresh fetch on resync | P1 | S | — | DONE (impl 5c83c8c) |
+| 011  | Stop DuckDB register/drop re-reading every dataset (bare connection) | P2 | S | — | DONE (impl 9055f82) |
+| 012  | Wire report→chat link (persist chat_id) + fix dead chat auto-title | P2 | S | — | DONE (impl a67e662) |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (one-line reason) | REJECTED (one-line rationale).
 
