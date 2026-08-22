@@ -31,6 +31,18 @@ row when done.
 | 011  | Stop DuckDB register/drop re-reading every dataset (bare connection) | P2 | S | — | DONE (impl 9055f82) |
 | 012  | Wire report→chat link (persist chat_id) + fix dead chat auto-title | P2 | S | — | DONE (impl a67e662) |
 
+### Pass 3 (branding sweep 2026-08-22)
+
+| Plan | Title | Priority | Effort | Depends on | Status |
+|------|-------|----------|--------|------------|--------|
+| 013  | Remove all "North"/"Cohere North" mentions from the product — Borealis only | P1 | M | — | TODO |
+
+### Pass 4 (incident diagnosis 2026-08-22 — user screencap, live-reproduced)
+
+| Plan | Title | Priority | Effort | Depends on | Status |
+|------|-------|----------|--------|------------|--------|
+| 014  | Fix ingest name mismatch (digit-leading table names), error recovery/reingest, raw `<think>` handling, duplicate thinking placeholder, European CSV parsing | P1 | L | — (Preflight: restart python :8000) | TODO |
+
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (one-line reason) | REJECTED (one-line rationale).
 
 ## Dependency notes
