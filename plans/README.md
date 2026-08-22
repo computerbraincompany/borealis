@@ -43,6 +43,21 @@ row when done.
 |------|-------|----------|--------|------------|--------|
 | 014  | Fix ingest name mismatch (digit-leading table names), error recovery/reingest, raw `<think>` handling, duplicate thinking placeholder, European CSV parsing | P1 | L | — (Preflight: restart python :8000) | TODO |
 
+### Pass 5 (deep audit 2026-08-23, commit `567481d`)
+
+Nine-category audit (8 parallel sweeps; every finding below verified against
+source by the advisor). Recommended execution order: **014 → 015 → 016 → 017
+→ 018 → 019 → 020**.
+
+| Plan | Title | Priority | Effort | Depends on | Status |
+|------|-------|----------|--------|------------|--------|
+| 015  | Stop silently dropping data in the agent pipeline (garbled chart ids unreachable prefix-fallback, duplicate chunk tails, matplotlib figure leaks, streaming tool-call merge, cleanFinal whole-answer wipe) | P1 | M | 014 | TODO |
+| 016  | PDF reports contain their charts (static render mode for WeasyPrint) + build report HTML once instead of twice | P1 | M | — (before 018) | TODO |
+| 017  | DuckDB query path: shared connection + per-file load memoization (was: re-parse ALL datasets per tool call), LIMIT pushdown, single-pass describe, ±inf→null, /chart 400s, url_json cache extension | P2 | M | 014 | TODO |
+| 018  | Report-HTML hardening travels with the artifact: link-scheme allowlist + CSP embedded as meta (blob/file surfaces had none), drop unpinned CDN fallback | P2 | S-M | 016 | TODO |
+| 019  | Chat view stops clobbering a switched-to conversation; delta batching + memoized message rendering; connector create sync_error made visible | P2 | S | 014 | TODO |
+| 020  | scripts/dev.sh + scripts/verify.sh; truth-in-docs (stale "no tests yet", LM Studio model requirements, Linux WeasyPrint libs); default loopback binds (server HOST + compose port) | P2 | S | — | TODO |
+
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (one-line reason) | REJECTED (one-line rationale).
 
 ## Dependency notes
@@ -62,6 +77,18 @@ Status values: TODO | IN PROGRESS | DONE | BLOCKED (one-line reason) | REJECTED 
 - 012 touches the same `context` object in `server/src/agent.ts` that a future
   "halve LLM calls" refactor would touch — if that refactor ever lands, 012's
   `chatId` plumbing is the pattern to preserve.
+
+### Pass 5 dependency notes
+
+- **014 first.** Plans 015, 017 and 019 all declare `Depends on: 014` because
+  they edit files 014 also edits (`server/src/agent.ts` + `server/src/llm.ts`
+  for 015; `python/app/datasets.py` for 017; `web/src/pages/ChatView.tsx` for
+  019). Run them strictly after 014 lands.
+- **016 before 018**: both edit `build_html` in `python/app/reports.py`.
+- **015's cleanFinal step** assumes 014 added `<think>` stripping to the same
+  function; its STOP condition blocks execution against a pre-014 tree.
+- 017 and 018 both touch `python/app/main.py` but in disjoint functions
+  (`_fetch_url`, `/chart` vs report dict); still run sequentially for clean review.
 
 ## Findings considered and rejected (Pass 2 deep audit — do not re-audit without new evidence)
 
@@ -114,6 +141,65 @@ Status values: TODO | IN PROGRESS | DONE | BLOCKED (one-line reason) | REJECTED 
   already carries passages); connector edit/rename (no PATCH endpoint today);
   CI workflow (add at the same time as the 008 test baseline gate). Any of these
   can become a plan on request.
+
+## Pass 5 findings verified but NOT planned (available on request — do not re-audit)
+
+Vetted during the 2026-08-23 deep audit; each is real (advisor confirmed the
+code), just below the plan-writing cut or awaiting its own ask:
+
+- **Fastify route-level integration tests** (`server/src/routes.ts`, all ~20
+  endpoints untested; auth/upload/report-serving are the money paths) — M;
+  needs a scratch `DATABASE_URL` test DB. The single most valuable test
+  investment after 014/015.
+- **Agent-loop characterization tests behind a fake LLM** (`agent.ts` event
+  contract, `llm.ts` streaming) — M; pairs with the deferred LLM-seam/DI
+  refactor below.
+- **Chart-spec drift reconciliation** (`charts.py normalize` injects `color`
+  not in the docstring/tools schema; tools requires `title`, python defaults
+  it; ChartCard constants diverge: donut radius 70% vs 72%, area opacity .25
+  vs .15, scatter symbolSize 10 vs 9) — M, MED risk (visual changes).
+- **Client consolidation**: web `api.ts` has four fetch wrappers with three
+  different 401 behaviors (`streamAgentChat` has none); server
+  `pythonClient.deleteDataset` ignores `res.ok` so failed dataset deletes
+  resolve successfully and DuckDB tables linger — S each, LOW risk.
+- **Sentinel-string 401 hook** (`auth.ts:60` throws `Error("unauthorized")`,
+  matched by string in routes onError) → replace with direct 401 reply — S.
+- **Dead code**: `/html-to-pdf` endpoint + `build_pdf_from_html` (zero
+  callers once 016 lands), `_slugify` in charts.py, unused `STORAGE_DIR` in
+  datasets.py, write-only `sources.{size_bytes,url,meta}` columns — S bundle.
+- **Dependency cleanups**: uuid→`crypto.randomUUID`; drop deprecated
+  `@types/bcryptjs` stub; align `@types/node` majors (server ^22 vs web ^26);
+  echarts lockstep check between web package and vendored python asset — S each.
+- **Perf candidates**: persist chart PNG at render time instead of re-render
+  per `/api/charts/:id` fetch (png_base64 is discarded today); window the chat
+  history resent on every LLM call (grows linearly, eventually overflows local
+  context); make connector create/sync ingest async like uploads (S).
+- **DX**: prettier+ruff formatting baseline; route console.*/python print()
+  through real loggers with source/account ids.
+- **Migrations (investigate-first)**: exit the fastapi pin by upgrading
+  litellm ≥ the release that dropped `get_flat_dependant`; openai-node v4→v5
+  while the surface is two files; vite 5 is past upstream support (fold into
+  the next frontend change).
+
+### Direction findings (Pass 5 — maintainer's call, grounded in docs/cohere-north research)
+
+1. **Inline query-result tables + CSV export in chat** — every quantitative
+   answer currently collapses to "N rows"; North shows structured tables
+   inline as a signature format. `messages.meta` is already JSONB; one Node
+   CSV route. (Strongest option.)
+2. **Store report payloads → rename/regenerate reports** — reports table keeps
+   only file paths today; the assembled payload is discarded at
+   `makeReportPayload`. One JSONB column + PATCH/rebuild routes make the
+   flagship artifact revisitable.
+3. **Scheduled connector auto-resync** — `syncConnector` is already a
+   standalone function needing only an interval sweep + schedule picker; the
+   honest MVP slice of North's automations story.
+4. **Chat rename / generated titles / markdown export** — no PUT/PATCH exists;
+   real North ships both rename and generate-title.
+5. **Compare-periods tooling (spike)** — suggested prompts are finance
+   comparisons but all 7 tools are generic SQL primitives; local models are
+   inconsistent at window-function SQL. Prototype one tool against the sample
+   data before committing.
 
 ## Not audited (Pass 2)
 
