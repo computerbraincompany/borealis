@@ -1,5 +1,3 @@
-version: "3.9"
-
 # North MVP infrastructure. Only Postgres with pgvector is required.
 # Zitadel/Redpanda are commented out as optional add-ons per the objective.
 services:
@@ -11,7 +9,8 @@ services:
       POSTGRES_PASSWORD: north_password
       POSTGRES_DB: north
     ports:
-      - "5432:5432"
+      # host 5433 (local Postgres may own 5432) -> container 5432
+      - "5433:5432"
     volumes:
       - north_pgdata:/var/lib/postgresql/data
     healthcheck:

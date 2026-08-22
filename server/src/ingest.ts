@@ -25,7 +25,7 @@ export function chunkText(text: string, size = 900, overlap = 120): string[] {
 }
 
 async function extractPdf(buffer: Buffer): Promise<string> {
-  const doc = await getDocument({ data: new Uint8Array(buffer), disableWorker: true, useSystemFonts: true }).promise;
+  const doc = await getDocument({ data: new Uint8Array(buffer), useSystemFonts: true }).promise;
   let text = "";
   for (let i = 1; i <= doc.numPages; i++) {
     const page = await doc.getPage(i);

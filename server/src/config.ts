@@ -9,7 +9,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", ".
 export const config = {
   port: Number(process.env.PORT || 3000),
   jwtSecret: process.env.JWT_SECRET || "dev-secret-change-me",
-  databaseUrl: process.env.DATABASE_URL || "postgres://north:north_password@localhost:5432/north",
+  databaseUrl: process.env.DATABASE_URL || "postgres://north:north_password@localhost:5433/north",
 
   // LiteLLM / any OpenAI-compatible endpoint
   llmBaseUrl: process.env.LITELLM_BASE_URL || "http://localhost:4000",

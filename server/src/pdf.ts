@@ -19,11 +19,12 @@ export async function htmlToPdf(html: string): Promise<Buffer> {
   const page = await b.newPage({ viewport: { width: 1080, height: 1400 } });
   try {
     await page.setContent(html, { waitUntil: "networkidle", timeout: 30000 });
-    // let echarts paint (up to ~10s)
+    // let echarts paint (up to ~10s); expression runs in the browser context
     await page
       .waitForFunction(
-        () => document.querySelectorAll(".chart-block").length === 0
-          || document.querySelectorAll(".chart-block canvas").length === document.querySelectorAll(".chart-block").length,
+        `document.querySelectorAll(".chart-block").length === 0 ||
+         document.querySelectorAll(".chart-block canvas").length ===
+           document.querySelectorAll(".chart-block").length`,
         { timeout: 12000 }
       )
       .catch(() => {});

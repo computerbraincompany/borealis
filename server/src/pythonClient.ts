@@ -27,8 +27,11 @@ export const py = {
   resync(accountId: string, name: string, url?: string) {
     return post<any[]>("/datasets/resync", { account_id: accountId, name, url });
   },
-  listDatasets(accountId: string) {
-    return fetch(`${config.pythonServiceUrl}/datasets?account_id=${accountId}`).then((r) => r.json());
+  async listDatasets(accountId: string): Promise<any[]> {
+    const res = await fetch(`${config.pythonServiceUrl}/datasets?account_id=${accountId}`);
+    if (!res.ok) throw new Error(`/datasets ${res.status}: ${(await res.text()).slice(0, 200)}`);
+    const text = await res.text();
+    return text ? JSON.parse(text) : [];
   },
   deleteDataset(accountId: string, name: string) {
     return fetch(`${config.pythonServiceUrl}/datasets/${name}?account_id=${accountId}`, { method: "DELETE" }).then((r) => r.json());
