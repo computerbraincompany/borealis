@@ -15,7 +15,7 @@ export type AgentEvent =
 const MAX_ITERATIONS = 8;
 
 /** Qwen-style models sometimes prefix answers with a "Thinking:" block. */
-function cleanFinal(text: string): string {
+export function cleanFinal(text: string): string {
   let t = text.trim();
   // Strip a leading "Thinking Process/Thought/Reasoning: ..." block up to the
   // first blank line (the first line may carry intro text after the colon).
