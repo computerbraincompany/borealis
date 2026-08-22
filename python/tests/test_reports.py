@@ -1,14 +1,81 @@
-"""Characterization tests for the report builder (reports.py).
+"""Characterization + security tests for the report builder (reports.py).
 
-Pins table rendering, markdown rendering, and the current escaping posture.
-NOTE: raw-HTML-in-markdown behavior is deliberately NOT asserted on payloads
-here — plan 009 replaces the blocklist scrub with input escaping and adds the
-adversarial matrix.
+Pins table rendering, markdown rendering, and the escaping contract: section
+markdown is LLM-authored and must never emit raw HTML into the standalone
+report (plan 009).
 """
 
 from __future__ import annotations
 
+import pytest
+
 from app import reports
+
+
+# ---------------------------------------------------------------------------
+# Section markdown escaping (security)
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize(
+    "payload",
+    [
+        "<script>alert(1)</script>",
+        '<a href="jav&#x61;script:alert(1)">x</a>',
+        "<img src=x onerror=alert(1)>",
+        "<style>@import url(evil)</style>",
+        "<svg onload=alert(1)>",
+        '<a href="javascript:x">y</a>',
+        "<iframe src=https://evil></iframe>",
+    ],
+)
+def test_section_markdown_escapes_raw_html(payload: str):
+    out = reports._render_section_markdown(payload)
+    # the whole payload is rendered as literal text — no raw tag markup may survive
+    assert "&lt;" in out
+    assert "<script" not in out
+    assert "<iframe" not in out
+    assert "<img" not in out
+    assert "<style" not in out
+    assert "<svg" not in out
+    assert "<a" not in out
+    assert " <b" not in out
+
+
+def test_section_markdown_still_renders_markdown():
+    out = reports._render_section_markdown("**bold**\n\n# head")
+    assert "<strong>bold</strong>" in out
+    assert "<h1>head</h1>" in out
+
+
+def test_section_markdown_renders_table():
+    out = reports._render_section_markdown("| a | b |\n|---|---|\n| 1 | 2 |")
+    assert "<table>" in out
+
+
+def test_section_markdown_renders_fenced_code():
+    out = reports._render_section_markdown("```\nconst x = a < b;\n```")
+    assert "<pre><code>" in out
+    assert "a < b" not in out  # bracket escaped (may show as &amp;lt; inside code)
+
+
+def test_build_html_blocks_payload_in_sections():
+    html = reports.build_html(
+        {
+            "title": "R",
+            "subtitle": "",
+            "generated_at": "2026-08-22 00:00:00 UTC",
+            "sections": [{"heading": "H", "markdown": '<img src=x onerror=alert(1)>'}],
+            "charts": [],
+            "tables": [],
+        }
+    )
+    # the payload survives only as escaped literal text
+    assert "&lt;img src=x onerror=alert(1)&gt;" in html
+    assert "<img src=x" not in html
+
+
+# ---------------------------------------------------------------------------
+# Tables
+# ---------------------------------------------------------------------------
 
 
 def test_table_skips_malformed():

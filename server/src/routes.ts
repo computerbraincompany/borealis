@@ -249,7 +249,18 @@ export async function routes(app: FastifyInstance) {
     if (!row) return reply.code(404).send({ error: "report not found" });
     if (!row.html_path || !(await fs.access(row.html_path).then(() => true).catch(() => false)))
       return reply.code(404).send({ error: "html not available" });
-    return reply.type("text/html").send(await fs.readFile(row.html_path, "utf8"));
+    // The report is fully self-contained (inline echarts, inline CSS, data: PNGs);
+    // the CDN fallback in reports.py is the only allowed external script.
+    return reply
+      .header(
+        "Content-Security-Policy",
+        "default-src 'none'; script-src 'unsafe-inline' https://cdn.jsdelivr.net; "
+          + "style-src 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'none'; "
+          + "frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"
+      )
+      .header("X-Content-Type-Options", "nosniff")
+      .type("text/html")
+      .send(await fs.readFile(row.html_path, "utf8"));
   });
 
   app.get("/api/reports/:id/pdf", { preHandler: requireAuth }, async (req, reply) => {

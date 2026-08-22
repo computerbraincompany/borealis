@@ -51,21 +51,11 @@ def _clean_markdown(md: str) -> str:
     return _CHART_TOKEN.sub("", md or "")
 
 
-def _sanitize_html(fragment: str) -> str:
-    """Neutralize script/iframe/object/embed and event-handler attributes
-    in the rendered report fragment (stdlib-only scrub)."""
-    fragment = re.sub(r"(?is)<script\b[^>]*>.*?</script\s*>", "&lt;script&gt;", fragment)
-    for tag in ("iframe", "object", "embed", "link", "meta", "base", "form", "img", "svg",
-                "picture", "video", "audio", "source", "canvas", "template"):
-        fragment = re.sub(rf"(?is)<{tag}\b[^>]*>.*?</{tag}\s*>", f"&lt;{tag}&gt;", fragment)
-        fragment = re.sub(rf"(?i)<{tag}\b[^>]*/?>", "", fragment)
-    fragment = re.sub(r'(?i)\bon\w+\s*=\s*("[^"]*"|\'[^\']*\'|[^\s>]+)', "", fragment)
-    fragment = re.sub(r"(?i)\bjavascript\s*:", "", fragment)
-    return fragment
-
-
 def _render_section_markdown(md: str) -> str:
-    return _render_markdown(_clean_markdown(md))
+    # LLM-authored markdown must never emit raw HTML into the standalone report:
+    # escape angle brackets so attempted markup renders as literal text. Charts
+    # and tables are added by trusted code after this, never via section markdown.
+    return _render_markdown(_clean_markdown(md).replace("<", "&lt;").replace(">", "&gt;"))
 
 
 def _render_tables(tables: list[dict[str, Any]]) -> str:
@@ -111,9 +101,9 @@ def build_html(report: dict[str, Any]) -> str:
         h = html.escape(sec.get("heading") or "")
         md = sec.get("markdown") or ""
         if h:
-            sections_html += f'<div class="section"><h2>{h}</h2>{_sanitize_html(_render_section_markdown(md))}</div>'
+            sections_html += f'<div class="section"><h2>{h}</h2>{_render_section_markdown(md)}</div>'
         else:
-            sections_html += f'<div class="section">{_sanitize_html(_render_section_markdown(md))}</div>'
+            sections_html += f'<div class="section">{_render_section_markdown(md)}</div>'
 
     charts_html = _render_chart_divs([(c["id"], c["spec"]) for c in report.get("charts", [])])
     tables_html = _render_tables(report.get("tables", []))
