@@ -1,0 +1,164 @@
+[
+  {
+    "file": "overall-workspace-document.png",
+    "source_page": "https://cohere.com/north",
+    "caption": "Dark primary workspace with agent conversation, navigation, composer, and generated document.",
+    "width": 1800,
+    "height": 1016,
+    "bytes": 697346,
+    "sha256": "0a96296a524728d8d0c7d3f4901ad3d8aad0c4b7a2ef43781be8049bdb5c74af"
+  },
+  {
+    "file": "automation-pipeline-canvas.png",
+    "source_page": "https://cohere.com/north",
+    "caption": "Automation graph wiring a data connector to a pipeline-forecast node with inspector tabs.",
+    "width": 1440,
+    "height": 1044,
+    "bytes": 111037,
+    "sha256": "7adc57abbe7f15cf5a059d43ca158ec19c631c2e6978793eade13bc00c8f002e"
+  },
+  {
+    "file": "automations-discovery.png",
+    "source_page": "https://cohere.com/north",
+    "caption": "Automations discovery gallery with workflow cards.",
+    "width": 1440,
+    "height": 1044,
+    "bytes": 117403,
+    "sha256": "260d637f3c540c4b2fa05c81f50a49efc77243f1d377ebf2fc1531da9ce4401e"
+  },
+  {
+    "file": "trend-forecasting-table.png",
+    "source_page": "https://cohere.com/north",
+    "caption": "Trend Forecasting Agent response with an inline structured table.",
+    "width": 1440,
+    "height": 1044,
+    "bytes": 95235,
+    "sha256": "320af3e5efe70e684309d6e7405491f94eed4d6586ca188dc9413e282694a388"
+  },
+  {
+    "file": "contract-citations.png",
+    "source_page": "https://cohere.com/north",
+    "caption": "Licensing contract Q&A with inline highlighted citation evidence.",
+    "width": 1440,
+    "height": 1044,
+    "bytes": 189278,
+    "sha256": "c55667f6ff08a9ade737250c06c295b1ef1e943266cb4af985b7f8bd73887e21"
+  },
+  {
+    "file": "financial-summary-configuration.png",
+    "source_page": "https://cohere.com/north",
+    "caption": "Financial-summary configuration/form surface.",
+    "width": 620,
+    "height": 480,
+    "bytes": 19155,
+    "sha256": "69d89f439137b9bbbf2bcfb30770e9d5e713d4e708ee235f215174e6d54579ec"
+  },
+  {
+    "file": "financial-summary-export.png",
+    "source_page": "https://cohere.com/north",
+    "caption": "Financial summary chart with export action.",
+    "width": 620,
+    "height": 480,
+    "bytes": 21161,
+    "sha256": "c4fec91f4a51de3aa2e48d1c3990da590cb6f8c4653821980f9430c6c7c65bde"
+  },
+  {
+    "file": "finance-agent-composer.png",
+    "source_page": "https://cohere.com/north",
+    "caption": "Finance Agent card/composer with connected capability badges.",
+    "width": 620,
+    "height": 480,
+    "bytes": 13077,
+    "sha256": "93c4e520de6698f1dd50d9f38a8b9d6a713594d18bfd73952918994201d0b191"
+  },
+  {
+    "file": "meeting-summarizer-card.png",
+    "source_page": "https://cohere.com/north/workplace-productivity",
+    "caption": "Meeting summarizer agent card shown in a workplace context.",
+    "width": 1360,
+    "height": 1360,
+    "bytes": 2598633,
+    "sha256": "40a068bdfffa670b2354a0a81a4559c024f6d3ab682f6e413c5c04b7c9fcfa61"
+  },
+  {
+    "file": "agent-gallery-cards.png",
+    "source_page": "https://cohere.com/north/workplace-productivity",
+    "caption": "Stack of reusable agent cards with connected-source badges.",
+    "width": 1128,
+    "height": 1128,
+    "bytes": 80229,
+    "sha256": "f3b41b923ee97fe6a90fa8da7985af5368fe20149c936e11a0e138b9f801e17f"
+  },
+  {
+    "file": "analysis-agent-and-document.png",
+    "source_page": "https://cohere.com/north/workplace-productivity",
+    "caption": "Analysis agent card layered over a generated document.",
+    "width": 1128,
+    "height": 1128,
+    "bytes": 132745,
+    "sha256": "c2cfc550e82cca8e97c780a81682157aafddc276040434ecd443fb1b2869c1d9"
+  },
+  {
+    "file": "customer-insight-agent.png",
+    "source_page": "https://cohere.com/north/workplace-productivity",
+    "caption": "Customer Insight Agent answer in the light product UI.",
+    "width": 1128,
+    "height": 1128,
+    "bytes": 98352,
+    "sha256": "592e23d2e78865463c546086192533b1329bfa4cc960c2171b8c021269b917c2"
+  },
+  {
+    "file": "hr-policy-agent-chat.png",
+    "source_page": "https://cohere.com/north/agent-studio",
+    "caption": "Dark chat UI for HR Policy Agent with source/capability badges.",
+    "width": 1440,
+    "height": 1106,
+    "bytes": 135951,
+    "sha256": "091dc82093c1f6a8ed735d05237856ecf23cd3f0487cbbbbd2f182e305a4d6f0"
+  },
+  {
+    "file": "outreach-agent-document.png",
+    "source_page": "https://cohere.com/north/agent-studio",
+    "caption": "Outreach Agent chat beside a generated cold-outreach document.",
+    "width": 1440,
+    "height": 1106,
+    "bytes": 196374,
+    "sha256": "be0a6ae5e37a6c6eaa97b2966cc14da8000a4a817e3932c542e6dca21f6fc712"
+  },
+  {
+    "file": "revenue-agent-table.png",
+    "source_page": "https://cohere.com/north/agent-studio",
+    "caption": "Revenue Analysis Agent chat beside a structured financial table.",
+    "width": 1440,
+    "height": 1106,
+    "bytes": 199148,
+    "sha256": "fca9d8a09a1c469b6a0a0445268498fbc9d9652be39a9edcf12ca9e4c5e6c4a3"
+  },
+  {
+    "file": "due-diligence-agent-report.png",
+    "source_page": "https://cohere.com/north/agent-studio",
+    "caption": "Due Diligence Agent chat beside a generated report.",
+    "width": 1440,
+    "height": 1106,
+    "bytes": 196061,
+    "sha256": "dced2e4d2937f7461ae193d3fbec389d14d6990f7514eeae618262c328034530"
+  },
+  {
+    "file": "create-agent-form.png",
+    "source_page": "https://cohere.com/north/agent-studio",
+    "caption": "Create Agent form with Basics, Tools, and Access sections.",
+    "width": 1128,
+    "height": 1128,
+    "bytes": 78628,
+    "sha256": "492c76e7358f727bd9b96faa88ad3e8fdcee850c271a42169acec62e94ff14a4"
+  },
+  {
+    "file": "automation-builder-node.png",
+    "source_page": "https://cohere.com/north/agent-studio",
+    "caption": "Automation builder canvas with an LLM node and Configure/Advanced/Testing tabs.",
+    "width": 1128,
+    "height": 1128,
+    "bytes": 88747,
+    "sha256": "27ca4635421e1db1ad6443ab773f894b296cec5ee5d2ad28753f8adde6fe460c"
+  }
+]

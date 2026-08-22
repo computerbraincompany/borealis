@@ -1,0 +1,701 @@
+{
+  "version": 1,
+  "sources": [
+    {
+      "id": 1,
+      "url": "https://private.docs.cohere.com",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 2,
+      "url": "https://private.docs.cohere.com/north/llms.txt",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 3,
+      "url": "https://private.docs.cohere.com/sitemap.xml",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 4,
+      "url": "https://private.docs.cohere.com/openapi.json",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 5,
+      "url": "https://cohere.com/north",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 6,
+      "url": "https://cohere.com/north/agent-studio",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 7,
+      "url": "https://cohere.com/blog/north-ga",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 8,
+      "url": "https://cohere.com/blog/north-eap",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 9,
+      "url": "https://www.youtube.com/watch?v=6Z0QyERuV6U",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 10,
+      "url": "https://www.youtube.com/watch?v=HBAs1p88e6M",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 11,
+      "url": "https://private.docs.cohere.com/openapi/north.yaml",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 12,
+      "url": "https://private.docs.cohere.com/docs/get-started/north-user-guide",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 13,
+      "url": "https://private.docs.cohere.com/docs/get-started/north-chat",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 14,
+      "url": "https://private.docs.cohere.com/docs/get-started/north-chat-capabilies",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 15,
+      "url": "https://private.docs.cohere.com/docs/get-started/using-citations",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 16,
+      "url": "https://private.docs.cohere.com/docs/get-started/sharing-collaborating-chat",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 17,
+      "url": "https://private.docs.cohere.com/docs/get-started/chat-history",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 18,
+      "url": "https://private.docs.cohere.com/docs/get-started/notifications",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 19,
+      "url": "https://private.docs.cohere.com/docs/get-started/memory",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 20,
+      "url": "https://private.docs.cohere.com/docs/get-started/north-document-mode",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 21,
+      "url": "https://private.docs.cohere.com/docs/get-started/north-table-mode",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 22,
+      "url": "https://private.docs.cohere.com/docs/get-started/deep-research",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 23,
+      "url": "https://private.docs.cohere.com/docs/get-started/agents",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 24,
+      "url": "https://private.docs.cohere.com/docs/get-started/agents/creating-custom-agents",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 25,
+      "url": "https://private.docs.cohere.com/docs/get-started/agents/evaluating-agents",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 26,
+      "url": "https://private.docs.cohere.com/docs/get-started/agents/agent-library",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 27,
+      "url": "https://private.docs.cohere.com/docs/get-started/north-automations",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 28,
+      "url": "https://private.docs.cohere.com/docs/get-started/north-automations/building-automations/configuring-automation-nodes",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 29,
+      "url": "https://private.docs.cohere.com/docs/get-started/north-automations/building-automations/human-in-the-loop-automations",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 30,
+      "url": "https://private.docs.cohere.com/docs/get-started/north-automations/building-automations/testing-automations",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 31,
+      "url": "https://private.docs.cohere.com/docs/get-started/north-automations/building-automations/saving-publishing-monitoring-automations",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 32,
+      "url": "https://private.docs.cohere.com/docs/get-started/north-automations/consuming-automations",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 33,
+      "url": "https://private.docs.cohere.com/docs/get-started/tools-overview",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 34,
+      "url": "https://private.docs.cohere.com/docs/get-started/tools/libraries",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 35,
+      "url": "https://private.docs.cohere.com/docs/get-started/tools/mcp-servers/mcp-overview",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 36,
+      "url": "https://private.docs.cohere.com/docs/get-started/tools/mcp-servers/mcp-apps",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 37,
+      "url": "https://private.docs.cohere.com/docs/get-started/tools/mcp-servers/mcp-elicitation",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 38,
+      "url": "https://private.docs.cohere.com/docs/get-started/tools/mcp-servers/using-mcp-prompts",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 39,
+      "url": "https://private.docs.cohere.com/docs/get-started/tools/mcp-servers/mcp-resources",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 40,
+      "url": "https://private.docs.cohere.com/docs/security",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 41,
+      "url": "https://private.docs.cohere.com/docs/security/data-encryption-at-rest",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 42,
+      "url": "https://private.docs.cohere.com/docs/security/tool-action-approvals",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 43,
+      "url": "https://private.docs.cohere.com/docs/security/data-sharing",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 44,
+      "url": "https://private.docs.cohere.com/docs/security/python-interpreter-controls",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 45,
+      "url": "https://private.docs.cohere.com/docs/admin/identity/overview",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 46,
+      "url": "https://private.docs.cohere.com/docs/admin/overview",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 47,
+      "url": "https://private.docs.cohere.com/docs/admin/permissions",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 48,
+      "url": "https://private.docs.cohere.com/docs/admin/audits",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 49,
+      "url": "https://private.docs.cohere.com/docs/admin/north-guardrails",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 50,
+      "url": "https://private.docs.cohere.com/docs/deployment-overview",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 51,
+      "url": "https://private.docs.cohere.com/docs/architecture-diagrams",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 52,
+      "url": "https://private.docs.cohere.com/docs/kubernetes-components",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 53,
+      "url": "https://private.docs.cohere.com/docs/observability/overview",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 54,
+      "url": "https://private.docs.cohere.com/docs/observability/metrics/reference",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 55,
+      "url": "https://private.docs.cohere.com/docs/observability/traces/reference",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 56,
+      "url": "https://private.docs.cohere.com/docs/backup-restore",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 57,
+      "url": "https://private.docs.cohere.com/docs/model-vault-with-north",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 58,
+      "url": "https://private.docs.cohere.com/reference/open-responses-compatibility",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 59,
+      "url": "https://private.docs.cohere.com/reference/chat-stream",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 60,
+      "url": "https://private.docs.cohere.com/docs/north-large-01-2026",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 61,
+      "url": "https://private.docs.cohere.com/docs/evaluating-north-models",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 62,
+      "url": "https://cohere.com/north/workplace-productivity",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 63,
+      "url": "https://cohere.com/blog/north-command-a",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 64,
+      "url": "https://cohere.com/security",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 65,
+      "url": "https://cohere.com/trust-center",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 66,
+      "url": "https://private.docs.cohere.com/docs/get-started/supported-files",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 67,
+      "url": "https://private.docs.cohere.com/docs/security/data-syncing",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 68,
+      "url": "https://private.docs.cohere.com/docs/security/tool-authentication",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 69,
+      "url": "https://private.docs.cohere.com/docs/security/tool-authorization",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 70,
+      "url": "https://private.docs.cohere.com/docs/security/data-deletion",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 71,
+      "url": "https://private.docs.cohere.com/docs/get-started/tools/my-files/home",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 72,
+      "url": "https://private.docs.cohere.com/docs/get-started/tools/data-interpreter/home",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 73,
+      "url": "https://private.docs.cohere.com/docs/get-started/tools/code-sandbox/home",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 74,
+      "url": "https://private.docs.cohere.com/docs/get-started/tools/conversation-history/home",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 75,
+      "url": "https://private.docs.cohere.com/docs/admin/identity/identity-patterns",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 76,
+      "url": "https://private.docs.cohere.com/docs/admin/oauth-applications",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 77,
+      "url": "https://private.docs.cohere.com/docs/admin/compliance",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 78,
+      "url": "https://private.docs.cohere.com/docs/admin/flow-control",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 79,
+      "url": "https://private.docs.cohere.com/docs/admin/configuring_data_retention_settings",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 80,
+      "url": "https://private.docs.cohere.com/docs/admin/configuring_graceful_delete_settings",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 81,
+      "url": "https://private.docs.cohere.com/docs/platform-requirements",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 82,
+      "url": "https://private.docs.cohere.com/docs/compute-requirements",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 83,
+      "url": "https://private.docs.cohere.com/docs/storage-requirements",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 84,
+      "url": "https://private.docs.cohere.com/docs/infrastructure-dependencies",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 85,
+      "url": "https://private.docs.cohere.com/docs/networking-requirements",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 86,
+      "url": "https://private.docs.cohere.com/docs/install/helm",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 87,
+      "url": "https://private.docs.cohere.com/docs/install/upgrade",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 88,
+      "url": "https://private.docs.cohere.com/docs/install/rollback",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 89,
+      "url": "https://private.docs.cohere.com/docs/install/verify-image-signatures",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 90,
+      "url": "https://private.docs.cohere.com/docs/fips-compliant-images",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 91,
+      "url": "https://github.com/openfga/openfga/blob/main/LICENSE",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 92,
+      "url": "https://github.com/keycloak/keycloak/blob/main/LICENSE.txt",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 93,
+      "url": "https://github.com/temporalio/temporal/blob/main/LICENSE",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 94,
+      "url": "https://github.com/opensearch-project/OpenSearch/blob/main/LICENSE.txt",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 95,
+      "url": "https://github.com/pgvector/pgvector/blob/master/LICENSE",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 96,
+      "url": "https://github.com/valkey-io/valkey/blob/unstable/COPYING",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 97,
+      "url": "https://github.com/vllm-project/vllm/blob/main/LICENSE",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 98,
+      "url": "https://github.com/ggml-org/llama.cpp/blob/master/LICENSE",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 99,
+      "url": "https://github.com/docling-project/docling/blob/main/LICENSE",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 100,
+      "url": "https://github.com/openbao/openbao/blob/main/LICENSE",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 101,
+      "url": "https://github.com/seaweedfs/seaweedfs/blob/master/LICENSE",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 102,
+      "url": "https://github.com/google/gvisor/blob/master/LICENSE",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 103,
+      "url": "https://github.com/apache/echarts/blob/master/LICENSE",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 104,
+      "url": "https://github.com/ProseMirror/prosemirror-view/blob/master/LICENSE",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 105,
+      "url": "https://github.com/open-telemetry/opentelemetry-collector/blob/main/LICENSE",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 106,
+      "url": "https://github.com/grafana/grafana/blob/main/LICENSE",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 107,
+      "url": "https://github.com/BerriAI/litellm/blob/main/LICENSE",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 108,
+      "url": "https://github.com/nats-io/nats-server/blob/main/LICENSE",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 109,
+      "url": "https://private.docs.cohere.com/changelog/20260821",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 110,
+      "url": "https://cohere.com/blog/introducing-north-automations-ai-workflows",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 111,
+      "url": "https://cohere.com/customer-stories/coreweave",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 112,
+      "url": "https://techcrunch.com/2025/08/06/coheres-new-ai-agent-platform-north-promises-to-keep-enterprise-data-secure",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 113,
+      "url": "https://cohere.com/blog/ensemble-partnership",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 114,
+      "url": "https://docs.min.io/license",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 115,
+      "url": "https://docs.n8n.io/privacy-and-security/sustainable-use-license",
+      "title": "",
+      "accessed": "2026-08-22"
+    },
+    {
+      "id": 116,
+      "url": "https://www.elastic.co/pricing/faq/licensing",
+      "title": "",
+      "accessed": "2026-08-22"
+    }
+  ]
+}

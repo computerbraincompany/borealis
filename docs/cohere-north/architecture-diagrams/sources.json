@@ -1,0 +1,112 @@
+[
+  {
+    "file": "north_gcp_poc.png",
+    "alt": "North GCP Proof of Concept Architecture Diagram",
+    "source_page": "https://private.docs.cohere.com/docs/architecture-diagrams",
+    "direct_image_url": "https://fdr-prod-docs-files-public.s3.us-east-1.amazonaws.com/cohere-private.docs.buildwithfern.com/3384d5bcc01c2308c72155d1351e8a44aede71c01ce4f994dcb2013df5d1df0d/assets/images/north-architecture-diagrams/north_gcp_poc.png",
+    "width": 960,
+    "height": 540,
+    "bytes": 46853,
+    "sha256": "3384d5bcc01c2308c72155d1351e8a44aede71c01ce4f994dcb2013df5d1df0d"
+  },
+  {
+    "file": "north_gcp_pilot.png",
+    "alt": "North GCP Pilot Architecture Diagram",
+    "source_page": "https://private.docs.cohere.com/docs/architecture-diagrams",
+    "direct_image_url": "https://fdr-prod-docs-files-public.s3.us-east-1.amazonaws.com/cohere-private.docs.buildwithfern.com/f6c95c564f40ad9f0b35ecfa0b72a1d3dd98cb50ff609fc351d33994e4b6b0a0/assets/images/north-architecture-diagrams/north_gcp_pilot.png",
+    "width": 960,
+    "height": 540,
+    "bytes": 65810,
+    "sha256": "f6c95c564f40ad9f0b35ecfa0b72a1d3dd98cb50ff609fc351d33994e4b6b0a0"
+  },
+  {
+    "file": "north_gcp_prod.png",
+    "alt": "North GCP Production Architecture Diagram",
+    "source_page": "https://private.docs.cohere.com/docs/architecture-diagrams",
+    "direct_image_url": "https://fdr-prod-docs-files-public.s3.us-east-1.amazonaws.com/cohere-private.docs.buildwithfern.com/4ec64147f6b3190702a670896cbabff0ea3d93180c20beebb4578e2b0341d8d4/assets/images/north-architecture-diagrams/north_gcp_prod.png",
+    "width": 960,
+    "height": 540,
+    "bytes": 69667,
+    "sha256": "4ec64147f6b3190702a670896cbabff0ea3d93180c20beebb4578e2b0341d8d4"
+  },
+  {
+    "file": "north_aws_poc.png",
+    "alt": "North AWS Proof of Concept Architecture Diagram",
+    "source_page": "https://private.docs.cohere.com/docs/architecture-diagrams",
+    "direct_image_url": "https://fdr-prod-docs-files-public.s3.us-east-1.amazonaws.com/cohere-private.docs.buildwithfern.com/6b0f6be06c256de575ba19dd43c7eaf6036eac7e77b0e978d01a1ae904a7487b/assets/images/north-architecture-diagrams/north_aws_poc.png",
+    "width": 960,
+    "height": 540,
+    "bytes": 45107,
+    "sha256": "6b0f6be06c256de575ba19dd43c7eaf6036eac7e77b0e978d01a1ae904a7487b"
+  },
+  {
+    "file": "north_aws_pilot.png",
+    "alt": "North AWS Pilot Architecture Diagram",
+    "source_page": "https://private.docs.cohere.com/docs/architecture-diagrams",
+    "direct_image_url": "https://fdr-prod-docs-files-public.s3.us-east-1.amazonaws.com/cohere-private.docs.buildwithfern.com/7aa92a70a2ec3bbd5001f4594263a7c4412d41c3092b55d8224811945a439676/assets/images/north-architecture-diagrams/north_aws_pilot.png",
+    "width": 960,
+    "height": 540,
+    "bytes": 61565,
+    "sha256": "7aa92a70a2ec3bbd5001f4594263a7c4412d41c3092b55d8224811945a439676"
+  },
+  {
+    "file": "north_aws_prod_1.png",
+    "alt": "North AWS Production Architecture Diagram Option 1",
+    "source_page": "https://private.docs.cohere.com/docs/architecture-diagrams",
+    "direct_image_url": "https://fdr-prod-docs-files-public.s3.us-east-1.amazonaws.com/cohere-private.docs.buildwithfern.com/090c6edc95edff695ab6a1b0ebcedd8e0f484f0ab414e57c6f3d34e44d9fcaef/assets/images/north-architecture-diagrams/north_aws_prod_1.png",
+    "width": 960,
+    "height": 540,
+    "bytes": 67856,
+    "sha256": "090c6edc95edff695ab6a1b0ebcedd8e0f484f0ab414e57c6f3d34e44d9fcaef"
+  },
+  {
+    "file": "north_aws_prod_2.png",
+    "alt": "North AWS Production Architecture Diagram Option 2",
+    "source_page": "https://private.docs.cohere.com/docs/architecture-diagrams",
+    "direct_image_url": "https://fdr-prod-docs-files-public.s3.us-east-1.amazonaws.com/cohere-private.docs.buildwithfern.com/e0e76085dc830b9658b2fc08b23d340c74a70e341c246dac46c6beefad6ae6bf/assets/images/north-architecture-diagrams/north_aws_prod_2.png",
+    "width": 960,
+    "height": 540,
+    "bytes": 74439,
+    "sha256": "e0e76085dc830b9658b2fc08b23d340c74a70e341c246dac46c6beefad6ae6bf"
+  },
+  {
+    "file": "north_azure_poc.png",
+    "alt": "North Azure Proof of Concept Architecture Diagram",
+    "source_page": "https://private.docs.cohere.com/docs/architecture-diagrams",
+    "direct_image_url": "https://fdr-prod-docs-files-public.s3.us-east-1.amazonaws.com/cohere-private.docs.buildwithfern.com/a61d988f46a702ac977f4e251461f758a0aca8aebab1a8db535f1697d7e6ca46/assets/images/north-architecture-diagrams/north_azure_poc.png",
+    "width": 960,
+    "height": 540,
+    "bytes": 50796,
+    "sha256": "a61d988f46a702ac977f4e251461f758a0aca8aebab1a8db535f1697d7e6ca46"
+  },
+  {
+    "file": "north_azure_pilot.png",
+    "alt": "North Azure Pilot Architecture Diagram",
+    "source_page": "https://private.docs.cohere.com/docs/architecture-diagrams",
+    "direct_image_url": "https://fdr-prod-docs-files-public.s3.us-east-1.amazonaws.com/cohere-private.docs.buildwithfern.com/71a2aca7420eff27dacd6a1e9cefe9828698a7e31a3edc6e9c787b75e373d5ad/assets/images/north-architecture-diagrams/north_azure_pilot.png",
+    "width": 960,
+    "height": 540,
+    "bytes": 68045,
+    "sha256": "71a2aca7420eff27dacd6a1e9cefe9828698a7e31a3edc6e9c787b75e373d5ad"
+  },
+  {
+    "file": "north_azure_prod.png",
+    "alt": "North Azure Production Architecture Diagram",
+    "source_page": "https://private.docs.cohere.com/docs/architecture-diagrams",
+    "direct_image_url": "https://fdr-prod-docs-files-public.s3.us-east-1.amazonaws.com/cohere-private.docs.buildwithfern.com/92c2a7bed4599b3077cda5ea07143b8d65f2d511cc77078ec0a665bd2df3aa3a/assets/images/north-architecture-diagrams/north_azure_prod.png",
+    "width": 960,
+    "height": 540,
+    "bytes": 72958,
+    "sha256": "92c2a7bed4599b3077cda5ea07143b8d65f2d511cc77078ec0a665bd2df3aa3a"
+  },
+  {
+    "file": "north_oci_prod.png",
+    "alt": "North OCI Production Architecture Diagram",
+    "source_page": "https://private.docs.cohere.com/docs/architecture-diagrams",
+    "direct_image_url": "https://fdr-prod-docs-files-public.s3.us-east-1.amazonaws.com/cohere-private.docs.buildwithfern.com/ed2beb8adb2b1a4abbe14cb06bd548b1198a6871a6f94a1d56aafe47249a02fd/assets/images/north-architecture-diagrams/north_oci_prod.png",
+    "width": 960,
+    "height": 540,
+    "bytes": 72205,
+    "sha256": "ed2beb8adb2b1a4abbe14cb06bd548b1198a6871a6f94a1d56aafe47249a02fd"
+  }
+]
