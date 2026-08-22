@@ -105,8 +105,9 @@ gotchas). Highlights:
   ECharts and matplotlib — read it before changing.
 - Datasets live in an **in-memory DuckDB registry** re-loaded from disk on boot;
   copy files + restart (or register via API) so they appear.
-- Absolute paths in `server/src/config.ts` and `python/app/*.py` defaults currently
-  point at this working copy.
+- `server/src/config.ts`, `python/app/main.py` and `python/app/datasets.py` derive
+  storage paths **relative to the repo** (`uploads/`, `reports_storage/`); override
+  via `UPLOAD_DIR`/`REPORT_DIR` or `NORTH_STORAGE_DIR`.
 
 ## License
 

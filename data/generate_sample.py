@@ -3,9 +3,11 @@ import csv
 import random
 from datetime import date, timedelta
 
+from pathlib import Path
+
 random.seed(42)
 
-OUT = "/Users/max/Developer/github/computerbraincompany/north-clone/data/sample"
+OUT = Path(__file__).resolve().parent / "sample"
 
 CATEGORIES = {
     "Groceries": 620, "Dining out": 240, "Rent": 1900, "Transport": 210,

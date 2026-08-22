@@ -1,8 +1,10 @@
 import "dotenv/config";
 import path from "node:path";
 import fs from "node:fs";
+import { fileURLToPath } from "node:url";
 
-const root = "/Users/max/Developer/github/computerbraincompany/north-clone";
+// repo root = two levels up from server/src
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
 export const config = {
   port: Number(process.env.PORT || 3000),

@@ -20,7 +20,8 @@ import duckdb
 import pandas as pd
 from fastapi import HTTPException
 
-STORAGE_DIR = Path(os.environ.get("NORTH_STORAGE_DIR", "/Users/max/Developer/github/computerbraincompany/north-clone/uploads"))
+REPO_ROOT = Path(__file__).resolve().parents[2]
+STORAGE_DIR = Path(os.environ.get("NORTH_STORAGE_DIR", REPO_ROOT / "uploads"))
 LOCK = threading.RLock()
 
 # account_id -> { table_name: {meta} }

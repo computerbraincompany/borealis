@@ -20,7 +20,8 @@ from pydantic import BaseModel, Field
 
 from . import charts, datasets, reports
 
-STORAGE_DIR = Path(os.environ.get("NORTH_STORAGE_DIR", "/Users/max/Developer/github/computerbraincompany/north-clone/uploads"))
+REPO_ROOT = Path(__file__).resolve().parents[2]
+STORAGE_DIR = Path(os.environ.get("NORTH_STORAGE_DIR", REPO_ROOT / "uploads"))
 STORAGE_DIR.mkdir(parents=True, exist_ok=True)
 
 app = FastAPI(title="North Report Service", version="0.1.0")

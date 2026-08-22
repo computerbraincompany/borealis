@@ -67,9 +67,10 @@ but that script does not exist.
   `${LITELLM_BASE_URL}/v1`; the LiteLLM proxy in turn points at LM Studio
   `http://localhost:1234/v1`. Model names are the LiteLLM aliases (`qwen-chat`,
   `nomic-embed`).
-- Paths are hardcoded to this workspace in `server/src/config.ts` and
-  `python/app/main.py` + `datasets.py` (STORAGE_DIR). `.env` is gitignored;
-  `server/.env.example` documents every variable.
+- Storage paths are derived relative to the repo root in `server/src/config.ts`
+  (`uploads/`, `reports_storage/`) and `python/app/main.py` + `datasets.py`
+  (`NORTH_STORAGE_DIR`, default `<repo>/uploads`). Override via env vars.
+  `.env` is gitignored; `server/.env.example` documents every variable.
 - Body limit is 20MB (server) / 150MB (uploads route).
 
 ## Before touching sensitive areas
