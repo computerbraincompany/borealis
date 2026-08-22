@@ -84,3 +84,36 @@ def test_query_caps_results_at_500_rows(tmp_path):
     assert r["row_count"] == 500
     assert len(r["rows"]) == 500
 
+
+# ---------------------------------------------------------------------------
+# Register / drop lifecycle (write paths must not re-read the read-path reload)
+# ---------------------------------------------------------------------------
+def test_register_and_drop_lifecycle(tmp_path):
+    account = _acct()
+    a = tmp_path / "a.csv"
+    a.write_text("x\n1\n2\n")
+    b = tmp_path / "b.csv"
+    b.write_text("y\n3\n")
+    datasets.register(account, "a", str(a), "path", "a.csv", None)
+    datasets.register(account, "b", str(b), "path", "b.csv", None)
+
+    assert datasets.query(account, "SELECT count(*) AS n FROM a")["rows"][0][0] == 2
+
+    datasets.drop(account, "a")
+    with pytest.raises(HTTPException):
+        datasets.query(account, "SELECT * FROM a")
+
+    assert datasets.query(account, "SELECT count(*) AS n FROM b")["rows"][0][0] == 1
+
+
+def test_register_drop_do_not_touch_read_reload(tmp_path, monkeypatch):
+    def _boom(account_id):
+        raise AssertionError("_connection must not be called on write paths")
+
+    monkeypatch.setattr(datasets, "_connection", _boom)
+    account = _acct()
+    a = tmp_path / "a.csv"
+    a.write_text("x\n1\n")
+    datasets.register(account, "a", str(a), "path", "a.csv", None)
+    datasets.drop(account, "a")
+

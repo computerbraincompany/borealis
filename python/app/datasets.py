@@ -54,6 +54,14 @@ def _connection(account_id: str) -> duckdb.DuckDBPyConnection:
     return con
 
 
+def _bare_connection() -> duckdb.DuckDBPyConnection:
+    # A connection without re-loading every dataset — for write paths that only
+    # touch one table and must not pay the per-query reload cost.
+    con = duckdb.connect()
+    con.execute("PRAGMA threads=4")
+    return con
+
+
 def register(account_id: str, name: str, location: str, kind: str, original_name: str, url: str | None = None) -> dict[str, Any]:
     with LOCK:
         _REGISTRY.setdefault(account_id, {})
@@ -64,7 +72,7 @@ def register(account_id: str, name: str, location: str, kind: str, original_name
         if not Path(location).exists():
             raise HTTPException(404, f"file not found: {location}")
         try:
-            con = _connection(account_id)
+            con = _bare_connection()
             con.execute(f"CREATE OR REPLACE TABLE {name} AS SELECT * FROM {_read_sql(location)}", [location])
             n_rows = con.execute(f"SELECT count(*) FROM {name}").fetchone()[0]
             columns = _columns(con, name)
@@ -113,7 +121,7 @@ def drop(account_id: str, name: str) -> None:
         if name not in _REGISTRY.get(account_id, {}):
             raise HTTPException(404, f"dataset {name} not found")
         del _REGISTRY[account_id][name]
-        con = _connection(account_id)
+        con = _bare_connection()
         con.execute(f"DROP TABLE IF EXISTS {name}")
         con.close()
 
