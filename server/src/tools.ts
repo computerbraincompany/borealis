@@ -165,7 +165,7 @@ export const TOOL_DEFS: ToolDef[] = [
   },
 ];
 
-export async function executeTool(accountId: string, name: string, args: any, context: { chartIds: string[]; reportId?: string }): Promise<any> {
+export async function executeTool(accountId: string, name: string, args: any, context: { chartIds: string[]; reportId?: string; chatId?: string }): Promise<any> {
   switch (name) {
     case "retrieve": {
       const res = await retrieve(accountId, args.query || "", args.top_k || 6);
@@ -213,9 +213,9 @@ export async function executeTool(accountId: string, name: string, args: any, co
       await fs.writeFile(htmlPath, html.html);
       await fs.writeFile(pdfPath, pdfBuf);
       const [rep] = await q(
-        `INSERT INTO reports (id, account_id, title, subtitle, html_path, pdf_path, created_at, updated_at)
-         VALUES ($1,$2,$3,$4,$5,$6, now(), now()) RETURNING id`,
-        [uuid(), accountId, reportPayload.title, reportPayload.subtitle || "", htmlPath, pdfPath]
+        `INSERT INTO reports (id, account_id, chat_id, title, subtitle, html_path, pdf_path, created_at, updated_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7, now(), now()) RETURNING id`,
+        [uuid(), accountId, context.chatId || null, reportPayload.title, reportPayload.subtitle || "", htmlPath, pdfPath]
       );
       context.reportId = rep.id;
       return { report_id: rep.id, title: reportPayload.title, html: htmlName, pdf: pdfName };
@@ -237,7 +237,7 @@ export async function executeTool(accountId: string, name: string, args: any, co
   }
 }
 
-async function makeReportPayload(accountId: string, args: any, context: { chartIds: string[]; reportId?: string }): Promise<any> {
+async function makeReportPayload(accountId: string, args: any, context: { chartIds: string[]; reportId?: string; chatId?: string }): Promise<any> {
   const title = args.title;
   const sections = (args.sections || []).map((s: any) => ({ heading: s.heading || "", markdown: s.markdown || "" }));
   const charts: any[] = [];

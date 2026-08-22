@@ -91,13 +91,10 @@ export async function runAgent(opts: {
     if (!m.content) continue;
     if (m.role === "user" || m.role === "assistant") messages.push({ role: m.role, content: m.content });
   }
-  if (messages.length === 0) {
-    await q(`UPDATE chats SET title=$2 WHERE id=$1`, [chatId, content.slice(0, 80)]);
-  }
   messages.push({ role: "user", content });
 
   const system: ChatMessage = { role: "system", content: await buildSystemPrompt(accountId) };
-  const context: { chartIds: string[]; reportId?: string } = { chartIds: [] };
+  const context: { chartIds: string[]; reportId?: string; chatId?: string } = { chartIds: [], chatId };
 
   let guard = 0;
   while (guard++ < MAX_ITERATIONS) {

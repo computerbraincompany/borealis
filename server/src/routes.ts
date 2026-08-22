@@ -64,7 +64,10 @@ export async function routes(app: FastifyInstance) {
     const [chat] = await q(`SELECT id FROM chats WHERE id=$1 AND account_id=$2`, [chatId, account]);
     if (!chat) return reply.code(404).send({ error: "chat not found" });
 
+    const [countRow] = await q(`SELECT count(*)::int AS n FROM messages WHERE chat_id=$1`, [chatId]);
+    const isFirst = countRow?.n === 0;
     const [userMsg] = await q(`INSERT INTO messages (chat_id, role, content) VALUES ($1,'user',$2) RETURNING id`, [chatId, content]);
+    if (isFirst) await q(`UPDATE chats SET title=$2 WHERE id=$1`, [chatId, content.slice(0, 80)]);
 
     reply.raw.writeHead(200, {
       "Content-Type": "text/event-stream",
