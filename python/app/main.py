@@ -87,7 +87,7 @@ def register(req: DatasetRegister) -> dict[str, Any]:
 
 @app.post("/datasets/resync")
 def resync(req: DatasetRegister) -> dict[str, Any]:
-    return datasets.resync(req.account_id, req.name, fetcher=lambda url: str(_fetch_url(url, req.account_id, req.name)))
+    return datasets.resync(req.account_id, req.name, fetcher=lambda url: str(_fetch_url(url, req.account_id, req.name, force=True)))
 
 
 @app.get("/datasets")
@@ -175,10 +175,11 @@ def html_to_pdf(html: str) -> Response:
     return Response(content=pdf, media_type="application/pdf")
 
 
-def _fetch_url(url: str, account_id: str, name: str) -> Path:
+def _fetch_url(url: str, account_id: str, name: str, force: bool = False) -> Path:
     path = STORAGE_DIR / f"url_{account_id}_{name}.csv"
     # allow csv/xlsx/json/parquet from plain URLs
-    if path.exists():
+    # Cached copy avoids re-download on restart; pass force=True from resync to refresh.
+    if path.exists() and not force:
         return path
     with httpx.Client(timeout=60, follow_redirects=True) as client:
         r = client.get(url)
