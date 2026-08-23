@@ -168,6 +168,7 @@ export const TOOL_DEFS: ToolDef[] = [
 
 export interface ToolRunContext {
   chartIds: string[];
+  evidence: RetrievedEvidence[];
   reportId?: string;
   chatId: string;
   model: string;
@@ -176,12 +177,66 @@ export interface ToolRunContext {
   readyTableNames: readonly string[];
 }
 
+export interface RetrievedEvidence {
+  source_id: string;
+  chunk_id: string;
+  source: string;
+  excerpt: string;
+  score: number;
+}
+
+const MAX_EVIDENCE_PASSAGES = 8;
+const MAX_EVIDENCE_SOURCE_LENGTH = 200;
+const MAX_EVIDENCE_EXCERPT_LENGTH = 800;
+
+/** Keep only the stable, bounded retrieval evidence safe to persist in message metadata. */
+export function sanitizeRetrievedEvidence(passages: readonly unknown[]): RetrievedEvidence[] {
+  const evidence: RetrievedEvidence[] = [];
+  const seen = new Set<string>();
+
+  for (const candidate of passages) {
+    if (evidence.length >= MAX_EVIDENCE_PASSAGES) break;
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) continue;
+    const passage = candidate as Partial<RetrievedEvidence> & { content?: unknown };
+    const content = typeof passage.content === "string" ? passage.content : passage.excerpt;
+    if (
+      typeof passage.source_id !== "string"
+      || typeof passage.chunk_id !== "string"
+      || typeof passage.source !== "string"
+      || typeof content !== "string"
+      || typeof passage.score !== "number"
+      || !Number.isFinite(passage.score)
+    ) {
+      continue;
+    }
+
+    const sourceId = passage.source_id.trim();
+    const chunkId = passage.chunk_id.trim();
+    const excerpt = content.trim().slice(0, MAX_EVIDENCE_EXCERPT_LENGTH);
+    if (!sourceId || !chunkId || !excerpt) continue;
+
+    const key = `${sourceId}\u0000${chunkId}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    evidence.push({
+      source_id: sourceId,
+      chunk_id: chunkId,
+      source: passage.source.trim().slice(0, MAX_EVIDENCE_SOURCE_LENGTH) || "Source",
+      excerpt,
+      score: passage.score,
+    });
+  }
+
+  return evidence;
+}
+
 export async function executeTool(accountId: string, name: string, args: any, context: ToolRunContext): Promise<any> {
   switch (name) {
     case "retrieve": {
       const res = await retrieve(accountId, args.query || "", context.readySourceIds, args.top_k || 6);
+      context.evidence = sanitizeRetrievedEvidence([...context.evidence, ...res]);
       return {
-        passages: res.map((c) => ({ source: c.source_name, score: c.score, content: c.content })),
+        passages: res.map((c) => ({ source: c.source, score: c.score, content: c.content })),
         instruction:
           "Answer using ONLY these passages as the factual basis. If they do not contain the answer, say so. Cite the source name after claims (e.g. [source]).",
       };

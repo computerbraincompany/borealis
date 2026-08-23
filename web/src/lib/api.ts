@@ -128,8 +128,17 @@ export interface Message {
     model?: string;
     source_mode?: SourceMode;
     source_ids?: string[];
+    evidence?: RetrievedEvidence[];
   } | null;
   created_at: string;
+}
+
+export interface RetrievedEvidence {
+  source_id: string;
+  chunk_id: string;
+  source: string;
+  excerpt: string;
+  score: number;
 }
 
 export interface ChatDetail extends Chat {

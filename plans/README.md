@@ -84,7 +84,7 @@ enterprise platform. Recommended execution is strictly **024 → 025 → 026 →
 | Plan | Title | Priority | Effort | Depends on | Status |
 |------|-------|----------|--------|------------|--------|
 | 024 | Upload and attach files from chat; recover from source-catalog errors | P1 | M | 022, 023 | DONE (web/full gates + selected/all browser paths; request-race review) |
-| 025 | Persist and show bounded retrieved evidence below grounded answers | P1 | M | 024 | TODO |
+| 025 | Persist and show bounded retrieved evidence below grounded answers | P1 | M | 024 | DONE (116 server tests + full gate + evidence browser cases; timeout-race review) |
 | 026 | Preserve scoped SQL results as inline tables with safe CSV export | P1 | M | 025 | TODO |
 | 027 | Search, rename, group and activity-sort private chat history | P2 | M | 026 | TODO |
 

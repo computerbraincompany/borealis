@@ -16,7 +16,7 @@ vi.mock("../pythonClient.js", () => ({
 import { q } from "../db.js";
 import { py } from "../pythonClient.js";
 import { retrieve } from "../retrieve.js";
-import { executeTool, makeReportPayload, type ToolRunContext } from "../tools.js";
+import { executeTool, makeReportPayload, sanitizeRetrievedEvidence, type ToolRunContext } from "../tools.js";
 import type { ResolvedSourceScope } from "../sourceScope.js";
 
 const qMock = vi.mocked(q);
@@ -44,6 +44,7 @@ function context(chartIds: string[] = []): ToolRunContext {
   const sourceScope = scope();
   return {
     chartIds,
+    evidence: [],
     chatId: "chat-1",
     model: "chat-model",
     sourceScope,
@@ -62,9 +63,24 @@ describe("source-scoped tools", () => {
   });
 
   it("passes the snapshotted ready source ids to retrieval", async () => {
-    retrieveMock.mockResolvedValueOnce([]);
-    await executeTool("account", "retrieve", { query: "canary", top_k: 3 }, context());
+    const runContext = context();
+    retrieveMock.mockResolvedValueOnce([{
+      chunk_id: "42",
+      source_id: SOURCE_A,
+      source: "Allowed.csv",
+      content: "A grounded passage",
+      score: 0.875,
+    }]);
+    const result = await executeTool("account", "retrieve", { query: "canary", top_k: 3 }, runContext);
     expect(retrieveMock).toHaveBeenCalledWith("account", "canary", [SOURCE_A], 3);
+    expect(result.passages).toEqual([{ source: "Allowed.csv", score: 0.875, content: "A grounded passage" }]);
+    expect(runContext.evidence).toEqual([{
+      source_id: SOURCE_A,
+      chunk_id: "42",
+      source: "Allowed.csv",
+      excerpt: "A grounded passage",
+      score: 0.875,
+    }]);
   });
 
   it("lists attached status and only sanitized metadata for allowed ready tables", async () => {
@@ -117,6 +133,80 @@ describe("source-scoped tools", () => {
     describeMock.mockResolvedValueOnce({ table: "allowed_table" });
     await executeTool("account", "describe_data", { table: "allowed_table" }, context());
     expect(describeMock).toHaveBeenCalledWith("account", "allowed_table", ["allowed_table"]);
+  });
+});
+
+describe("retrieved evidence sanitizer", () => {
+  it("deduplicates by source and chunk while preserving first-seen order", () => {
+    const evidence = sanitizeRetrievedEvidence([
+      { source_id: SOURCE_A, chunk_id: "1", source: "First", content: "first passage", score: 0.9 },
+      { source_id: SOURCE_A, chunk_id: "1", source: "Duplicate", content: "duplicate passage", score: 0.8 },
+      { source_id: SOURCE_B, chunk_id: "1", source: "Second", content: "second passage", score: 0.7 },
+    ]);
+
+    expect(evidence).toEqual([
+      { source_id: SOURCE_A, chunk_id: "1", source: "First", excerpt: "first passage", score: 0.9 },
+      { source_id: SOURCE_B, chunk_id: "1", source: "Second", excerpt: "second passage", score: 0.7 },
+    ]);
+  });
+
+  it("omits malformed values and non-finite scores", () => {
+    const valid = { source_id: SOURCE_A, chunk_id: "1", source: "Allowed", content: "passage", score: 0.9 };
+    expect(sanitizeRetrievedEvidence([
+      null,
+      {},
+      { ...valid, source_id: "" },
+      { ...valid, chunk_id: " " },
+      { ...valid, content: "" },
+      { ...valid, score: Number.POSITIVE_INFINITY },
+      { ...valid, score: "0.9" },
+      valid,
+    ])).toEqual([{
+      source_id: SOURCE_A,
+      chunk_id: "1",
+      source: "Allowed",
+      excerpt: "passage",
+      score: 0.9,
+    }]);
+  });
+
+  it("bounds labels, excerpts, and total passages", () => {
+    const evidence = sanitizeRetrievedEvidence(Array.from({ length: 12 }, (_, index) => ({
+      source_id: SOURCE_A,
+      chunk_id: String(index),
+      source: `  ${"s".repeat(220)}  `,
+      content: `  ${"x".repeat(900)}  `,
+      score: 1 - index / 100,
+    })));
+
+    expect(evidence).toHaveLength(8);
+    expect(evidence[0].source).toHaveLength(200);
+    expect(evidence[0].excerpt).toHaveLength(800);
+    expect(evidence.map((entry) => entry.chunk_id)).toEqual(["0", "1", "2", "3", "4", "5", "6", "7"]);
+  });
+
+  it("keeps the first eight unique passages across repeated retrievals", async () => {
+    const runContext = context();
+    retrieveMock.mockResolvedValueOnce(Array.from({ length: 6 }, (_, index) => ({
+      chunk_id: String(index),
+      source_id: SOURCE_A,
+      source: "Allowed",
+      content: `passage ${index}`,
+      score: 0.9,
+    })));
+    retrieveMock.mockResolvedValueOnce(Array.from({ length: 6 }, (_, index) => ({
+      chunk_id: String(index + 4),
+      source_id: SOURCE_A,
+      source: "Allowed",
+      content: `passage ${index + 4}`,
+      score: 0.8,
+    })));
+
+    await executeTool("account", "retrieve", { query: "first" }, runContext);
+    expect(runContext.evidence.map((entry) => entry.chunk_id)).toEqual(["0", "1", "2", "3", "4", "5"]);
+    await executeTool("account", "retrieve", { query: "second" }, runContext);
+
+    expect(runContext.evidence.map((entry) => entry.chunk_id)).toEqual(["0", "1", "2", "3", "4", "5", "6", "7"]);
   });
 });
 

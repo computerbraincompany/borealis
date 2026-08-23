@@ -119,6 +119,7 @@ export async function runAgent(opts: {
   const system: ChatMessage = { role: "system", content: await buildSystemPrompt(accountId, sourceScope) };
   const context: ToolRunContext = {
     chartIds: [],
+    evidence: [],
     chatId,
     model,
     sourceScope,
@@ -156,6 +157,7 @@ export async function runAgent(opts: {
         model,
         source_mode: sourceScope.mode,
         source_ids: [...sourceScope.readySourceIds],
+        evidence: context.evidence,
       };
       await q(`INSERT INTO messages (chat_id, role, content, meta) VALUES ($1,'assistant',$2,$3)`, [
         chatId,
@@ -184,6 +186,7 @@ export async function runAgent(opts: {
     model,
     source_mode: sourceScope.mode,
     source_ids: [...sourceScope.readySourceIds],
+    evidence: context.evidence,
   };
   await q(`INSERT INTO messages (chat_id, role, content, meta) VALUES ($1,'assistant',$2,$3)`, [chatId, final, JSON.stringify(meta)]);
   emit({ type: "delta", text: final });
@@ -191,7 +194,7 @@ export async function runAgent(opts: {
   emit({ type: "done" });
 }
 
-async function runToolRound(
+export async function runToolRound(
   accountId: string,
   chatId: string,
   tc: any,
@@ -209,11 +212,19 @@ async function runToolRound(
   }
   emit({ type: "step-start", name, args: parsedArgs });
   let result: any;
+  // Retrieval builds trusted evidence as a side effect. Isolate that ledger so
+  // a promise that loses the timeout race cannot mutate evidence later.
+  const toolContext = name === "retrieve"
+    ? { ...context, evidence: [...context.evidence] }
+    : context;
   try {
     result = await Promise.race([
-      executeTool(accountId, name, parsedArgs, context),
+      executeTool(accountId, name, parsedArgs, toolContext),
       new Promise((_, rej) => setTimeout(() => rej(new Error("tool timed out")), maxMs)),
     ]);
+    if (name === "retrieve" && !isToolErrorResult(result)) {
+      context.evidence = [...toolContext.evidence];
+    }
   } catch (e: any) {
     result = { error: String(e?.message || e) };
   }
@@ -223,4 +234,13 @@ async function runToolRound(
     tool_call_id: tc.id,
     content: JSON.stringify(result).slice(0, 12000),
   } as any);
+}
+
+function isToolErrorResult(result: unknown): boolean {
+  return Boolean(
+    result
+    && typeof result === "object"
+    && !Array.isArray(result)
+    && Object.prototype.hasOwnProperty.call(result, "error")
+  );
 }

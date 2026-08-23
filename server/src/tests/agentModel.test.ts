@@ -5,15 +5,17 @@ vi.mock("../llm.js", () => ({ chatOnce: vi.fn(), streamingChat: vi.fn() }));
 vi.mock("../pythonClient.js", () => ({ py: { listDatasets: vi.fn() } }));
 vi.mock("../tools.js", () => ({ TOOL_DEFS: [], executeTool: vi.fn() }));
 
-import { buildSystemPrompt, runAgent } from "../agent.js";
+import { buildSystemPrompt, runAgent, runToolRound } from "../agent.js";
 import { q } from "../db.js";
 import { chatOnce, streamingChat } from "../llm.js";
 import { py } from "../pythonClient.js";
+import { executeTool } from "../tools.js";
 
 const qMock = vi.mocked(q);
 const chatOnceMock = vi.mocked(chatOnce);
 const streamingChatMock = vi.mocked(streamingChat);
 const listDatasetsMock = vi.mocked(py.listDatasets);
+const executeToolMock = vi.mocked(executeTool);
 const emptyScope = Object.freeze({
   mode: "selected" as const,
   attached: Object.freeze([]),
@@ -27,6 +29,7 @@ describe("runAgent model snapshot", () => {
     chatOnceMock.mockReset();
     streamingChatMock.mockReset();
     listDatasetsMock.mockReset();
+    executeToolMock.mockReset();
   });
 
   it("uses one immutable model and records it on the assistant message", async () => {
@@ -68,6 +71,7 @@ describe("runAgent model snapshot", () => {
       model: "selected-chat-model",
       source_mode: "selected",
       source_ids: [],
+      evidence: [],
     });
     expect(emitted).toContainEqual({
       type: "message",
@@ -79,8 +83,165 @@ describe("runAgent model snapshot", () => {
         model: "selected-chat-model",
         source_mode: "selected",
         source_ids: [],
+        evidence: [],
       },
     });
+  });
+
+  it("persists and emits the evidence captured by a retrieval turn", async () => {
+    const evidence = [{
+      source_id: "11111111-1111-4111-8111-111111111111",
+      chunk_id: "42",
+      source: "Allowed.pdf",
+      excerpt: "A grounded passage",
+      score: 0.91,
+    }];
+    qMock.mockResolvedValue([]);
+    listDatasetsMock.mockResolvedValue([]);
+    chatOnceMock
+      .mockResolvedValueOnce({
+        choices: [{ message: {
+          role: "assistant",
+          content: "",
+          tool_calls: [{ id: "retrieve-1", type: "function", function: { name: "retrieve", arguments: '{"query":"grounding"}' } }],
+        } }],
+      } as any)
+      .mockResolvedValueOnce({ choices: [{ message: { role: "assistant", content: "draft", tool_calls: [] } }] } as any);
+    executeToolMock.mockImplementationOnce(async (_accountId, name, _args, context) => {
+      expect(name).toBe("retrieve");
+      context.evidence = evidence;
+      return { passages: [] };
+    });
+    streamingChatMock.mockResolvedValueOnce({
+      choices: [{ message: { role: "assistant", content: "grounded answer", tool_calls: [] } }],
+    } as any);
+    const emitted: any[] = [];
+
+    await runAgent({
+      accountId: "account-1",
+      chatId: "chat-1",
+      content: "question",
+      model: "selected-chat-model",
+      sourceScope: emptyScope,
+      emit: (event) => {
+        emitted.push(event);
+      },
+    });
+
+    const insert = qMock.mock.calls.find(([sql]) => String(sql).includes("INSERT INTO messages"));
+    const persistedMeta = JSON.parse(String(insert?.[1]?.[2]));
+    expect(persistedMeta.evidence).toEqual(evidence);
+    expect(emitted).toContainEqual(expect.objectContaining({
+      type: "message",
+      content: "grounded answer",
+      meta: persistedMeta,
+    }));
+  });
+
+  it("uses the same evidence metadata contract when the iteration guard is exhausted", async () => {
+    const evidence = [{
+      source_id: "11111111-1111-4111-8111-111111111111",
+      chunk_id: "42",
+      source: "Allowed.pdf",
+      excerpt: "A grounded passage",
+      score: 0.91,
+    }];
+    qMock.mockResolvedValue([]);
+    listDatasetsMock.mockResolvedValue([]);
+    for (let index = 0; index < 8; index += 1) {
+      chatOnceMock.mockResolvedValueOnce({
+        choices: [{ message: {
+          role: "assistant",
+          content: "",
+          tool_calls: [{ id: `retrieve-${index}`, type: "function", function: { name: "retrieve", arguments: "{}" } }],
+        } }],
+      } as any);
+    }
+    chatOnceMock.mockResolvedValueOnce({
+      choices: [{ message: { role: "assistant", content: "guard answer", tool_calls: [] } }],
+    } as any);
+    executeToolMock.mockImplementation(async (_accountId, _name, _args, context) => {
+      context.evidence = evidence;
+      return { passages: [] };
+    });
+    const emitted: any[] = [];
+
+    await runAgent({
+      accountId: "account-1",
+      chatId: "chat-1",
+      content: "question",
+      model: "selected-chat-model",
+      sourceScope: emptyScope,
+      emit: (event) => {
+        emitted.push(event);
+      },
+    });
+
+    const insert = qMock.mock.calls.find(([sql]) => String(sql).includes("INSERT INTO messages"));
+    const persistedMeta = JSON.parse(String(insert?.[1]?.[2]));
+    expect(persistedMeta).toEqual({
+      charts: [],
+      report: null,
+      model: "selected-chat-model",
+      source_mode: "selected",
+      source_ids: [],
+      evidence,
+    });
+    expect(emitted).toContainEqual(expect.objectContaining({ type: "message", meta: persistedMeta }));
+  });
+
+  it("does not accept evidence from a retrieval that resolves after its timeout", async () => {
+    const priorEvidence = {
+      source_id: "11111111-1111-4111-8111-111111111111",
+      chunk_id: "accepted",
+      source: "Accepted.pdf",
+      excerpt: "Previously accepted evidence",
+      score: 0.95,
+    };
+    const lateEvidence = {
+      source_id: "22222222-2222-4222-8222-222222222222",
+      chunk_id: "late",
+      source: "Late.pdf",
+      excerpt: "This retrieval lost the timeout race",
+      score: 0.9,
+    };
+    const context = {
+      chartIds: [],
+      evidence: [priorEvidence],
+      chatId: "chat-1",
+      model: "selected-chat-model",
+      sourceScope: emptyScope,
+      readySourceIds: emptyScope.readySourceIds,
+      readyTableNames: emptyScope.readyTableNames,
+    };
+    let completeLateRetrieval: (() => void) | undefined;
+    executeToolMock.mockImplementationOnce((_accountId, _name, _args, isolatedContext) => (
+      new Promise((resolve) => {
+        completeLateRetrieval = () => {
+          isolatedContext.evidence = [...isolatedContext.evidence, lateEvidence];
+          resolve({ passages: [] });
+        };
+      })
+    ));
+    const messages: any[] = [];
+    const emitted: any[] = [];
+
+    await runToolRound(
+      "account-1",
+      "chat-1",
+      { id: "retrieve-timeout", function: { name: "retrieve", arguments: '{"query":"slow"}' } },
+      messages,
+      context,
+      (event) => emitted.push(event),
+      0
+    );
+
+    expect(context.evidence).toEqual([priorEvidence]);
+    expect(emitted).toContainEqual({ type: "step-end", name: "retrieve", result: { error: "tool timed out" } });
+    expect(completeLateRetrieval).toBeTypeOf("function");
+    completeLateRetrieval?.();
+    await Promise.resolve();
+    expect(context.evidence).toEqual([priorEvidence]);
   });
 
   it("builds the catalog only from selected tables and names attached unready sources", async () => {

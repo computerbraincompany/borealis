@@ -4,8 +4,9 @@ import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
 import { Bot, User, FileText, ExternalLink } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { openProtected, reportsApi } from "@/lib/api";
+import { openProtected, reportsApi, type RetrievedEvidence as RetrievedEvidenceItem } from "@/lib/api";
 import { ChartCard } from "@/components/ChartCard";
+import { RetrievedEvidence } from "@/components/RetrievedEvidence";
 
 function ReportLink({ reportId }: { reportId: string }) {
   const [info, setInfo] = useState<{ title: string; hasHtml: boolean; hasPdf: boolean } | null>(null);
@@ -54,6 +55,7 @@ export const ChatMessage = memo(function ChatMessage({
   charts,
   report,
   model,
+  evidence,
   streaming,
   className,
 }: {
@@ -63,6 +65,7 @@ export const ChatMessage = memo(function ChatMessage({
   charts?: string[];
   report?: string | null;
   model?: string;
+  evidence?: RetrievedEvidenceItem[];
   streaming?: boolean;
   className?: string;
 }) {
@@ -92,6 +95,7 @@ export const ChatMessage = memo(function ChatMessage({
                 {content || (streaming ? "" : "_no response_")}
               </ReactMarkdown>
             </div>
+            {evidence && evidence.length > 0 && <RetrievedEvidence evidence={evidence} />}
             {model && (
               <div className="mt-2 flex min-w-0 items-center gap-1.5 text-[10px] text-muted-foreground">
                 <span>Model</span>
