@@ -7,7 +7,7 @@
 > in `plans/README.md`.
 >
 > **Drift check (run first)**:
-> `git diff --stat 567481d..HEAD -- python/app/datasets.py python/app/main.py python/tests/test_datasets.py python/tests/test_main.py`
+> `git diff --stat 567481d..HEAD -- python/app/datasets.py python/app/main.py python/tests/test_datasets.py python/tests/test_main.py plans/README.md`
 > On any diff, compare "Current state" excerpts against live code; mismatch → STOP.
 > This plan assumes plan 014 has landed (it edits `_read_sql` in datasets.py).
 
@@ -15,10 +15,12 @@
 
 - **Priority**: P2
 - **Effort**: M
-- **Risk**: MED (introduces a shared DuckDB connection — thread discipline must be right)
+- **Risk**: MED (introduces persistent per-account DuckDB connections — thread discipline and tenant isolation must both be right)
 - **Depends on**: plans/014-fix-ingest-name-and-chat-stream-ux.md (both edit `datasets.py`; run sequentially)
 - **Category**: perf / bug
 - **Planned at**: commit `567481d`, 2026-08-23
+- **Safety revision**: commit `e6e9d2b`, 2026-08-23 — replaced the proposed
+  process-global catalog with per-account catalogs before execution.
 
 ## Why this matters
 
@@ -32,6 +34,12 @@ results are fully materialized into pandas before truncating to 500 rows;
 `describe` issues 1–2 full scans PER COLUMN while holding the global lock;
 ±Infinity values crash response serialization; and a query racing an upload
 can hit "dictionary changed size during iteration".
+
+The cache MUST stay account-partitioned. Table names are unique only inside an
+account; one process-global DuckDB catalog would retain tables loaded for other
+accounts (and same-name tables would overwrite each other), turning this
+performance change into a cross-account disclosure risk. The per-chat source
+scope in plan 022 will further refine the cache key after this plan lands.
 
 ## Current state
 
@@ -124,25 +132,25 @@ registry). `fastapi.testclient.TestClient` is available (httpx is installed).
 
 ## Steps
 
-### Step 1: One shared connection + load memoization
+### Step 1: One persistent connection per account + load memoization
 
-Replace `_connection()` with a lazily-created module-level connection that
-persists tables BETWEEN calls, plus a load signature per registry entry:
+Replace `_connection()` with lazily-created, account-keyed connections that
+persist tables BETWEEN calls, plus a load signature per registry entry:
 
 ```python
-_SHARED_CON: duckdb.DuckDBPyConnection | None = None
+_CONNECTIONS: dict[str, duckdb.DuckDBPyConnection] = {}
 
-def _shared_connection() -> duckdb.DuckDBPyConnection:
-    global _SHARED_CON
-    if _SHARED_CON is None:
+def _account_connection(account_id: str) -> duckdb.DuckDBPyConnection:
+    con = _CONNECTIONS.get(account_id)
+    if con is None:
         con = duckdb.connect()
         con.execute("PRAGMA threads=4")
-        _SHARED_CON = con
-    return _SHARED_CON
+        _CONNECTIONS[account_id] = con
+    return con
 
 def _ensure_loaded(account_id: str) -> None:
     """CREATE OR REPLACE only entries whose file changed since last load."""
-    con = _shared_connection()
+    con = _account_connection(account_id)
     for name, meta in list(_REGISTRY.get(account_id, {}).items()):
         sig = _file_sig(meta["location"])
         if meta.get("_loaded_sig") == sig:
@@ -152,6 +160,7 @@ def _ensure_loaded(account_id: str) -> None:
             meta["_loaded_sig"] = sig
         except Exception as e:  # noqa: BLE001
             logging.getLogger(__name__).warning("failed to load %s: %s", name, e)
+            raise HTTPException(422, f"dataset {name} could not be reloaded") from e
 
 def _file_sig(path: str) -> str:
     try:
@@ -162,15 +171,25 @@ def _file_sig(path: str) -> str:
 ```
 
 Discipline (this is the MED-risk part — be exact):
-- ALL access to `_SHARED_CON` happens under `with LOCK:` — `query()`,
+- ALL access to `_CONNECTIONS` and every contained connection happens under
+  `with LOCK:` — `query()`,
   `describe()`, `register()`, `drop()`, `resync()` wrap their ENTIRE
   db-touching body in the lock (RLock already exists; resync already calls
   register while holding it). DuckDB python connections are not safe across
   concurrent threads; serializing is correct for this single-user service.
-- `drop()` executes its `DROP TABLE IF EXISTS` on the SHARED connection and
+- `drop()` executes its `DROP TABLE IF EXISTS` only on that account's
+  connection and
   clears `meta["_loaded_sig"]` semantics by deleting the entry.
-- `register()` validates parseability on the shared connection too (inside
+- `register()` validates parseability on that account's connection too (inside
   LOCK); on success set `meta["_loaded_sig"]`.
+- When an account has no remaining registry entries, close and remove its
+  connection so empty/deleted accounts do not leak handles.
+- Never search, drop, replace, or reuse a table in another account's
+  connection, even when the table name is identical.
+- Fail closed on a changed or missing registered file. If its signature no
+  longer matches and reloading fails, raise 422 for that query/describe call;
+  do not continue against the stale in-memory table. A later call may retry
+  after the file is restored.
 - Delete the old `_connection()`; keep `_bare_connection` ONLY if still
   referenced after this (it should not be — remove it and update callers).
 - Add `import logging` and replace the bare `print` in the load path.
@@ -180,11 +199,13 @@ Discipline (this is the MED-risk part — be exact):
 ### Step 2: Truncate in DuckDB, not pandas
 
 In `query()`: strip ONE trailing `;` if present. If the statement starts with
-`PRAGMA` (case-insensitive), execute as-is (cannot be wrapped). Otherwise
-execute `SELECT * FROM ({sql}) AS _q LIMIT 500` and drop the `.fetchdf().head(500)`
-pattern (still convert via `fetchdf()` for the row serializer, or use
-`.fetchall()` + cursor description — pick one and keep the return shape
-identical: `{columns, rows, row_count}` where row_count ≤ 500).
+`PRAGMA` (case-insensitive), execute as-is (it cannot be wrapped). Otherwise
+execute `SELECT * FROM ({sql}) AS _q LIMIT 500`. For BOTH branches, consume at
+most 500 rows with `cursor.fetchmany(500)` and obtain column names from cursor
+description. If preserving the pandas-based serializer, construct a DataFrame
+only from those fetched rows; never call an unbounded `fetchdf()` first. Keep
+the return shape identical: `{columns, rows, row_count}`, with `row_count <=
+500` even for PRAGMA output.
 
 **Verify**: pytest (new test below asserts row_count == 500 for a 1000-row dataset).
 
@@ -229,20 +250,34 @@ def _cache_ext(url: str, content_type: str) -> str:
         return suffix
     return _EXT_BY_CT.get(content_type.split(";")[0].strip(), ".csv")
 ```
-   (`from urllib.parse import urlparse`). The fetch must happen BEFORE the
-   path is known — restructure so the early-return cache check uses the OLD
-   `.csv` path if it exists (back-compat with existing caches), else fetches
-   and writes to the derived name. Keep `force=True` behavior identical.
+   (`from urllib.parse import urlparse`). Use one extensionless cache stem and
+   the fixed allowed suffix set above. On `force=False`, check the URL-derived
+   suffix first, the legacy `.csv` path second, and then the other allowed
+   suffix siblings so a previously content-type-derived `.json`/`.parquet`
+   cache is reused without an HTTP request. After a successful fetch, write to
+   the derived suffix and remove stale sibling suffixes for that same stem;
+   never remove the old cache before the replacement write succeeds. On
+   `force=True`, always fetch and then perform the same replacement/cleanup.
+   Do not use a glob broader than that explicit cache stem + suffix allowlist.
 
 **Verify**: pytest (tests below).
 
 ## Test plan
 
 Add to `python/tests/test_datasets.py`:
-- Repeated-query memoization: register a tmp CSV, DELETE the file, query
-  again → succeeds (table already loaded); a NEW account querying the same
-  missing-file dataset → 422 (proves loads are keyed per entry).
+- Repeated-query memoization: wrap/spy on `_read_sql`, record its call count
+  after registration/first query, then query the unchanged file again; the
+  count does not increase. Rewrite the file with a different size/value and
+  query again; exactly one reload occurs and the new value is returned.
+- Missing-file fail-closed behavior: delete a previously loaded source, then
+  query/describe -> 422 and no stale rows/stats are returned.
+- Account isolation: register the SAME table name with different canary values
+  in two accounts and alternate queries; each account always returns its own
+  value. A table registered only for account A must be unavailable to account
+  B even after A queried it (422, never leaked rows).
 - LIMIT pushdown: register a 1000-row CSV, `SELECT * FROM t` → row_count == 500.
+- PRAGMA bounding: a PRAGMA returning more than 500 rows (for example
+  `PRAGMA functions` in the pinned DuckDB version) returns exactly 500.
 - Infinity: query `SELECT 1.0/0.0 AS x` → 200 with rows `[[None]]`.
 - Quote-bearing header: register a CSV with column header `we"ird` → describe()
   returns stats without raising.
@@ -251,6 +286,12 @@ Add to `python/tests/test_main.py` (TestClient is fine here):
 - POST `/chart` with spec `{"type":"nope"}` → 400 (not 500).
 - `_cache_ext("https://x/y/data.json", "application/octet-stream")` → `.json`;
   `("https://x/y/data", "application/json")` → `.json`; unknown → `.csv`.
+- Mock the HTTP client and call `_fetch_url` twice for an extensionless JSON
+  URL. The first call performs one GET and writes `.json`; the second
+  non-forced call returns that path with the GET count still exactly one.
+- Force-refresh a cache whose derived suffix changes; the new file is present,
+  stale sibling suffixes are absent, and a failed refresh leaves the prior
+  cache intact.
 
 Verification: `cd python && uv run pytest` → all pass, ≥6 new tests.
 
@@ -258,9 +299,12 @@ Verification: `cd python && uv run pytest` → all pass, ≥6 new tests.
 
 Machine-checkable. ALL must hold:
 
-- [ ] `grep -n "_connection" python/app/datasets.py` → no matches (replaced by `_shared_connection`/`_ensure_loaded`)
+- [ ] `rg -n "_SHARED_CON|def _shared_connection" python/app/datasets.py` -> no matches
+- [ ] `grep -n "_CONNECTIONS" python/app/datasets.py` -> present; keys are account IDs
 - [ ] `grep -n "fetchdf().head" python/app/datasets.py` → no matches
-- [ ] `cd python && uv run pytest` exit 0 incl. the ≥6 new tests
+- [ ] `cd python && uv run pytest` exits 0, including account isolation,
+  load-count memoization, missing-file fail-closed behavior, bounded PRAGMA,
+  and two-call URL-cache reuse
 - [ ] `grep -n '_loaded_sig' python/app/datasets.py` → present (memoization live)
 - [ ] POST /chart bad-spec → 400 (pytest)
 - [ ] No files outside the in-scope list modified (`git status`)
@@ -274,16 +318,19 @@ Stop and report back (do not improvise) if:
   changed `_read_sql` signatures).
 - You find a code path that uses a DuckDB connection OUTSIDE the lock that
   you cannot move under it — report the site instead of weakening discipline.
+- A proposed implementation has one process-global catalog, or either
+  same-name/unique-name account-isolation test can see another account's table.
 - SUMMARIZE output columns differ from `{column_name, column_type, min, max,
   approx_unique, avg}` in the installed DuckDB version — report actual columns.
-- The memoization test (deleted file still queryable) fails — meaning loads
-  are not actually cached; do not fake the test green.
+- The unchanged-file load count increases, a changed file is not reloaded, or
+  a missing/failed reload serves stale rows. Those violate the cache contract;
+  do not weaken the assertions to make them green.
 
 ## Maintenance notes
 
-- The shared connection serializes queries under LOCK. Fine single-user; if
-  multi-tenant ever lands, move to a connection pool per account or disk-backed
-  databases and revisit.
+- Persistent connections remain partitioned by account and serialize under the
+  global LOCK. Plan 022 deliberately extends the key to `(account, selected
+  tables)`; preserve the account component in every future cache design.
 - `_loaded_sig` keys on size+mtime; a same-size in-place rewrite within one
   mtime tick would be missed — acceptable; connector resyncs write new bytes
   (size changes) and force=True goes through register().
