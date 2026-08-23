@@ -61,12 +61,16 @@ export function ChatView({ chatId }: { chatId?: string }) {
   const [modelErrorsByChat, setModelErrorsByChat] = useState<Record<string, string>>({});
   const [sources, setSources] = useState<Source[]>([]);
   const [sourcesLoading, setSourcesLoading] = useState(true);
-  const [sourcesUnavailable, setSourcesUnavailable] = useState(false);
+  const [sourcesError, setSourcesError] = useState<string | null>(null);
   const [sourceSavingByChat, setSourceSavingByChat] = useState<Record<string, boolean>>({});
   const [sourceErrorsByChat, setSourceErrorsByChat] = useState<Record<string, string>>({});
   const abortByChatRef = useRef(new Map<string, AbortController>());
   const selectedChatIdRef = useRef<string | null>(null);
   const runRevisionByChatRef = useRef(new Map<string, number>());
+  const sourceCatalogRequestRef = useRef(0);
+  const sourceCatalogRequestsInFlightRef = useRef(new Set<number>());
+  const sourceCatalogLoadingOwnerRef = useRef<number | null>(null);
+  const pendingUploadedSourcesRef = useRef(new Map<string, Source>());
   const bottomRef = useRef<HTMLDivElement>(null);
   const stepKeyRef = useRef(0);
 
@@ -99,20 +103,41 @@ export function ChatView({ chatId }: { chatId?: string }) {
     }
   }, []);
 
-  const loadSources = useCallback(async () => {
+  const loadSources = useCallback(async (showLoading = false) => {
+    const requestId = ++sourceCatalogRequestRef.current;
+    sourceCatalogRequestsInFlightRef.current.add(requestId);
+    if (showLoading) {
+      sourceCatalogLoadingOwnerRef.current = requestId;
+      setSourcesLoading(true);
+    }
     try {
       const latest = await sourcesApi.list();
-      setSources(latest);
-      setSourcesUnavailable(false);
+      if (requestId !== sourceCatalogRequestRef.current) return;
+
+      const listedIds = new Set(latest.map((source) => source.id));
+      const pending = [...pendingUploadedSourcesRef.current.values()].filter((source) => {
+        if (!listedIds.has(source.id)) return true;
+        pendingUploadedSourcesRef.current.delete(source.id);
+        return false;
+      });
+      const reconciledCatalog = [...pending, ...latest];
+
+      setSources(reconciledCatalog);
+      setSourcesError(null);
       setDetail((current) => {
         if (!current) return current;
-        const reconciled = reconcileAttachedSources(current.source_mode, current.sources, latest);
+        const reconciled = reconcileAttachedSources(current.source_mode, current.sources, reconciledCatalog);
         return sameAttachedSources(current.sources, reconciled) ? current : { ...current, sources: reconciled };
       });
     } catch {
-      setSourcesUnavailable(true);
+      if (requestId !== sourceCatalogRequestRef.current) return;
+      setSourcesError("The source catalog is temporarily unavailable. Your saved chat sources are unchanged.");
     } finally {
-      setSourcesLoading(false);
+      sourceCatalogRequestsInFlightRef.current.delete(requestId);
+      if (sourceCatalogLoadingOwnerRef.current === requestId) {
+        sourceCatalogLoadingOwnerRef.current = null;
+        setSourcesLoading(false);
+      }
     }
   }, []);
 
@@ -156,9 +181,18 @@ export function ChatView({ chatId }: { chatId?: string }) {
   }, [loadModels]);
 
   useEffect(() => {
-    void loadSources();
-    const timer = window.setInterval(() => void loadSources(), 6000);
-    return () => window.clearInterval(timer);
+    void loadSources(true);
+    const timer = window.setInterval(() => {
+      if (sourceCatalogRequestsInFlightRef.current.size === 0) void loadSources();
+    }, 6000);
+    return () => {
+      window.clearInterval(timer);
+      // Invalidate responses from this mount. React StrictMode immediately
+      // starts a fresh foreground load after its development-only cleanup.
+      sourceCatalogRequestRef.current += 1;
+      sourceCatalogRequestsInFlightRef.current.clear();
+      sourceCatalogLoadingOwnerRef.current = null;
+    };
   }, [loadSources]);
 
   // scroll to bottom on updates
@@ -309,6 +343,13 @@ export function ChatView({ chatId }: { chatId?: string }) {
       delete next[id];
       return next;
     });
+  };
+
+  const uploadSource = async (file: File): Promise<Source> => {
+    const uploaded = await sourcesApi.upload(file);
+    pendingUploadedSourcesRef.current.set(uploaded.id, uploaded);
+    setSources((current) => [uploaded, ...current.filter((source) => source.id !== uploaded.id)]);
+    return uploaded;
   };
 
   const dismissStreamError = () => {
@@ -694,11 +735,14 @@ export function ChatView({ chatId }: { chatId?: string }) {
                             sourceMode={detail.source_mode}
                             attachedSources={detail.sources}
                             sources={sources}
-                            sourcesLoading={sourcesLoading || sourcesUnavailable}
+                            sourcesLoading={sourcesLoading}
+                            sourcesError={sourcesError}
                             disabled={isModelSaving || isSourceSaving || stream.running}
                             saving={isSourceSaving}
                             hasMessages={messages.length > 0}
                             onApply={saveSourceScope}
+                            onUpload={uploadSource}
+                            onRetrySources={() => loadSources(true)}
                           />
                         </div>
                         <ActiveSourceScope

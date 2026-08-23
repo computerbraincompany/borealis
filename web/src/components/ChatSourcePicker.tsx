@@ -1,5 +1,5 @@
-import { useId, useMemo, useState } from "react";
-import { CheckCircle2, CircleAlert, Database, FileText, Info, LoaderCircle, Table2 } from "lucide-react";
+import { useId, useMemo, useRef, useState } from "react";
+import { CheckCircle2, CircleAlert, Database, FileText, Info, LoaderCircle, Table2, UploadCloud } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
   type AttachedSource,
@@ -25,10 +25,13 @@ interface ChatSourcePickerProps {
   attachedSources: AttachedSource[];
   sources: Source[];
   sourcesLoading: boolean;
+  sourcesError: string | null;
   disabled: boolean;
   saving: boolean;
   hasMessages: boolean;
   onApply: (scope: SourceScopeInput) => Promise<void>;
+  onUpload: (file: File) => Promise<Source>;
+  onRetrySources: () => Promise<void>;
 }
 
 export function ChatSourcePicker({
@@ -36,13 +39,17 @@ export function ChatSourcePicker({
   attachedSources,
   sources,
   sourcesLoading,
+  sourcesError,
   disabled,
   saving,
   hasMessages,
   onApply,
+  onUpload,
+  onRetrySources,
 }: ChatSourcePickerProps) {
   const radioName = useId();
   const searchId = useId();
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [open, setOpen] = useState(false);
   const [draftMode, setDraftMode] = useState<SourceMode>(sourceMode);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(
@@ -50,6 +57,10 @@ export function ChatSourcePicker({
   );
   const [search, setSearch] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [uploadingFileName, setUploadingFileName] = useState<string | null>(null);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+
+  const isUploading = uploadingFileName !== null;
 
   const filteredSources = useMemo(() => {
     const query = search.trim().toLocaleLowerCase();
@@ -95,6 +106,31 @@ export function ChatSourcePicker({
     }
   };
 
+  const uploadFile = async (file: File) => {
+    const uploadMode = draftMode;
+    const selectedAtUpload = new Set(selectedIds);
+    setError(null);
+    setUploadError(null);
+    setUploadingFileName(file.name);
+    try {
+      const uploaded = await onUpload(file);
+      if (uploadMode === "selected") {
+        if (!selectedAtUpload.has(uploaded.id) && selectedAtUpload.size >= 100) {
+          setUploadError(
+            `${file.name} was uploaded to Sources but was not selected because this chat already has 100 sources.`
+          );
+        } else {
+          selectedAtUpload.add(uploaded.id);
+          setSelectedIds(selectedAtUpload);
+        }
+      }
+    } catch {
+      setUploadError(`Could not upload ${file.name}. Check the file type and size, then try again.`);
+    } finally {
+      setUploadingFileName(null);
+    }
+  };
+
   return (
     <Dialog
       open={open}
@@ -104,10 +140,11 @@ export function ChatSourcePicker({
           setSelectedIds(selectedSourceIds(sourceMode, attachedSources));
           setSearch("");
           setError(null);
+          setUploadError(null);
           setOpen(true);
           return;
         }
-        if (!saving) setOpen(false);
+        if (!saving && !isUploading) setOpen(false);
       }}
     >
       <DialogTrigger asChild>
@@ -130,12 +167,12 @@ export function ChatSourcePicker({
 
       <DialogContent
         className="flex max-h-[85vh] max-w-xl flex-col gap-0 overflow-hidden p-0"
-        aria-busy={saving}
+        aria-busy={saving || isUploading}
         onEscapeKeyDown={(event) => {
-          if (saving) event.preventDefault();
+          if (saving || isUploading) event.preventDefault();
         }}
         onPointerDownOutside={(event) => {
-          if (saving) event.preventDefault();
+          if (saving || isUploading) event.preventDefault();
         }}
       >
         <DialogHeader className="border-b px-6 py-5 pr-12">
@@ -146,6 +183,72 @@ export function ChatSourcePicker({
         </DialogHeader>
 
         <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-6 py-5">
+          {sourcesError && (
+            <div
+              className="flex items-start gap-3 rounded-lg border border-warning/30 bg-warning/10 px-3 py-2.5 text-sm text-foreground"
+              role="alert"
+            >
+              <CircleAlert className="mt-0.5 size-4 shrink-0 text-warning" />
+              <span className="min-w-0 flex-1">{sourcesError}</span>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={sourcesLoading}
+                onClick={() => void onRetrySources()}
+                className="shrink-0"
+              >
+                {sourcesLoading && <LoaderCircle data-icon="inline-start" className="animate-spin" />}
+                Retry
+              </Button>
+            </div>
+          )}
+
+          <div className="flex flex-wrap items-center gap-3 rounded-lg border bg-surface-subtle px-3 py-3">
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-medium text-foreground">Add a file from this device</p>
+              <p className="mt-0.5 text-xs text-muted-foreground">
+                The file stays in Sources even if you cancel this selection.
+              </p>
+            </div>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".csv,.tsv,.xlsx,.xls,.parquet,.jsonl,.pdf,.docx,.doc,.txt,.md"
+              className="hidden"
+              onChange={(event) => {
+                const file = event.currentTarget.files?.[0];
+                event.currentTarget.value = "";
+                if (file) void uploadFile(file);
+              }}
+            />
+            <Button
+              type="button"
+              variant="secondary"
+              size="sm"
+              disabled={disabled || saving || isUploading}
+              onClick={() => fileInputRef.current?.click()}
+              className="max-w-full shrink-0"
+            >
+              {isUploading ? (
+                <LoaderCircle data-icon="inline-start" className="animate-spin" />
+              ) : (
+                <UploadCloud data-icon="inline-start" />
+              )}
+              Upload file
+            </Button>
+            {uploadingFileName && (
+              <p className="w-full truncate text-xs text-muted-foreground" aria-live="polite" title={uploadingFileName}>
+                Uploading <span className="font-medium text-foreground">{uploadingFileName}</span>…
+              </p>
+            )}
+            {uploadError && (
+              <p className="w-full text-xs text-destructive" role="alert">
+                {uploadError}
+              </p>
+            )}
+          </div>
+
           <fieldset className="flex flex-col gap-2">
             <legend className="mb-1 text-xs font-medium uppercase tracking-[0.12em] text-muted-foreground">
               Source scope
@@ -165,7 +268,7 @@ export function ChatSourcePicker({
                   setDraftMode("all");
                   setError(null);
                 }}
-                disabled={saving}
+                disabled={saving || isUploading}
                 className="mt-0.5 size-4 accent-primary"
               />
               <span className="flex min-w-0 flex-1 flex-col gap-0.5">
@@ -190,7 +293,7 @@ export function ChatSourcePicker({
                   setDraftMode("selected");
                   setError(null);
                 }}
-                disabled={saving}
+                disabled={saving || isUploading}
                 className="mt-0.5 size-4 accent-primary"
               />
               <span className="flex min-w-0 flex-1 flex-col gap-0.5">
@@ -215,7 +318,7 @@ export function ChatSourcePicker({
                   value={search}
                   onChange={(event) => setSearch(event.target.value)}
                   placeholder="Search sources by name…"
-                  disabled={saving}
+                  disabled={saving || isUploading}
                 />
               </div>
 
@@ -234,7 +337,7 @@ export function ChatSourcePicker({
                         type="checkbox"
                         checked={selected}
                         onChange={(event) => toggleSource(source.id, event.target.checked)}
-                        disabled={saving}
+                        disabled={saving || isUploading || Boolean(sourcesError)}
                         className="mt-1 size-4 shrink-0 accent-primary"
                       />
                       <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
@@ -253,9 +356,9 @@ export function ChatSourcePicker({
                   );
                 })}
 
-                {!sourcesLoading && sources.length === 0 && (
+                {!sourcesLoading && !sourcesError && sources.length === 0 && (
                   <p className="px-3 py-8 text-center text-sm text-muted-foreground">
-                    No stored sources yet. Keep this selection empty or add sources from the Sources page.
+                    No stored sources yet. Upload a file above or keep this selection empty.
                   </p>
                 )}
                 {sources.length > 0 && filteredSources.length === 0 && (
@@ -289,11 +392,11 @@ export function ChatSourcePicker({
 
         <DialogFooter className="border-t px-6 py-4">
           <DialogClose asChild>
-            <Button type="button" variant="outline" disabled={saving}>
+            <Button type="button" variant="outline" disabled={saving || isUploading}>
               Cancel
             </Button>
           </DialogClose>
-          <Button type="button" onClick={() => void apply()} disabled={saving}>
+          <Button type="button" onClick={() => void apply()} disabled={saving || isUploading}>
             {saving && <LoaderCircle data-icon="inline-start" className="animate-spin" />}
             Apply sources
           </Button>
