@@ -7,6 +7,10 @@ export default defineConfig({
     setupFiles: ["./src/tests/integrationSetup.ts"],
     fileParallelism: false,
     maxWorkers: 1,
-    env: { JWT_SECRET: "vitest-secret-that-is-longer-than-32-chars-123456" },
+    env: {
+      JWT_SECRET: "vitest-secret-that-is-longer-than-32-chars-123456",
+      PYTHON_SERVICE_TOKEN: "vitest-python-token-that-is-longer-than-32-chars",
+      LITELLM_API_KEY: "vitest-litellm-token-that-is-longer-than-32-chars",
+    },
   },
 });

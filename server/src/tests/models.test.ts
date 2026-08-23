@@ -1,11 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { config, validateModelIds } from "../config.js";
-import {
-  client,
-  createChatModelDiscovery,
-  discoverChatModels,
-  normalizeChatModels,
-} from "../llm.js";
+import { client, createChatModelDiscovery, discoverChatModels, normalizeChatModels } from "../llm.js";
 
 afterEach(() => {
   vi.restoreAllMocks();

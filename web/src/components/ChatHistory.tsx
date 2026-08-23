@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { Check, LoaderCircle, MessageSquareText, Pencil, Search, Trash2, X } from "lucide-react";
-import type { Chat } from "@/lib/api";
+import { formatApiError, type Chat } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 const GROUPS = ["Today", "Yesterday", "Previous 7 days", "Older"] as const;
@@ -44,20 +44,13 @@ function validateTitle(value: string): string | null {
   return null;
 }
 
-export function ChatHistory({
-  chats,
-  activeChatId,
-  busyChatIds,
-  onOpen,
-  onDelete,
-  onRename,
-}: ChatHistoryProps) {
+export function ChatHistory({ chats, activeChatId, busyChatIds, onOpen, onDelete, onRename }: ChatHistoryProps) {
   const [search, setSearch] = useState("");
   const [rename, setRename] = useState<RenameState | null>(null);
   const normalizedSearch = search.trim().toLocaleLowerCase();
   const filteredChats = useMemo(
     () => chats.filter((chat) => chat.title.toLocaleLowerCase().includes(normalizedSearch)),
-    [chats, normalizedSearch]
+    [chats, normalizedSearch],
   );
   const groupedChats = useMemo(() => {
     const groups = new Map<GroupName, Chat[]>(GROUPS.map((name) => [name, []]));
@@ -89,11 +82,11 @@ export function ChatHistory({
     try {
       await onRename(chatId, title);
       setRename((current) => (current?.chatId === chatId ? null : current));
-    } catch (error: any) {
+    } catch (error: unknown) {
       setRename((current) =>
         current?.chatId === chatId
-          ? { ...current, pending: false, error: error?.message || "Could not rename this chat. Try again." }
-          : current
+          ? { ...current, pending: false, error: formatApiError(error, "Could not rename this chat. Try again.") }
+          : current,
       );
     }
   };
@@ -105,7 +98,10 @@ export function ChatHistory({
           Search conversations
         </label>
         <div className="relative">
-          <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
+          <Search
+            className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground"
+            aria-hidden="true"
+          />
           <input
             id="chat-history-search"
             type="search"
@@ -167,7 +163,7 @@ export function ChatHistory({
                           "group rounded-lg transition-colors",
                           active
                             ? "bg-gradient-to-r from-aurora-teal/12 to-aurora-violet/12 text-foreground"
-                            : "text-muted-foreground hover:bg-secondary hover:text-foreground"
+                            : "text-muted-foreground hover:bg-secondary hover:text-foreground",
                         )}
                       >
                         {editing ? (
@@ -206,7 +202,11 @@ export function ChatHistory({
                                 className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-success hover:bg-success/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
                                 aria-label={rename.error ? "Retry rename" : "Save chat title"}
                               >
-                                {rename.pending ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
+                                {rename.pending ? (
+                                  <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+                                ) : (
+                                  <Check className="h-3.5 w-3.5" />
+                                )}
                               </button>
                               <button
                                 type="button"
@@ -239,11 +239,19 @@ export function ChatHistory({
                               aria-current={active ? "page" : undefined}
                             >
                               <MessageSquareText
-                                className={cn("h-4 w-4 shrink-0", active ? "text-aurora-teal" : "text-muted-foreground group-hover:text-foreground")}
+                                className={cn(
+                                  "h-4 w-4 shrink-0",
+                                  active ? "text-aurora-teal" : "text-muted-foreground group-hover:text-foreground",
+                                )}
                                 aria-hidden="true"
                               />
                               <span className="min-w-0 flex-1 truncate text-[13px]">{chat.title}</span>
-                              {busy && <LoaderCircle className="h-3.5 w-3.5 shrink-0 animate-spin text-aurora-teal" aria-label="Chat is busy" />}
+                              {busy && (
+                                <LoaderCircle
+                                  className="h-3.5 w-3.5 shrink-0 animate-spin text-aurora-teal"
+                                  aria-label="Chat is busy"
+                                />
+                              )}
                             </button>
                             <button
                               type="button"

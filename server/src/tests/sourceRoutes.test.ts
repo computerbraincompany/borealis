@@ -10,6 +10,7 @@ vi.mock("../agent.js", () => ({ runAgent: vi.fn() }));
 import { signToken } from "../auth.js";
 import { pool, q } from "../db.js";
 import { routes } from "../routes.js";
+import { buildHistoryPage } from "../routes/chats.js";
 
 const ACCOUNT = "11111111-1111-4111-8111-111111111111";
 const CHAT = "22222222-2222-4222-8222-222222222222";
@@ -44,6 +45,97 @@ afterEach(async () => {
 });
 
 describe("chat source-scope routes", () => {
+  it("preserves accepted astral characters when enforcing the history message boundary", () => {
+    const emoji = "😀".repeat(4);
+    const page = buildHistoryPage([{ id: 1, role: "user", content: emoji, meta: {} }], 1, 10_000, 4);
+    expect(page.messages[0].content).toBe(emoji);
+    expect(page.messages[0].meta).toEqual({});
+
+    const oversized = buildHistoryPage([{ id: 2, role: "user", content: "😀".repeat(5), meta: {} }], 1, 10_000, 4);
+    expect(oversized.messages[0].content).toBe("😀".repeat(4));
+    expect(oversized.messages[0].meta).toEqual({ content_truncated: true });
+  });
+
+  it("returns a cursor-bearing bounded row when legal control characters expand during JSON serialization", () => {
+    const page = buildHistoryPage(
+      [{ id: 77, role: "user", content: "\u0001".repeat(32_000), meta: {}, created_at: "now" }],
+      80,
+      120_000,
+      32_000
+    );
+
+    expect(page.messages).toHaveLength(1);
+    expect(page.messages[0].id).toBe(77);
+    expect(page.messages[0].content.length).toBeGreaterThan(0);
+    expect(page.messages[0].content.length).toBeLessThan(32_000);
+    expect(page.messages[0].meta).toEqual({ content_truncated: true });
+    expect(JSON.stringify(page.messages).length).toBeLessThanOrEqual(120_000);
+    expect(page.hasMore).toBe(false);
+  });
+
+  it("bounds default history while returning active-run state", async () => {
+    const messages = [
+      { id: 1, role: "user", content: "one", meta: {}, created_at: "now" },
+      { id: 2, role: "assistant", content: "two", meta: {}, created_at: "now" },
+    ];
+    const activeRun = { id: "44444444-4444-4444-8444-444444444444", status: "running" };
+    const client = clientWith([
+      [],
+      [{ id: CHAT, title: "Chat", model: "model", created_at: "now", updated_at: "now" }],
+      [{ source_mode: "selected" }],
+      [],
+      messages,
+      [activeRun],
+      [],
+    ]);
+    connectMock.mockResolvedValueOnce(client as any);
+    const app = await buildApp();
+
+    const response = await app.inject({ method: "GET", url: `/api/chats/${CHAT}`, headers: auth });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      messages,
+      messages_page: { has_more: false, next_before_message_id: null },
+      active_run: activeRun,
+    });
+    const messageCall = client.query.mock.calls.find(([sql]) => String(sql).includes("FROM messages"));
+    expect(messageCall?.[0]).toContain("LIMIT");
+    expect(messageCall?.[0]).toContain("octet_length(meta::text)");
+    expect(messageCall?.[0]).not.toContain("pg_column_size(meta)");
+    expect(messageCall?.[1]).toEqual([CHAT, null, 81, 32_000, 32_000]);
+  });
+
+  it("returns deterministic newest-page cursor metadata", async () => {
+    const client = clientWith([
+      [],
+      [{ id: CHAT, title: "Chat", model: "model", created_at: "now", updated_at: "now" }],
+      [{ source_mode: "selected" }],
+      [],
+      [
+        { id: 2, role: "assistant", content: "two", meta: {}, created_at: "now" },
+        { id: 3, role: "user", content: "three", meta: {}, created_at: "now" },
+        { id: 4, role: "assistant", content: "four", meta: {}, created_at: "now" },
+      ],
+      [],
+      [],
+    ]);
+    connectMock.mockResolvedValueOnce(client as any);
+    const app = await buildApp();
+
+    const response = await app.inject({
+      method: "GET",
+      url: `/api/chats/${CHAT}?before_message_id=5&limit=2`,
+      headers: auth,
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().messages.map((message: any) => message.id)).toEqual([3, 4]);
+    expect(response.json().messages_page).toEqual({ has_more: true, next_before_message_id: 3 });
+    const messageCall = client.query.mock.calls.find(([sql]) => String(sql).includes("FROM messages"));
+    expect(messageCall?.[1]).toEqual([CHAT, 5, 3, 32_000, 32_000]);
+  });
+
   it.each([
     { source_ids: [] },
     { source_mode: "all", source_ids: [] },
@@ -88,7 +180,8 @@ describe("chat source-scope routes", () => {
     for (let attempt = 0; attempt < 2; attempt++) {
       const client = clientWith([[], [{ id: CHAT }], []]);
       // BEGIN, owned chat, unavailable-source lookup, ROLLBACK
-      client.query.mockReset()
+      client.query
+        .mockReset()
         .mockResolvedValueOnce({ rows: [] })
         .mockResolvedValueOnce({ rows: [{ id: CHAT }] })
         .mockResolvedValueOnce({ rows: [] })
@@ -98,7 +191,10 @@ describe("chat source-scope routes", () => {
         method: "PUT",
         url: `/api/chats/${CHAT}/sources`,
         headers: auth,
-        payload: { source_mode: "selected", source_ids: [attempt === 0 ? SOURCE : "44444444-4444-4444-8444-444444444444"] },
+        payload: {
+          source_mode: "selected",
+          source_ids: [attempt === 0 ? SOURCE : "44444444-4444-4444-8444-444444444444"],
+        },
       });
       expect(response.statusCode).toBe(400);
       expect(response.json()).toEqual({ error: "one or more sources are unavailable" });
@@ -120,5 +216,18 @@ describe("chat source-scope routes", () => {
     expect(response.statusCode).toBe(404);
     expect(response.json()).toEqual({ error: "chat not found" });
     expect(client.query.mock.calls.at(-1)?.[0]).toBe("ROLLBACK");
+  });
+
+  it("rejects deleting a chat while its durable run is active", async () => {
+    const client = clientWith([[], [{ id: CHAT }], [{ id: "active-run" }], []]);
+    connectMock.mockResolvedValueOnce(client as any);
+    const app = await buildApp();
+
+    const response = await app.inject({ method: "DELETE", url: `/api/chats/${CHAT}`, headers: auth });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toEqual({ error: "chat has an active run" });
+    expect(client.query.mock.calls[2][0]).toContain("status IN ('running','cancelling')");
+    expect(client.query.mock.calls[2][1]).toEqual([CHAT, ACCOUNT]);
   });
 });

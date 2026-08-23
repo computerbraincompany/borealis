@@ -13,10 +13,12 @@ export async function retrieve(
   accountId: string,
   query: string,
   allowedSourceIds: readonly string[],
-  topK = 6
+  topK = 6,
+  signal?: AbortSignal
 ): Promise<RetrievedPassage[]> {
   if (!query.trim() || !allowedSourceIds.length) return [];
-  const [vec] = await embed([query]);
+  const [vec] = await embed([query], signal);
+  if (signal?.aborted) throw signal.reason;
   const rows = await q(
     `SELECT chunks.id::text AS chunk_id,
             chunks.source_id::text AS source_id,

@@ -1,10 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  chunkText,
-  datasetRegistrationForSource,
-  isTabularSource,
-  sanitizeDatasetName,
-} from "../ingest.js";
+import { chunkText, datasetRegistrationForSource, isTabularSource, sanitizeDatasetName } from "../ingest.js";
 
 describe("sanitizeDatasetName", () => {
   it("prefixes digit-leading bank-export names with a letter", () => {
@@ -73,20 +68,34 @@ describe("chunkText", () => {
 describe("tabular source registration", () => {
   it.each([
     ["events.json", "application/octet-stream"],
-    ["events.bin", "application/json"],
     ["events.jsonl", "application/x-ndjson"],
     ["ledger.csv", "text/plain"],
+    ["ledger.csv", "application/vnd.ms-excel"],
   ])("classifies %s (%s) for scoped SQL", (filePath, mime) => {
     expect(isTabularSource(filePath, mime)).toBe(true);
   });
 
+  it("does not classify unsupported legacy XLS as tabular even with its legacy MIME", () => {
+    expect(isTabularSource("legacy.xls", "application/vnd.ms-excel")).toBe(false);
+  });
+
+  it.each([
+    ["events.bin", "application/json"],
+    ["notes.docx", "application/json"],
+    ["notes.txt", "application/vnd.ms-excel"],
+  ])("does not let a spoofed MIME change the parser for %s", (filePath, mime) => {
+    expect(isTabularSource(filePath, mime)).toBe(false);
+  });
+
   it("keeps connector URL provenance while using the fetched local file", () => {
-    expect(datasetRegistrationForSource({
-      filePath: "/safe/cache/ledger.csv",
-      displayName: "Finance ledger",
-      connector: "connector-id",
-      url: "https://example.invalid/private.csv?signature=secret",
-    })).toEqual({
+    expect(
+      datasetRegistrationForSource({
+        filePath: "/safe/cache/ledger.csv",
+        displayName: "Finance ledger",
+        connector: "connector-id",
+        url: "https://example.invalid/private.csv?signature=secret",
+      })
+    ).toEqual({
       location: "/safe/cache/ledger.csv",
       kind: "url",
       url: "https://example.invalid/private.csv?signature=secret",
@@ -95,10 +104,12 @@ describe("tabular source registration", () => {
   });
 
   it("does not put an uploaded file's display name in the URL field", () => {
-    expect(datasetRegistrationForSource({
-      filePath: "/safe/uploads/ledger.csv",
-      displayName: "Ledger.csv",
-    })).toEqual({
+    expect(
+      datasetRegistrationForSource({
+        filePath: "/safe/uploads/ledger.csv",
+        displayName: "Ledger.csv",
+      })
+    ).toEqual({
       location: "/safe/uploads/ledger.csv",
       kind: "path",
       originalName: "Ledger.csv",

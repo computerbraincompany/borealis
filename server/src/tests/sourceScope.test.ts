@@ -41,7 +41,8 @@ describe("parseSourceScopeInput", () => {
 
 describe("resolveChatSourceScope", () => {
   it("keeps attached non-ready rows but derives ready ids and tabular names", async () => {
-    const query = vi.fn()
+    const query = vi
+      .fn()
       .mockResolvedValueOnce({ rows: [{ source_mode: "selected" }] })
       .mockResolvedValueOnce({
         rows: [
@@ -69,15 +70,39 @@ describe("resolveChatSourceScope", () => {
   });
 
   it("resolves all dynamically from account-owned sources", async () => {
-    const query = vi.fn()
+    const query = vi
+      .fn()
       .mockResolvedValueOnce({ rows: [{ source_mode: "all" }] })
       .mockResolvedValueOnce({ rows: [] });
 
     const scope = await resolveChatSourceScope({ query } as unknown as ScopeQueryable, "account", "chat");
 
     expect(scope.mode).toBe("all");
-    expect(query.mock.calls[1][0]).toContain("WHERE account_id=$1");
+    expect(query.mock.calls[1][0]).toContain("WHERE s.account_id=$1");
     expect(query.mock.calls[1][1]).toEqual(["account"]);
+  });
+
+  it("rejects an all-mode scope beyond the shared 100-source boundary", async () => {
+    const query = vi
+      .fn()
+      .mockResolvedValueOnce({ rows: [{ source_mode: "all" }] })
+      .mockResolvedValueOnce({
+        rows: Array.from({ length: 101 }, (_, index) => ({
+          id: `${String(index).padStart(8, "0")}-1111-4111-8111-111111111111`,
+          name: `source_${index}`,
+          display_name: `Source ${index}`,
+          kind: "tabular",
+          status: "ready",
+        })),
+      });
+
+    await expect(
+      resolveChatSourceScope({ query } as unknown as ScopeQueryable, "account", "chat")
+    ).rejects.toMatchObject({
+      statusCode: 409,
+      message: "chat source scope exceeds 100 sources; select a smaller set",
+    });
+    expect(query.mock.calls[1][0]).toContain("LIMIT 101");
   });
 
   it("does not reveal whether a foreign or missing chat exists", async () => {

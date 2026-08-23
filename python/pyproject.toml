@@ -2,6 +2,7 @@
 name = "borealis-report-service"
 version = "0.1.0"
 description = "Borealis analysis, chart and report service (DuckDB + matplotlib + WeasyPrint)"
+license = "MIT"
 requires-python = ">=3.12,<3.13"
 dependencies = [
     # fastapi pinned to 0.140.6: 0.140.7 removed get_flat_dependant, which
@@ -9,20 +10,20 @@ dependencies = [
     "fastapi>=0.140.6,<0.140.7",
     "uvicorn[standard]>=0.30",
     "pydantic>=2.7",
-    "pandas>=2.2",
     "numpy>=1.26",
     "duckdb>=1.1",
     "matplotlib>=3.9",
     "jinja2>=3.1",
     "weasyprint>=62",
     "httpx>=0.27",
-    "openpyxl>=3.1",
+    "openpyxl>=3.1,<4",
     "Markdown>=3.6",
     "litellm[proxy]>=1.45",
 ]
 
 [tool.uv]
 package = false
+required-version = "==0.11.26"
 
 [build-system]
 requires = ["hatchling"]
@@ -31,7 +32,18 @@ build-backend = "hatchling.build"
 [dependency-groups]
 dev = [
     "pytest>=9.1.1",
+    "ruff>=0.13",
 ]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+
+[tool.ruff.format]
+quote-style = "double"
 
 [tool.hatch.build.targets.wheel]
 packages = ["app"]

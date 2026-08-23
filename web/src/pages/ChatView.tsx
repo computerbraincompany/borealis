@@ -1,7 +1,9 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { Plus, Send, Square, Sparkles, X } from "lucide-react";
+import { useCallback, useEffect, useReducer, useRef, useState } from "react";
+import { Loader2, Plus, Send, Square, Sparkles, X } from "lucide-react";
 import {
+  ApiError,
   chatsApi,
+  formatApiError,
   modelsApi,
   parseQueryResultArtifacts,
   sourcesApi,
@@ -9,10 +11,9 @@ import {
   type AttachedSource,
   type Chat,
   type ChatDetail,
+  type ChatRunTerminalStatus,
   type Message,
   type ModelsResponse,
-  type QueryResultArtifact,
-  type RetrievedEvidence,
   type Source,
   type SourceMode,
   type SourceScopeInput,
@@ -24,7 +25,13 @@ import { ChatMessage } from "@/components/ChatMessage";
 import { ModelSelector } from "@/components/ModelSelector";
 import { ChatSourcePicker } from "@/components/ChatSourcePicker";
 import { ChatHistory } from "@/components/ChatHistory";
-import { ToolActivity, type ToolStep } from "@/components/ToolActivity";
+import { ToolActivity } from "@/components/ToolActivity";
+import { createStreamState, EMPTY_STREAM_STATE, streamsByChatReducer, type StreamState } from "@/lib/chatStream";
+import { useSourceCatalog } from "@/hooks/useSourceCatalog";
+import { useChatSessionController } from "@/hooks/useChatSessionController";
+import { cancelRunThenAbort } from "@/lib/chatRun";
+import { prependOlderMessages } from "@/lib/chatHistoryPage";
+import { reconcileAttachedSources, sameAttachedSources } from "@/lib/sourceScope";
 
 const SUGGESTIONS = [
   "Analyze my spending and produce a financial report with charts",
@@ -33,212 +40,264 @@ const SUGGESTIONS = [
   "Build me a professional financial report with recommendations",
 ];
 
-interface StreamState {
-  running: boolean;
-  model: string | null;
-  text: string;
-  reasoning: string;
-  steps: ToolStep[];
-  error: string | null;
-  finalCharts: string[];
-  finalReport: string | null;
-  finalEvidence: RetrievedEvidence[];
-  finalQueryResults: QueryResultArtifact[];
-}
-
-function newStreamState(): StreamState {
-  return {
-    running: false,
-    model: null,
-    text: "",
-    reasoning: "",
-    steps: [],
-    error: null,
-    finalCharts: [],
-    finalReport: null,
-    finalEvidence: [],
-    finalQueryResults: [],
-  };
-}
-
-const EMPTY_STREAM_STATE = newStreamState();
-
-export function ChatView({ chatId }: { chatId?: string }) {
+export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatRequest?: string }) {
   const [chats, setChats] = useState<Chat[]>([]);
   const [detail, setDetail] = useState<ChatDetail | null>(null);
   const [draft, setDraft] = useState(() => {
     const m = window.location.hash.match(/[?&]q=([^&]*)/);
     return m ? decodeURIComponent(m[1]) : "";
   });
-  const [streamsByChat, setStreamsByChat] = useState<Record<string, StreamState>>({});
+  const [streamsByChat, dispatchStream] = useReducer(streamsByChatReducer, {});
   const [modelCatalog, setModelCatalog] = useState<ModelsResponse | null>(null);
   const [modelCatalogLoading, setModelCatalogLoading] = useState(false);
   const [modelCatalogFailed, setModelCatalogFailed] = useState(false);
   const [modelSavingByChat, setModelSavingByChat] = useState<Record<string, boolean>>({});
   const [modelErrorsByChat, setModelErrorsByChat] = useState<Record<string, string>>({});
   const [titleSavingByChat, setTitleSavingByChat] = useState<Record<string, boolean>>({});
-  const [sources, setSources] = useState<Source[]>([]);
-  const [sourcesLoading, setSourcesLoading] = useState(true);
-  const [sourcesError, setSourcesError] = useState<string | null>(null);
   const [sourceSavingByChat, setSourceSavingByChat] = useState<Record<string, boolean>>({});
   const [sourceErrorsByChat, setSourceErrorsByChat] = useState<Record<string, string>>({});
+  const [olderMessagesLoading, setOlderMessagesLoading] = useState(false);
+  const [olderMessagesError, setOlderMessagesError] = useState<string | null>(null);
+  const [newChatError, setNewChatError] = useState<string | null>(null);
   const abortByChatRef = useRef(new Map<string, AbortController>());
-  const selectedChatIdRef = useRef<string | null>(null);
   const runRevisionByChatRef = useRef(new Map<string, number>());
-  const sourceCatalogRequestRef = useRef(0);
-  const sourceCatalogRequestsInFlightRef = useRef(new Set<number>());
-  const sourceCatalogLoadingOwnerRef = useRef<number | null>(null);
-  const pendingUploadedSourcesRef = useRef(new Map<string, Source>());
+  const rehydratedRunByChatRef = useRef(new Map<string, string>());
+  const rehydratedCancellingByChatRef = useRef(new Map<string, string>());
+  const stopRequestedByChatRef = useRef(new Set<string>());
+  const cancellationAcceptedByChatRef = useRef(new Map<string, string>());
+  const cancellationByRunRef = useRef(new Map<string, Promise<void>>());
   const bottomRef = useRef<HTMLDivElement>(null);
   const stepKeyRef = useRef(0);
   const chatListRequestRef = useRef(0);
+  const modelCatalogRequestRef = useRef(0);
+  const newChatRequestRef = useRef<string | null>(null);
+  const preserveScrollRef = useRef(false);
+  const {
+    creatingChat,
+    selectChat,
+    beginDetailRequest,
+    ownsDetailRequest,
+    clearSelection,
+    currentChatId,
+    isMounted,
+    createChat,
+  } = useChatSessionController();
 
-  const updateStream = useCallback((id: string, updater: (state: StreamState) => StreamState) => {
-    setStreamsByChat((current) => {
-      const previous = current[id] ?? newStreamState();
-      const next = updater(previous);
-      return next === previous ? current : { ...current, [id]: next };
-    });
-  }, []);
-
-  const stream = detail?.id ? streamsByChat[detail.id] ?? EMPTY_STREAM_STATE : EMPTY_STREAM_STATE;
+  const stream = detail?.id ? (streamsByChat[detail.id] ?? EMPTY_STREAM_STATE) : EMPTY_STREAM_STATE;
 
   const loadChats = useCallback(async () => {
     const requestId = ++chatListRequestRef.current;
     try {
       const latest = await chatsApi.list();
-      if (requestId === chatListRequestRef.current) setChats(latest);
+      if (isMounted() && requestId === chatListRequestRef.current) setChats(latest);
     } catch {}
-  }, []);
+  }, [isMounted]);
 
-  const loadModels = useCallback(async (refresh = false) => {
-    setModelCatalogLoading(true);
-    try {
-      setModelCatalog(await modelsApi.list(refresh));
-      setModelCatalogFailed(false);
-    } catch {
-      setModelCatalog(null);
-      setModelCatalogFailed(true);
-    } finally {
-      setModelCatalogLoading(false);
-    }
-  }, []);
-
-  const loadSources = useCallback(async (showLoading = false) => {
-    const requestId = ++sourceCatalogRequestRef.current;
-    sourceCatalogRequestsInFlightRef.current.add(requestId);
-    if (showLoading) {
-      sourceCatalogLoadingOwnerRef.current = requestId;
-      setSourcesLoading(true);
-    }
-    try {
-      const latest = await sourcesApi.list();
-      if (requestId !== sourceCatalogRequestRef.current) return;
-
-      const listedIds = new Set(latest.map((source) => source.id));
-      const pending = [...pendingUploadedSourcesRef.current.values()].filter((source) => {
-        if (!listedIds.has(source.id)) return true;
-        pendingUploadedSourcesRef.current.delete(source.id);
-        return false;
-      });
-      const reconciledCatalog = [...pending, ...latest];
-
-      setSources(reconciledCatalog);
-      setSourcesError(null);
-      setDetail((current) => {
-        if (!current) return current;
-        const reconciled = reconcileAttachedSources(current.source_mode, current.sources, reconciledCatalog);
-        return sameAttachedSources(current.sources, reconciled) ? current : { ...current, sources: reconciled };
-      });
-    } catch {
-      if (requestId !== sourceCatalogRequestRef.current) return;
-      setSourcesError("The source catalog is temporarily unavailable. Your saved chat sources are unchanged.");
-    } finally {
-      sourceCatalogRequestsInFlightRef.current.delete(requestId);
-      if (sourceCatalogLoadingOwnerRef.current === requestId) {
-        sourceCatalogLoadingOwnerRef.current = null;
-        setSourcesLoading(false);
+  const loadModels = useCallback(
+    async (refresh = false) => {
+      const requestId = ++modelCatalogRequestRef.current;
+      setModelCatalogLoading(true);
+      try {
+        const latest = await modelsApi.list(refresh);
+        if (!isMounted() || requestId !== modelCatalogRequestRef.current) return;
+        setModelCatalog(latest);
+        setModelCatalogFailed(false);
+      } catch {
+        if (!isMounted() || requestId !== modelCatalogRequestRef.current) return;
+        setModelCatalog(null);
+        setModelCatalogFailed(true);
+      } finally {
+        if (isMounted() && requestId === modelCatalogRequestRef.current) setModelCatalogLoading(false);
       }
-    }
-  }, []);
+    },
+    [isMounted],
+  );
 
-  const loadChat = useCallback(async (id: string) => {
-    selectedChatIdRef.current = id;
-    try {
-      const d = await chatsApi.get(id);
-      if (selectedChatIdRef.current !== id) return;
-      setStreamsByChat((current) => {
-        let next = current;
-        for (const [streamChatId, state] of Object.entries(current)) {
-          if (streamChatId === id) {
-            if (!state.running && !state.error) {
-              if (next === current) next = { ...current };
-              delete next[streamChatId];
-            }
-            continue;
-          }
-          if (!state.error) continue;
-          if (next === current) next = { ...current };
-          next[streamChatId] = { ...state, error: null };
-        }
-        return next;
+  const reconcileCatalog = useCallback((catalog: Source[]) => {
+    setDetail((current) => {
+      if (!current) return current;
+      const reconciled = reconcileAttachedSources(current.source_mode, current.sources, catalog);
+      return sameAttachedSources(current.sources, reconciled) ? current : { ...current, sources: reconciled };
+    });
+  }, []);
+  const {
+    sources,
+    loading: sourcesLoading,
+    error: sourcesError,
+    refresh: refreshSources,
+    addPending: addPendingSource,
+  } = useSourceCatalog({ onCatalog: reconcileCatalog });
+
+  const applyChatDetail = useCallback((next: ChatDetail) => {
+    setDetail(next);
+    setOlderMessagesLoading(false);
+    const activeRun = next.active_run;
+    const rehydratedRunId = rehydratedRunByChatRef.current.get(next.id);
+
+    if (activeRun && !abortByChatRef.current.has(next.id)) {
+      rehydratedRunByChatRef.current.set(next.id, activeRun.id);
+      if (activeRun.status === "cancelling") rehydratedCancellingByChatRef.current.set(next.id, activeRun.id);
+      dispatchStream({
+        type: "rehydrate",
+        chatId: next.id,
+        runId: activeRun.id,
+        status: activeRun.status,
+        model: next.model,
       });
-      setDetail(d);
-      window.location.hash = `/chat/${id}`;
-    } catch (e: any) {
-      console.error(e);
-      if (selectedChatIdRef.current === id) setDetail(null);
+      return;
+    }
+
+    if (!activeRun && rehydratedRunId) {
+      rehydratedRunByChatRef.current.delete(next.id);
+      const wasCancelled =
+        cancellationAcceptedByChatRef.current.get(next.id) === rehydratedRunId ||
+        rehydratedCancellingByChatRef.current.get(next.id) === rehydratedRunId;
+      rehydratedCancellingByChatRef.current.delete(next.id);
+      cancellationAcceptedByChatRef.current.delete(next.id);
+      stopRequestedByChatRef.current.delete(next.id);
+      if (wasCancelled) {
+        dispatchStream({
+          type: "patch",
+          chatId: next.id,
+          patch: {
+            running: false,
+            stopping: false,
+            runId: rehydratedRunId,
+            terminalStatus: "cancelled",
+            error: null,
+          },
+        });
+      } else {
+        dispatchStream({ type: "clear", chatId: next.id });
+      }
+      return;
+    }
+
+    if (!activeRun && !abortByChatRef.current.has(next.id)) {
+      dispatchStream({ type: "reconcile-no-active-run", chatId: next.id });
     }
   }, []);
 
-  // initial: if chatId given load it, else just list chats
+  const loadChat = useCallback(
+    async (id: string) => {
+      const request = selectChat(id);
+      try {
+        const next = await chatsApi.get(id, { limit: 50 });
+        if (!ownsDetailRequest(request)) return;
+        dispatchStream({ type: "select-chat", chatId: id });
+        applyChatDetail(next);
+        setOlderMessagesLoading(false);
+        setOlderMessagesError(null);
+        window.location.hash = `/chat/${id}`;
+      } catch (error: unknown) {
+        if (ownsDetailRequest(request)) {
+          console.error(formatApiError(error, "Could not open this chat"));
+          setDetail(null);
+        }
+      }
+    },
+    [applyChatDetail, ownsDetailRequest, selectChat],
+  );
+
+  // Route selection is also an ownership boundary. Returning to the chat root
+  // invalidates deferred detail/creation navigation without choosing a chat.
   useEffect(() => {
     loadChats();
-    if (chatId) loadChat(chatId);
-  }, [chatId, loadChats, loadChat]);
+    if (chatId) {
+      void loadChat(chatId);
+    } else if (!newChatRequest) {
+      clearSelection();
+      setDetail(null);
+      setOlderMessagesLoading(false);
+      setOlderMessagesError(null);
+    }
+  }, [chatId, clearSelection, loadChats, loadChat, newChatRequest]);
 
   useEffect(() => {
     void loadModels();
   }, [loadModels]);
 
   useEffect(() => {
-    void loadSources(true);
-    const timer = window.setInterval(() => {
-      if (sourceCatalogRequestsInFlightRef.current.size === 0) void loadSources();
-    }, 6000);
-    return () => {
-      window.clearInterval(timer);
-      // Invalidate responses from this mount. React StrictMode immediately
-      // starts a fresh foreground load after its development-only cleanup.
-      sourceCatalogRequestRef.current += 1;
-      sourceCatalogRequestsInFlightRef.current.clear();
-      sourceCatalogLoadingOwnerRef.current = null;
+    void refreshSources(true);
+  }, [refreshSources]);
+
+  useEffect(() => {
+    const activeRun = detail?.active_run;
+    if (!detail || !activeRun || rehydratedRunByChatRef.current.get(detail.id) !== activeRun.id) return;
+
+    let disposed = false;
+    let timer: number | undefined;
+    let failedAttempts = 0;
+    const poll = () => {
+      const delay = Math.min(750 * 2 ** failedAttempts, 5000);
+      timer = window.setTimeout(async () => {
+        const request = beginDetailRequest(detail.id);
+        try {
+          const next = await chatsApi.get(detail.id, { limit: 50 });
+          if (!disposed && ownsDetailRequest(request)) applyChatDetail(next);
+        } catch {
+          failedAttempts += 1;
+          if (!disposed && currentChatId() === detail.id) poll();
+        }
+      }, delay);
     };
-  }, [loadSources]);
+    poll();
+
+    return () => {
+      disposed = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [applyChatDetail, beginDetailRequest, currentChatId, detail, ownsDetailRequest]);
 
   // scroll to bottom on updates
   useEffect(() => {
+    if (preserveScrollRef.current) {
+      preserveScrollRef.current = false;
+      return;
+    }
     bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [detail, stream]);
 
-  const openNewChat = async () => {
-    const c = await chatsApi.create();
-    chatListRequestRef.current += 1;
-    setChats((prev) => [c, ...prev.filter((chat) => chat.id !== c.id)]);
-    await loadChat(c.id);
-  };
+  const openNewChat = useCallback(async () => {
+    setNewChatError(null);
+    try {
+      await createChat(chatsApi.create, async (created) => {
+        chatListRequestRef.current += 1;
+        setChats((current) => [created, ...current.filter((chat) => chat.id !== created.id)]);
+        await loadChat(created.id);
+      });
+      // If a newer navigation took ownership, keep the created chat discoverable
+      // without allowing its delayed response to yank the current route.
+      await loadChats();
+    } catch (error: unknown) {
+      if (isMounted()) setNewChatError(formatApiError(error, "Could not create a new chat"));
+    }
+  }, [createChat, isMounted, loadChat, loadChats]);
+
+  useEffect(() => {
+    if (!newChatRequest) {
+      newChatRequestRef.current = null;
+      return;
+    }
+    if (newChatRequestRef.current === newChatRequest) return;
+    newChatRequestRef.current = newChatRequest;
+    void openNewChat();
+  }, [newChatRequest, openNewChat]);
 
   const deleteChat = async (id: string) => {
-    if (sourceSavingByChat[id] || modelSavingByChat[id] || titleSavingByChat[id] || streamsByChat[id]?.running || abortByChatRef.current.has(id)) return;
+    if (
+      sourceSavingByChat[id] ||
+      modelSavingByChat[id] ||
+      titleSavingByChat[id] ||
+      streamsByChat[id]?.running ||
+      abortByChatRef.current.has(id)
+    )
+      return;
     await chatsApi.remove(id);
+    if (!isMounted()) return;
     chatListRequestRef.current += 1;
     setChats((prev) => prev.filter((c) => c.id !== id));
-    setStreamsByChat((current) => {
-      if (!(id in current)) return current;
-      const next = { ...current };
-      delete next[id];
-      return next;
-    });
+    dispatchStream({ type: "clear", chatId: id });
     setSourceErrorsByChat((current) => {
       if (!(id in current)) return current;
       const next = { ...current };
@@ -246,15 +305,24 @@ export function ChatView({ chatId }: { chatId?: string }) {
       return next;
     });
     runRevisionByChatRef.current.delete(id);
-    if (id === detail?.id) {
-      selectedChatIdRef.current = null;
-      setDetail(null);
-      window.location.hash = "/chat";
+    // The selection may have changed while DELETE was in flight. Resolve
+    // ownership at response time so a delayed deletion cannot clear a newer
+    // chat, while still clearing a chat opened after its deletion began.
+    if (currentChatId() === id) {
+      clearSelection(id);
+      setDetail((current) => (current?.id === id ? null : current));
+      if (currentChatId() === null) window.location.hash = "/chat";
     }
   };
 
   const renameChat = async (id: string, title: string) => {
-    if (sourceSavingByChat[id] || modelSavingByChat[id] || titleSavingByChat[id] || streamsByChat[id]?.running || abortByChatRef.current.has(id)) {
+    if (
+      sourceSavingByChat[id] ||
+      modelSavingByChat[id] ||
+      titleSavingByChat[id] ||
+      streamsByChat[id]?.running ||
+      abortByChatRef.current.has(id)
+    ) {
       throw new Error("Wait for this chat to finish its current activity.");
     }
 
@@ -262,11 +330,11 @@ export function ChatView({ chatId }: { chatId?: string }) {
     try {
       const updated = await chatsApi.updateTitle(id, title);
       chatListRequestRef.current += 1;
-      setChats((current) => sortChatsByActivity(current.map((chat) => (chat.id === id ? { ...chat, ...updated } : chat))));
+      setChats((current) =>
+        sortChatsByActivity(current.map((chat) => (chat.id === id ? { ...chat, ...updated } : chat))),
+      );
       setDetail((current) =>
-        current?.id === id
-          ? { ...current, title: updated.title, updated_at: updated.updated_at }
-          : current
+        current?.id === id ? { ...current, title: updated.title, updated_at: updated.updated_at } : current,
       );
       // Reconcile any concurrent background turn activity after the local
       // rename response, while retaining the immediate optimistic ordering if
@@ -278,6 +346,41 @@ export function ChatView({ chatId }: { chatId?: string }) {
         delete next[id];
         return next;
       });
+    }
+  };
+
+  const loadOlderMessages = async () => {
+    if (!detail?.messages_page?.has_more || !detail.messages_page.next_before_message_id || olderMessagesLoading)
+      return;
+    const chatId = detail.id;
+    const beforeMessageId = detail.messages_page.next_before_message_id;
+    const request = beginDetailRequest(chatId);
+    setOlderMessagesLoading(true);
+    setOlderMessagesError(null);
+    try {
+      const older = await chatsApi.get(chatId, { beforeMessageId, limit: 50 });
+      if (!ownsDetailRequest(request)) return;
+      setDetail((current) => {
+        if (
+          !ownsDetailRequest(request) ||
+          current?.id !== chatId ||
+          current.messages_page?.next_before_message_id !== beforeMessageId
+        ) {
+          return current;
+        }
+        preserveScrollRef.current = true;
+        return {
+          ...current,
+          messages: prependOlderMessages(current.messages, older.messages),
+          messages_page: older.messages_page,
+        };
+      });
+    } catch (error: unknown) {
+      if (ownsDetailRequest(request)) {
+        setOlderMessagesError(formatApiError(error, "Could not load older messages"));
+      }
+    } finally {
+      if (ownsDetailRequest(request)) setOlderMessagesLoading(false);
     }
   };
 
@@ -305,16 +408,12 @@ export function ChatView({ chatId }: { chatId?: string }) {
 
     try {
       const updated = await chatsApi.updateModel(targetChatId, nextModel);
-      setDetail((current) =>
-        current?.id === targetChatId ? { ...current, model: updated.model } : current
-      );
-      setChats((current) =>
-        current.map((chat) => (chat.id === targetChatId ? { ...chat, ...updated } : chat))
-      );
-    } catch (error: any) {
+      setDetail((current) => (current?.id === targetChatId ? { ...current, model: updated.model } : current));
+      setChats((current) => current.map((chat) => (chat.id === targetChatId ? { ...chat, ...updated } : chat)));
+    } catch (error: unknown) {
       setModelErrorsByChat((current) => ({
         ...current,
-        [targetChatId]: error?.message || "Could not save the selected model",
+        [targetChatId]: formatApiError(error, "Could not save the selected model"),
       }));
     } finally {
       setModelSavingByChat((current) => {
@@ -360,12 +459,10 @@ export function ChatView({ chatId }: { chatId?: string }) {
       setDetail((current) =>
         current?.id === targetChatId
           ? { ...current, source_mode: updated.source_mode, sources: updated.sources }
-          : current
+          : current,
       );
       setChats((current) =>
-        current.map((chat) =>
-          chat.id === targetChatId ? { ...chat, source_mode: updated.source_mode } : chat
-        )
+        current.map((chat) => (chat.id === targetChatId ? { ...chat, source_mode: updated.source_mode } : chat)),
       );
     } finally {
       setSourceSavingByChat((current) => {
@@ -380,10 +477,10 @@ export function ChatView({ chatId }: { chatId?: string }) {
     if (!detail || detail.source_mode !== "selected") return;
     const targetChatId = detail.id;
     const remainingIds = detail.sources.filter((source) => source.id !== sourceId).map((source) => source.id);
-    void saveSourceScope({ source_mode: "selected", source_ids: remainingIds }).catch((error: any) => {
+    void saveSourceScope({ source_mode: "selected", source_ids: remainingIds }).catch((error: unknown) => {
       setSourceErrorsByChat((current) => ({
         ...current,
-        [targetChatId]: error?.message || "Could not remove the source",
+        [targetChatId]: formatApiError(error, "Could not remove the source"),
       }));
     });
   };
@@ -399,15 +496,68 @@ export function ChatView({ chatId }: { chatId?: string }) {
 
   const uploadSource = async (file: File): Promise<Source> => {
     const uploaded = await sourcesApi.upload(file);
-    pendingUploadedSourcesRef.current.set(uploaded.id, uploaded);
-    setSources((current) => [uploaded, ...current.filter((source) => source.id !== uploaded.id)]);
+    addPendingSource(uploaded);
     return uploaded;
   };
 
   const dismissStreamError = () => {
     if (!detail) return;
-    updateStream(detail.id, (current) => (current.error ? { ...current, error: null } : current));
+    dispatchStream({ type: "patch", chatId: detail.id, patch: { error: null } });
   };
+
+  const cancelKnownRun = useCallback(
+    (chatId: string, runId: string, controller: AbortController | null): Promise<void> => {
+      const key = `${chatId}:${runId}`;
+      const existing = cancellationByRunRef.current.get(key);
+      if (existing) return existing;
+
+      const cancellation = (async () => {
+        try {
+          const status = await cancelRunThenAbort({
+            chatId,
+            runId,
+            controller,
+            cancel: chatsApi.cancelRun,
+            isCurrent: () =>
+              controller
+                ? abortByChatRef.current.get(chatId) === controller
+                : currentChatId() === chatId && rehydratedRunByChatRef.current.get(chatId) === runId,
+            onCancelled: () => cancellationAcceptedByChatRef.current.set(chatId, runId),
+          });
+          stopRequestedByChatRef.current.delete(chatId);
+          if (status === "completed" || status === "failed") {
+            dispatchStream({ type: "patch", chatId, patch: { stopping: false } });
+          }
+        } catch (error: unknown) {
+          stopRequestedByChatRef.current.delete(chatId);
+          const isCurrent = controller
+            ? abortByChatRef.current.get(chatId) === controller
+            : currentChatId() === chatId && rehydratedRunByChatRef.current.get(chatId) === runId;
+          if (isCurrent) {
+            dispatchStream({
+              type: "patch",
+              chatId,
+              patch: { stopping: false, error: formatApiError(error, "Could not stop this run") },
+            });
+          }
+          throw error;
+        } finally {
+          cancellationByRunRef.current.delete(key);
+        }
+      })();
+      cancellationByRunRef.current.set(key, cancellation);
+      return cancellation;
+    },
+    [currentChatId],
+  );
+
+  useEffect(() => {
+    const activeRun = detail?.active_run;
+    if (!detail || !activeRun || !stopRequestedByChatRef.current.has(detail.id)) return;
+    const controller = abortByChatRef.current.get(detail.id) ?? null;
+    dispatchStream({ type: "patch", chatId: detail.id, patch: { runId: activeRun.id, stopping: true } });
+    void cancelKnownRun(detail.id, activeRun.id, controller).catch(() => undefined);
+  }, [cancelKnownRun, detail]);
 
   const send = async (text?: string) => {
     const content = (text ?? draft).trim();
@@ -422,6 +572,8 @@ export function ChatView({ chatId }: { chatId?: string }) {
     ) {
       return;
     }
+    stopRequestedByChatRef.current.delete(runChatId);
+    cancellationAcceptedByChatRef.current.delete(runChatId);
     setDraft("");
 
     // clear the welcome query param
@@ -429,49 +581,39 @@ export function ChatView({ chatId }: { chatId?: string }) {
     history.replaceState(null, "", `#${base}`);
 
     // optimistic local user message
-    const optimistic: Message = { id: `local-${Date.now()}`, role: "user", content, created_at: new Date().toISOString() };
-
-    const st: StreamState = {
-      running: true,
-      model: detail.model,
-      text: "",
-      reasoning: "",
-      steps: [],
-      error: null,
-      finalCharts: [],
-      finalReport: null,
-      finalEvidence: [],
-      finalQueryResults: [],
+    const optimistic: Message = {
+      id: `local-${Date.now()}`,
+      role: "user",
+      content,
+      created_at: new Date().toISOString(),
     };
+
+    const st: StreamState = { ...createStreamState(detail.model), running: true };
     const runRevision = (runRevisionByChatRef.current.get(runChatId) ?? 0) + 1;
     runRevisionByChatRef.current.set(runChatId, runRevision);
     const abort = new AbortController();
     abortByChatRef.current.set(runChatId, abort);
-    setStreamsByChat((current) => ({ ...current, [runChatId]: st }));
+    dispatchStream({ type: "replace", chatId: runChatId, state: st });
     // temporarily hold the optimistic user message until stream refreshes from server
     setDetail((current) =>
-      current?.id === runChatId ? { ...current, messages: [...current.messages, optimistic] } : current
+      current?.id === runChatId ? { ...current, messages: [...current.messages, optimistic] } : current,
     );
 
     const ownsRun = () => runRevisionByChatRef.current.get(runChatId) === runRevision;
     const isActiveRun = () => ownsRun() && abortByChatRef.current.get(runChatId) === abort;
     let pendingText = "";
-    let pendingReasoning = "";
     let cancelScheduled: (() => void) | null = null;
     let runError: string | null = null;
+    let requestRejected = false;
+    let currentRunId: string | null = null;
+    let terminalStatus: ChatRunTerminalStatus | null = null;
 
     const flush = () => {
       cancelScheduled = null;
       const textChunk = pendingText;
-      const reasoningChunk = pendingReasoning;
       pendingText = "";
-      pendingReasoning = "";
-      if ((!textChunk && !reasoningChunk) || !isActiveRun()) return;
-      updateStream(runChatId, (current) => ({
-        ...current,
-        text: current.text + textChunk,
-        reasoning: current.reasoning + reasoningChunk,
-      }));
+      if (!textChunk || !isActiveRun()) return;
+      dispatchStream({ type: "append", chatId: runChatId, text: textChunk });
     };
 
     const scheduleFlush = () => {
@@ -491,111 +633,158 @@ export function ChatView({ chatId }: { chatId?: string }) {
       if (cancel) cancel();
     };
 
-    const emit = (ev: any) => {
+    const emit = (event: unknown) => {
       if (!isActiveRun()) return;
-      if (ev.type === "step-start") {
-        const step: ToolStep = {
-          key: ++stepKeyRef.current,
-          name: ev.name,
-          args: ev.args || {},
-          status: "running",
-        };
-        updateStream(runChatId, (current) => ({ ...current, steps: [...current.steps, step] }));
-      } else if (ev.type === "step-end") {
-        updateStream(runChatId, (current) => ({
-          ...current,
-          steps: current.steps.map((step) =>
-            step.name === ev.name && step.status === "running"
-              ? { ...step, status: ev.result?.error ? "error" : "done", resultPreview: summarizeResult(ev.result) }
-              : step
-          ),
-        }));
-      } else if (ev.type === "delta") {
+      const ev = event && typeof event === "object" ? (event as Record<string, unknown>) : null;
+      if (ev?.type === "delta" && typeof ev.text === "string") {
         pendingText += ev.text;
         scheduleFlush();
-      } else if (ev.type === "reasoning") {
-        pendingReasoning += ev.text;
-        scheduleFlush();
-      } else if (ev.type === "message") {
-        updateStream(runChatId, (current) => ({
-          ...current,
-          model: typeof ev.meta?.model === "string" ? ev.meta.model : current.model,
-          finalCharts: ev.meta?.charts || [],
-          finalReport: ev.meta?.report || null,
-          finalEvidence: Array.isArray(ev.meta?.evidence) ? ev.meta.evidence : [],
-          finalQueryResults: parseQueryResultArtifacts(ev.meta?.query_results),
-        }));
-      } else if (ev.type === "error") {
-        runError = ev.message || "stream failed";
-        updateStream(runChatId, (current) => ({ ...current, error: runError }));
+        return;
+      }
+      if (ev?.type === "error") {
+        runError = typeof ev.message === "string" ? ev.message.slice(0, 500) : "Generation failed";
+      }
+      if (ev?.type === "run-started") {
+        const runId = typeof ev.run_id === "string" ? ev.run_id : typeof ev.id === "string" ? ev.id : null;
+        if (runId) currentRunId = runId;
+      }
+      if (
+        ev?.type === "run-ended" &&
+        (ev.status === "cancelled" || ev.status === "completed" || ev.status === "failed")
+      ) {
+        terminalStatus = ev.status;
+        if (terminalStatus === "cancelled") runError = null;
+        if (terminalStatus === "failed" && !runError) runError = "Generation failed";
+      }
+      dispatchStream({ type: "event", chatId: runChatId, event, stepKey: ++stepKeyRef.current });
+      if (currentRunId && stopRequestedByChatRef.current.has(runChatId)) {
+        void cancelKnownRun(runChatId, currentRunId, abort).catch(() => undefined);
       }
     };
     try {
       await streamAgentChat(runChatId, content, emit, abort.signal);
-    } catch (e: any) {
-      if ((e as Error).name !== "AbortError" && isActiveRun()) {
-        runError = e.message || "stream failed";
-        updateStream(runChatId, (current) => ({ ...current, error: runError }));
+    } catch (error: unknown) {
+      if (!(error instanceof Error && error.name === "AbortError") && isActiveRun()) {
+        requestRejected = error instanceof ApiError;
+        runError = formatApiError(error, "The generation stream failed");
+        dispatchStream({ type: "patch", chatId: runChatId, patch: { error: runError } });
       }
     } finally {
       cancelPendingFlush();
       flush();
 
+      const cancellationAccepted =
+        terminalStatus === "cancelled" || Boolean(cancellationAcceptedByChatRef.current.get(runChatId));
+      // A `cancelling` response acknowledges the request but is not terminal.
+      // Keep mutation gates closed and retry detail just as we do for an
+      // ambiguous dropped connection until durable state proves the run ended.
+      const needsAuthoritativeRecovery = terminalStatus === null && !requestRejected;
+      if (needsAuthoritativeRecovery && !cancellationAccepted) {
+        runError = "The generation connection was interrupted. Checking the server run status…";
+      }
       if (isActiveRun()) {
-        updateStream(runChatId, (current) => ({ ...current, running: false }));
+        dispatchStream({
+          type: "patch",
+          chatId: runChatId,
+          patch: {
+            // A dropped SSE connection is not a terminal run state. Keep all
+            // mutation gates closed until the durable detail endpoint confirms
+            // whether the accepted run is still active.
+            running: needsAuthoritativeRecovery,
+            stopping:
+              needsAuthoritativeRecovery && (cancellationAccepted || stopRequestedByChatRef.current.has(runChatId)),
+            terminalStatus,
+            error: cancellationAccepted ? null : runError,
+          },
+        });
         abortByChatRef.current.delete(runChatId);
       }
 
       let appliedAuthoritativeDetail = false;
-      if (ownsRun() && selectedChatIdRef.current === runChatId) {
-        const authoritative = await chatsApi.get(runChatId).catch(() => null);
-        if (authoritative && ownsRun() && selectedChatIdRef.current === runChatId) {
-          setDetail((current) => (current?.id === runChatId ? authoritative : current));
-          if (!runError) {
-            setStreamsByChat((current) => {
-              const completed = current[runChatId];
-              if (!completed || completed.running || completed.error) return current;
-              const next = { ...current };
-              delete next[runChatId];
-              return next;
-            });
+      let authoritativeHasActiveRun = false;
+      if (ownsRun() && currentChatId() === runChatId) {
+        let failedAttempts = 0;
+        while (ownsRun() && isMounted() && currentChatId() === runChatId) {
+          const detailRequest = beginDetailRequest(runChatId);
+          try {
+            const authoritative = await chatsApi.get(runChatId, { limit: 50 });
+            if (!ownsRun() || !ownsDetailRequest(detailRequest)) break;
+            authoritativeHasActiveRun = Boolean(authoritative.active_run);
+            applyChatDetail(authoritative);
+            appliedAuthoritativeDetail = true;
+            if (needsAuthoritativeRecovery && !authoritativeHasActiveRun) {
+              runError = null;
+              if (cancellationAccepted) {
+                dispatchStream({
+                  type: "replace",
+                  chatId: runChatId,
+                  state: {
+                    ...createStreamState(detail.model),
+                    runId: currentRunId,
+                    terminalStatus: "cancelled",
+                  },
+                });
+              } else {
+                // The durable detail is now the complete source of truth. Drop
+                // partial SSE text/artifacts as well as the synthetic transport
+                // warning so a response committed just before disconnect is not
+                // rendered twice beside its persisted assistant message.
+                dispatchStream({ type: "clear", chatId: runChatId });
+              }
+            }
+            break;
+          } catch {
+            if (!needsAuthoritativeRecovery) break;
+            failedAttempts += 1;
+            const delay = Math.min(500 * 2 ** (failedAttempts - 1), 5000);
+            await new Promise((resolve) => window.setTimeout(resolve, delay));
           }
-          appliedAuthoritativeDetail = true;
         }
       }
 
       await loadChats();
 
       if (ownsRun()) {
-        const canDiscardStoppedState = selectedChatIdRef.current !== runChatId || appliedAuthoritativeDetail;
-        if (!runError && canDiscardStoppedState) {
-          setStreamsByChat((current) => {
-            const completed = current[runChatId];
-            if (!completed || completed.running || completed.error) return current;
-            const next = { ...current };
-            delete next[runChatId];
-            return next;
-          });
+        if (requestRejected && currentChatId() === runChatId && isMounted()) {
+          setDraft((current) => current || content);
+        }
+        const canDiscardStoppedState = currentChatId() !== runChatId || appliedAuthoritativeDetail;
+        if (!runError && !cancellationAccepted && !authoritativeHasActiveRun && canDiscardStoppedState) {
+          dispatchStream({ type: "clear", chatId: runChatId });
+        }
+        if (!authoritativeHasActiveRun) {
+          cancellationAcceptedByChatRef.current.delete(runChatId);
+          stopRequestedByChatRef.current.delete(runChatId);
         }
         runRevisionByChatRef.current.delete(runChatId);
       }
     }
   };
 
-  const stop = () => {
-    if (detail) abortByChatRef.current.get(detail.id)?.abort();
+  const stop = async () => {
+    if (!detail) return;
+    const chatId = detail.id;
+    const controller = abortByChatRef.current.get(chatId) ?? null;
+    const runId = streamsByChat[chatId]?.runId ?? detail.active_run?.id ?? null;
+    stopRequestedByChatRef.current.add(chatId);
+    dispatchStream({ type: "patch", chatId, patch: { stopping: true, error: null } });
+
+    // A freshly accepted POST can be stopped before the first run id arrives.
+    // The stream stays connected; `emit` completes the cancellation as soon as
+    // it receives the authoritative `run-started` event.
+    if (!runId) return;
+    await cancelKnownRun(chatId, runId, controller).catch(() => undefined);
   };
 
   const messages = detail?.messages || [];
   const hasStreamMessage = Boolean(
     stream.text ||
-      stream.reasoning ||
       stream.finalCharts.length ||
       stream.finalReport ||
       stream.finalEvidence.length ||
-      stream.finalQueryResults.length
+      stream.finalQueryResults.length,
   );
-  const hasStreamActivity = hasStreamMessage || stream.steps.length > 0;
+  const hasStreamActivity = hasStreamMessage || stream.steps.length > 0 || stream.terminalStatus === "cancelled";
   const isEmpty = messages.length === 0 && !stream.running && !hasStreamActivity;
   const isModelSaving = detail ? Boolean(modelSavingByChat[detail.id]) : false;
   const isSourceSaving = detail ? Boolean(sourceSavingByChat[detail.id]) : false;
@@ -608,26 +797,33 @@ export function ChatView({ chatId }: { chatId?: string }) {
       {/* conversations column */}
       <div className="flex w-[260px] shrink-0 flex-col border-r bg-sidebar/70">
         <div className="px-3 pb-2 pt-4">
-          <Button variant="aurora" className="w-full" onClick={openNewChat}>
-            <Plus className="h-4 w-4" /> New chat
+          <Button variant="aurora" className="w-full" onClick={openNewChat} disabled={creatingChat}>
+            {creatingChat ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />} New chat
           </Button>
+          {newChatError && (
+            <p className="mt-2 text-xs text-destructive" role="alert">
+              {newChatError}
+            </p>
+          )}
         </div>
         <ChatHistory
           chats={chats}
           activeChatId={detail?.id}
-          busyChatIds={new Set(
-            chats
-              .filter((chat) =>
-                Boolean(
-                  streamsByChat[chat.id]?.running ||
-                    sourceSavingByChat[chat.id] ||
-                    modelSavingByChat[chat.id] ||
-                    titleSavingByChat[chat.id] ||
-                    abortByChatRef.current.has(chat.id)
+          busyChatIds={
+            new Set(
+              chats
+                .filter((chat) =>
+                  Boolean(
+                    streamsByChat[chat.id]?.running ||
+                      sourceSavingByChat[chat.id] ||
+                      modelSavingByChat[chat.id] ||
+                      titleSavingByChat[chat.id] ||
+                      abortByChatRef.current.has(chat.id),
+                  ),
                 )
-              )
-              .map((chat) => chat.id)
-          )}
+                .map((chat) => chat.id),
+            )
+          }
           onOpen={(id) => void loadChat(id)}
           onDelete={deleteChat}
           onRename={renameChat}
@@ -647,12 +843,33 @@ export function ChatView({ chatId }: { chatId?: string }) {
               <Sparkles className="h-3 w-3" /> agentic · grounded in your data
             </span>
           </div>
-          <div className="text-xs text-muted-foreground">{messages.filter((m) => m.role === "assistant").length} answers</div>
+          <div className="text-xs text-muted-foreground">
+            {messages.filter((m) => m.role === "assistant").length} answers
+          </div>
         </header>
 
         {/* messages */}
         <div className="flex-1 overflow-y-auto">
           <div className="mx-auto flex max-w-4xl flex-col gap-6 px-6 py-8">
+            {detail?.messages_page?.has_more && (
+              <div className="flex flex-col items-center gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={olderMessagesLoading || stream.running}
+                  onClick={() => void loadOlderMessages()}
+                >
+                  {olderMessagesLoading && <Loader2 className="animate-spin" />}
+                  {olderMessagesLoading ? "Loading older messages…" : "Load older messages"}
+                </Button>
+                {olderMessagesError && (
+                  <span className="text-xs text-destructive" role="alert">
+                    {olderMessagesError}
+                  </span>
+                )}
+              </div>
+            )}
             {messages.map((m) =>
               m.role === "user" ? (
                 <ChatMessage key={m.id} role="user" content={m.content} />
@@ -667,7 +884,7 @@ export function ChatView({ chatId }: { chatId?: string }) {
                   evidence={m.meta?.evidence}
                   queryResults={parseQueryResultArtifacts(m.meta?.query_results)}
                 />
-              )
+              ),
             )}
 
             {(stream.running || hasStreamActivity) && (
@@ -676,7 +893,6 @@ export function ChatView({ chatId }: { chatId?: string }) {
                   <ChatMessage
                     role="assistant"
                     content={stream.text}
-                    reasoning={stream.reasoning}
                     streaming={stream.running}
                     charts={stream.finalCharts}
                     report={stream.finalReport}
@@ -689,16 +905,18 @@ export function ChatView({ chatId }: { chatId?: string }) {
                     <div className="flex min-w-[80px] items-center gap-3 rounded-2xl rounded-tl-md border bg-surface-subtle px-4 py-3">
                       <span className="inline-flex gap-1.5">
                         {[0, 1, 2].map((i) => (
-                          <span key={i} className="h-2 w-2 rounded-full bg-aurora-teal" style={{ animation: `aurora-pulse 1.2s ${i * 0.2}s infinite` }} />
+                          <span
+                            key={i}
+                            className="h-2 w-2 rounded-full bg-aurora-teal"
+                            style={{ animation: `aurora-pulse 1.2s ${i * 0.2}s infinite` }}
+                          />
                         ))}
                       </span>
                       <span className="text-xs text-muted-foreground">thinking…</span>
                     </div>
                   </div>
                 ) : null}
-                {stream.steps.length > 0 && (
-                  <ToolActivity steps={stream.steps} className="max-w-[360px]" />
-                )}
+                {stream.steps.length > 0 && <ToolActivity steps={stream.steps} className="max-w-[360px]" />}
               </>
             )}
             {stream.error && (
@@ -717,6 +935,11 @@ export function ChatView({ chatId }: { chatId?: string }) {
                 >
                   <X />
                 </Button>
+              </div>
+            )}
+            {!stream.running && stream.terminalStatus === "cancelled" && (
+              <div className="rounded-lg border bg-muted/50 px-3 py-2 text-sm text-muted-foreground" role="status">
+                Generation cancelled.
               </div>
             )}
             <div ref={bottomRef} />
@@ -794,7 +1017,7 @@ export function ChatView({ chatId }: { chatId?: string }) {
                             hasMessages={messages.length > 0}
                             onApply={saveSourceScope}
                             onUpload={uploadSource}
-                            onRetrySources={() => loadSources(true)}
+                            onRetrySources={() => refreshSources(true)}
                           />
                         </div>
                         <ActiveSourceScope
@@ -815,8 +1038,9 @@ export function ChatView({ chatId }: { chatId?: string }) {
                       variant="outline"
                       size="icon"
                       className="size-11 shrink-0 rounded-xl"
-                      onClick={stop}
-                      title="Stop generating"
+                      onClick={() => void stop()}
+                      disabled={stream.stopping}
+                      title={stream.stopping ? "Stopping…" : "Stop generating"}
                     >
                       <Square className="fill-current" />
                     </Button>
@@ -854,20 +1078,11 @@ interface ActiveSourceScopeProps {
   onDismissError: () => void;
 }
 
-function ActiveSourceScope({
-  mode,
-  sources,
-  disabled,
-  error,
-  onRemove,
-  onDismissError,
-}: ActiveSourceScopeProps) {
+function ActiveSourceScope({ mode, sources, disabled, error, onRemove, onDismissError }: ActiveSourceScopeProps) {
   return (
     <div className="flex flex-col gap-1.5 px-2" role="group" aria-label="Active chat sources">
       <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-        <span className="text-[10px] font-medium uppercase tracking-[0.12em] text-muted-foreground">
-          Sources
-        </span>
+        <span className="text-[10px] font-medium uppercase tracking-[0.12em] text-muted-foreground">Sources</span>
         {mode === "all" ? (
           <span className="inline-flex h-6 items-center rounded-md border bg-secondary px-2 text-[11px] text-secondary-foreground">
             All sources
@@ -886,12 +1101,7 @@ function ActiveSourceScope({
                 {source.display_name}
               </span>
               {source.status !== "ready" && (
-                <span
-                  className={cn(
-                    "ml-1 shrink-0",
-                    source.status === "error" ? "text-destructive" : "text-warning"
-                  )}
-                >
+                <span className={cn("ml-1 shrink-0", source.status === "error" ? "text-destructive" : "text-warning")}>
                   · {source.status === "index" ? "processing" : source.status}
                 </span>
               )}
@@ -930,46 +1140,6 @@ function ActiveSourceScope({
   );
 }
 
-function toAttachedSource(source: Source): AttachedSource {
-  return {
-    id: source.id,
-    name: source.name,
-    display_name: source.display_name,
-    kind: source.kind,
-    status: source.status,
-  };
-}
-
-function reconcileAttachedSources(
-  mode: SourceMode,
-  attached: AttachedSource[],
-  available: Source[]
-): AttachedSource[] {
-  if (mode === "all") return available.map(toAttachedSource);
-
-  const availableById = new Map(available.map((source) => [source.id, source]));
-  return attached.flatMap((source) => {
-    const current = availableById.get(source.id);
-    return current ? [toAttachedSource(current)] : [];
-  });
-}
-
-function sameAttachedSources(left: AttachedSource[], right: AttachedSource[]): boolean {
-  return (
-    left.length === right.length &&
-    left.every((source, index) => {
-      const other = right[index];
-      return (
-        source.id === other.id &&
-        source.name === other.name &&
-        source.display_name === other.display_name &&
-        source.kind === other.kind &&
-        source.status === other.status
-      );
-    })
-  );
-}
-
 function sortChatsByActivity(chats: Chat[]): Chat[] {
   return [...chats].sort((left, right) => {
     const leftTime = Date.parse(left.updated_at);
@@ -980,18 +1150,4 @@ function sortChatsByActivity(chats: Chat[]): Chat[] {
     if (left.id === right.id) return 0;
     return left.id < right.id ? 1 : -1;
   });
-}
-
-function summarizeResult(result: any): string {
-  if (!result) return "";
-  if (result.error) return String(result.error);
-  if (typeof result === "object") {
-    const r = result as Record<string, any>;
-    if (r.ok === true && r.id) return `created ${r.name || "artifact"} (${r.id})`;
-    if (Array.isArray(r.rows)) return `${r.rows.length} rows`;
-    if (Array.isArray(r)) return `${r.length} items`;
-    if (r.count !== undefined) return `${r.count} rows`;
-    return JSON.stringify(result).slice(0, 160);
-  }
-  return String(result).slice(0, 160);
 }

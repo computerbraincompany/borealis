@@ -41,10 +41,7 @@ describe("chat schema migrations", () => {
     expect(schema.indexOf("UPDATE chats SET title_is_manual=false WHERE title_is_manual IS NULL")).toBeLessThan(
       schema.indexOf("ALTER TABLE chats ALTER COLUMN title_is_manual SET NOT NULL")
     );
-    expect(query.mock.calls[1]).toEqual([
-      "UPDATE chats SET model=$1 WHERE model IS NULL",
-      [config.chatModel],
-    ]);
+    expect(query.mock.calls[1]).toEqual(["UPDATE chats SET model=$1 WHERE model IS NULL", [config.chatModel]]);
     expect(query.mock.calls[2][0]).toBe("ALTER TABLE chats ALTER COLUMN model SET NOT NULL");
   });
 });

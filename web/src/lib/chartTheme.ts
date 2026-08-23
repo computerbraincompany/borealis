@@ -1,12 +1,12 @@
 export const CANONICAL_CHART_PALETTE = [
-  "#2dd4bf",
-  "#60a5fa",
-  "#a78bfa",
-  "#4ade80",
-  "#fbbf24",
-  "#fb7185",
-  "#7dd3fc",
-  "#f472b6",
+  "#6366F1",
+  "#14B8A6",
+  "#F59E0B",
+  "#F43F5E",
+  "#0EA5E9",
+  "#8B5CF6",
+  "#10B981",
+  "#64748B",
 ] as const;
 
 export interface ChartThemeTokens {
@@ -43,20 +43,15 @@ function deepClone<T>(value: T): T {
   if (Array.isArray(value)) return value.map((entry) => deepClone(entry)) as T;
   if (value && typeof value === "object") {
     return Object.fromEntries(
-      Object.entries(value as OptionRecord).map(([key, entry]) => [key, deepClone(entry)])
+      Object.entries(value as OptionRecord).map(([key, entry]) => [key, deepClone(entry)]),
     ) as T;
   }
   return value;
 }
 
-function mapObjectOrArray(
-  value: unknown,
-  transform: (entry: OptionRecord) => OptionRecord
-): unknown {
+function mapObjectOrArray(value: unknown, transform: (entry: OptionRecord) => OptionRecord): unknown {
   if (Array.isArray(value)) {
-    return value.map((entry) =>
-      entry && typeof entry === "object" ? transform(entry as OptionRecord) : entry
-    );
+    return value.map((entry) => (entry && typeof entry === "object" ? transform(entry as OptionRecord) : entry));
   }
   return value && typeof value === "object" ? transform(value as OptionRecord) : value;
 }

@@ -8,6 +8,7 @@ let initDb: typeof import("../db.js").initDb;
 let replaceChatSourceScope: typeof import("../sourceScope.js").replaceChatSourceScope;
 let resolveChatSourceScope: typeof import("../sourceScope.js").resolveChatSourceScope;
 let acceptChatTurn: typeof import("../turnContext.js").acceptChatTurn;
+let sourceReferencedByActiveRun: typeof import("../sourceMutationGuard.js").sourceReferencedByActiveRun;
 let app: FastifyInstance;
 let signToken: typeof import("../auth.js").signToken;
 
@@ -18,6 +19,7 @@ beforeAll(async () => {
   await initDb(); // schema/migrations must remain boot-idempotent
   ({ replaceChatSourceScope, resolveChatSourceScope } = await import("../sourceScope.js"));
   ({ acceptChatTurn } = await import("../turnContext.js"));
+  ({ sourceReferencedByActiveRun } = await import("../sourceMutationGuard.js"));
   ({ signToken } = await import("../auth.js"));
   const Fastify = (await import("fastify")).default;
   const { routes } = await import("../routes.js");
@@ -33,10 +35,10 @@ afterAll(async () => {
 
 async function insertUser(label: string): Promise<string> {
   const id = randomUUID();
-  await pool.query(
-    `INSERT INTO users (id, email, password_hash) VALUES ($1,$2,'integration-only')`,
-    [id, `${label}-${id}@example.test`]
-  );
+  await pool.query(`INSERT INTO users (id, email, password_hash) VALUES ($1,$2,'integration-only')`, [
+    id,
+    `${label}-${id}@example.test`,
+  ]);
   return id;
 }
 
@@ -49,6 +51,29 @@ async function insertSource(accountId: string, label: string, status = "ready"):
     [id, accountId, name, `${label}.csv`, status]
   );
   return id;
+}
+
+async function insertConnectorSource(
+  accountId: string,
+  label: string
+): Promise<{
+  connectorId: string;
+  sourceId: string;
+}> {
+  const connectorId = randomUUID();
+  const sourceId = randomUUID();
+  const table = `t_${label}_${sourceId.replace(/-/g, "").slice(0, 10)}`;
+  await pool.query(
+    `INSERT INTO connectors (id, account_id, name, type, config, target_table)
+     VALUES ($1,$2,$3,'url_csv',$4::jsonb,$5)`,
+    [connectorId, accountId, `${label} connector`, JSON.stringify({ url: "https://example.test/data.csv" }), table]
+  );
+  await pool.query(
+    `INSERT INTO sources (id, account_id, name, kind, display_name, status, connector)
+     VALUES ($1,$2,$3,'tabular',$4,'ready',$5)`,
+    [sourceId, accountId, table, `${label}.csv`, connectorId]
+  );
+  return { connectorId, sourceId };
 }
 
 async function insertChat(
@@ -80,7 +105,9 @@ async function cleanupUsers(ids: string[]): Promise<void> {
 
 function deferred() {
   let resolve!: () => void;
-  const promise = new Promise<void>((done) => { resolve = done; });
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
   return { promise, resolve };
 }
 
@@ -122,10 +149,11 @@ describe("source-scope database isolation", () => {
       });
 
       await expect(
-        pool.query(
-          `INSERT INTO chat_sources (chat_id, source_id, account_id) VALUES ($1,$2,$3)`,
-          [chatId, foreignSource, owner]
-        )
+        pool.query(`INSERT INTO chat_sources (chat_id, source_id, account_id) VALUES ($1,$2,$3)`, [
+          chatId,
+          foreignSource,
+          owner,
+        ])
       ).rejects.toMatchObject({ code: "23503" });
     } finally {
       await cleanupUsers(users);
@@ -158,10 +186,9 @@ describe("source-scope database isolation", () => {
         source_ids: [second],
       });
       await replaceChatSourceScope(accountId, selectedChat, { source_mode: "all" });
-      const rowCount = await pool.query<{ n: number }>(
-        `SELECT count(*)::int AS n FROM chat_sources WHERE chat_id=$1`,
-        [selectedChat]
-      );
+      const rowCount = await pool.query<{ n: number }>(`SELECT count(*)::int AS n FROM chat_sources WHERE chat_id=$1`, [
+        selectedChat,
+      ]);
       expect(rowCount.rows[0].n).toBe(0);
 
       const later = await insertSource(accountId, "later");
@@ -195,25 +222,7 @@ describe("source-scope database isolation", () => {
       const sourceAfter = await insertSource(accountId, "after");
       const chatId = await insertChat(accountId, "selected", "model-before");
       await attach(accountId, chatId, [sourceBefore]);
-      await pool.query(
-        `INSERT INTO messages (chat_id, role, content) VALUES ($1,'assistant','seed')`,
-        [chatId]
-      );
-
-      const replacementPaused = deferred();
-      const allowReplacement = deferred();
-      const replacement = replaceChatSourceScope(
-        accountId,
-        chatId,
-        { source_mode: "selected", source_ids: [sourceAfter] },
-        {
-          afterDelete: async () => {
-            replacementPaused.resolve();
-            await allowReplacement.promise;
-          },
-        }
-      );
-      await replacementPaused.promise;
+      await pool.query(`INSERT INTO messages (chat_id, role, content) VALUES ($1,'assistant','seed')`, [chatId]);
 
       const snapshotAccepted = deferred();
       const allowAcceptance = deferred();
@@ -224,10 +233,19 @@ describe("source-scope database isolation", () => {
         },
       });
       await snapshotAccepted.promise;
-      allowReplacement.resolve();
-      await replacement;
+      let replacementSettled = false;
+      const replacement = replaceChatSourceScope(accountId, chatId, {
+        source_mode: "selected",
+        source_ids: [sourceAfter],
+      }).finally(() => {
+        replacementSettled = true;
+      });
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      expect(replacementSettled).toBe(false);
       allowAcceptance.resolve();
       const acceptedBefore = await acceptedPromise;
+      await finishAcceptedRun(acceptedBefore);
+      await replacement;
       const acceptedAfter = await acceptChatTurn(accountId, chatId, "source next turn");
 
       expect(acceptedBefore.sourceScope).toMatchObject({ mode: "selected", readySourceIds: [sourceBefore] });
@@ -236,6 +254,7 @@ describe("source-scope database isolation", () => {
       expect(acceptedAfter.userMessage.meta).toMatchObject({ source_mode: "selected", source_ids: [sourceAfter] });
       await expectMessageMetaMatches(acceptedBefore);
       await expectMessageMetaMatches(acceptedAfter);
+      await finishAcceptedRun(acceptedAfter);
 
       const token = signToken({ userId: accountId, email: "concurrency@example.test" });
       const modelSnapshotAccepted = deferred();
@@ -247,16 +266,25 @@ describe("source-scope database isolation", () => {
         },
       });
       await modelSnapshotAccepted.promise;
-      const patchResponse = await app.inject({
-        method: "PATCH",
-        url: `/api/chats/${chatId}`,
-        headers: { authorization: `Bearer ${token}` },
-        payload: { model: "model-after" },
-      });
-      expect(patchResponse.statusCode).toBe(200);
+      let patchSettled = false;
+      const patchPromise = app
+        .inject({
+          method: "PATCH",
+          url: `/api/chats/${chatId}`,
+          headers: { authorization: `Bearer ${token}` },
+          payload: { model: "model-after" },
+        })
+        .finally(() => {
+          patchSettled = true;
+        });
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      expect(patchSettled).toBe(false);
       allowModelAcceptance.resolve();
 
       const modelBefore = await modelAcceptPromise;
+      const patchResponse = await patchPromise;
+      expect(patchResponse.statusCode).toBe(200);
+      await finishAcceptedRun(modelBefore);
       const modelAfter = await acceptChatTurn(accountId, chatId, "model next turn");
       expect(modelBefore.model).toBe("model-before");
       expect(modelBefore.userMessage.meta.model).toBe("model-before");
@@ -266,6 +294,7 @@ describe("source-scope database isolation", () => {
       expect(modelAfter.sourceScope.readySourceIds).toEqual([sourceAfter]);
       await expectMessageMetaMatches(modelBefore);
       await expectMessageMetaMatches(modelAfter);
+      await finishAcceptedRun(modelAfter);
     } finally {
       await cleanupUsers(users);
     }
@@ -338,7 +367,145 @@ describe("source-scope database isolation", () => {
       await cleanupUsers(users);
     }
   });
+
+  it("accepts exactly one of two overlapping turns for the same chat", async () => {
+    const users: string[] = [];
+    try {
+      const accountId = await insertUser("overlap");
+      users.push(accountId);
+      const chatId = await insertChat(accountId, "selected");
+
+      const results = await Promise.allSettled([
+        acceptChatTurn(accountId, chatId, "first overlap"),
+        acceptChatTurn(accountId, chatId, "second overlap"),
+      ]);
+
+      const fulfilled = results.filter(
+        (result): result is PromiseFulfilledResult<AcceptedChatTurn> => result.status === "fulfilled"
+      );
+      const rejected = results.filter((result): result is PromiseRejectedResult => result.status === "rejected");
+      expect(fulfilled).toHaveLength(1);
+      expect(rejected).toHaveLength(1);
+      expect(rejected[0].reason).toMatchObject({ statusCode: 409, message: "a run is already active for this chat" });
+      const messages = await pool.query<{ n: number }>(
+        `SELECT count(*)::int AS n FROM messages WHERE chat_id=$1 AND role='user'`,
+        [chatId]
+      );
+      expect(messages.rows[0].n).toBe(1);
+      await finishAcceptedRun(fulfilled[0].value);
+    } finally {
+      await cleanupUsers(users);
+    }
+  });
+
+  it("serializes connector deletion with turn acceptance in both lock orderings", async () => {
+    const users: string[] = [];
+    try {
+      const accountId = await insertUser("connector-delete-race");
+      users.push(accountId);
+
+      // Delete-first: the source UPDATE lock prevents acceptance from taking a
+      // stale SHARE lock/snapshot. Once deletion commits, acceptance must fail
+      // and its message/run transaction must roll back.
+      const deleteFirst = await insertConnectorSource(accountId, "delete-first");
+      const deleteFirstChat = await insertChat(accountId, "selected");
+      await attach(accountId, deleteFirstChat, [deleteFirst.sourceId]);
+      const sourceLocked = deferred();
+      const allowDelete = deferred();
+      const deletion = deleteConnectorLikeRoute(accountId, deleteFirst.connectorId, async () => {
+        sourceLocked.resolve();
+        await allowDelete.promise;
+      });
+      await sourceLocked.promise;
+      let acceptanceSettled = false;
+      const blockedAcceptance = acceptChatTurn(accountId, deleteFirstChat, "must not snapshot deleted source").finally(
+        () => {
+          acceptanceSettled = true;
+        }
+      );
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      expect(acceptanceSettled).toBe(false);
+      allowDelete.resolve();
+      await expect(deletion).resolves.toBe("deleted");
+      await expect(blockedAcceptance).rejects.toBeTruthy();
+      expect(
+        (
+          await pool.query<{ n: number }>(`SELECT count(*)::int AS n FROM messages WHERE chat_id=$1 AND role='user'`, [
+            deleteFirstChat,
+          ])
+        ).rows[0].n
+      ).toBe(0);
+
+      // Accept-first: the accepted turn holds a SHARE lock through run commit.
+      // Deletion waits, then its fresh active-run guard observes the committed
+      // immutable source snapshot and returns a conflict without deleting.
+      const acceptFirst = await insertConnectorSource(accountId, "accept-first");
+      const acceptFirstChat = await insertChat(accountId, "selected");
+      await attach(accountId, acceptFirstChat, [acceptFirst.sourceId]);
+      const acceptancePaused = deferred();
+      const allowAcceptance = deferred();
+      const acceptedPromise = acceptChatTurn(accountId, acceptFirstChat, "holds source share lock", {
+        afterSnapshot: async () => {
+          acceptancePaused.resolve();
+          await allowAcceptance.promise;
+        },
+      });
+      await acceptancePaused.promise;
+      let deletionSettled = false;
+      const blockedDeletion = deleteConnectorLikeRoute(accountId, acceptFirst.connectorId).finally(() => {
+        deletionSettled = true;
+      });
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      expect(deletionSettled).toBe(false);
+      allowAcceptance.resolve();
+      const accepted = await acceptedPromise;
+      await expect(blockedDeletion).resolves.toBe("conflict");
+      expect(
+        (await pool.query<{ n: number }>(`SELECT count(*)::int AS n FROM sources WHERE id=$1`, [acceptFirst.sourceId]))
+          .rows[0].n
+      ).toBe(1);
+      await finishAcceptedRun(accepted);
+    } finally {
+      await cleanupUsers(users);
+    }
+  });
 });
+
+async function deleteConnectorLikeRoute(
+  accountId: string,
+  connectorId: string,
+  afterSourcesLocked?: () => Promise<void>
+): Promise<"deleted" | "conflict"> {
+  const client = await pool.connect();
+  let inTransaction = false;
+  try {
+    await client.query("BEGIN");
+    inTransaction = true;
+    await client.query(`SELECT id FROM connectors WHERE id=$1 AND account_id=$2 FOR UPDATE`, [connectorId, accountId]);
+    const sources = await client.query<{ id: string }>(
+      `SELECT id FROM sources WHERE connector=$1 AND account_id=$2 FOR UPDATE`,
+      [connectorId, accountId]
+    );
+    await afterSourcesLocked?.();
+    for (const source of sources.rows) {
+      if (await sourceReferencedByActiveRun(client, accountId, source.id)) {
+        await client.query("ROLLBACK");
+        inTransaction = false;
+        return "conflict";
+      }
+    }
+    await client.query(`DELETE FROM sources WHERE connector=$1 AND account_id=$2`, [connectorId, accountId]);
+    await client.query(`DELETE FROM connectors WHERE id=$1 AND account_id=$2`, [connectorId, accountId]);
+    await client.query("COMMIT");
+    inTransaction = false;
+    return "deleted";
+  } catch (error) {
+    if (inTransaction) await client.query("ROLLBACK").catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}
 
 async function getChatState(chatId: string): Promise<{
   title: string;
@@ -371,31 +538,30 @@ async function acceptFirstTurnWithConcurrentRename(
   });
   await snapshotAccepted.promise;
 
-  let renamed;
-  try {
-    renamed = await app.inject({
-      method: "PATCH",
-      url: `/api/chats/${chatId}`,
-      headers,
-      payload: { title },
-    });
-  } finally {
-    allowAcceptance.resolve();
-  }
-  await acceptance;
+  const rename = app.inject({
+    method: "PATCH",
+    url: `/api/chats/${chatId}`,
+    headers,
+    payload: { title },
+  });
+  allowAcceptance.resolve();
+  const [renamed] = await Promise.all([rename, acceptance]);
   expect(renamed.statusCode).toBe(200);
   expect(renamed.json()).not.toHaveProperty("title_is_manual");
   return chatId;
 }
 
 async function expectMessageMetaMatches(turn: AcceptedChatTurn): Promise<void> {
-  const result = await pool.query<{ meta: Record<string, unknown> }>(
-    `SELECT meta FROM messages WHERE id=$1`,
-    [turn.userMessage.id]
-  );
+  const result = await pool.query<{ meta: Record<string, unknown> }>(`SELECT meta FROM messages WHERE id=$1`, [
+    turn.userMessage.id,
+  ]);
   expect(result.rows[0].meta).toEqual({
     model: turn.model,
     source_mode: turn.sourceScope.mode,
     source_ids: [...turn.sourceScope.readySourceIds],
   });
+}
+
+async function finishAcceptedRun(turn: AcceptedChatTurn): Promise<void> {
+  await pool.query(`UPDATE chat_runs SET status='completed', finished_at=now() WHERE id=$1`, [turn.runId]);
 }

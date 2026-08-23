@@ -1,13 +1,8 @@
 import { Search, Table2, Info, BarChart3, FileOutput, Globe, List, Check, Loader2, TriangleAlert } from "lucide-react";
 import { cn } from "@/lib/utils";
+import type { ToolStep } from "@/lib/chatStream";
 
-export interface ToolStep {
-  key: number;
-  name: string;
-  args: Record<string, any>;
-  status: "running" | "done" | "error";
-  resultPreview?: string;
-}
+export type { ToolStep } from "@/lib/chatStream";
 
 const TOOL_META: Record<string, { icon: typeof Search; label: string }> = {
   retrieve: { icon: Search, label: "Searching documents & data" },
@@ -45,7 +40,9 @@ export function ToolActivity({ steps, className }: { steps: ToolStep[]; classNam
             <div
               className={cn(
                 "mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border",
-                running ? "border-aurora-teal/30 bg-aurora-teal/10 text-aurora-teal" : "border-border bg-muted/70 text-muted-foreground"
+                running
+                  ? "border-aurora-teal/30 bg-aurora-teal/10 text-aurora-teal"
+                  : "border-border bg-muted/70 text-muted-foreground",
               )}
             >
               <Icon className="h-3.5 w-3.5" />
@@ -55,15 +52,11 @@ export function ToolActivity({ steps, className }: { steps: ToolStep[]; classNam
                 {meta.label}
                 {running && <Loader2 className="h-3 w-3 animate-spin text-aurora-teal" />}
               </div>
-              {s.args && !isEmptyArgs(s.args) && (
-                <div className="mt-0.5 truncate font-mono text-[11px] text-muted-foreground" title={JSON.stringify(s.args)}>
-                  {JSON.stringify(s.args).slice(0, 140)}
-                </div>
-              )}
+              {s.summary && <div className="mt-0.5 text-[11px] leading-relaxed text-muted-foreground">{s.summary}</div>}
               {s.status === "error" && (
                 <div className="mt-1 flex items-center gap-1.5 rounded-md bg-destructive/10 px-2 py-1 text-[11px] text-destructive">
                   <TriangleAlert className="h-3 w-3 shrink-0" />
-                  <span className="truncate">{s.resultPreview || "tool failed"}</span>
+                  <span>{s.resultSummary || "This step could not be completed."}</span>
                 </div>
               )}
             </div>
@@ -73,8 +66,4 @@ export function ToolActivity({ steps, className }: { steps: ToolStep[]; classNam
       })}
     </div>
   );
-}
-
-function isEmptyArgs(args: Record<string, any>): boolean {
-  return Object.keys(args || {}).length === 0;
 }

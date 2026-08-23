@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Requirements: Docker Compose, uv, Node.js/npm, installed server/web npm
-# dependencies, a valid server/.env, and the LM Studio models from README.md.
+# Requirements: Docker Compose, uv, Node.js/npm, curl, a valid server/.env,
+# and the LM Studio models from README.md. Locked dependencies are synchronized.
 set -euo pipefail
 set -m
 
@@ -8,19 +8,40 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 log_dir="${TMPDIR:-/tmp}/borealis-dev"
 mkdir -p "$log_dir"
 
-for required_command in docker uv node npm; do
+for required_command in docker uv node npm curl openssl; do
   if ! command -v "$required_command" >/dev/null 2>&1; then
     printf 'Missing required command: %s\n' "$required_command" >&2
     exit 1
   fi
 done
 
-if [[ ! -f "$root/server/.env" ]]; then
-  printf 'Missing server/.env. Copy server/.env.example and set JWT_SECRET first.\n' >&2
+if ! node -e 'const [major, minor] = process.versions.node.split(".").map(Number); process.exit(major === 22 && minor >= 13 ? 0 : 1)'; then
+  printf 'Unsupported Node.js version: expected 22.13 or newer 22.x, found %s.\n' "$(node --version)" >&2
   exit 1
 fi
-if [[ ! -d "$root/server/node_modules" || ! -d "$root/web/node_modules" ]]; then
-  printf 'Missing npm dependencies. Run npm install in server/ and web/ first.\n' >&2
+
+if [[ ! -f "$root/server/.env" ]]; then
+  printf 'Missing server/.env. Copy server/.env.example and set JWT_SECRET, PYTHON_SERVICE_TOKEN, and LITELLM_API_KEY.\n' >&2
+  exit 1
+fi
+
+sync_node_dependencies() {
+  local directory="$1"
+  local expected_hash
+  local stamp="$directory/node_modules/.borealis-lock-hash"
+  expected_hash="$(node -e 'const fs=require("fs"),crypto=require("crypto"); const hash=crypto.createHash("sha256"); for (const file of process.argv.slice(1)) hash.update(fs.readFileSync(file)); process.stdout.write(hash.digest("hex"))' "$directory/package.json" "$directory/package-lock.json")"
+  if [[ ! -d "$directory/node_modules" || ! -f "$stamp" || "$(<"$stamp")" != "$expected_hash" ]]; then
+    (cd "$directory" && npm ci --no-audit --no-fund)
+    printf '%s' "$expected_hash" > "$stamp"
+  fi
+}
+
+sync_node_dependencies "$root/server"
+sync_node_dependencies "$root/web"
+(cd "$root/python" && uv sync --locked)
+python_version="$(cd "$root/python" && uv run --no-sync python -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
+if [[ "$python_version" != "3.12" ]]; then
+  printf 'Unsupported Python version: expected 3.12.x, found %s.\n' "$python_version" >&2
   exit 1
 fi
 
@@ -37,6 +58,18 @@ if (weak.has(secret) || secret.length < 32) {
   process.exit(1);
 }
 
+const serviceToken = process.env.PYTHON_SERVICE_TOKEN ?? "";
+if (weak.has(serviceToken) || serviceToken.length < 32) {
+  console.error("Configuration error: PYTHON_SERVICE_TOKEN must be a random value of at least 32 characters");
+  process.exit(1);
+}
+
+const proxyKey = process.env.LITELLM_API_KEY ?? "";
+if (weak.has(proxyKey) || proxyKey.length < 32) {
+  console.error("Configuration error: LITELLM_API_KEY must be a random value of at least 32 characters");
+  process.exit(1);
+}
+
 const chat = (process.env.LITELLM_CHAT_MODEL ?? "qwen-chat").trim();
 const embed = (process.env.LITELLM_EMBED_MODEL ?? "nomic-embed").trim();
 if (!chat || chat.length > 256 || !embed || embed.length > 256 || chat === embed) {
@@ -46,15 +79,33 @@ if (!chat || chat.length > 256 || !embed || embed.length > 256 || chat === embed
 NODE
 )
 
-if [[ ! -d "$root/python/.venv" || "$root/python/pyproject.toml" -nt "$root/python/.venv" ]]; then
-  (cd "$root/python" && uv sync)
-fi
+python_service_token="$({ cd "$root/server" && node --input-type=module -e 'import "dotenv/config"; process.stdout.write(process.env.PYTHON_SERVICE_TOKEN ?? "")'; })"
+export BOREALIS_SERVICE_TOKEN="$python_service_token"
+litellm_master_key="$({ cd "$root/server" && node --input-type=module -e 'import "dotenv/config"; process.stdout.write(process.env.LITELLM_API_KEY ?? "")'; })"
+export LITELLM_MASTER_KEY="$litellm_master_key"
+export LM_STUDIO_API_KEY="${LM_STUDIO_API_KEY:-$(openssl rand -hex 32)}"
+python_storage_dir="$({ cd "$root/server" && node --input-type=module -e 'import "dotenv/config"; import path from "node:path"; process.stdout.write(path.resolve(process.env.UPLOAD_DIR || "../uploads"))'; })"
+export BOREALIS_STORAGE_DIR="$python_storage_dir"
 
 docker compose --project-directory "$root" -f "$root/docker-compose.yml" config >/dev/null
 docker compose --project-directory "$root" -f "$root/docker-compose.yml" up -d postgres
-until docker compose --project-directory "$root" -f "$root/docker-compose.yml" exec -T postgres pg_isready -U borealis >/dev/null 2>&1; do
+postgres_ready=false
+for _ in {1..120}; do
+  if docker compose --project-directory "$root" -f "$root/docker-compose.yml" exec -T postgres pg_isready -U borealis >/dev/null 2>&1; then
+    postgres_ready=true
+    break
+  fi
+  if ! docker compose --project-directory "$root" -f "$root/docker-compose.yml" ps --status running --services postgres 2>/dev/null | grep -qx postgres; then
+    break
+  fi
   sleep 1
 done
+if [[ "$postgres_ready" != true ]]; then
+  printf 'PostgreSQL did not become ready within 120 seconds.\n' >&2
+  docker compose --project-directory "$root" -f "$root/docker-compose.yml" ps postgres >&2 || true
+  docker compose --project-directory "$root" -f "$root/docker-compose.yml" logs --tail=50 postgres >&2 || true
+  exit 1
+fi
 
 prefix_logs() {
   local service="$1"
@@ -90,12 +141,35 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-start_service litellm "$root/python" uv run litellm --config litellm.yaml --port 4000
+start_service litellm "$root/python" uv run litellm --config litellm.yaml --host 127.0.0.1 --port 4000
 if [[ "$(uname -s)" == "Darwin" ]]; then
-  start_service python "$root/python" env DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/lib .venv/bin/uvicorn app.main:app --port 8000
+  mac_library_path="${DYLD_FALLBACK_LIBRARY_PATH:-}"
+  if command -v brew >/dev/null 2>&1; then
+    homebrew_library_path="$(brew --prefix)/lib"
+    mac_library_path="${homebrew_library_path}${mac_library_path:+:${mac_library_path}}"
+  fi
+  if [[ -n "$mac_library_path" ]]; then
+    start_service python "$root/python" env DYLD_FALLBACK_LIBRARY_PATH="$mac_library_path" .venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000
+  else
+    start_service python "$root/python" .venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000
+  fi
 else
-  start_service python "$root/python" .venv/bin/uvicorn app.main:app --port 8000
+  start_service python "$root/python" .venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000
 fi
+
+python_ready=false
+for _ in {1..120}; do
+  if curl --fail --silent --show-error http://127.0.0.1:8000/health >/dev/null 2>&1; then
+    python_ready=true
+    break
+  fi
+  sleep 1
+done
+if [[ "$python_ready" != true ]]; then
+  printf 'Python service did not become ready within 120 seconds. See %s/python.log.\n' "$log_dir" >&2
+  exit 1
+fi
+
 start_service server "$root/server" npm run dev
 start_service web "$root/web" npm run dev
 

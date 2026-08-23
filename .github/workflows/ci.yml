@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        # Multi-platform digest for pgvector/pgvector:pg16; update deliberately.
+        image: pgvector/pgvector@sha256:ad2e18408bf447f62092a8a5259e7df10505c5a0360bd1a1853ac8b8b0763da2
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_DB: borealis_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d borealis_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22.22.3
+          cache: npm
+          cache-dependency-path: |
+            server/package-lock.json
+            web/package-lock.json
+
+      - uses: astral-sh/setup-uv@d0d8abe699bfb85fec6de9f7adb5ae17292296ff # v6
+        with:
+          version: "0.11.26"
+          python-version: "3.12"
+          enable-cache: true
+          cache-dependency-glob: python/uv.lock
+
+      - name: Install PDF system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes libpango-1.0-0 libpangoft2-1.0-0 libglib2.0-0
+
+      - name: Install locked dependencies
+        run: |
+          npm ci --prefix server
+          npm ci --prefix web
+          uv sync --locked --project python
+
+      - name: Create ephemeral test credentials
+        shell: bash
+        run: |
+          echo "JWT_SECRET=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
+          service_token="$(openssl rand -hex 32)"
+          echo "PYTHON_SERVICE_TOKEN=$service_token" >> "$GITHUB_ENV"
+          echo "BOREALIS_SERVICE_TOKEN=$service_token" >> "$GITHUB_ENV"
+          echo "LITELLM_API_KEY=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
+
+      - name: Verify repository
+        env:
+          TEST_DATABASE_URL: postgres://postgres@127.0.0.1:5432/borealis_test
+        run: ./scripts/verify.sh

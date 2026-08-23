@@ -3,17 +3,26 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "packageManager": "npm@10.9.8",
+  "engines": {
+    "node": ">=22.13 <23",
+    "npm": ">=10.9 <11"
+  },
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "start": "tsx src/index.ts",
     "build": "tsc",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:integration": "vitest run --config vitest.integration.config.ts"
+    "test:integration": "RUN_SOURCE_SCOPE_INTEGRATION=1 vitest run --config vitest.integration.config.ts",
+    "lint": "eslint src --max-warnings=0",
+    "format": "prettier --write 'src/**/*.ts' '*.config.ts' 'eslint.config.js' 'package.json'",
+    "format:check": "prettier --check 'src/**/*.ts' '*.config.ts' 'eslint.config.js' 'package.json'"
   },
   "dependencies": {
     "@fastify/cors": "^10.0.0",
     "@fastify/multipart": "^9.0.0",
+    "@fastify/swagger": "^9.8.1",
     "bcryptjs": "^3.0.0",
     "dotenv": "^16.4.5",
     "fastify": "^5.2.0",
@@ -22,16 +31,17 @@
     "openai": "^4.77.0",
     "pdfjs-dist": "^4.8.69",
     "pg": "^8.13.1",
-    "tsx": "^4.19.2",
-    "uuid": "^11.0.3",
-    "xlsx": "^0.18.5"
+    "tsx": "^4.19.2"
   },
   "devDependencies": {
-    "@types/bcryptjs": "^2.4.6",
+    "@eslint/js": "^10.0.1",
     "@types/jsonwebtoken": "^9.0.9",
     "@types/node": "^22.10.0",
     "@types/pg": "^8.11.10",
+    "eslint": "^10.9.0",
+    "prettier": "^3.9.6",
     "typescript": "^5.7.2",
+    "typescript-eslint": "^8.67.0",
     "vitest": "^4.1.11"
   }
 }

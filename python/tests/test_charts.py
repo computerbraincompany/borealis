@@ -8,8 +8,10 @@ visible (AGENTS.md: "a single spec drives ECharts ... and matplotlib").
 from __future__ import annotations
 
 import base64
+import math
 
 import pytest
+from matplotlib.axes import Axes
 
 from app import charts
 
@@ -26,10 +28,10 @@ VALID_SPEC = {
 
 
 def test_normalize_fills_defaults():
-    out = charts.normalize({"type": "line", "title": "t"})
+    out = charts.normalize({"type": "line", "title": "t", "categories": ["x"], "series": [{"name": "n", "data": [1]}]})
     assert out["subtitle"] == ""
-    assert out["categories"] == []
-    assert out["series"] == []
+    assert out["categories"] == ["x"]
+    assert out["series"][0]["data"] == [1.0]
     assert out["items"] == []
     assert out["x_label"] == ""
     assert out["y_label"] == ""
@@ -39,6 +41,7 @@ def test_normalize_assigns_palette_colors():
     out = charts.normalize(
         {
             "type": "bar",
+            "categories": ["x"],
             "series": [{"name": "A", "data": [1]}, {"name": "B", "data": [2]}],
             "items": [{"name": "X", "value": 1}],
         }
@@ -91,16 +94,103 @@ def test_render_png_base64_returns_valid_png():
     assert raw[:4] == b"\x89PNG"
 
 
-def test_bad_pie_value_is_coerced_and_render_closes_figure():
-    spec = {"type": "pie", "items": [{"name": "x", "value": "abc"}]}
+@pytest.mark.parametrize("value", ["abc", math.inf, -math.inf, math.nan, None, True, -1])
+def test_pie_rejects_invalid_values(value):
+    with pytest.raises(charts.ChartSpecError):
+        charts.normalize({"type": "pie", "items": [{"name": "x", "value": value}]})
 
-    raw = charts.render_png(spec)
+
+@pytest.mark.parametrize(
+    "spec",
+    [
+        {"type": "line", "categories": ["x"], "series": []},
+        {"type": "line", "categories": [1], "series": [{"name": "A", "data": [1]}]},
+        {"type": "bar", "categories": ["x", "y"], "series": [{"name": "A", "data": [1]}]},
+        {"type": "scatter", "categories": ["x"], "series": [{"name": "A", "data": [math.nan]}]},
+        {"type": "pie", "items": [{"name": "x", "value": 0}]},
+        {"type": "pie", "items": [{"name": "x", "value": 1e308}, {"name": "y", "value": 1e308}]},
+    ],
+)
+def test_normalize_rejects_empty_mismatched_or_nonfinite_shapes(spec):
+    with pytest.raises(charts.ChartSpecError):
+        charts.normalize(spec)
+
+
+@pytest.mark.parametrize("ctype", ["line", "bar", "area", "scatter"])
+@pytest.mark.parametrize("sign", [-1, 1])
+def test_xy_magnitude_bound_renders_at_both_boundaries(ctype: str, sign: int):
+    raw = charts.render_png(
+        {
+            "type": ctype,
+            "categories": ["boundary"],
+            "series": [
+                {
+                    "name": "boundary",
+                    "data": [sign * charts.MAX_ABSOLUTE_VALUE],
+                }
+            ],
+        }
+    )
 
     assert raw[:4] == b"\x89PNG"
-    assert charts.plt.get_fignums() == []
 
 
-def test_echarts_bad_pie_value_becomes_zero():
-    option = charts.echarts_option({"type": "pie", "items": [{"name": "x", "value": "abc"}]})
+@pytest.mark.parametrize("ctype", ["line", "bar", "area", "scatter"])
+@pytest.mark.parametrize("sign", [-1, 1])
+def test_xy_magnitude_bound_rejects_values_beyond_both_boundaries(ctype: str, sign: int):
+    with pytest.raises(charts.ChartSpecError, match="magnitude at most"):
+        charts.normalize(
+            {
+                "type": ctype,
+                "categories": ["extreme"],
+                "series": [{"name": "outside", "data": [sign * charts.MAX_ABSOLUTE_VALUE * 2]}],
+            }
+        )
 
-    assert option["series"][0]["data"][0]["value"] == 0.0
+
+def test_static_scatter_uses_points_without_plot_lines(monkeypatch):
+    scatter_calls = 0
+    plot_calls = 0
+    original_scatter = Axes.scatter
+    original_plot = Axes.plot
+
+    def tracked_scatter(self, *args, **kwargs):
+        nonlocal scatter_calls
+        scatter_calls += 1
+        return original_scatter(self, *args, **kwargs)
+
+    def tracked_plot(self, *args, **kwargs):
+        nonlocal plot_calls
+        plot_calls += 1
+        return original_plot(self, *args, **kwargs)
+
+    monkeypatch.setattr(Axes, "scatter", tracked_scatter)
+    monkeypatch.setattr(Axes, "plot", tracked_plot)
+
+    raw = charts.render_png({**VALID_SPEC, "type": "scatter"})
+
+    assert raw[:4] == b"\x89PNG"
+    assert scatter_calls == 1
+    assert plot_calls == 0
+
+
+def test_static_bar_groups_multiple_series(monkeypatch):
+    positions: list[list[float]] = []
+    original_bar = Axes.bar
+
+    def tracked_bar(self, x, *args, **kwargs):
+        positions.append(list(x))
+        return original_bar(self, x, *args, **kwargs)
+
+    monkeypatch.setattr(Axes, "bar", tracked_bar)
+    raw = charts.render_png(
+        {
+            "type": "bar",
+            "categories": ["Jan", "Feb"],
+            "series": [{"name": "A", "data": [1, 2]}, {"name": "B", "data": [3, 4]}],
+        }
+    )
+
+    assert raw[:4] == b"\x89PNG"
+    assert len(positions) == 2
+    assert positions[0] != positions[1]

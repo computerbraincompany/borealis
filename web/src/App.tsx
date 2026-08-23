@@ -36,8 +36,16 @@ export default function App() {
   }
 
   let page: React.ReactNode;
-  if (route.startsWith("/chat")) page = <ChatView chatId={route.split("/")[2] || undefined} />;
-  else if (route.startsWith("/sources")) page = <SourcesView />;
+  const [routePath] = route.split("?");
+  const chatSegment = routePath.split("/")[2];
+  if (route.startsWith("/chat")) {
+    page = (
+      <ChatView
+        chatId={chatSegment && chatSegment !== "new" ? chatSegment : undefined}
+        newChatRequest={chatSegment === "new" ? route : undefined}
+      />
+    );
+  } else if (route.startsWith("/sources")) page = <SourcesView />;
   else if (route.startsWith("/connectors")) page = <ConnectorsView />;
   else if (route.startsWith("/reports")) page = <ReportsView />;
   else page = <ChatView chatId={undefined} />;

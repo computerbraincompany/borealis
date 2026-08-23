@@ -5,7 +5,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent } from "@/components/ui/card";
 import { ThemeMenu } from "@/components/ThemeMenu";
-import { authApi, setSession, getUser } from "@/lib/api";
+import { authApi, formatApiError, setSession, getUser } from "@/lib/api";
 
 const SUGGESTED_PROMPTS = [
   { title: "Personal finance analysis", prompt: "Analyze my spending and produce a financial report with charts" },
@@ -26,15 +26,12 @@ export function AuthPage() {
     setError(null);
     setBusy(true);
     try {
-      const res =
-        mode === "login"
-          ? await authApi.login(email, password)
-          : await authApi.register(email, password);
+      const res = mode === "login" ? await authApi.login(email, password) : await authApi.register(email, password);
       setSession(res.token, res.user);
       window.location.hash = "/chat";
       window.location.reload();
-    } catch (err: any) {
-      setError(err.message || "Something went wrong");
+    } catch (error: unknown) {
+      setError(formatApiError(error, "Something went wrong"));
     } finally {
       setBusy(false);
     }
@@ -73,9 +70,8 @@ export function AuthPage() {
             Answer with charts &amp; reports.
           </h1>
           <p className="mt-4 max-w-md text-[15px] leading-relaxed text-muted-foreground">
-            Upload spreadsheets and documents, connect external URLs, then ask questions.
-            The agent writes SQL, renders charts, and assembles polished HTML + PDF reports —
-            fully local on an OpenAI-compatible stack.
+            Upload spreadsheets and documents, connect external URLs, then ask questions. The agent writes SQL, renders
+            charts, and assembles polished HTML + PDF reports — fully local on an OpenAI-compatible stack.
           </p>
           <ul className="mt-8 space-y-3">
             {[
@@ -84,7 +80,9 @@ export function AuthPage() {
               "One-click HTML & PDF reports",
             ].map((t) => (
               <li key={t} className="flex items-center gap-2.5 text-sm text-muted-foreground">
-                <span className="flex h-5 w-5 items-center justify-center rounded-full bg-aurora-teal/15 text-aurora-teal text-xs">✓</span>
+                <span className="flex h-5 w-5 items-center justify-center rounded-full bg-aurora-teal/15 text-aurora-teal text-xs">
+                  ✓
+                </span>
                 {t}
               </li>
             ))}
@@ -135,7 +133,10 @@ export function AuthPage() {
                 />
               </div>
               {error && (
-                <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive" role="alert">
+                <div
+                  className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+                  role="alert"
+                >
                   {error}
                 </div>
               )}

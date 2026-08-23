@@ -15,6 +15,9 @@ reports_storage/*
 .DS_Store
 *.log
 coverage/
+.coverage
+.pytest_cache/
+.ruff_cache/
 .python-version
 .playwright-mcp/
 

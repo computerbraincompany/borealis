@@ -1,61 +1,63 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { UploadCloud, Trash2, FileSpreadsheet, FileText as FileDoc, RefreshCw, Loader2, Inbox } from "lucide-react";
-import { sourcesApi, type Source } from "@/lib/api";
+import { formatApiError, sourcesApi } from "@/lib/api";
+import { useSourceCatalog } from "@/hooks/useSourceCatalog";
 import { cn, formatDate } from "@/lib/utils";
+import { SOURCE_FILE_ACCEPT } from "@/lib/sourceFiles";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 
 export function SourcesView() {
-  const [sources, setSources] = useState<Source[]>([]);
   const [busy, setBusy] = useState(false);
   const [uploading, setUploading] = useState<string | null>(null);
   const [retrying, setRetrying] = useState<string | null>(null);
+  const [operationError, setOperationError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
-
-  const load = useCallback(async () => {
-    try {
-      setSources(await sourcesApi.list());
-    } catch {}
-  }, []);
+  const { sources, loading, error: catalogError, refresh, addPending } = useSourceCatalog();
 
   useEffect(() => {
-    load();
-    const t = setInterval(load, 6000);
-    return () => clearInterval(t);
-  }, [load]);
+    void refresh(true);
+  }, [refresh]);
 
   const onFiles = async (files: FileList | null) => {
     if (!files) return;
+    setOperationError(null);
     setBusy(true);
     try {
       for (const f of Array.from(files)) {
         setUploading(f.name);
         try {
-          await sourcesApi.upload(f);
-        } catch (e: any) {
-          alert(`Upload failed: ${e.message}`);
+          addPending(await sourcesApi.upload(f));
+        } catch (error: unknown) {
+          setOperationError(formatApiError(error, `Upload failed for ${f.name}`));
         }
       }
     } finally {
       setUploading(null);
       setBusy(false);
-      await load();
+      await refresh();
     }
   };
 
   const remove = async (id: string) => {
-    await sourcesApi.remove(id);
-    await load();
+    setOperationError(null);
+    try {
+      await sourcesApi.remove(id);
+      await refresh();
+    } catch (error: unknown) {
+      setOperationError(formatApiError(error, "Could not delete the source"));
+    }
   };
 
   const retry = async (id: string) => {
     setRetrying(id);
+    setOperationError(null);
     try {
-      await sourcesApi.reingest(id);
-      await load();
-    } catch (e: any) {
-      alert(`Retry failed: ${e.message}`);
+      addPending(await sourcesApi.reingest(id));
+      await refresh();
+    } catch (error: unknown) {
+      setOperationError(formatApiError(error, "Could not retry source processing"));
     } finally {
       setRetrying(null);
     }
@@ -73,14 +75,14 @@ export function SourcesView() {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <Button variant="secondary" onClick={load} disabled={busy} size="sm">
-            <RefreshCw className={cn("h-4 w-4", busy && "animate-spin")} /> Refresh
+          <Button variant="secondary" onClick={() => void refresh(true)} disabled={busy || loading} size="sm">
+            <RefreshCw className={cn("h-4 w-4", (busy || loading) && "animate-spin")} /> Refresh
           </Button>
           <input
             ref={fileRef}
             type="file"
             multiple
-            accept=".csv,.tsv,.xlsx,.xls,.parquet,.jsonl,.pdf,.docx,.doc,.txt,.md"
+            accept={SOURCE_FILE_ACCEPT}
             className="hidden"
             onChange={(e) => onFiles(e.target.files)}
           />
@@ -98,6 +100,15 @@ export function SourcesView() {
         </div>
       )}
 
+      {(operationError || catalogError) && (
+        <div
+          className="mt-4 rounded-xl border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive"
+          role="alert"
+        >
+          {operationError || catalogError}
+        </div>
+      )}
+
       <div className="mt-8 space-y-3">
         {sources.length === 0 && !uploading && (
           <Card className="flex flex-col items-center gap-3 py-16 text-center">
@@ -106,7 +117,11 @@ export function SourcesView() {
               No sources yet. Upload CSVs, spreadsheets, PDFs or documents so Borealis can answer grounded questions.
             </p>
             <p className="text-xs text-muted-foreground/70">
-              Tip: run <code className="rounded bg-secondary px-1.5 py-0.5 font-mono text-[11px]">python data/generate_sample.py</code> for sample personal-finance data.
+              Tip: run{" "}
+              <code className="rounded bg-secondary px-1.5 py-0.5 font-mono text-[11px]">
+                python data/generate_sample.py
+              </code>{" "}
+              for sample personal-finance data.
             </p>
           </Card>
         )}
@@ -115,7 +130,7 @@ export function SourcesView() {
             <div
               className={cn(
                 "flex h-11 w-11 shrink-0 items-center justify-center rounded-xl",
-                s.kind === "tabular" ? "bg-aurora-teal/15 text-aurora-teal" : "bg-aurora-violet/15 text-aurora-violet"
+                s.kind === "tabular" ? "bg-aurora-teal/15 text-aurora-teal" : "bg-aurora-violet/15 text-aurora-violet",
               )}
             >
               {s.kind === "tabular" ? <FileSpreadsheet className="h-5 w-5" /> : <FileDoc className="h-5 w-5" />}
@@ -135,7 +150,9 @@ export function SourcesView() {
               <div className="mt-1 flex items-center gap-3 text-xs text-muted-foreground">
                 <span className="font-mono">{s.name}</span>
                 <span>· {s.mime}</span>
-                {s.tabular && <span className="text-aurora-teal">· {s.tabular.rows.toLocaleString()} rows · DuckDB table</span>}
+                {s.tabular && (
+                  <span className="text-aurora-teal">· {s.tabular.rows.toLocaleString()} rows · DuckDB table</span>
+                )}
                 <span>· uploaded {formatDate(s.created_at)}</span>
               </div>
               {s.status === "error" && s.meta?.error && (
@@ -155,7 +172,13 @@ export function SourcesView() {
                 <RefreshCw className={cn("h-4 w-4", retrying === s.id && "animate-spin")} /> Retry
               </Button>
             )}
-            <Button variant="ghost" size="icon" onClick={() => remove(s.id)} title="Delete source" className="shrink-0 text-muted-foreground hover:text-destructive">
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => remove(s.id)}
+              title="Delete source"
+              className="shrink-0 text-muted-foreground hover:text-destructive"
+            >
               <Trash2 className="h-4 w-4" />
             </Button>
           </Card>

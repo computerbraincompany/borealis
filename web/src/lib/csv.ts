@@ -36,7 +36,7 @@ export function safeCsvFilename(filename: string): string {
 export function downloadCsv(
   columns: readonly string[],
   rows: readonly (readonly QueryResultCell[])[],
-  filename: string
+  filename: string,
 ): void {
   const blob = new Blob([serializeCsv(columns, rows)], { type: "text/csv;charset=utf-8" });
   const url = URL.createObjectURL(blob);

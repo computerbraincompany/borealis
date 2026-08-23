@@ -6,6 +6,7 @@ import { Bot, User, FileText, ExternalLink } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
   openProtected,
+  formatApiError,
   reportsApi,
   type QueryResultArtifact,
   type RetrievedEvidence as RetrievedEvidenceItem,
@@ -16,14 +17,32 @@ import { RetrievedEvidence } from "@/components/RetrievedEvidence";
 
 function ReportLink({ reportId }: { reportId: string }) {
   const [info, setInfo] = useState<{ title: string; hasHtml: boolean; hasPdf: boolean } | null>(null);
-  const [err, setErr] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   useEffect(() => {
+    let active = true;
+    setInfo(null);
+    setError(null);
     reportsApi
       .get(reportId)
-      .then((r) => setInfo({ title: r.title, hasHtml: r.has_html, hasPdf: r.has_pdf }))
-      .catch(() => setErr(true));
+      .then((report) => {
+        if (active) setInfo({ title: report.title, hasHtml: report.has_html, hasPdf: report.has_pdf });
+      })
+      .catch((failure: unknown) => {
+        if (active) setError(formatApiError(failure, "Report unavailable"));
+      });
+    return () => {
+      active = false;
+    };
   }, [reportId]);
   const title = info?.title || "Report";
+  const openReport = async (kind: "html" | "pdf") => {
+    setError(null);
+    try {
+      await openProtected(kind, `/api/reports/${reportId}/${kind}`, `${title}.${kind}`);
+    } catch (failure: unknown) {
+      setError(formatApiError(failure, `Could not open the report ${kind.toUpperCase()}`));
+    }
+  };
   return (
     <div className="mt-3 flex flex-wrap items-center gap-2 rounded-xl border border-aurora-teal/20 bg-gradient-to-r from-aurora-teal/10 to-aurora-violet/10 p-3">
       <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-gradient-to-br from-aurora-teal to-aurora-violet text-aurora-foreground">
@@ -35,7 +54,7 @@ function ReportLink({ reportId }: { reportId: string }) {
       </div>
       {info?.hasHtml && (
         <button
-          onClick={() => openProtected("html", `/api/reports/${reportId}/html`, `${title}.html`)}
+          onClick={() => void openReport("html")}
           className="inline-flex h-8 items-center gap-1.5 rounded-md border bg-card/60 px-3 text-xs font-medium text-foreground transition-colors hover:border-aurora-teal/50 hover:text-aurora-teal focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
           <ExternalLink className="h-3.5 w-3.5" /> View HTML
@@ -43,13 +62,17 @@ function ReportLink({ reportId }: { reportId: string }) {
       )}
       {info?.hasPdf && (
         <button
-          onClick={() => openProtected("pdf", `/api/reports/${reportId}/pdf`, `${title}.pdf`)}
+          onClick={() => void openReport("pdf")}
           className="inline-flex h-8 items-center gap-1.5 rounded-md bg-gradient-to-r from-aurora-teal to-aurora-blue px-3 text-xs font-semibold text-aurora-foreground transition-opacity hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
           Download PDF
         </button>
       )}
-      {err && <span className="text-xs text-muted-foreground">Report expired</span>}
+      {error && (
+        <span className="w-full text-xs text-destructive" role="alert">
+          {error}
+        </span>
+      )}
     </div>
   );
 }
@@ -57,7 +80,6 @@ function ReportLink({ reportId }: { reportId: string }) {
 export const ChatMessage = memo(function ChatMessage({
   role,
   content,
-  reasoning,
   charts,
   report,
   model,
@@ -68,7 +90,6 @@ export const ChatMessage = memo(function ChatMessage({
 }: {
   role: "user" | "assistant";
   content: string;
-  reasoning?: string;
   charts?: string[];
   report?: string | null;
   model?: string;
@@ -92,12 +113,6 @@ export const ChatMessage = memo(function ChatMessage({
           </div>
         ) : (
           <div className="rounded-2xl rounded-tl-md text-[15px] leading-relaxed text-foreground/90">
-            {reasoning && (
-              <details className="mb-3 rounded-lg border bg-surface-subtle px-3 py-2 text-sm text-muted-foreground">
-                <summary className="cursor-pointer select-none font-medium text-foreground/80">Thought process</summary>
-                <div className="mt-2 whitespace-pre-wrap text-xs leading-relaxed">{reasoning}</div>
-              </details>
-            )}
             <div className="markdown-body">
               <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>
                 {content || (streaming ? "" : "_no response_")}

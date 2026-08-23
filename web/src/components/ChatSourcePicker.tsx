@@ -1,13 +1,9 @@
 import { useId, useMemo, useRef, useState } from "react";
 import { CheckCircle2, CircleAlert, Database, FileText, Info, LoaderCircle, Table2, UploadCloud } from "lucide-react";
 import { cn } from "@/lib/utils";
-import {
-  type AttachedSource,
-  type Source,
-  type SourceMode,
-  type SourceScopeInput,
-} from "@/lib/api";
+import { formatApiError, type AttachedSource, type Source, type SourceMode, type SourceScopeInput } from "@/lib/api";
 import { Button } from "@/components/ui/button";
+import { SOURCE_FILE_ACCEPT } from "@/lib/sourceFiles";
 import {
   Dialog,
   DialogClose,
@@ -52,9 +48,7 @@ export function ChatSourcePicker({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [open, setOpen] = useState(false);
   const [draftMode, setDraftMode] = useState<SourceMode>(sourceMode);
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(
-    () => selectedSourceIds(sourceMode, attachedSources)
-  );
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(() => selectedSourceIds(sourceMode, attachedSources));
   const [search, setSearch] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [uploadingFileName, setUploadingFileName] = useState<string | null>(null);
@@ -94,15 +88,13 @@ export function ChatSourcePicker({
 
   const apply = async () => {
     const scope: SourceScopeInput =
-      draftMode === "all"
-        ? { source_mode: "all" }
-        : { source_mode: "selected", source_ids: [...selectedIds] };
+      draftMode === "all" ? { source_mode: "all" } : { source_mode: "selected", source_ids: [...selectedIds] };
     setError(null);
     try {
       await onApply(scope);
       setOpen(false);
-    } catch (reason: any) {
-      setError(reason?.message || "Could not update this chat's sources");
+    } catch (reason: unknown) {
+      setError(formatApiError(reason, "Could not update this chat's sources"));
     }
   };
 
@@ -117,15 +109,17 @@ export function ChatSourcePicker({
       if (uploadMode === "selected") {
         if (!selectedAtUpload.has(uploaded.id) && selectedAtUpload.size >= 100) {
           setUploadError(
-            `${file.name} was uploaded to Sources but was not selected because this chat already has 100 sources.`
+            `${file.name} was uploaded to Sources but was not selected because this chat already has 100 sources.`,
           );
         } else {
           selectedAtUpload.add(uploaded.id);
           setSelectedIds(selectedAtUpload);
         }
       }
-    } catch {
-      setUploadError(`Could not upload ${file.name}. Check the file type and size, then try again.`);
+    } catch (reason: unknown) {
+      setUploadError(
+        formatApiError(reason, `Could not upload ${file.name}. Check the file type and size, then try again.`),
+      );
     } finally {
       setUploadingFileName(null);
     }
@@ -177,9 +171,7 @@ export function ChatSourcePicker({
       >
         <DialogHeader className="border-b px-6 py-5 pr-12">
           <DialogTitle>Choose sources for this chat</DialogTitle>
-          <DialogDescription>
-            Control which stored sources Borealis may use in future turns.
-          </DialogDescription>
+          <DialogDescription>Control which stored sources Borealis may use in future turns.</DialogDescription>
         </DialogHeader>
 
         <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-6 py-5">
@@ -214,7 +206,7 @@ export function ChatSourcePicker({
             <input
               ref={fileInputRef}
               type="file"
-              accept=".csv,.tsv,.xlsx,.xls,.parquet,.jsonl,.pdf,.docx,.doc,.txt,.md"
+              accept={SOURCE_FILE_ACCEPT}
               className="hidden"
               onChange={(event) => {
                 const file = event.currentTarget.files?.[0];
@@ -256,7 +248,7 @@ export function ChatSourcePicker({
             <label
               className={cn(
                 "flex cursor-pointer items-start gap-3 rounded-lg border bg-background p-3 focus-within:ring-2 focus-within:ring-ring",
-                draftMode === "all" && "border-primary/40 bg-primary/5"
+                draftMode === "all" && "border-primary/40 bg-primary/5",
               )}
             >
               <input
@@ -281,7 +273,7 @@ export function ChatSourcePicker({
             <label
               className={cn(
                 "flex cursor-pointer items-start gap-3 rounded-lg border bg-background p-3 focus-within:ring-2 focus-within:ring-ring",
-                draftMode === "selected" && "border-primary/40 bg-primary/5"
+                draftMode === "selected" && "border-primary/40 bg-primary/5",
               )}
             >
               <input
@@ -330,7 +322,7 @@ export function ChatSourcePicker({
                       key={source.id}
                       className={cn(
                         "flex cursor-pointer items-start gap-3 rounded-md border border-transparent px-3 py-2.5 focus-within:ring-2 focus-within:ring-ring",
-                        selected && "border-primary/30 bg-primary/5"
+                        selected && "border-primary/30 bg-primary/5",
                       )}
                     >
                       <input

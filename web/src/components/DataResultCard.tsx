@@ -55,10 +55,15 @@ export function DataResultCard({ artifact, index }: { artifact: QueryResultArtif
         </Button>
       </div>
 
-      <div className="max-h-80 overflow-auto border-y" tabIndex={0} aria-label={`Scrollable table for query result ${resultNumber}`}>
+      <div
+        className="max-h-80 overflow-auto border-y"
+        tabIndex={0}
+        aria-label={`Scrollable table for query result ${resultNumber}`}
+      >
         <table className="min-w-full border-separate border-spacing-0 text-left text-xs">
           <caption className="sr-only">
-            Stored rows for query result {resultNumber}. {artifact.row_count} rows returned and {artifact.rows.length} rows stored.
+            Stored rows for query result {resultNumber}. {artifact.row_count} rows returned and {artifact.rows.length}{" "}
+            rows stored.
           </caption>
           <thead>
             <tr>

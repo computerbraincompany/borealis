@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Trash2, FileText, Eye, Download, MessageSquare } from "lucide-react";
-import { reportsApi, type Report, apiText, openProtected } from "@/lib/api";
+import { reportsApi, type Report, apiText, formatApiError, openProtected } from "@/lib/api";
 import { formatDate } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -15,10 +15,16 @@ export function ReportsView() {
   const [previewTitle, setPreviewTitle] = useState("");
   const [previewHtml, setPreviewHtml] = useState<string | null>(null);
   const [previewErr, setPreviewErr] = useState<string | null>(null);
+  const [pageError, setPageError] = useState<string | null>(null);
+  const previewRequestRef = useRef(0);
+  const previewAbortRef = useRef<AbortController | null>(null);
 
   const load = useCallback(async () => {
+    setPageError(null);
     try {
       setReports(await reportsApi.list());
+    } catch (failure: unknown) {
+      setPageError(formatApiError(failure, "Could not load reports"));
     } finally {
       setLoading(false);
     }
@@ -26,24 +32,54 @@ export function ReportsView() {
 
   useEffect(() => {
     load();
+    return () => previewAbortRef.current?.abort();
   }, [load]);
 
   const remove = async (r: Report) => {
-    await reportsApi.remove(r.id);
-    await load();
+    setPageError(null);
+    try {
+      await reportsApi.remove(r.id);
+      await load();
+    } catch (failure: unknown) {
+      setPageError(formatApiError(failure, "Could not delete the report"));
+    }
+  };
+
+  const download = async (report: Report) => {
+    setPageError(null);
+    try {
+      await openProtected("pdf", `/api/reports/${report.id}/pdf`, `${report.title}.pdf`);
+    } catch (failure: unknown) {
+      setPageError(formatApiError(failure, "Could not download the report PDF"));
+    }
   };
 
   const openPreview = async (r: Report) => {
+    const requestId = ++previewRequestRef.current;
+    previewAbortRef.current?.abort();
+    const abort = new AbortController();
+    previewAbortRef.current = abort;
     setPreview(r.id);
     setPreviewTitle(r.title);
     setPreviewHtml(null);
     setPreviewErr(null);
     try {
-      const html = await apiText(`/api/reports/${r.id}/html`);
-      setPreviewHtml(html);
-    } catch (e: any) {
-      setPreviewErr(e.message || "Could not load report HTML");
+      const html = await apiText(`/api/reports/${r.id}/html`, abort.signal);
+      if (requestId === previewRequestRef.current && !abort.signal.aborted) setPreviewHtml(html);
+    } catch (error: unknown) {
+      if (requestId === previewRequestRef.current && !abort.signal.aborted) {
+        setPreviewErr(formatApiError(error, "Could not load report HTML"));
+      }
     }
+  };
+
+  const closePreview = () => {
+    previewRequestRef.current += 1;
+    previewAbortRef.current?.abort();
+    previewAbortRef.current = null;
+    setPreview(null);
+    setPreviewHtml(null);
+    setPreviewErr(null);
   };
 
   return (
@@ -59,6 +95,15 @@ export function ReportsView() {
           Refresh
         </Button>
       </div>
+
+      {pageError && (
+        <div
+          className="mt-4 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+          role="alert"
+        >
+          {pageError}
+        </div>
+      )}
 
       {loading ? (
         <div className="mt-8 space-y-3">
@@ -85,9 +130,7 @@ export function ReportsView() {
                   <span className="truncate font-medium text-foreground">{r.title}</span>
                   <Badge variant="aurora">HTML + PDF</Badge>
                 </div>
-                <div className="mt-1 truncate text-xs text-muted-foreground">
-                  {r.subtitle || "No subtitle"}
-                </div>
+                <div className="mt-1 truncate text-xs text-muted-foreground">{r.subtitle || "No subtitle"}</div>
                 <div className="mt-1.5 flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
                   <span>Created {formatDate(r.created_at)}</span>
                   {r.chat_id && (
@@ -108,13 +151,19 @@ export function ReportsView() {
                 <Button
                   variant="ghost"
                   size="icon"
-                  onClick={() => openProtected("pdf", `/api/reports/${r.id}/pdf`, `${r.title}.pdf`)}
+                  onClick={() => void download(r)}
                   title="Download PDF"
                   className="text-muted-foreground hover:text-aurora-teal"
                 >
                   <Download className="h-4 w-4" />
                 </Button>
-                <Button variant="ghost" size="icon" onClick={() => remove(r)} title="Delete report" className="text-muted-foreground hover:text-destructive">
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  onClick={() => remove(r)}
+                  title="Delete report"
+                  className="text-muted-foreground hover:text-destructive"
+                >
                   <Trash2 className="h-4 w-4" />
                 </Button>
               </div>
@@ -124,7 +173,7 @@ export function ReportsView() {
       )}
 
       {/* report preview dialog */}
-      <Dialog open={!!preview} onOpenChange={(o) => !o && setPreview(null)}>
+      <Dialog open={!!preview} onOpenChange={(open) => !open && closePreview()}>
         <DialogContent className="flex max-h-[85vh] max-w-4xl flex-col overflow-hidden p-0">
           <DialogHeader className="px-6 pt-5">
             <DialogTitle>{previewTitle}</DialogTitle>
@@ -134,9 +183,18 @@ export function ReportsView() {
           </DialogHeader>
           <div className="min-h-0 flex-1 overflow-hidden px-6 pb-6">
             {previewHtml ? (
-              <iframe srcDoc={previewHtml} className="h-[70vh] w-full rounded-xl border bg-white" sandbox="" title="Report preview" />
+              <iframe
+                srcDoc={previewHtml}
+                className="h-[70vh] w-full rounded-xl border bg-white"
+                sandbox="allow-scripts"
+                referrerPolicy="no-referrer"
+                title="Report preview"
+              />
             ) : previewErr ? (
-              <div className="flex h-[calc(70vh-2rem)] items-center justify-center rounded-xl border border-destructive/30 bg-destructive/10 text-sm text-destructive" role="alert">
+              <div
+                className="flex h-[calc(70vh-2rem)] items-center justify-center rounded-xl border border-destructive/30 bg-destructive/10 text-sm text-destructive"
+                role="alert"
+              >
                 {previewErr}
               </div>
             ) : (

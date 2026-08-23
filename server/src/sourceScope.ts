@@ -1,9 +1,7 @@
 import type { QueryResult, QueryResultRow } from "pg";
 import { pool } from "./db.js";
 
-export type SourceScopeInput =
-  | { source_mode: "all" }
-  | { source_mode: "selected"; source_ids: string[] };
+export type SourceScopeInput = { source_mode: "all" } | { source_mode: "selected"; source_ids: string[] };
 
 export interface AttachedSource {
   id: string;
@@ -26,7 +24,7 @@ export interface ScopeQueryable {
 
 export class SourceScopeError extends Error {
   constructor(
-    readonly statusCode: 400 | 404,
+    readonly statusCode: 400 | 404 | 409,
     message: string
   ) {
     super(message);
@@ -35,6 +33,7 @@ export class SourceScopeError extends Error {
 }
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const MAX_SCOPED_SOURCES = 100;
 
 /** Validate the exact public source-scope union and return a stable, deduped copy. */
 export function parseSourceScopeInput(value: unknown): SourceScopeInput {
@@ -76,19 +75,14 @@ export function parseSourceScopeInput(value: unknown): SourceScopeInput {
   return { source_mode: "selected", source_ids: deduped };
 }
 
-function freezeResolved(
-  mode: "all" | "selected",
-  rows: AttachedSource[]
-): ResolvedSourceScope {
+function freezeResolved(mode: "all" | "selected", rows: AttachedSource[]): ResolvedSourceScope {
   const attached = rows.map((row) => Object.freeze({ ...row }));
   const ready = attached.filter((source) => source.status === "ready");
   return Object.freeze({
     mode,
     attached: Object.freeze(attached),
     readySourceIds: Object.freeze(ready.map((source) => source.id)),
-    readyTableNames: Object.freeze(
-      ready.filter((source) => source.kind === "tabular").map((source) => source.name)
-    ),
+    readyTableNames: Object.freeze(ready.filter((source) => source.kind === "tabular").map((source) => source.name)),
   });
 }
 
@@ -96,7 +90,8 @@ function freezeResolved(
 export async function resolveChatSourceScope(
   client: ScopeQueryable,
   accountId: string,
-  chatId: string
+  chatId: string,
+  options: { lockSources?: boolean } = {}
 ): Promise<ResolvedSourceScope> {
   const chatResult = await client.query<{ source_mode: "all" | "selected" }>(
     `SELECT source_mode FROM chats WHERE id=$1 AND account_id=$2`,
@@ -105,24 +100,31 @@ export async function resolveChatSourceScope(
   const mode = chatResult.rows[0]?.source_mode;
   if (!mode) throw new SourceScopeError(404, "chat not found");
 
-  const sourceResult = mode === "all"
-    ? await client.query<AttachedSource>(
-        `SELECT id, name, display_name, kind, status
-         FROM sources
-         WHERE account_id=$1
-         ORDER BY lower(display_name), display_name, id`,
-        [accountId]
-      )
-    : await client.query<AttachedSource>(
-        `SELECT s.id, s.name, s.display_name, s.kind, s.status
+  const sourceLock = options.lockSources ? " FOR SHARE OF s" : "";
+  const sourceResult =
+    mode === "all"
+      ? await client.query<AttachedSource>(
+          `SELECT id, name, display_name, kind, status
+         FROM sources s
+         WHERE s.account_id=$1
+         ORDER BY lower(s.display_name), s.display_name, s.id
+         LIMIT ${MAX_SCOPED_SOURCES + 1}${sourceLock}`,
+          [accountId]
+        )
+      : await client.query<AttachedSource>(
+          `SELECT s.id, s.name, s.display_name, s.kind, s.status
          FROM chat_sources cs
          JOIN sources s
            ON s.id=cs.source_id AND s.account_id=cs.account_id
          WHERE cs.chat_id=$1 AND cs.account_id=$2
-         ORDER BY lower(s.display_name), s.display_name, s.id`,
-        [chatId, accountId]
-      );
+         ORDER BY lower(s.display_name), s.display_name, s.id
+         LIMIT ${MAX_SCOPED_SOURCES + 1}${sourceLock}`,
+          [chatId, accountId]
+        );
 
+  if (sourceResult.rows.length > MAX_SCOPED_SOURCES) {
+    throw new SourceScopeError(409, `chat source scope exceeds ${MAX_SCOPED_SOURCES} sources; select a smaller set`);
+  }
   return freezeResolved(mode, sourceResult.rows);
 }
 
@@ -163,10 +165,10 @@ export async function replaceChatSourceScope(
   try {
     await client.query("BEGIN");
     inTransaction = true;
-    const owned = await client.query(
-      `SELECT id FROM chats WHERE id=$1 AND account_id=$2 FOR NO KEY UPDATE`,
-      [chatId, accountId]
-    );
+    const owned = await client.query(`SELECT id FROM chats WHERE id=$1 AND account_id=$2 FOR NO KEY UPDATE`, [
+      chatId,
+      accountId,
+    ]);
     if (!owned.rows.length) throw new SourceScopeError(404, "chat not found");
 
     if (input.source_mode === "selected") {

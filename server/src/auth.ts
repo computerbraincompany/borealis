@@ -1,6 +1,6 @@
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
-import type { FastifyInstance, FastifyRequest } from "fastify";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { config } from "./config.js";
 import { q } from "./db.js";
 
@@ -10,39 +10,81 @@ export interface AuthPayload {
 }
 
 export function signToken(payload: AuthPayload): string {
-  return jwt.sign(payload, config.jwtSecret, { expiresIn: "7d" });
+  return jwt.sign(payload, config.jwtSecret, { algorithm: "HS256", expiresIn: "7d" });
 }
 
 export function verifyToken(token: string): AuthPayload {
-  return jwt.verify(token, config.jwtSecret) as AuthPayload;
+  const payload = jwt.verify(token, config.jwtSecret, { algorithms: ["HS256"] }) as Partial<AuthPayload>;
+  if (
+    typeof payload.userId !== "string" ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(payload.userId) ||
+    typeof payload.email !== "string"
+  ) {
+    throw new Error("invalid token payload");
+  }
+  return payload as AuthPayload;
 }
 
 export async function authRoutes(app: FastifyInstance) {
-  app.post("/api/register", async (req, reply) => {
-    const body = req.body as { email?: string; password?: string };
-    const email = (body.email || "").trim().toLowerCase();
-    const password = body.password || "";
-    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return reply.code(400).send({ error: "invalid email" });
-    if (password.length < 6) return reply.code(400).send({ error: "password must be at least 6 chars" });
-    const exists = await q(`SELECT id FROM users WHERE email=$1`, [email]);
-    if (exists.length) return reply.code(409).send({ error: "email already registered" });
-    const hash = await bcrypt.hash(password, 10);
-    const [user] = await q(
-      `INSERT INTO users (email, password_hash) VALUES ($1,$2) RETURNING id`,
-      [email, hash]
-    );
-    return reply.send({ token: signToken({ userId: user.id, email }), user: { id: user.id, email } });
-  });
+  const authBodySchema = {
+    type: "object",
+    required: ["email", "password"],
+    additionalProperties: false,
+    properties: {
+      email: { type: "string", minLength: 3, maxLength: 254 },
+      password: { type: "string", minLength: 6, maxLength: 72 },
+    },
+  } as const;
+  app.post(
+    "/api/register",
+    { bodyLimit: 2 * 1024, schema: { body: authBodySchema, security: [] } },
+    async (req, reply) => {
+      const body =
+        req.body && typeof req.body === "object" && !Array.isArray(req.body)
+          ? (req.body as { email?: unknown; password?: unknown })
+          : {};
+      const email = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
+      const password = typeof body.password === "string" ? body.password : "";
+      if (email.length > 254 || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email))
+        return reply.code(400).send({ error: "invalid email" });
+      if (password.length < 6 || Buffer.byteLength(password, "utf8") > 72)
+        return reply.code(400).send({ error: "password must contain between 6 and 72 bytes" });
+      const hash = await bcrypt.hash(password, 10);
+      let user;
+      try {
+        [user] = await q(`INSERT INTO users (email, password_hash) VALUES ($1,$2) RETURNING id`, [email, hash]);
+      } catch (error) {
+        if ((error as { code?: unknown })?.code === "23505") {
+          return reply.code(409).send({ error: "email already registered" });
+        }
+        throw error;
+      }
+      return reply.send({ token: signToken({ userId: user.id, email }), user: { id: user.id, email } });
+    }
+  );
 
-  app.post("/api/login", async (req, reply) => {
-    const body = req.body as { email?: string; password?: string };
-    const email = (body.email || "").trim().toLowerCase();
-    const password = body.password || "";
-    const [user] = await q(`SELECT id, email, password_hash FROM users WHERE email=$1`, [email]);
-    if (!user || !(await bcrypt.compare(password, user.password_hash)))
-      return reply.code(401).send({ error: "invalid credentials" });
-    return reply.send({ token: signToken({ userId: user.id, email: user.email }), user: { id: user.id, email: user.email } });
-  });
+  app.post(
+    "/api/login",
+    { bodyLimit: 2 * 1024, schema: { body: authBodySchema, security: [] } },
+    async (req, reply) => {
+      const body =
+        req.body && typeof req.body === "object" && !Array.isArray(req.body)
+          ? (req.body as { email?: unknown; password?: unknown })
+          : {};
+      const email = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
+      const password = typeof body.password === "string" ? body.password : "";
+      if (email.length > 254 || Buffer.byteLength(password, "utf8") > 72) {
+        return reply.code(401).send({ error: "invalid credentials" });
+      }
+      const [user] = await q(`SELECT id, email, password_hash FROM users WHERE email=$1`, [email]);
+      if (!user || !(await bcrypt.compare(password, user.password_hash)))
+        return reply.code(401).send({ error: "invalid credentials" });
+      return reply.send({
+        token: signToken({ userId: user.id, email: user.email }),
+        user: { id: user.id, email: user.email },
+      });
+    }
+  );
 
   app.get("/api/me", { preHandler: requireAuth }, async (req, reply) => {
     const user = (req as any).user;
@@ -50,14 +92,14 @@ export async function authRoutes(app: FastifyInstance) {
   });
 }
 
-export function requireAuth(req: FastifyRequest, _reply: any, next: (err?: any) => void) {
+export async function requireAuth(req: FastifyRequest, reply: FastifyReply) {
   const header = req.headers.authorization || "";
   const token = header.startsWith("Bearer ") ? header.slice(7) : "";
   try {
     (req as any).user = verifyToken(token);
-    next();
   } catch {
-    next(new Error("unauthorized"));
+    const requestId = String(reply.getHeader("X-Request-ID") || req.id);
+    return reply.code(401).send({ error: "unauthorized", request_id: requestId });
   }
 }
 

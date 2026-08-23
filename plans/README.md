@@ -6,6 +6,9 @@ Plan set 008-012 was written 2026-08-22 against commit `d16a44c` (deep audit).
 Plans 021-023 were written 2026-08-23 against commit `e6e9d2b` for the
 user-selected model, per-chat source-scope and appearance features. Plans 017
 and 019 received pre-execution safety corrections at the same time.
+Plan 028 records the complete implementation of the subsequent 29-item deep
+engineering audit. The three separate product-direction options were excluded
+at the maintainer's request.
 Execute in the order below unless dependencies say otherwise. Each executor:
 read the plan fully before starting, honor its STOP conditions, and update your
 row when done.
@@ -105,6 +108,18 @@ Official sources checked:
 - <https://private.docs.cohere.com/docs/get-started/tools/my-files/home>
 - <https://private.docs.cohere.com/docs/get-started/tools/data-interpreter/home>
 
+### Pass 8 (deep engineering remediation 2026-08-23)
+
+| Plan | Title | Priority | Effort | Depends on | Status |
+|------|-------|----------|--------|------------|--------|
+| 028 | Implement the complete P1/P2/P3 deep-audit ledger (29 findings; D1–D3 excluded) | P1–P3 | XL | 027 | DONE |
+
+Plan 028 supersedes earlier local-MVP deferrals where the new audit supplied a
+concrete cross-service threat or lifecycle path. In particular, SSRF defenses,
+offline XLSX parsing, single-pass streaming agent rounds, durable cancellation,
+report preview, CI, cached chart PNGs, formatting/linting, and structured
+cross-service request context are now implemented rather than deferred.
+
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (one-line reason) | REJECTED (one-line rationale).
 
 ## Dependency notes
@@ -177,14 +192,14 @@ Status values: TODO | IN PROGRESS | DONE | BLOCKED (one-line reason) | REJECTED 
   accepted message timestamp with `GREATEST`; it must not lock/write the chat
   row inside the immutable model/source snapshot established by 022.
 
-## Findings considered and rejected (Pass 2 deep audit — do not re-audit without new evidence)
+## Historical Pass 2 deferrals
 
-- **SSRF via agent `fetch_url` / `_fetch_url`** (`server/src/tools.ts:223`,
-  `python/app/main.py:178`) — real primitive, but in this single-user, locally-run
-  app the caller is the operator and the server is on localhost; impact is
-  operator-equivalent. Revisit if the service is ever exposed beyond localhost or
-  becomes multi-tenant. (Cheap partial hardening — a timeout on the Node fetch —
-  is baked into the outer 120s tool race already.)
+These notes preserve why work was deferred at the time. Plan 028 supplied new
+evidence and explicitly supersedes the entries marked **SUPERSEDED** below.
+
+- **SUPERSEDED — SSRF via agent/connector fetches.** Plan 028 now requires
+  explicit current-turn URLs, public-only DNS answers, pinned sockets, validated
+  redirects, one total deadline, and byte limits at both outbound fetch surfaces.
 - **DuckDB "connection leak" on error paths** (`datasets.py` query/register/describe
   skip `con.close()` on exception) — CPython refcounting deallocates the
   connection as soon as the frame unwinds, so the leak is largely theoretical.
@@ -194,75 +209,70 @@ Status values: TODO | IN PROGRESS | DONE | BLOCKED (one-line reason) | REJECTED 
   executes tools strictly sequentially (`await` per `runToolRound`), so two
   same-name step-ends can't interleave; the current matching is correct in
   practice. Revisit only if the agent is ever made to parallelize tool calls.
-- **CORS `origin:true, credentials:true`** (`server/src/index.ts:13`) — auth is a
-  bearer header in localStorage, not a cookie; a cross-origin page can't attach
-  it. No concrete harm path in this app.
+- **SUPERSEDED — permissive credentialed CORS.** Plan 028 replaces origin
+  reflection with an exact configured HTTP(S)-origin allowlist and tests both
+  allowed and rejected preflights.
 - **Auth token in localStorage** — acceptable for the current local single-origin
   MVP (no HttpOnly cookie path without a server change); becomes a real concern
   only if report XSS (plan 009) or multi-tenancy changes the threat model.
-- **DuckDB `/query` local-file reads** (from Pass 1) — still accepted; unchanged.
+- **SUPERSEDED — DuckDB `/query` local-file reads.** Query parsing now accepts
+  exactly one read-only statement against the immutable table allowlist, loads
+  trusted source files before disabling external access, and prevents model SQL
+  from re-enabling it.
 - **echarts XSS advisory / esbuild dev-server advisory (web)** — dev-toolchain /
   low-severity for a local app; revisit at the next echarts major bump (6.x is
   breaking). Note: the vendored `python/app/assets/echarts.min.js` duplicates the
   web echarts version — any future bump must update both or they drift.
-- **xlsx @0.18.5 (abandoned, HIGH proto-pollution + ReDoS, no npm fix)** — still
-  parsed from user uploads in `server/src/ingest.ts`. Threat model: the uploader
-  is the owner in single-user mode. A swap (read-excel-file/exceljs; note `.xls`
-  legacy support would drop) is a day-sized plan with a parsing-behavior
-  verification requirement — deferred; revisit when multi-tenant or before the
-  next public milestone.
-- **Double LLM round-trip per answer** (`agent.ts:104-113` chatOnce + streamingChat)
-  — real latency cost (~2× model calls per turn), but the fix needs an LLM seam
-  to be verifiable; deferred until after the 008 test baseline and a small
-  `runAgent` dependency-injection refactor.
-- **ReportsView preview iframe `sandbox=""` blanks charts** — real UX bug
-  (self-contained interactive HTML can't initialize ECharts in a fully-sandboxed
-  iframe); the fix interacts with plan 009's CSP and the sanitizer, so it was
-  deferred rather than planned alongside.
-- **"Stop generating" doesn't stop the server agent** (`ChatView.tsx` abort is
-  client-only) — real; needs server-side abort threading through `runAgent` (M,
-  MED risk). Deferred: shares the agent-loop flux with the LLM-seam refactor.
+- **SUPERSEDED — Node `xlsx`, Pandas/OpenPyXL dependency shape.** Plan 028 removes
+  SheetJS and unused Pandas, delegates tabular extraction to Python, and uses
+  actively required OpenPyXL behind strict offline ZIP/workbook/output limits.
+  Legacy `.xls` support is deliberately dropped.
+- **SUPERSEDED — double LLM round trip.** Each agent iteration now uses one
+  streaming completion that also merges tool calls, with focused stream tests.
+- **SUPERSEDED — report preview.** Authenticated HTML is rendered through an
+  `allow-scripts` opaque-origin sandbox, with request abort and stale ownership.
+- **SUPERSEDED — client-only stop.** Chat runs are durable, cancellable at the
+  server, rehydratable after reload, and expose an authoritative terminal event.
 - **Direction items, deferred** (product options, not bugs): in-app "load sample
   data" button (SourcesView empty state already tells users to run
   `python data/generate_sample.py`); visible retrieval grounding (tool step-end
-  already carries passages); connector edit/rename (no PATCH endpoint today);
-  CI workflow (add at the same time as the 008 test baseline gate). Any of these
-  can become a plan on request.
+  already carries passages); connector edit/rename (no PATCH endpoint today).
+  The previously listed CI item is **SUPERSEDED** by plan 028; the remaining
+  product options can become plans on request.
 
-## Pass 5 findings verified but NOT planned (available on request — do not re-audit)
+## Historical Pass 5 follow-ups
 
-Vetted during the 2026-08-23 deep audit; each is real (advisor confirmed the
-code), just below the plan-writing cut or awaiting its own ask:
+Vetted during the 2026-08-23 deep audit. Plan 028 subsequently implemented the
+entries marked **SUPERSEDED**; the remaining notes stay available for a future
+dependency or cleanup pass.
 
-- **Fastify route-level integration tests** (`server/src/routes.ts`, all ~20
-  endpoints untested; auth/upload/report-serving are the money paths) — M;
-  needs a scratch `DATABASE_URL` test DB. The single most valuable test
-  investment after 014/015.
-- **Agent-loop characterization tests behind a fake LLM** (`agent.ts` event
-  contract, `llm.ts` streaming) — M; pairs with the deferred LLM-seam/DI
-  refactor below.
-- **Chart-spec drift reconciliation** (`charts.py normalize` injects `color`
-  not in the docstring/tools schema; tools requires `title`, python defaults
-  it; ChartCard constants diverge: donut radius 70% vs 72%, area opacity .25
-  vs .15, scatter symbolSize 10 vs 9) — M, MED risk (visual changes).
-- **Client consolidation**: web `api.ts` has four fetch wrappers with three
-  different 401 behaviors (`streamAgentChat` has none); server
-  `pythonClient.deleteDataset` ignores `res.ok` so failed dataset deletes
-  resolve successfully and DuckDB tables linger — S each, LOW risk.
-- **Sentinel-string 401 hook** (`auth.ts:60` throws `Error("unauthorized")`,
-  matched by string in routes onError) → replace with direct 401 reply — S.
-- **Dead code**: `/html-to-pdf` endpoint + `build_pdf_from_html` (zero
-  callers once 016 lands), `_slugify` in charts.py, unused `STORAGE_DIR` in
-  datasets.py, write-only `sources.{size_bytes,url,meta}` columns — S bundle.
-- **Dependency cleanups**: uuid→`crypto.randomUUID`; drop deprecated
-  `@types/bcryptjs` stub; align `@types/node` majors (server ^22 vs web ^26);
-  echarts lockstep check between web package and vendored python asset — S each.
-- **Perf candidates**: persist chart PNG at render time instead of re-render
-  per `/api/charts/:id` fetch (png_base64 is discarded today); window the chat
-  history resent on every LLM call (grows linearly, eventually overflows local
-  context); make connector create/sync ingest async like uploads (S).
-- **DX**: prettier+ruff formatting baseline; route console.*/python print()
-  through real loggers with source/account ids.
+- **SUPERSEDED — Fastify route/integration coverage.** Resource plugins now
+  have mounted boundary regressions, and the canonical CI gate provisions an
+  isolated pgvector database for the guarded concurrency/isolation suite.
+- **SUPERSEDED — agent-loop characterization.** Fake-provider stream merging,
+  adversarial provider budgets, tool timeouts, durable cancellation, pending
+  artifacts, and terminal transitions now have focused tests.
+- **SUPERSEDED — chart-spec drift.** One strictly bounded canonical spec is
+  normalized across Node, Python, ECharts, persisted PNGs, and report renderers,
+  with parity regressions for the formerly divergent options.
+- **SUPERSEDED — client error/delete behavior.** Every authenticated web fetch
+  path now handles 401 consistently. The unsafe name-only Python dataset delete
+  client and endpoint were removed in favor of exact-location CAS operations.
+- **SUPERSEDED — sentinel-string 401 hook.** `requireAuth` now sends an opaque
+  correlated 401 response directly; the shared error boundary no longer
+  classifies authentication failures by exception text.
+- **Dead code (partly superseded)**: the raw `/html-to-pdf` surface and its
+  builder are removed. `_slugify` in `charts.py` remains a harmless cleanup
+  candidate; source metadata/storage fields are now used by lifecycle budgets.
+- **Dependency cleanups (partly superseded)**: Node uses `crypto.randomUUID`,
+  the deprecated bcrypt stub and Node SheetJS are gone, and both packages use
+  Node 22 type definitions. An automated ECharts vendored-asset lockstep check
+  remains a small future improvement.
+- **Perf candidates (partly superseded)**: plan 028 persists/reuses chart PNGs
+  and bounds the history sent to the model. The connector download/validation
+  phase remains request-bound; only its ingestion phase is durable/asynchronous.
+- **DX (SUPERSEDED)**: plan 028 establishes Prettier/Ruff/ESLint checks and
+  correlated sanitized logging across request and background-operation paths.
 - **Migrations (investigate-first)**: exit the fastapi pin by upgrading
   litellm ≥ the release that dropped `get_flat_dependant`; openai-node v4→v5
   while the surface is two files; vite 5 is past upstream support (fold into

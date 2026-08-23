@@ -1,3 +1,5 @@
+import { consumeSseJson } from "@/lib/sse";
+
 const TOKEN_KEY = "borealis_token";
 const USER_KEY = "borealis_user";
 
@@ -7,44 +9,91 @@ export interface AuthUser {
 }
 
 export function getToken(): string | null {
-  return localStorage.getItem(TOKEN_KEY);
+  return window.localStorage.getItem(TOKEN_KEY);
 }
 
 export function getUser(): AuthUser | null {
   try {
-    return JSON.parse(localStorage.getItem(USER_KEY) || "null");
+    return JSON.parse(window.localStorage.getItem(USER_KEY) || "null");
   } catch {
     return null;
   }
 }
 
 export function setSession(token: string, user: AuthUser) {
-  localStorage.setItem(TOKEN_KEY, token);
-  localStorage.setItem(USER_KEY, JSON.stringify(user));
+  window.localStorage.setItem(TOKEN_KEY, token);
+  window.localStorage.setItem(USER_KEY, JSON.stringify(user));
 }
 
 export function clearSession() {
-  localStorage.removeItem(TOKEN_KEY);
-  localStorage.removeItem(USER_KEY);
+  window.localStorage.removeItem(TOKEN_KEY);
+  window.localStorage.removeItem(USER_KEY);
 }
 
 export class ApiError extends Error {
   status: number;
-  constructor(status: number, message: string) {
+  data?: unknown;
+  requestId?: string;
+  constructor(status: number, message: string, data?: unknown, requestId?: string) {
     super(message);
+    this.name = "ApiError";
     this.status = status;
+    this.data = data;
+    this.requestId = requestId;
   }
 }
 
+const REQUEST_ID_PATTERN = /^[A-Za-z0-9._-]{1,128}$/;
+
+function safeRequestId(value: unknown): string | undefined {
+  return typeof value === "string" && REQUEST_ID_PATTERN.test(value) ? value : undefined;
+}
+
+async function errorFromResponse(res: Response): Promise<ApiError> {
+  let data: unknown;
+  let message = res.statusText || `Request failed (${res.status})`;
+  try {
+    const contentType = res.headers.get("content-type") || "";
+    if (contentType.includes("application/json")) {
+      data = await res.json();
+      if (data && typeof data === "object" && !Array.isArray(data)) {
+        const error = (data as Record<string, unknown>).error;
+        if (typeof error === "string" && error.trim()) message = error.trim().slice(0, 500);
+      }
+    } else {
+      // Do not reflect arbitrary upstream HTML/text into the UI.
+      await res.body?.cancel().catch(() => undefined);
+    }
+  } catch {
+    // Keep the bounded HTTP fallback when the error payload is malformed.
+  }
+
+  const bodyRequestId =
+    data && typeof data === "object" && !Array.isArray(data)
+      ? safeRequestId((data as Record<string, unknown>).request_id)
+      : undefined;
+  const requestId = safeRequestId(res.headers.get("x-request-id")) ?? bodyRequestId;
+  return new ApiError(res.status, message, data, requestId);
+}
+
+/** Convert an unknown failure to bounded user-facing text, including only a validated request reference. */
+export function formatApiError(error: unknown, fallback: string): string {
+  // Only the HTTP boundary's normalized message is safe to reflect. Runtime,
+  // provider, and parser exceptions may contain URLs, SQL, paths, or secrets.
+  const message = error instanceof ApiError && error.message.trim() ? error.message.trim().slice(0, 500) : fallback;
+  const requestId = error instanceof ApiError ? safeRequestId(error.requestId) : undefined;
+  return requestId ? `${message} (reference: ${requestId})` : message || fallback;
+}
+
 /** Authenticated fetch returning raw text (e.g. report HTML). */
-export async function apiText(path: string): Promise<string> {
-  const res = await fetch(path, { headers: { Authorization: `Bearer ${getToken()}` } });
+export async function apiText(path: string, signal?: AbortSignal): Promise<string> {
+  const res = await fetch(path, { headers: { Authorization: `Bearer ${getToken()}` }, signal });
   if (res.status === 401) {
     clearSession();
     location.href = "/login";
-    throw new ApiError(401, "unauthorized");
+    throw await errorFromResponse(res);
   }
-  if (!res.ok) throw new ApiError(res.status, res.statusText);
+  if (!res.ok) throw await errorFromResponse(res);
   return res.text();
 }
 
@@ -54,9 +103,9 @@ export async function apiBlob(path: string): Promise<Blob> {
   if (res.status === 401) {
     clearSession();
     location.href = "/login";
-    throw new ApiError(401, "unauthorized");
+    throw await errorFromResponse(res);
   }
-  if (!res.ok) throw new ApiError(res.status, res.statusText);
+  if (!res.ok) throw await errorFromResponse(res);
   return res.blob();
 }
 
@@ -72,11 +121,37 @@ export async function openProtected(kind: "html" | "pdf", path: string, filename
     setTimeout(() => URL.revokeObjectURL(url), 5000);
     return;
   }
-  const html = await apiText(path);
-  const blob = new Blob([html], { type: "text/html" });
-  const url = URL.createObjectURL(blob);
-  window.open(url, "_blank");
-  setTimeout(() => URL.revokeObjectURL(url), 30000);
+
+  // Open synchronously while the click still owns browser popup permission.
+  // The shell is trusted app code; report HTML is mounted only in an opaque
+  // sandbox so its inline chart script can never inherit the app origin or
+  // read the JWT stored in localStorage.
+  const previewWindow = window.open("", "_blank");
+  if (!previewWindow) throw new Error("report preview window was blocked");
+  previewWindow.opener = null;
+  previewWindow.document.title = filename;
+  previewWindow.document.body.textContent = "Loading report…";
+
+  try {
+    const html = await apiText(path);
+    if (previewWindow.closed) throw new Error("report preview window was closed");
+
+    const frame = previewWindow.document.createElement("iframe");
+    frame.setAttribute("sandbox", "allow-scripts");
+    frame.setAttribute("referrerpolicy", "no-referrer");
+    frame.setAttribute("title", filename);
+    frame.style.border = "0";
+    frame.style.height = "100vh";
+    frame.style.width = "100%";
+    frame.srcdoc = html;
+
+    previewWindow.document.documentElement.style.height = "100%";
+    previewWindow.document.body.style.margin = "0";
+    previewWindow.document.body.replaceChildren(frame);
+  } catch (error) {
+    previewWindow.close();
+    throw error;
+  }
 }
 
 export async function api<T>(path: string, opts: RequestInit = {}): Promise<T> {
@@ -94,16 +169,9 @@ export async function api<T>(path: string, opts: RequestInit = {}): Promise<T> {
     if (!location.pathname.startsWith("/login")) {
       location.href = "/login";
     }
-    throw new ApiError(401, "unauthorized");
+    throw await errorFromResponse(res);
   }
-  if (!res.ok) {
-    let msg = res.statusText;
-    try {
-      const data = await res.json();
-      if (data?.error) msg = data.error;
-    } catch {}
-    throw new ApiError(res.status, msg);
-  }
+  if (!res.ok) throw await errorFromResponse(res);
   if (res.status === 204) return undefined as T;
   const ct = res.headers.get("content-type") || "";
   if (ct.includes("application/json")) return (await res.json()) as T;
@@ -249,6 +317,24 @@ export function parseQueryResultArtifacts(value: unknown): QueryResultArtifact[]
 export interface ChatDetail extends Chat {
   messages: Message[];
   sources: AttachedSource[];
+  active_run: ChatActiveRun | null;
+  messages_page?: {
+    has_more: boolean;
+    next_before_message_id: string | null;
+  };
+}
+
+export interface ChatActiveRun {
+  id: string;
+  status: "running" | "cancelling";
+}
+
+export type ChatRunTerminalStatus = "cancelled" | "completed" | "failed";
+
+export interface RunEndedEvent {
+  type: "run-ended";
+  run_id: string;
+  status: ChatRunTerminalStatus;
 }
 
 export type SourceMode = "all" | "selected";
@@ -261,9 +347,7 @@ export interface AttachedSource {
   status: string;
 }
 
-export type SourceScopeInput =
-  | { source_mode: "all" }
-  | { source_mode: "selected"; source_ids: string[] };
+export type SourceScopeInput = { source_mode: "all" } | { source_mode: "selected"; source_ids: string[] };
 
 export interface ChatModelOption {
   id: string;
@@ -288,15 +372,133 @@ export interface Source {
   tabular?: { rows: number; table: string; original_name: string };
 }
 
+type SourceListPayload = Source[] | { sources?: unknown; items?: unknown };
+
+/** Accept the compact source DTO as well as the legacy array without trusting either shape. */
+export function parseSourceListPayload(payload: unknown): Source[] {
+  const container = payload as SourceListPayload;
+  const candidates = Array.isArray(container)
+    ? container
+    : container && typeof container === "object"
+      ? Array.isArray(container.sources)
+        ? container.sources
+        : Array.isArray(container.items)
+          ? container.items
+          : []
+      : [];
+
+  return candidates.flatMap((candidate) => {
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return [];
+    const value = candidate as Record<string, unknown>;
+    if (
+      typeof value.id !== "string" ||
+      typeof value.name !== "string" ||
+      typeof value.display_name !== "string" ||
+      (value.kind !== "document" && value.kind !== "tabular") ||
+      typeof value.status !== "string"
+    ) {
+      return [];
+    }
+
+    const meta =
+      value.meta && typeof value.meta === "object" && !Array.isArray(value.meta)
+        ? {
+            error:
+              typeof (value.meta as Record<string, unknown>).error === "string"
+                ? String((value.meta as Record<string, unknown>).error)
+                : undefined,
+          }
+        : null;
+    const rawTabular = value.tabular;
+    const tabular =
+      rawTabular &&
+      typeof rawTabular === "object" &&
+      !Array.isArray(rawTabular) &&
+      typeof (rawTabular as Record<string, unknown>).rows === "number" &&
+      typeof (rawTabular as Record<string, unknown>).table === "string"
+        ? {
+            rows: Number((rawTabular as Record<string, unknown>).rows),
+            table: String((rawTabular as Record<string, unknown>).table),
+            original_name:
+              typeof (rawTabular as Record<string, unknown>).original_name === "string"
+                ? String((rawTabular as Record<string, unknown>).original_name)
+                : value.display_name,
+          }
+        : undefined;
+
+    return [
+      {
+        id: value.id,
+        name: value.name,
+        display_name: value.display_name,
+        kind: value.kind,
+        status: value.status,
+        mime: typeof value.mime === "string" ? value.mime : "application/octet-stream",
+        created_at: typeof value.created_at === "string" ? value.created_at : "",
+        meta,
+        tabular,
+      } satisfies Source,
+    ];
+  });
+}
+
 export interface Connector {
   id: string;
   name: string;
   type: "url_csv" | "url_json";
-  config: string;
+  config: Record<string, unknown>;
   target_table: string;
-  status: string;
+  sync_status: ConnectorSyncStatus;
+  sync_error?: string | null;
   last_sync: string | null;
   created_at: string;
+}
+
+export type ConnectorSyncStatus = "syncing" | "indexing" | "idle" | "error";
+
+const CONNECTOR_SYNC_STATUSES = new Set<ConnectorSyncStatus>(["syncing", "indexing", "idle", "error"]);
+
+/** Normalize Postgres JSONB and reject connector rows outside the UI status contract. */
+export function parseConnectorListPayload(payload: unknown): Connector[] {
+  if (!Array.isArray(payload)) return [];
+  return payload.flatMap((candidate) => {
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return [];
+    const value = candidate as Record<string, unknown>;
+    if (
+      typeof value.id !== "string" ||
+      typeof value.name !== "string" ||
+      (value.type !== "url_csv" && value.type !== "url_json") ||
+      typeof value.target_table !== "string" ||
+      !CONNECTOR_SYNC_STATUSES.has(value.sync_status as ConnectorSyncStatus) ||
+      typeof value.created_at !== "string"
+    ) {
+      return [];
+    }
+
+    let config: unknown = value.config;
+    if (typeof config === "string") {
+      try {
+        config = JSON.parse(config);
+      } catch {
+        config = {};
+      }
+    }
+    if (!config || typeof config !== "object" || Array.isArray(config)) config = {};
+
+    return [
+      {
+        id: value.id,
+        name: value.name,
+        type: value.type,
+        config: config as Record<string, unknown>,
+        target_table: value.target_table,
+        sync_status: value.sync_status as ConnectorSyncStatus,
+        sync_error: typeof value.sync_error === "string" ? value.sync_error : null,
+        last_sync: typeof value.last_sync === "string" ? value.last_sync : null,
+        created_at: value.created_at,
+      } satisfies Connector,
+    ];
+  });
 }
 
 export interface Report {
@@ -321,7 +523,10 @@ export const authApi = {
   login: (email: string, password: string) =>
     api<{ token: string; user: AuthUser }>("/api/login", { method: "POST", body: JSON.stringify({ email, password }) }),
   register: (email: string, password: string) =>
-    api<{ token: string; user: AuthUser }>("/api/register", { method: "POST", body: JSON.stringify({ email, password }) }),
+    api<{ token: string; user: AuthUser }>("/api/register", {
+      method: "POST",
+      body: JSON.stringify({ email, password }),
+    }),
   me: () => api<AuthUser>("/api/me"),
 };
 
@@ -333,7 +538,13 @@ export const chatsApi = {
       method: "POST",
       body: JSON.stringify({ title, source_mode: "selected", source_ids: [] }),
     }),
-  get: (id: string) => api<ChatDetail>(`/api/chats/${id}`),
+  get: (id: string, page?: { beforeMessageId?: string; limit?: number }) => {
+    const params = new URLSearchParams();
+    if (page?.beforeMessageId) params.set("before_message_id", page.beforeMessageId);
+    if (page?.limit) params.set("limit", String(page.limit));
+    const query = params.size ? `?${params.toString()}` : "";
+    return api<ChatDetail>(`/api/chats/${id}${query}`);
+  },
   updateModel: (id: string, model: string) =>
     api<Chat>(`/api/chats/${id}`, { method: "PATCH", body: JSON.stringify({ model }) }),
   updateTitle: (id: string, title: string) =>
@@ -344,6 +555,13 @@ export const chatsApi = {
       body: JSON.stringify(scope),
     }),
   remove: (id: string) => api<{ ok: true }>(`/api/chats/${id}`, { method: "DELETE" }),
+  cancelRun: (chatId: string, runId: string) =>
+    api<{ ok: true; run_id: string; status: "cancelling" | ChatRunTerminalStatus }>(
+      `/api/chats/${chatId}/runs/${runId}`,
+      {
+        method: "DELETE",
+      },
+    ),
 };
 
 // ------------------------------------------------------------------ models
@@ -353,7 +571,7 @@ export const modelsApi = {
 
 // ------------------------------------------------------------------ sources
 export const sourcesApi = {
-  list: () => api<Source[]>("/api/sources"),
+  list: async () => parseSourceListPayload(await api<unknown>("/api/sources")),
   upload: (file: File) => {
     const fd = new FormData();
     fd.append("file", file);
@@ -365,10 +583,15 @@ export const sourcesApi = {
 
 // ------------------------------------------------------------------ connectors
 export const connectorsApi = {
-  list: () => api<Connector[]>("/api/connectors"),
-  create: (body: { name?: string; type: string; config: Record<string, unknown> }) =>
-    api<Connector>("/api/connectors", { method: "POST", body: JSON.stringify(body) }),
-  sync: (id: string) => api<{ synced: true }>(`/api/connectors/${id}/sync`, { method: "POST" }),
+  list: async () => parseConnectorListPayload(await api<unknown>("/api/connectors")),
+  create: (body: {
+    display_name: string;
+    target_table: string;
+    type: "url_csv" | "url_json";
+    config: { url: string };
+  }) => api<Connector>("/api/connectors", { method: "POST", body: JSON.stringify(body) }),
+  sync: (id: string) =>
+    api<Connector | { synced: true; processing: true }>(`/api/connectors/${id}/sync`, { method: "POST" }),
   remove: (id: string) => api<{ ok: true }>(`/api/connectors/${id}`, { method: "DELETE" }),
 };
 
@@ -376,9 +599,15 @@ export const connectorsApi = {
 export const reportsApi = {
   list: () => api<Report[]>("/api/reports"),
   get: (id: string) =>
-    api<{ id: string; title: string; subtitle: string | null; created_at: string; updated_at: string; has_html: boolean; has_pdf: boolean }>(
-      `/api/reports/${id}`
-    ),
+    api<{
+      id: string;
+      title: string;
+      subtitle: string | null;
+      created_at: string;
+      updated_at: string;
+      has_html: boolean;
+      has_pdf: boolean;
+    }>(`/api/reports/${id}`),
   remove: (id: string) => api<{ ok: true }>(`/api/reports/${id}`, { method: "DELETE" }),
 };
 
@@ -391,8 +620,8 @@ export const chartsApi = {
 export async function streamAgentChat(
   chatId: string,
   content: string,
-  onEvent: (ev: any) => void,
-  signal?: AbortSignal
+  onEvent: (ev: unknown) => void,
+  signal?: AbortSignal,
 ): Promise<void> {
   const token = getToken();
   const res = await fetch(`/api/chats/${chatId}/messages`, {
@@ -401,33 +630,13 @@ export async function streamAgentChat(
     body: JSON.stringify({ content }),
     signal,
   });
+  if (res.status === 401) {
+    clearSession();
+    if (!location.pathname.startsWith("/login")) location.href = "/login";
+    throw await errorFromResponse(res);
+  }
   if (!res.ok || !res.body) {
-    let msg = res.statusText;
-    try {
-      const d = await res.json();
-      if (d?.error) msg = d.error;
-    } catch {}
-    throw new Error(msg);
+    throw await errorFromResponse(res);
   }
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buf = "";
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buf += decoder.decode(value, { stream: true });
-    let idx: number;
-    while ((idx = buf.indexOf("\n\n")) >= 0) {
-      const raw = buf.slice(0, idx);
-      buf = buf.slice(idx + 2);
-      for (const line of raw.split("\n")) {
-        if (!line.startsWith("data:")) continue;
-        const payload = line.slice(5).trim();
-        if (!payload) continue;
-        try {
-          onEvent(JSON.parse(payload));
-        } catch {}
-      }
-    }
-  }
+  await consumeSseJson(res.body, onEvent);
 }

@@ -24,26 +24,30 @@ describe("scoped retrieval", () => {
 
   it("filters vector search by both account and the server-derived source ids", async () => {
     embedMock.mockResolvedValueOnce([[0.25, 0.75]]);
-    qMock.mockResolvedValueOnce([{
-      chunk_id: "42",
-      source_id: "11111111-1111-4111-8111-111111111111",
-      source: "Allowed.pdf",
-      content: "allowed",
-      score: 0.9,
-      file_path: "/private/not-returned.pdf",
-      url: "https://not-returned.invalid",
-    }]);
+    qMock.mockResolvedValueOnce([
+      {
+        chunk_id: "42",
+        source_id: "11111111-1111-4111-8111-111111111111",
+        source: "Allowed.pdf",
+        content: "allowed",
+        score: 0.9,
+        file_path: "/private/not-returned.pdf",
+        url: "https://not-returned.invalid",
+      },
+    ]);
     const allowed = ["11111111-1111-4111-8111-111111111111"];
 
     const result = await retrieve("account", "canary", allowed, 4);
 
-    expect(result).toEqual([{
-      chunk_id: "42",
-      source_id: allowed[0],
-      source: "Allowed.pdf",
-      content: "allowed",
-      score: 0.9,
-    }]);
+    expect(result).toEqual([
+      {
+        chunk_id: "42",
+        source_id: allowed[0],
+        source: "Allowed.pdf",
+        content: "allowed",
+        score: 0.9,
+      },
+    ]);
     const sql = String(qMock.mock.calls[0][0]);
     expect(sql).toContain("chunks.id::text AS chunk_id");
     expect(sql).toContain("chunks.source_id::text AS source_id");

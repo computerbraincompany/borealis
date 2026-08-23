@@ -30,14 +30,24 @@ describe("cleanFinal", () => {
     expect(cleanFinal("Thinking: let me work it out\n\nFinal Answer: 42")).toBe("42");
   });
 
-  it("keeps the answer after a Thinking line without a blank separator", () => {
-    expect(cleanFinal("Thinking: line\nanswer continues")).toBe("answer continues");
+  it("does not erase prose after an ambiguous Thinking label without a blank separator", () => {
+    expect(cleanFinal("Thinking: line\nanswer continues")).toBe("Thinking: line\nanswer continues");
   });
 
-  it("handles the other prefix variants case-insensitively", () => {
+  it("preserves a legitimate one-line answer beginning with Reasoning", () => {
+    expect(cleanFinal("Reasoning: the total is 42")).toBe("Reasoning: the total is 42");
+  });
+
+  it("handles confirmed answer blocks case-insensitively", () => {
     expect(cleanFinal("Reasoning: blah\n\nAnswer: yes")).toBe("yes");
-    expect(cleanFinal("Thought Process:\nsome reasoning\n\nSure, here it is.")).toBe("Sure, here it is.");
-    expect(cleanFinal("thought: x\n\nBody")).toBe("Body");
+    expect(cleanFinal("Thought Process:\nsome reasoning\n\nFinal Answer: Sure, here it is.")).toBe("Sure, here it is.");
+  });
+
+  it("preserves ambiguous multi-paragraph prose without an explicit answer label", () => {
+    expect(cleanFinal("Thought Process:\nsome context\n\nSure, here it is.")).toBe(
+      "Thought Process:\nsome context\n\nSure, here it is."
+    );
+    expect(cleanFinal("thought: x\n\nBody")).toBe("thought: x\n\nBody");
   });
 
   it("is loop-safe for repeated labels", () => {

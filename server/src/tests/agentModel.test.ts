@@ -2,10 +2,16 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../db.js", () => ({ q: vi.fn() }));
 vi.mock("../llm.js", () => ({ chatOnce: vi.fn(), streamingChat: vi.fn() }));
-vi.mock("../pythonClient.js", () => ({ py: { listDatasets: vi.fn() } }));
+vi.mock("../pythonClient.js", () => ({ py: { listDatasetCatalog: vi.fn() } }));
 vi.mock("../tools.js", () => ({ TOOL_DEFS: [], executeTool: vi.fn() }));
 
-import { buildSystemPrompt, runAgent, runToolRound } from "../agent.js";
+import {
+  buildSystemPrompt,
+  runAgent,
+  runToolRound,
+  selectRecentHistory,
+  serializedAgentCharacterCount,
+} from "../agent.js";
 import { q } from "../db.js";
 import { chatOnce, streamingChat } from "../llm.js";
 import { py } from "../pythonClient.js";
@@ -14,7 +20,7 @@ import { executeTool } from "../tools.js";
 const qMock = vi.mocked(q);
 const chatOnceMock = vi.mocked(chatOnce);
 const streamingChatMock = vi.mocked(streamingChat);
-const listDatasetsMock = vi.mocked(py.listDatasets);
+const listDatasetCatalogMock = vi.mocked(py.listDatasetCatalog);
 const executeToolMock = vi.mocked(executeTool);
 const emptyScope = Object.freeze({
   mode: "selected" as const,
@@ -28,24 +34,22 @@ describe("runAgent model snapshot", () => {
     qMock.mockReset();
     chatOnceMock.mockReset();
     streamingChatMock.mockReset();
-    listDatasetsMock.mockReset();
+    listDatasetCatalogMock.mockReset();
     executeToolMock.mockReset();
   });
 
   it("uses one immutable model and records it on the assistant message", async () => {
     qMock.mockResolvedValue([]);
-    listDatasetsMock.mockResolvedValue([]);
-    chatOnceMock.mockResolvedValue({
-      choices: [{ message: { role: "assistant", content: "draft", tool_calls: [] } }],
-    } as any);
+    listDatasetCatalogMock.mockResolvedValue({ datasets: [], total: 0, returned: 0, omitted: 0, truncated: false });
     streamingChatMock.mockResolvedValue({
       choices: [{ message: { role: "assistant", content: "final answer", tool_calls: [] } }],
     } as any);
     const emitted: any[] = [];
 
-    await runAgent({
+    const completion = await runAgent({
       accountId: "account-1",
       chatId: "chat-1",
+      runId: "11111111-1111-4111-8111-111111111111",
       content: "question",
       model: "selected-chat-model",
       sourceScope: emptyScope,
@@ -54,29 +58,13 @@ describe("runAgent model snapshot", () => {
       },
     });
 
-    expect(chatOnceMock).toHaveBeenCalledWith(
-      expect.any(Array),
-      expect.objectContaining({ model: "selected-chat-model" })
-    );
+    expect(chatOnceMock).not.toHaveBeenCalled();
     expect(streamingChatMock).toHaveBeenCalledWith(
       expect.any(Array),
       expect.objectContaining({ model: "selected-chat-model" }),
       expect.any(Function)
     );
-    const insert = qMock.mock.calls.find(([sql]) => String(sql).includes("INSERT INTO messages"));
-    expect(insert).toBeDefined();
-    expect(JSON.parse(String(insert?.[1]?.[2]))).toEqual({
-      charts: [],
-      report: null,
-      model: "selected-chat-model",
-      source_mode: "selected",
-      source_ids: [],
-      evidence: [],
-      query_results: [],
-    });
-    expect(emitted).toContainEqual({
-      type: "message",
-      roles: [],
+    expect(completion).toEqual({
       content: "final answer",
       meta: {
         charts: [],
@@ -88,40 +76,53 @@ describe("runAgent model snapshot", () => {
         query_results: [],
       },
     });
+    expect(emitted).toEqual([]);
   });
 
   it("persists and emits the evidence captured by a retrieval turn", async () => {
-    const evidence = [{
-      source_id: "11111111-1111-4111-8111-111111111111",
-      chunk_id: "42",
-      source: "Allowed.pdf",
-      excerpt: "A grounded passage",
-      score: 0.91,
-    }];
+    const evidence = [
+      {
+        source_id: "11111111-1111-4111-8111-111111111111",
+        chunk_id: "42",
+        source: "Allowed.pdf",
+        excerpt: "A grounded passage",
+        score: 0.91,
+      },
+    ];
     qMock.mockResolvedValue([]);
-    listDatasetsMock.mockResolvedValue([]);
-    chatOnceMock
+    listDatasetCatalogMock.mockResolvedValue({ datasets: [], total: 0, returned: 0, omitted: 0, truncated: false });
+    streamingChatMock
       .mockResolvedValueOnce({
-        choices: [{ message: {
-          role: "assistant",
-          content: "",
-          tool_calls: [{ id: "retrieve-1", type: "function", function: { name: "retrieve", arguments: '{"query":"grounding"}' } }],
-        } }],
+        choices: [
+          {
+            message: {
+              role: "assistant",
+              content: "",
+              tool_calls: [
+                {
+                  id: "retrieve-1",
+                  type: "function",
+                  function: { name: "retrieve", arguments: '{"query":"grounding"}' },
+                },
+              ],
+            },
+          },
+        ],
       } as any)
-      .mockResolvedValueOnce({ choices: [{ message: { role: "assistant", content: "draft", tool_calls: [] } }] } as any);
+      .mockResolvedValueOnce({
+        choices: [{ message: { role: "assistant", content: "grounded answer", tool_calls: [] } }],
+      } as any);
     executeToolMock.mockImplementationOnce(async (_accountId, name, _args, context) => {
       expect(name).toBe("retrieve");
       context.evidence = evidence;
       return { passages: [] };
     });
-    streamingChatMock.mockResolvedValueOnce({
-      choices: [{ message: { role: "assistant", content: "grounded answer", tool_calls: [] } }],
-    } as any);
     const emitted: any[] = [];
 
-    await runAgent({
+    const completion = await runAgent({
       accountId: "account-1",
       chatId: "chat-1",
+      runId: "11111111-1111-4111-8111-111111111111",
       content: "question",
       model: "selected-chat-model",
       sourceScope: emptyScope,
@@ -130,47 +131,56 @@ describe("runAgent model snapshot", () => {
       },
     });
 
-    const insert = qMock.mock.calls.find(([sql]) => String(sql).includes("INSERT INTO messages"));
-    const persistedMeta = JSON.parse(String(insert?.[1]?.[2]));
-    expect(persistedMeta.evidence).toEqual(evidence);
-    expect(persistedMeta.query_results).toEqual([]);
-    expect(emitted).toContainEqual(expect.objectContaining({
-      type: "message",
-      content: "grounded answer",
-      meta: persistedMeta,
-    }));
+    expect(completion.content).toBe("grounded answer");
+    expect(completion.meta.evidence).toEqual(evidence);
+    expect(completion.meta.query_results).toEqual([]);
+    expect(emitted.every((event) => event.type !== "message" && event.type !== "delta")).toBe(true);
   });
 
   it("persists and emits query artifacts without dropping prior evidence metadata", async () => {
-    const evidence = [{
-      source_id: "11111111-1111-4111-8111-111111111111",
-      chunk_id: "42",
-      source: "Allowed.pdf",
-      excerpt: "A grounded passage",
-      score: 0.91,
-    }];
-    const queryResults = [{
-      id: "query-1",
-      sql: "SELECT category, sum(amount) FROM ledger GROUP BY category",
-      columns: ["category", "amount"],
-      rows: [["Food", 42]],
-      row_count: 1,
-      truncated: false,
-    }];
+    const evidence = [
+      {
+        source_id: "11111111-1111-4111-8111-111111111111",
+        chunk_id: "42",
+        source: "Allowed.pdf",
+        excerpt: "A grounded passage",
+        score: 0.91,
+      },
+    ];
+    const queryResults = [
+      {
+        id: "query-1",
+        sql: "SELECT category, sum(amount) FROM ledger GROUP BY category",
+        columns: ["category", "amount"],
+        rows: [["Food", 42]],
+        row_count: 1,
+        truncated: false,
+      },
+    ];
     qMock.mockResolvedValue([]);
-    listDatasetsMock.mockResolvedValue([]);
-    chatOnceMock
+    listDatasetCatalogMock.mockResolvedValue({ datasets: [], total: 0, returned: 0, omitted: 0, truncated: false });
+    streamingChatMock
       .mockResolvedValueOnce({
-        choices: [{ message: {
-          role: "assistant",
-          content: "",
-          tool_calls: [
-            { id: "retrieve-1", type: "function", function: { name: "retrieve", arguments: '{"query":"grounding"}' } },
-            { id: "query-1", type: "function", function: { name: "query_data", arguments: '{"sql":"SELECT 42"}' } },
-          ],
-        } }],
+        choices: [
+          {
+            message: {
+              role: "assistant",
+              content: "",
+              tool_calls: [
+                {
+                  id: "retrieve-1",
+                  type: "function",
+                  function: { name: "retrieve", arguments: '{"query":"grounding"}' },
+                },
+                { id: "query-1", type: "function", function: { name: "query_data", arguments: '{"sql":"SELECT 42"}' } },
+              ],
+            },
+          },
+        ],
       } as any)
-      .mockResolvedValueOnce({ choices: [{ message: { role: "assistant", content: "draft", tool_calls: [] } }] } as any);
+      .mockResolvedValueOnce({
+        choices: [{ message: { role: "assistant", content: "grounded data answer", tool_calls: [] } }],
+      } as any);
     executeToolMock.mockImplementation(async (_accountId, name, _args, context) => {
       if (name === "retrieve") {
         context.evidence = evidence;
@@ -182,14 +192,12 @@ describe("runAgent model snapshot", () => {
       }
       throw new Error(`unexpected tool ${name}`);
     });
-    streamingChatMock.mockResolvedValueOnce({
-      choices: [{ message: { role: "assistant", content: "grounded data answer", tool_calls: [] } }],
-    } as any);
     const emitted: any[] = [];
 
-    await runAgent({
+    const completion = await runAgent({
       accountId: "account-1",
       chatId: "chat-1",
+      runId: "11111111-1111-4111-8111-111111111111",
       content: "question",
       model: "selected-chat-model",
       sourceScope: emptyScope,
@@ -198,9 +206,7 @@ describe("runAgent model snapshot", () => {
       },
     });
 
-    const insert = qMock.mock.calls.find(([sql]) => String(sql).includes("INSERT INTO messages"));
-    const persistedMeta = JSON.parse(String(insert?.[1]?.[2]));
-    expect(persistedMeta).toEqual({
+    expect(completion.meta).toEqual({
       charts: [],
       report: null,
       model: "selected-chat-model",
@@ -209,44 +215,47 @@ describe("runAgent model snapshot", () => {
       evidence,
       query_results: queryResults,
     });
-    expect(emitted).toContainEqual(expect.objectContaining({
-      type: "message",
-      content: "grounded data answer",
-      meta: persistedMeta,
-    }));
+    expect(completion.content).toBe("grounded data answer");
+    expect(emitted.every((event) => event.type !== "message" && event.type !== "delta")).toBe(true);
   });
 
   it("uses the same evidence metadata contract when the iteration guard is exhausted", async () => {
-    const evidence = [{
-      source_id: "11111111-1111-4111-8111-111111111111",
-      chunk_id: "42",
-      source: "Allowed.pdf",
-      excerpt: "A grounded passage",
-      score: 0.91,
-    }];
+    const evidence = [
+      {
+        source_id: "11111111-1111-4111-8111-111111111111",
+        chunk_id: "42",
+        source: "Allowed.pdf",
+        excerpt: "A grounded passage",
+        score: 0.91,
+      },
+    ];
     qMock.mockResolvedValue([]);
-    listDatasetsMock.mockResolvedValue([]);
+    listDatasetCatalogMock.mockResolvedValue({ datasets: [], total: 0, returned: 0, omitted: 0, truncated: false });
     for (let index = 0; index < 8; index += 1) {
-      chatOnceMock.mockResolvedValueOnce({
-        choices: [{ message: {
-          role: "assistant",
-          content: "",
-          tool_calls: [{ id: `retrieve-${index}`, type: "function", function: { name: "retrieve", arguments: "{}" } }],
-        } }],
+      streamingChatMock.mockResolvedValueOnce({
+        choices: [
+          {
+            message: {
+              role: "assistant",
+              content: "",
+              tool_calls: [
+                { id: `retrieve-${index}`, type: "function", function: { name: "retrieve", arguments: "{}" } },
+              ],
+            },
+          },
+        ],
       } as any);
     }
-    chatOnceMock.mockResolvedValueOnce({
-      choices: [{ message: { role: "assistant", content: "guard answer", tool_calls: [] } }],
-    } as any);
     executeToolMock.mockImplementation(async (_accountId, _name, _args, context) => {
       context.evidence = evidence;
       return { passages: [] };
     });
     const emitted: any[] = [];
 
-    await runAgent({
+    const completion = await runAgent({
       accountId: "account-1",
       chatId: "chat-1",
+      runId: "11111111-1111-4111-8111-111111111111",
       content: "question",
       model: "selected-chat-model",
       sourceScope: emptyScope,
@@ -255,9 +264,7 @@ describe("runAgent model snapshot", () => {
       },
     });
 
-    const insert = qMock.mock.calls.find(([sql]) => String(sql).includes("INSERT INTO messages"));
-    const persistedMeta = JSON.parse(String(insert?.[1]?.[2]));
-    expect(persistedMeta).toEqual({
+    expect(completion.meta).toEqual({
       charts: [],
       report: null,
       model: "selected-chat-model",
@@ -266,7 +273,9 @@ describe("runAgent model snapshot", () => {
       evidence,
       query_results: [],
     });
-    expect(emitted).toContainEqual(expect.objectContaining({ type: "message", meta: persistedMeta }));
+    expect(completion.content).toContain("tool-step limit");
+    expect(streamingChatMock).toHaveBeenCalledTimes(8);
+    expect(emitted.every((event) => event.type !== "message" && event.type !== "delta")).toBe(true);
   });
 
   it("does not accept evidence from a retrieval that resolves after its timeout", async () => {
@@ -289,20 +298,22 @@ describe("runAgent model snapshot", () => {
       evidence: [priorEvidence],
       queryResults: [],
       chatId: "chat-1",
+      runId: "run-1",
       model: "selected-chat-model",
       sourceScope: emptyScope,
       readySourceIds: emptyScope.readySourceIds,
       readyTableNames: emptyScope.readyTableNames,
     };
     let completeLateRetrieval: (() => void) | undefined;
-    executeToolMock.mockImplementationOnce((_accountId, _name, _args, isolatedContext) => (
-      new Promise((resolve) => {
-        completeLateRetrieval = () => {
-          isolatedContext.evidence = [...isolatedContext.evidence, lateEvidence];
-          resolve({ passages: [] });
-        };
-      })
-    ));
+    executeToolMock.mockImplementationOnce(
+      (_accountId, _name, _args, isolatedContext) =>
+        new Promise((resolve) => {
+          completeLateRetrieval = () => {
+            isolatedContext.evidence = [...isolatedContext.evidence, lateEvidence];
+            resolve({ passages: [] });
+          };
+        })
+    );
     const messages: any[] = [];
     const emitted: any[] = [];
 
@@ -317,7 +328,12 @@ describe("runAgent model snapshot", () => {
     );
 
     expect(context.evidence).toEqual([priorEvidence]);
-    expect(emitted).toContainEqual({ type: "step-end", name: "retrieve", result: { error: "tool timed out" } });
+    expect(emitted).toContainEqual({
+      type: "step-end",
+      name: "retrieve",
+      summary: "The operation could not be completed.",
+      status: "error",
+    });
     expect(completeLateRetrieval).toBeTypeOf("function");
     completeLateRetrieval?.();
     await Promise.resolve();
@@ -346,20 +362,22 @@ describe("runAgent model snapshot", () => {
       evidence: [],
       queryResults: [priorQuery],
       chatId: "chat-1",
+      runId: "run-1",
       model: "selected-chat-model",
       sourceScope: emptyScope,
       readySourceIds: emptyScope.readySourceIds,
       readyTableNames: emptyScope.readyTableNames,
     };
     let completeLateQuery: (() => void) | undefined;
-    executeToolMock.mockImplementationOnce((_accountId, _name, _args, isolatedContext) => (
-      new Promise((resolve) => {
-        completeLateQuery = () => {
-          isolatedContext.queryResults = [...isolatedContext.queryResults, lateQuery];
-          resolve({ columns: ["n"], rows: [[2]], row_count: 1 });
-        };
-      })
-    ));
+    executeToolMock.mockImplementationOnce(
+      (_accountId, _name, _args, isolatedContext) =>
+        new Promise((resolve) => {
+          completeLateQuery = () => {
+            isolatedContext.queryResults = [...isolatedContext.queryResults, lateQuery];
+            resolve({ columns: ["n"], rows: [[2]], row_count: 1 });
+          };
+        })
+    );
     const emitted: any[] = [];
 
     await runToolRound(
@@ -373,18 +391,144 @@ describe("runAgent model snapshot", () => {
     );
 
     expect(context.queryResults).toEqual([priorQuery]);
-    expect(emitted).toContainEqual({ type: "step-end", name: "query_data", result: { error: "tool timed out" } });
+    expect(emitted).toContainEqual({
+      type: "step-end",
+      name: "query_data",
+      summary: "The operation could not be completed.",
+      status: "error",
+    });
     expect(completeLateQuery).toBeTypeOf("function");
     completeLateQuery?.();
     await Promise.resolve();
     expect(context.queryResults).toEqual([priorQuery]);
   });
 
-  it("builds the catalog only from selected tables and names attached unready sources", async () => {
-    listDatasetsMock.mockResolvedValueOnce([
-      { table: "allowed_table", original_name: "Allowed.csv", rows: 2, columns: [{ name: "amount", type: "DOUBLE" }] },
-      { table: "unselected_canary", original_name: "SECRET CANARY", rows: 1, columns: [] },
+  it("never emits raw tool arguments or results in execution events", async () => {
+    executeToolMock.mockResolvedValueOnce({ secret: "result-canary" });
+    const emitted: any[] = [];
+    await runToolRound(
+      "account-1",
+      "chat-1",
+      { id: "call-1", function: { name: "query_data", arguments: '{"sql":"argument-canary"}' } },
+      [],
+      {
+        chartIds: [],
+        evidence: [],
+        queryResults: [],
+        chatId: "chat-1",
+        runId: "run-1",
+        model: "model",
+        sourceScope: emptyScope,
+        readySourceIds: [],
+        readyTableNames: [],
+      },
+      (event) => emitted.push(event)
+    );
+    expect(JSON.stringify(emitted)).not.toContain("argument-canary");
+    expect(JSON.stringify(emitted)).not.toContain("result-canary");
+    expect(emitted).toEqual([
+      { type: "step-start", name: "query_data", summary: "Running a scoped data query." },
+      { type: "step-end", name: "query_data", summary: "Completed the scoped data query.", status: "ok" },
     ]);
+  });
+
+  it("selects the newest complete history messages within the character budget", () => {
+    const rows = [{ content: "old" }, { content: "middle" }, { content: "new" }];
+    const newestPairBudget = serializedAgentCharacterCount(rows[1]) + serializedAgentCharacterCount(rows[2]);
+    expect(selectRecentHistory(rows, newestPairBudget)).toEqual([{ content: "middle" }, { content: "new" }]);
+    expect(selectRecentHistory(rows, serializedAgentCharacterCount(rows[2]) - 1)).toEqual([]);
+  });
+
+  it("charges history JSON escapes without charging astral characters as two", () => {
+    const controls = [
+      { role: "user", content: "\u0001".repeat(32_000) },
+      { role: "assistant", content: "\u0001".repeat(32_000) },
+    ];
+    expect(selectRecentHistory(controls, 120_000)).toEqual([]);
+
+    const astral = [{ role: "assistant", content: "😀".repeat(100_000) }];
+    expect(selectRecentHistory(astral, 136_000)).toEqual(astral);
+  });
+
+  it("runs with repeated control-heavy legal history without exceeding the provider budget", async () => {
+    qMock.mockResolvedValueOnce([
+      { role: "user", content: "\u0001".repeat(32_000) },
+      { role: "assistant", content: "\u0001".repeat(32_000) },
+    ]);
+    listDatasetCatalogMock.mockResolvedValue({
+      datasets: [],
+      total: 0,
+      returned: 0,
+      omitted: 0,
+      truncated: false,
+    });
+    streamingChatMock.mockResolvedValueOnce({
+      choices: [{ message: { role: "assistant", content: "bounded answer", tool_calls: [] } }],
+    } as any);
+
+    await expect(
+      runAgent({
+        accountId: "account-1",
+        chatId: "chat-1",
+        runId: "11111111-1111-4111-8111-111111111111",
+        content: "question",
+        model: "selected-chat-model",
+        sourceScope: emptyScope,
+        emit: () => {},
+      })
+    ).resolves.toMatchObject({ content: "bounded answer" });
+    const providerMessages = streamingChatMock.mock.calls[0][0];
+    expect(providerMessages).toHaveLength(2);
+    expect(providerMessages[1]).toEqual({ role: "user", content: "question" });
+  });
+
+  it("preserves repeated legal astral history under the same serialized budget", async () => {
+    const emoji = "😀".repeat(32_000);
+    qMock.mockResolvedValueOnce([
+      { role: "user", content: emoji },
+      { role: "assistant", content: emoji },
+      { role: "user", content: emoji },
+    ]);
+    listDatasetCatalogMock.mockResolvedValue({
+      datasets: [],
+      total: 0,
+      returned: 0,
+      omitted: 0,
+      truncated: false,
+    });
+    streamingChatMock.mockResolvedValueOnce({
+      choices: [{ message: { role: "assistant", content: "astral answer", tool_calls: [] } }],
+    } as any);
+
+    await expect(
+      runAgent({
+        accountId: "account-1",
+        chatId: "chat-1",
+        runId: "11111111-1111-4111-8111-111111111111",
+        content: "question",
+        model: "selected-chat-model",
+        sourceScope: emptyScope,
+        emit: () => {},
+      })
+    ).resolves.toMatchObject({ content: "astral answer" });
+    expect(streamingChatMock.mock.calls[0][0]).toHaveLength(5);
+  });
+
+  it("builds the catalog only from selected tables and names attached unready sources", async () => {
+    listDatasetCatalogMock.mockResolvedValueOnce({
+      datasets: [
+        {
+          table: "allowed_table",
+          original_name: "Allowed.csv",
+          rows: 2,
+          columns: [{ name: "amount", type: "DOUBLE" }],
+        },
+      ],
+      total: 1,
+      returned: 1,
+      omitted: 0,
+      truncated: false,
+    });
     const sourceScope = Object.freeze({
       mode: "selected" as const,
       attached: Object.freeze([
@@ -418,6 +562,6 @@ describe("runAgent model snapshot", () => {
   it("does not call the account-wide catalog for explicit none", async () => {
     const prompt = await buildSystemPrompt("account-1", emptyScope);
     expect(prompt).toContain("No stored sources are attached to this chat.");
-    expect(listDatasetsMock).not.toHaveBeenCalled();
+    expect(listDatasetCatalogMock).not.toHaveBeenCalled();
   });
 });

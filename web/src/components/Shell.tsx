@@ -50,10 +50,15 @@ export function Shell({ children }: { children: React.ReactNode }) {
                   "group flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors",
                   isActive
                     ? "bg-gradient-to-r from-aurora-teal/15 to-aurora-violet/15 text-foreground"
-                    : "text-muted-foreground hover:bg-secondary hover:text-foreground"
+                    : "text-muted-foreground hover:bg-secondary hover:text-foreground",
                 )}
               >
-                <Icon className={cn("h-[18px] w-[18px]", isActive ? "text-aurora-teal" : "text-muted-foreground group-hover:text-foreground")} />
+                <Icon
+                  className={cn(
+                    "h-[18px] w-[18px]",
+                    isActive ? "text-aurora-teal" : "text-muted-foreground group-hover:text-foreground",
+                  )}
+                />
                 {item.label}
                 {item.href === "/reports" && <span className="ml-auto h-1.5 w-1.5 rounded-full bg-aurora-violet/70" />}
               </button>
@@ -63,7 +68,11 @@ export function Shell({ children }: { children: React.ReactNode }) {
 
         {/* new chat quick action */}
         <div className="px-3 pb-3">
-          <Button onClick={() => (window.location.hash = "/chat")} className="w-full" variant="aurora">
+          <Button
+            onClick={() => (window.location.hash = `/chat/new?request=${Date.now()}`)}
+            className="w-full"
+            variant="aurora"
+          >
             <Plus className="h-4 w-4" /> New chat
           </Button>
         </div>
