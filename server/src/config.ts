@@ -16,16 +16,45 @@ if (WEAK_JWT_SECRETS.has(JWT_SECRET) || JWT_SECRET.length < 32) {
   );
 }
 
+export interface ModelIds {
+  chatModel: string;
+  embedModel: string;
+}
+
+/** Validate the two operator-owned model roles without exposing their values. */
+export function validateModelIds(input: ModelIds): ModelIds {
+  const chatModel = input.chatModel.trim();
+  const embedModel = input.embedModel.trim();
+
+  if (chatModel.length < 1 || chatModel.length > 256) {
+    throw new Error("LITELLM_CHAT_MODEL must contain between 1 and 256 characters");
+  }
+  if (embedModel.length < 1 || embedModel.length > 256) {
+    throw new Error("LITELLM_EMBED_MODEL must contain between 1 and 256 characters");
+  }
+  if (chatModel === embedModel) {
+    throw new Error("LITELLM_CHAT_MODEL and LITELLM_EMBED_MODEL must be distinct");
+  }
+
+  return { chatModel, embedModel };
+}
+
+const modelIds = validateModelIds({
+  chatModel: process.env.LITELLM_CHAT_MODEL ?? "qwen-chat",
+  embedModel: process.env.LITELLM_EMBED_MODEL ?? "nomic-embed",
+});
+
 export const config = {
   port: Number(process.env.PORT || 3000),
+  host: process.env.HOST || "127.0.0.1",
   jwtSecret: JWT_SECRET,
-  databaseUrl: process.env.DATABASE_URL || "postgres://north:north_password@localhost:5433/north",
+  databaseUrl: process.env.DATABASE_URL || "postgres://borealis:borealis_password@localhost:5433/borealis",
 
   // LiteLLM / any OpenAI-compatible endpoint
   llmBaseUrl: process.env.LITELLM_BASE_URL || "http://localhost:4000",
-  llmApiKey: process.env.LITELLM_API_KEY || "sk-north-local",
-  chatModel: process.env.LITELLM_CHAT_MODEL || "qwen-chat",
-  embedModel: process.env.LITELLM_EMBED_MODEL || "nomic-embed",
+  llmApiKey: process.env.LITELLM_API_KEY || "sk-borealis-local",
+  chatModel: modelIds.chatModel,
+  embedModel: modelIds.embedModel,
   embeddingDim: Number(process.env.EMBEDDING_DIM || 768),
 
   pythonServiceUrl: process.env.PYTHON_SERVICE_URL || "http://localhost:8000",

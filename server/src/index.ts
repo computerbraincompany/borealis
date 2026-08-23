@@ -11,11 +11,11 @@ async function main() {
   await restoreDatasets().catch((e) => console.warn("dataset restore skipped", String(e)));
   const app = Fastify({ logger: true, bodyLimit: 20 * 1024 * 1024 });
   await app.register(cors, { origin: true, credentials: true });
-  app.get("/health", async () => ({ status: "ok", llm: config.llmBaseUrl, model: config.chatModel }));
+  app.get("/health", async () => ({ status: "ok" }));
   await authRoutes(app);
   await routes(app);
-  await app.listen({ port: config.port, host: "0.0.0.0" });
-  console.log(`North server listening on :${config.port}`);
+  await app.listen({ port: config.port, host: config.host });
+  console.log(`Borealis server listening on ${config.host}:${config.port}`);
 }
 
 main().catch((e) => {

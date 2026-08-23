@@ -10,6 +10,7 @@ export function SourcesView() {
   const [sources, setSources] = useState<Source[]>([]);
   const [busy, setBusy] = useState(false);
   const [uploading, setUploading] = useState<string | null>(null);
+  const [retrying, setRetrying] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const load = useCallback(async () => {
@@ -48,8 +49,19 @@ export function SourcesView() {
     await load();
   };
 
-  const readyCount = sources.filter((s) => s.status === "ready").length;
-  const pendingCount = sources.length - readyCount;
+  const retry = async (id: string) => {
+    setRetrying(id);
+    try {
+      await sourcesApi.reingest(id);
+      await load();
+    } catch (e: any) {
+      alert(`Retry failed: ${e.message}`);
+    } finally {
+      setRetrying(null);
+    }
+  };
+
+  const pendingCount = sources.filter((s) => s.status === "index").length;
 
   return (
     <div className="mx-auto max-w-5xl px-6 py-10">
@@ -82,7 +94,7 @@ export function SourcesView() {
       {uploading && (
         <div className="mt-4 rounded-xl border border-aurora-teal/20 bg-aurora-teal/5 px-4 py-3 text-sm text-foreground">
           <Loader2 className="mr-2 inline h-4 w-4 animate-spin text-aurora-teal" />
-          Uploading <span className="font-mono text-aurora-teal">{uploading}</span> — chunking and embedding in progress…
+          Uploading <span className="font-mono text-foreground">{uploading}</span> — chunking and embedding in progress…
         </div>
       )}
 
@@ -91,7 +103,7 @@ export function SourcesView() {
           <Card className="flex flex-col items-center gap-3 py-16 text-center">
             <Inbox className="h-10 w-10 text-muted-foreground/50" />
             <p className="text-sm text-muted-foreground">
-              No sources yet. Upload CSVs, spreadsheets, PDFs or documents so North can answer grounded questions.
+              No sources yet. Upload CSVs, spreadsheets, PDFs or documents so Borealis can answer grounded questions.
             </p>
             <p className="text-xs text-muted-foreground/70">
               Tip: run <code className="rounded bg-secondary px-1.5 py-0.5 font-mono text-[11px]">python data/generate_sample.py</code> for sample personal-finance data.
@@ -99,7 +111,7 @@ export function SourcesView() {
           </Card>
         )}
         {sources.map((s) => (
-          <Card key={s.id} className="flex items-center gap-4 p-4 transition-colors hover:border-white/10">
+          <Card key={s.id} className="flex items-center gap-4 p-4 transition-colors hover:border-foreground/20">
             <div
               className={cn(
                 "flex h-11 w-11 shrink-0 items-center justify-center rounded-xl",
@@ -116,7 +128,7 @@ export function SourcesView() {
                 ) : s.status === "index" ? (
                   <Badge variant="pending">processing</Badge>
                 ) : (
-                  <Badge variant="outline">{s.status}</Badge>
+                  <Badge variant="destructive">{s.status}</Badge>
                 )}
                 <Badge variant="secondary">{s.kind}</Badge>
               </div>
@@ -126,7 +138,23 @@ export function SourcesView() {
                 {s.tabular && <span className="text-aurora-teal">· {s.tabular.rows.toLocaleString()} rows · DuckDB table</span>}
                 <span>· uploaded {formatDate(s.created_at)}</span>
               </div>
+              {s.status === "error" && s.meta?.error && (
+                <p className="mt-1 truncate text-xs text-destructive" title={s.meta.error}>
+                  {s.meta.error}
+                </p>
+              )}
             </div>
+            {s.status === "error" && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => retry(s.id)}
+                disabled={retrying === s.id}
+                className="shrink-0"
+              >
+                <RefreshCw className={cn("h-4 w-4", retrying === s.id && "animate-spin")} /> Retry
+              </Button>
+            )}
             <Button variant="ghost" size="icon" onClick={() => remove(s.id)} title="Delete source" className="shrink-0 text-muted-foreground hover:text-destructive">
               <Trash2 className="h-4 w-4" />
             </Button>

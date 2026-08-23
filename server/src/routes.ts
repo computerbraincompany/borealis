@@ -6,10 +6,20 @@ import { v4 as uuid } from "uuid";
 import type { FastifyInstance } from "fastify";
 import { requireAuth, getAccountId } from "./auth.js";
 import { config } from "./config.js";
-import { q } from "./db.js";
-import { ingestSource } from "./ingest.js";
+import { pool, q } from "./db.js";
+import { ingestSource, isTabularSource, sanitizeDatasetName } from "./ingest.js";
 import { runAgent } from "./agent.js";
+import { discoverChatModels } from "./llm.js";
 import { py } from "./pythonClient.js";
+import {
+  assertSelectedSourcesAvailable,
+  parseSourceScopeInput,
+  replaceChatSourceScope,
+  resolveChatSourceScope,
+  SourceScopeError,
+  type SourceScopeInput,
+} from "./sourceScope.js";
+import { acceptChatTurn } from "./turnContext.js";
 
 export async function routes(app: FastifyInstance) {
   await app.register(import("@fastify/multipart"), { limits: { fileSize: 150 * 1024 * 1024 } });
@@ -20,29 +30,145 @@ export async function routes(app: FastifyInstance) {
     done();
   });
 
+  // --------------------------------------------------------------- models
+  app.get("/api/models", { preHandler: requireAuth }, async (req, reply) => {
+    const refresh = (req.query as { refresh?: unknown }).refresh === "1";
+    const result = await discoverChatModels({ refresh });
+    return reply.send({
+      models: result.models,
+      default_model: config.chatModel,
+      discovery: result.discovery,
+    });
+  });
+
   // ---------------------------------------------------------------- chats
   app.get("/api/chats", { preHandler: requireAuth }, async (req, reply) => {
-    const rows = await q(`SELECT id, title, created_at FROM chats WHERE account_id=$1 ORDER BY created_at DESC`, [getAccountId(req)]);
+    const rows = await q(`SELECT id, title, model, source_mode, created_at FROM chats WHERE account_id=$1 ORDER BY created_at DESC`, [getAccountId(req)]);
     return reply.send(rows);
   });
 
   app.post("/api/chats", { preHandler: requireAuth }, async (req, reply) => {
-    const body = req.body as { title?: string };
-    const [row] = await q(`INSERT INTO chats (id, account_id, title) VALUES ($1,$2,$3) RETURNING id, title, created_at`, [
-      uuid(),
-      getAccountId(req),
-      body.title || "New chat",
-    ]);
-    return reply.send(row);
+    let parsed: { title: string; scope: SourceScopeInput };
+    try {
+      parsed = parseChatCreateBody(req.body);
+    } catch (error) {
+      return sendSourceScopeError(reply, error);
+    }
+    const accountId = getAccountId(req);
+    const chatId = uuid();
+
+    // A legacy/all chat needs only one statement, which is already atomic.
+    if (parsed.scope.source_mode === "all") {
+      const [row] = await q(
+        `INSERT INTO chats (id, account_id, title, model, source_mode)
+         VALUES ($1,$2,$3,$4,'all')
+         RETURNING id, title, model, source_mode, created_at`,
+        [chatId, accountId, parsed.title, config.chatModel]
+      );
+      return reply.send(row);
+    }
+
+    const client = await pool.connect();
+    let inTransaction = false;
+    try {
+      await client.query("BEGIN");
+      inTransaction = true;
+      await assertSelectedSourcesAvailable(client, accountId, parsed.scope.source_ids);
+      const insert = await client.query(
+        `INSERT INTO chats (id, account_id, title, model, source_mode)
+         VALUES ($1,$2,$3,$4,'selected')
+         RETURNING id, title, model, source_mode, created_at`,
+        [chatId, accountId, parsed.title, config.chatModel]
+      );
+      if (parsed.scope.source_ids.length) {
+        await client.query(
+          `INSERT INTO chat_sources (chat_id, source_id, account_id)
+           SELECT $1, source_id, $2 FROM unnest($3::uuid[]) AS selected(source_id)`,
+          [chatId, accountId, parsed.scope.source_ids]
+        );
+      }
+      await client.query("COMMIT");
+      inTransaction = false;
+      return reply.send(insert.rows[0]);
+    } catch (error) {
+      if (inTransaction) await client.query("ROLLBACK").catch(() => {});
+      return sendSourceScopeError(reply, error);
+    } finally {
+      client.release();
+    }
   });
 
   app.get("/api/chats/:id", { preHandler: requireAuth }, async (req, reply) => {
     const chatId = (req.params as any).id;
     const account = getAccountId(req);
-    const [chat] = await q(`SELECT id, title, created_at FROM chats WHERE id=$1 AND account_id=$2`, [chatId, account]);
+    const client = await pool.connect();
+    let inTransaction = false;
+    try {
+      await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
+      inTransaction = true;
+      const chatResult = await client.query(
+        `SELECT id, title, model, created_at FROM chats WHERE id=$1 AND account_id=$2`,
+        [chatId, account]
+      );
+      const chat = chatResult.rows[0];
+      if (!chat) {
+        await client.query("ROLLBACK");
+        inTransaction = false;
+        return reply.code(404).send({ error: "chat not found" });
+      }
+      const sourceScope = await resolveChatSourceScope(client, account, chatId);
+      const msgs = await client.query(
+        `SELECT id, role, content, meta, created_at FROM messages WHERE chat_id=$1 ORDER BY id`,
+        [chatId]
+      );
+      await client.query("COMMIT");
+      inTransaction = false;
+      return reply.send({ ...chat, source_mode: sourceScope.mode, sources: sourceScope.attached, messages: msgs.rows });
+    } catch (error) {
+      if (inTransaction) await client.query("ROLLBACK").catch(() => {});
+      return sendSourceScopeError(reply, error);
+    } finally {
+      client.release();
+    }
+  });
+
+  app.put("/api/chats/:id/sources", { preHandler: requireAuth }, async (req, reply) => {
+    try {
+      const sourceScope = await replaceChatSourceScope(
+        getAccountId(req),
+        (req.params as any).id,
+        req.body
+      );
+      return reply.send({ source_mode: sourceScope.mode, sources: sourceScope.attached });
+    } catch (error) {
+      return sendSourceScopeError(reply, error);
+    }
+  });
+
+  app.patch("/api/chats/:id", { preHandler: requireAuth }, async (req, reply) => {
+    const body = req.body;
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+      return reply.code(400).send({ error: "body must contain exactly model" });
+    }
+    const keys = Object.keys(body);
+    if (keys.length !== 1 || keys[0] !== "model" || typeof (body as { model?: unknown }).model !== "string") {
+      return reply.code(400).send({ error: "body must contain exactly model" });
+    }
+    const model = (body as { model: string }).model.trim();
+    if (model.length < 1 || model.length > 256) {
+      return reply.code(400).send({ error: "model must contain between 1 and 256 characters" });
+    }
+    if (model === config.embedModel) {
+      return reply.code(400).send({ error: "embedding model cannot be selected for chat" });
+    }
+
+    const [chat] = await q(
+      `UPDATE chats SET model=$3 WHERE id=$1 AND account_id=$2
+       RETURNING id, title, model, source_mode, created_at`,
+      [(req.params as any).id, getAccountId(req), model]
+    );
     if (!chat) return reply.code(404).send({ error: "chat not found" });
-    const msgs = await q(`SELECT id, role, content, meta, created_at FROM messages WHERE chat_id=$1 ORDER BY id`, [chatId]);
-    return reply.send({ ...chat, messages: msgs });
+    return reply.send(chat);
   });
 
   app.delete("/api/chats/:id", { preHandler: requireAuth }, async (req, reply) => {
@@ -57,17 +183,19 @@ export async function routes(app: FastifyInstance) {
   app.post("/api/chats/:id/messages", { preHandler: requireAuth }, async (req, reply) => {
     const chatId = (req.params as any).id;
     const account = getAccountId(req);
-    const body = req.body as { content?: string };
-    const content = (body.content || "").trim();
+    const body = req.body as { content?: unknown } | undefined;
+    const content = typeof body?.content === "string" ? body.content.trim() : "";
     if (!content) return reply.code(400).send({ error: "empty message" });
+    if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).some((key) => key !== "content")) {
+      return reply.code(400).send({ error: "message body must contain only content" });
+    }
 
-    const [chat] = await q(`SELECT id FROM chats WHERE id=$1 AND account_id=$2`, [chatId, account]);
-    if (!chat) return reply.code(404).send({ error: "chat not found" });
-
-    const [countRow] = await q(`SELECT count(*)::int AS n FROM messages WHERE chat_id=$1`, [chatId]);
-    const isFirst = countRow?.n === 0;
-    const [userMsg] = await q(`INSERT INTO messages (chat_id, role, content) VALUES ($1,'user',$2) RETURNING id`, [chatId, content]);
-    if (isFirst) await q(`UPDATE chats SET title=$2 WHERE id=$1`, [chatId, content.slice(0, 80)]);
+    let turn;
+    try {
+      turn = await acceptChatTurn(account, chatId, content);
+    } catch (error) {
+      return sendSourceScopeError(reply, error);
+    }
 
     reply.raw.writeHead(200, {
       "Content-Type": "text/event-stream",
@@ -78,12 +206,13 @@ export async function routes(app: FastifyInstance) {
     const emit = (ev: any) => {
       reply.raw.write(`data: ${JSON.stringify(ev)}\n\n`);
     };
-    emit({ type: "user-saved", message_id: userMsg.id });
+    emit({ type: "user-saved", message_id: turn.userMessage.id });
 
     try {
-      await runAgent({ accountId: account, chatId, content, emit });
-    } catch (e: any) {
-      emit({ type: "error", message: String(e?.message || e) });
+      await runAgent({ accountId: account, ...turn, content: turn.userMessage.content, emit });
+    } catch (error: unknown) {
+      console.warn("agent run failed", safeAgentFailureSummary(error));
+      emit({ type: "error", message: publicAgentFailureMessage() });
     } finally {
       reply.raw.end();
     }
@@ -115,7 +244,7 @@ export async function routes(app: FastifyInstance) {
     const filePath = path.join(dir, `${ts}_${safeOriginal}`);
     await pipeline(file.file, createWriteStream(filePath));
 
-    const base = path.basename(safeOriginal, path.extname(safeOriginal)).toLowerCase().replace(/[^a-z0-9_]+/g, "_").replace(/^_+|_+$/g, "") || "dataset";
+    const base = sanitizeDatasetName(safeOriginal);
     let name = base;
     let n = 1;
     const exists = await q(`SELECT name FROM sources WHERE account_id=$1 AND name=$2`, [account, name]);
@@ -138,6 +267,40 @@ export async function routes(app: FastifyInstance) {
       displayName: safeOriginal,
     }).catch((e) => console.error("async ingest failed", e));
     return reply.send({ ...src, processing: true });
+  });
+
+  app.post("/api/sources/:id/reingest", { preHandler: requireAuth }, async (req, reply) => {
+    const account = getAccountId(req);
+    const id = (req.params as any).id;
+    const [src] = await q(`SELECT * FROM sources WHERE id=$1 AND account_id=$2`, [id, account]);
+    if (!src) return reply.code(404).send({ error: "source not found" });
+    if (!src.file_path) return reply.code(400).send({ error: "source has no uploaded file" });
+
+    let name = src.name;
+    if (!/^[a-z][a-z0-9_]{0,62}$/.test(name)) {
+      const base = sanitizeDatasetName(src.display_name || name);
+      name = base;
+      let n = 1;
+      while ((await q(`SELECT 1 FROM sources WHERE account_id=$1 AND name=$2 AND id<>$3`, [account, name, id])).length) {
+        name = `${base}_${n++}`;
+      }
+    }
+    const [updated] = await q(
+      `UPDATE sources SET name=$2, status='index', meta = meta - 'error' WHERE id=$1 RETURNING *`,
+      [id, name]
+    );
+    ingestSource({
+      accountId: account,
+      sourceId: src.id,
+      name,
+      filePath: src.file_path,
+      mime: src.mime || "application/octet-stream",
+      kind: src.kind,
+      displayName: src.display_name,
+      url: src.url || undefined,
+      connector: src.connector || undefined,
+    }).catch((e) => console.error("async reingest failed", e));
+    return reply.send({ ...updated, processing: true });
   });
 
   app.delete("/api/sources/:id", { preHandler: requireAuth }, async (req, reply) => {
@@ -252,13 +415,12 @@ export async function routes(app: FastifyInstance) {
     if (!row) return reply.code(404).send({ error: "report not found" });
     if (!row.html_path || !(await fs.access(row.html_path).then(() => true).catch(() => false)))
       return reply.code(404).send({ error: "html not available" });
-    // The report is fully self-contained (inline echarts, inline CSS, data: PNGs);
-    // the CDN fallback in reports.py is the only allowed external script.
+    // Keep in sync with python/app/reports.py CSP.
     return reply
       .header(
         "Content-Security-Policy",
-        "default-src 'none'; script-src 'unsafe-inline' https://cdn.jsdelivr.net; "
-          + "style-src 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'none'; "
+        "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
+          + "img-src data:; connect-src 'none'; "
           + "frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"
       )
       .header("X-Content-Type-Options", "nosniff")
@@ -302,9 +464,61 @@ export async function routes(app: FastifyInstance) {
   });
 }
 
+function parseChatCreateBody(body: unknown): { title: string; scope: SourceScopeInput } {
+  const value = body ?? {};
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new SourceScopeError(400, "invalid chat body");
+  }
+  const record = value as Record<string, unknown>;
+  const allowed = new Set(["title", "source_mode", "source_ids"]);
+  if (Object.keys(record).some((key) => !allowed.has(key))) {
+    throw new SourceScopeError(400, "invalid chat body");
+  }
+  if (record.title !== undefined && typeof record.title !== "string") {
+    throw new SourceScopeError(400, "invalid chat body");
+  }
+  const title = (record.title as string | undefined) || "New chat";
+  const hasMode = Object.prototype.hasOwnProperty.call(record, "source_mode");
+  const hasIds = Object.prototype.hasOwnProperty.call(record, "source_ids");
+  const scope = !hasMode && !hasIds
+    ? { source_mode: "all" as const }
+    : parseSourceScopeInput(Object.fromEntries(
+        Object.entries(record).filter(([key]) => key === "source_mode" || key === "source_ids")
+      ));
+  return { title, scope };
+}
+
+function sendSourceScopeError(reply: any, error: unknown) {
+  if (error instanceof SourceScopeError) {
+    return reply.code(error.statusCode).send({ error: error.message });
+  }
+  throw error;
+}
+
+export function publicAgentFailureMessage(): string {
+  return "The selected model could not complete this turn. Check the saved model and endpoint logs, then try again.";
+}
+
+function safeAgentFailureSummary(error: unknown): { name: string; status?: number; code?: string } {
+  if (!error || typeof error !== "object") return { name: "UnknownError" };
+  const value = error as { name?: unknown; status?: unknown; code?: unknown };
+  const stableLabel = (candidate: unknown): string | undefined => {
+    if (typeof candidate !== "string") return undefined;
+    return /^[A-Za-z][A-Za-z0-9_.:-]{0,79}$/.test(candidate) ? candidate : undefined;
+  };
+  const code = stableLabel(value.code);
+  return {
+    name: stableLabel(value.name) ?? "Error",
+    ...(typeof value.status === "number" && Number.isInteger(value.status) && value.status >= 100 && value.status <= 599
+      ? { status: value.status }
+      : {}),
+    ...(code ? { code } : {}),
+  };
+}
+
 function mimeKind(mime: string, filePath: string): string {
   const ext = path.extname(filePath).toLowerCase();
-  if (mime.includes("csv") || ext === ".csv" || ext === ".tsv" || ext === ".xlsx" || ext === ".xls" || ext === ".parquet" || ext === ".jsonl") return "tabular";
+  if (isTabularSource(filePath, mime)) return "tabular";
   if (mime.includes("pdf") || ext === ".pdf") return "document";
   if (mime.includes("word") || ext === ".docx" || ext === ".doc") return "document";
   return "document";
@@ -312,35 +526,44 @@ function mimeKind(mime: string, filePath: string): string {
 
 async function syncConnector(account: string, conn: any): Promise<any> {
   const configVal = typeof conn.config === "string" ? JSON.parse(conn.config) : conn.config;
+  const [src] = await q(
+    `SELECT id, file_path, name, kind FROM sources WHERE account_id=$1 AND connector=$2`,
+    [account, conn.id]
+  );
+  const display = configVal.name || conn.name;
   let dset: any;
-  if (conn.type === "url_csv") {
-    const existing = (await py.listDatasets(account).catch(() => [])).find((d: any) => d.table === conn.target_table);
-    dset = existing
-      ? await py.resync(account, conn.target_table, configVal.url)
-      : await py.registerDataset(account, conn.target_table, undefined, "url", configVal.url, configVal.name || conn.name);
+  if (src) {
+    dset = await py.resync(account, conn.target_table, configVal.url, display);
   } else {
-    dset = await py.registerDataset(account, conn.target_table, undefined, "url", configVal.url, configVal.name || conn.name);
+    dset = await py.registerDataset(account, conn.target_table, {
+      kind: "url",
+      url: configVal.url,
+      originalName: display,
+    });
   }
   // always regenerate RAG chunks from the fetched content
-  const [src] = await q(`SELECT id, file_path, name FROM sources WHERE account_id=$1 AND connector=$2`, [account, conn.id]);
-  const display = configVal.name || conn.name;
   if (src) {
+    const refreshedFilePath = typeof dset?.location === "string" && dset.location
+      ? dset.location
+      : src.file_path;
+    if (refreshedFilePath !== src.file_path) {
+      await q(`UPDATE sources SET file_path=$2 WHERE id=$1 AND account_id=$3`, [src.id, refreshedFilePath, account]);
+    }
     await ingestSource({
       accountId: account,
       sourceId: src.id,
       name: src.name,
-      filePath: src.file_path,
+      filePath: refreshedFilePath,
       mime: "text/csv",
       kind: src.kind,
       displayName: display,
       url: configVal.url,
       connector: conn.id,
     });
-    await q(`UPDATE sources SET status='ready', connector=$2 WHERE id=$1`, [src.id, conn.id]);
   } else {
     const [created] = await q(
       `INSERT INTO sources (id, account_id, name, kind, connector, display_name, file_path, url, mime, status)
-       VALUES ($1,$2,$3,'tabular',$4,$5,$6,$7,'text/csv','ready') RETURNING *`,
+       VALUES ($1,$2,$3,'tabular',$4,$5,$6,$7,'text/csv','index') RETURNING *`,
       [uuid(), account, conn.target_table, conn.id, display, (dset && dset.location) || "", configVal.url]
     );
     await ingestSource({

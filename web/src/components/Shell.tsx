@@ -2,6 +2,7 @@ import { MessageSquare, Database, Plug, FileText, LogOut, Plus, Sparkles } from 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { getUser, clearSession } from "@/lib/api";
+import { ThemeMenu } from "@/components/ThemeMenu";
 
 const NAV_ITEMS = [
   { href: "/chat", label: "Chat", icon: MessageSquare },
@@ -24,15 +25,15 @@ export function Shell({ children }: { children: React.ReactNode }) {
       <div className="aurora-top fixed inset-x-0 top-0 z-50 h-[2px] animate-shimmer" />
 
       {/* sidebar */}
-      <aside className="flex w-[232px] shrink-0 flex-col border-r bg-[#0b0f1d]/80 backdrop-blur">
+      <aside className="flex w-[232px] shrink-0 flex-col border-r bg-sidebar/90 backdrop-blur">
         {/* brand */}
         <div className="flex items-center gap-2.5 px-5 py-5">
           <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-aurora-teal to-aurora-violet shadow-lg shadow-aurora-violet/20">
-            <Sparkles className="h-5 w-5 text-slate-950" />
+            <Sparkles className="h-5 w-5 text-aurora-foreground" />
           </div>
           <div>
             <div className="text-[15px] font-bold tracking-tight text-foreground">Borealis</div>
-            <div className="text-[11px] text-muted-foreground -mt-0.5">Cohere North · open source</div>
+            <div className="text-[11px] text-muted-foreground -mt-0.5">ask your data · open source</div>
           </div>
         </div>
 
@@ -48,7 +49,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
                 className={cn(
                   "group flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors",
                   isActive
-                    ? "bg-gradient-to-r from-aurora-teal/15 to-aurora-violet/15 text-aurora-teal"
+                    ? "bg-gradient-to-r from-aurora-teal/15 to-aurora-violet/15 text-foreground"
                     : "text-muted-foreground hover:bg-secondary hover:text-foreground"
                 )}
               >
@@ -70,23 +71,27 @@ export function Shell({ children }: { children: React.ReactNode }) {
         {/* user */}
         <div className="border-t px-3 py-3">
           <div className="flex items-center gap-2.5 rounded-lg px-2 py-1.5">
-            <div className="flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-br from-aurora-blue to-aurora-violet text-xs font-bold text-slate-950">
+            <div className="flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-br from-aurora-blue to-aurora-violet text-xs font-bold text-aurora-foreground">
               {user?.email?.slice(0, 2).toUpperCase() ?? "B"}
             </div>
             <div className="min-w-0 flex-1">
               <div className="truncate text-[13px] font-medium text-foreground">{user?.email}</div>
               <div className="text-[11px] text-muted-foreground">Local instance</div>
             </div>
-            <button
-              title="Sign out"
-              onClick={() => {
-                clearSession();
-                window.location.hash = "/login";
-              }}
-              className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-secondary hover:text-destructive"
-            >
-              <LogOut className="h-4 w-4" />
-            </button>
+            <div className="flex shrink-0 items-center">
+              <ThemeMenu />
+              <button
+                title="Sign out"
+                aria-label="Sign out"
+                onClick={() => {
+                  clearSession();
+                  window.location.hash = "/login";
+                }}
+                className="rounded-md p-2 text-muted-foreground transition-colors hover:bg-secondary hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <LogOut className="h-4 w-4" />
+              </button>
+            </div>
           </div>
         </div>
       </aside>

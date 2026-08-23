@@ -38,13 +38,13 @@ row when done.
 
 | Plan | Title | Priority | Effort | Depends on | Status |
 |------|-------|----------|--------|------------|--------|
-| 013  | Remove all "North"/"Cohere North" mentions from the product — Borealis only | P1 | M | — | TODO |
+| 013  | Remove all "North"/"Cohere North" mentions from the product — Borealis only | P1 | M | — | DONE (Borealis rename + recoverable DB migration; verify green) |
 
 ### Pass 4 (incident diagnosis 2026-08-22 — user screencap, live-reproduced)
 
 | Plan | Title | Priority | Effort | Depends on | Status |
 |------|-------|----------|--------|------------|--------|
-| 014  | Fix ingest name mismatch (digit-leading table names), error recovery/reingest, raw `<think>` handling, duplicate thinking placeholder, European CSV parsing | P1 | L | — (Preflight: restart python :8000) | TODO |
+| 014  | Fix ingest name mismatch (digit-leading table names), error recovery/reingest, raw `<think>` handling, duplicate thinking placeholder, European CSV parsing | P1 | L | — (Preflight: restart python :8000) | DONE (live reingest + server/web/python gates) |
 
 ### Pass 5 (deep audit 2026-08-23, commit `567481d`)
 
@@ -54,12 +54,12 @@ source by the advisor). Recommended execution order: **014 → 015 → 016 → 0
 
 | Plan | Title | Priority | Effort | Depends on | Status |
 |------|-------|----------|--------|------------|--------|
-| 015  | Stop silently dropping data in the agent pipeline (garbled chart ids unreachable prefix-fallback, duplicate chunk tails, matplotlib figure leaks, streaming tool-call merge, cleanFinal whole-answer wipe) | P1 | M | 014 | TODO |
-| 016  | PDF reports contain their charts (static render mode for WeasyPrint) + build report HTML once instead of twice | P1 | M | — (before 018) | TODO |
-| 017  | DuckDB query path: per-account persistent connections + per-file load memoization (was: re-parse ALL datasets per tool call), LIMIT pushdown, single-pass describe, ±inf→null, /chart 400s, url_json cache extension | P2 | M | 014 | TODO |
-| 018  | Report-HTML hardening travels with the artifact: link-scheme allowlist + CSP embedded as meta (blob/file surfaces had none), drop unpinned CDN fallback | P2 | S-M | 016 | TODO |
-| 019  | Per-chat in-flight stream ownership across navigation; delta batching + memoized message rendering; connector create sync_error made visible | P2 | M | 014 | TODO |
-| 020  | scripts/dev.sh + scripts/verify.sh; truth-in-docs (stale "no tests yet", LM Studio model requirements, Linux WeasyPrint libs); default loopback binds (server HOST + compose port) | P2 | S | — | TODO |
+| 015  | Stop silently dropping data in the agent pipeline (garbled chart ids unreachable prefix-fallback, duplicate chunk tails, matplotlib figure leaks, streaming tool-call merge, cleanFinal whole-answer wipe) | P1 | M | 014 | DONE (29 server tests + 13 chart tests) |
+| 016  | PDF reports contain their charts (static render mode for WeasyPrint) + build report HTML once instead of twice | P1 | M | — (before 018) | DONE (PDF chart render verified) |
+| 017  | DuckDB query path: per-account persistent connections + per-file load memoization (was: re-parse ALL datasets per tool call), LIMIT pushdown, single-pass describe, ±inf→null, /chart 400s, url_json cache extension | P2 | M | 014 | DONE (77 Python tests) |
+| 018  | Report-HTML hardening travels with the artifact: link-scheme allowlist + CSP embedded as meta (blob/file surfaces had none), drop unpinned CDN fallback | P2 | S-M | 016 | DONE (CSP browser check + report suite) |
+| 019  | Per-chat in-flight stream ownership across navigation; delta batching + memoized message rendering; connector create sync_error made visible | P2 | M | 014 | DONE (web build + two-chat browser matrix) |
+| 020  | scripts/dev.sh + scripts/verify.sh; truth-in-docs (stale "no tests yet", LM Studio model requirements, Linux WeasyPrint libs); default loopback binds (server HOST + compose port) | P2 | S | — | DONE (`scripts/verify.sh` + compose/health gates) |
 
 ### Pass 6 (user-selected product features 2026-08-23, commit `e6e9d2b`)
 
@@ -69,9 +69,9 @@ between these steps as long as their own ordering is preserved.
 
 | Plan | Title | Priority | Effort | Depends on | Status |
 |------|-------|----------|--------|------------|--------|
-| 021  | Discover OpenAI-compatible models and persist the selected model per chat | P1 | M | 013, 014, 015, 019, 020 | TODO |
-| 022  | Select data sources per chat and enforce the immutable turn scope across prompt, RAG, DuckDB and reports | P1 | L | 013, 014, 015, 017, 019, 020, 021 | TODO |
-| 023  | Persistent Light/Dark/System app theme, semantic tokens and theme-aware chat charts | P2 | M | 013, 014, 019, 021, 022 | TODO |
+| 021  | Discover OpenAI-compatible models and persist the selected model per chat | P1 | M | 013, 014, 015, 019, 020 | DONE (63 server tests + web build; two-model live matrix pending availability) |
+| 022  | Select data sources per chat and enforce the immutable turn scope across prompt, RAG, DuckDB and reports | P1 | L | 013, 014, 015, 017, 019, 020, 021 | DONE (unit/integration/Python/web gates + live scoped API probes) |
+| 023  | Persistent Light/Dark/System app theme, semantic tokens and theme-aware chat charts | P2 | M | 013, 014, 019, 021, 022 | DONE (web build + static sweeps + Light/Dark/System chart/browser matrix) |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (one-line reason) | REJECTED (one-line rationale).
 

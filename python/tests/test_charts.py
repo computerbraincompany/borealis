@@ -89,3 +89,18 @@ def test_render_png_base64_returns_valid_png():
     b64 = charts.render_png_base64({**VALID_SPEC, "type": "pie"})
     raw = base64.b64decode(b64)
     assert raw[:4] == b"\x89PNG"
+
+
+def test_bad_pie_value_is_coerced_and_render_closes_figure():
+    spec = {"type": "pie", "items": [{"name": "x", "value": "abc"}]}
+
+    raw = charts.render_png(spec)
+
+    assert raw[:4] == b"\x89PNG"
+    assert charts.plt.get_fignums() == []
+
+
+def test_echarts_bad_pie_value_becomes_zero():
+    option = charts.echarts_option({"type": "pie", "items": [{"name": "x", "value": "abc"}]})
+
+    assert option["series"][0]["data"][0]["value"] == 0.0

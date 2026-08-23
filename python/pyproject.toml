@@ -1,7 +1,7 @@
 [project]
-name = "north-report-service"
+name = "borealis-report-service"
 version = "0.1.0"
-description = "North analysis, chart and report service (DuckDB + matplotlib + WeasyPrint)"
+description = "Borealis analysis, chart and report service (DuckDB + matplotlib + WeasyPrint)"
 requires-python = ">=3.12,<3.13"
 dependencies = [
     # fastapi pinned to 0.140.6: 0.140.7 removed get_flat_dependant, which

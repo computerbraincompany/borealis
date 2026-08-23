@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS sources (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   UNIQUE (account_id, name)
 );
+CREATE UNIQUE INDEX IF NOT EXISTS sources_id_account_uidx ON sources (id, account_id);
 
 CREATE TABLE IF NOT EXISTS chunks (
   id BIGSERIAL PRIMARY KEY,
@@ -57,8 +58,41 @@ CREATE TABLE IF NOT EXISTS chats (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   account_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   title TEXT NOT NULL DEFAULT 'New chat',
+  model TEXT,
+  source_mode TEXT NOT NULL DEFAULT 'all',
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+ALTER TABLE chats ADD COLUMN IF NOT EXISTS model TEXT;
+ALTER TABLE chats ADD COLUMN IF NOT EXISTS source_mode TEXT NOT NULL DEFAULT 'all';
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conname = 'chats_source_mode_check'
+      AND conrelid = 'chats'::regclass
+  ) THEN
+    ALTER TABLE chats
+      ADD CONSTRAINT chats_source_mode_check
+      CHECK (source_mode IN ('all', 'selected'));
+  END IF;
+END
+$$;
+CREATE UNIQUE INDEX IF NOT EXISTS chats_id_account_uidx ON chats (id, account_id);
+
+CREATE TABLE IF NOT EXISTS chat_sources (
+  chat_id UUID NOT NULL,
+  source_id UUID NOT NULL,
+  account_id UUID NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (chat_id, source_id),
+  FOREIGN KEY (chat_id, account_id)
+    REFERENCES chats(id, account_id) ON DELETE CASCADE,
+  FOREIGN KEY (source_id, account_id)
+    REFERENCES sources(id, account_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS chat_sources_source_idx
+  ON chat_sources (source_id, chat_id);
 
 CREATE TABLE IF NOT EXISTS messages (
   id BIGSERIAL PRIMARY KEY,
@@ -92,6 +126,8 @@ CREATE TABLE IF NOT EXISTS charts (
 
 export async function initDb() {
   await pool.query(SCHEMA);
+  await pool.query(`UPDATE chats SET model=$1 WHERE model IS NULL`, [config.chatModel]);
+  await pool.query(`ALTER TABLE chats ALTER COLUMN model SET NOT NULL`);
 }
 
 export async function q<T = any>(text: string, params?: any[]): Promise<T[]> {

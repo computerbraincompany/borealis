@@ -1,20 +1,22 @@
-# North MVP infrastructure. Only Postgres with pgvector is required.
+# Borealis infrastructure. Only Postgres with pgvector is required.
 # Zitadel/Redpanda are commented out as optional add-ons per the objective.
+name: borealis
+
 services:
   postgres:
     image: pgvector/pgvector:pg16
-    container_name: north-postgres
+    container_name: borealis-postgres
     environment:
-      POSTGRES_USER: north
-      POSTGRES_PASSWORD: north_password
-      POSTGRES_DB: north
+      POSTGRES_USER: borealis
+      POSTGRES_PASSWORD: borealis_password
+      POSTGRES_DB: borealis
     ports:
       # host 5433 (local Postgres may own 5432) -> container 5432
-      - "5433:5432"
+      - "127.0.0.1:5433:5432"
     volumes:
-      - north_pgdata:/var/lib/postgresql/data
+      - borealis_pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U north"]
+      test: ["CMD-SHELL", "pg_isready -U borealis"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -32,4 +34,5 @@ services:
   #   zitadel / redpanda — see README.
 
 volumes:
-  north_pgdata:
+  borealis_pgdata:
+    name: borealis_pgdata

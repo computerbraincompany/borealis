@@ -113,6 +113,8 @@ export async function api<T>(path: string, opts: RequestInit = {}): Promise<T> {
 export interface Chat {
   id: string;
   title: string;
+  model: string;
+  source_mode: SourceMode;
   created_at: string;
 }
 
@@ -120,12 +122,44 @@ export interface Message {
   id: string;
   role: "user" | "assistant" | "system";
   content: string;
-  meta?: { charts?: string[]; report?: string | null } | null;
+  meta?: {
+    charts?: string[];
+    report?: string | null;
+    model?: string;
+    source_mode?: SourceMode;
+    source_ids?: string[];
+  } | null;
   created_at: string;
 }
 
 export interface ChatDetail extends Chat {
   messages: Message[];
+  sources: AttachedSource[];
+}
+
+export type SourceMode = "all" | "selected";
+
+export interface AttachedSource {
+  id: string;
+  name: string;
+  display_name: string;
+  kind: string;
+  status: string;
+}
+
+export type SourceScopeInput =
+  | { source_mode: "all" }
+  | { source_mode: "selected"; source_ids: string[] };
+
+export interface ChatModelOption {
+  id: string;
+  owned_by?: string;
+}
+
+export interface ModelsResponse {
+  models: ChatModelOption[];
+  default_model: string;
+  discovery: "live" | "unavailable";
 }
 
 export interface Source {
@@ -135,6 +169,7 @@ export interface Source {
   display_name: string;
   mime: string;
   status: string;
+  meta?: { error?: string } | null;
   created_at: string;
   tabular?: { rows: number; table: string; original_name: string };
 }
@@ -179,9 +214,25 @@ export const authApi = {
 // ------------------------------------------------------------------ chats
 export const chatsApi = {
   list: () => api<Chat[]>("/api/chats"),
-  create: (title?: string) => api<Chat>("/api/chats", { method: "POST", body: JSON.stringify({ title }) }),
+  create: (title?: string) =>
+    api<Chat>("/api/chats", {
+      method: "POST",
+      body: JSON.stringify({ title, source_mode: "selected", source_ids: [] }),
+    }),
   get: (id: string) => api<ChatDetail>(`/api/chats/${id}`),
+  updateModel: (id: string, model: string) =>
+    api<Chat>(`/api/chats/${id}`, { method: "PATCH", body: JSON.stringify({ model }) }),
+  updateSources: (id: string, scope: SourceScopeInput) =>
+    api<{ source_mode: SourceMode; sources: AttachedSource[] }>(`/api/chats/${id}/sources`, {
+      method: "PUT",
+      body: JSON.stringify(scope),
+    }),
   remove: (id: string) => api<{ ok: true }>(`/api/chats/${id}`, { method: "DELETE" }),
+};
+
+// ------------------------------------------------------------------ models
+export const modelsApi = {
+  list: (refresh = false) => api<ModelsResponse>(`/api/models${refresh ? "?refresh=1" : ""}`),
 };
 
 // ------------------------------------------------------------------ sources
@@ -192,6 +243,7 @@ export const sourcesApi = {
     fd.append("file", file);
     return api<Source & { processing: boolean }>("/api/sources/upload", { method: "POST", body: fd });
   },
+  reingest: (id: string) => api<Source & { processing: boolean }>(`/api/sources/${id}/reingest`, { method: "POST" }),
   remove: (id: string) => api<{ ok: true }>(`/api/sources/${id}`, { method: "DELETE" }),
 };
 

@@ -4,7 +4,7 @@ import { getDocument, GlobalWorkerOptions } from "pdfjs-dist/legacy/build/pdf.mj
 import mammoth from "mammoth";
 import * as XLSX from "xlsx";
 import { config } from "./config.js";
-import { q } from "./db.js";
+import { pool, q } from "./db.js";
 import { embed } from "./llm.js";
 import { py } from "./pythonClient.js";
 
@@ -14,12 +14,59 @@ const EXT_TEXT = new Set([".txt", ".md", ".markdown", ".text", ".log"]);
 const EXT_TABULAR = new Set([".csv", ".tsv", ".xlsx", ".xls", ".parquet", ".jsonl", ".json"]);
 const EXT_DOC = new Set([".pdf", ".docx", ".doc"]);
 
+export function isTabularSource(filePath: string, mime: string): boolean {
+  const ext = path.extname(filePath).toLowerCase();
+  const normalizedMime = mime.toLowerCase();
+  return EXT_TABULAR.has(ext)
+    || normalizedMime.includes("csv")
+    || normalizedMime.includes("spreadsheet")
+    || normalizedMime.includes("excel")
+    || normalizedMime.includes("application/json")
+    || normalizedMime.includes("jsonlines");
+}
+
+export function datasetRegistrationForSource(source: {
+  filePath: string;
+  displayName: string;
+  url?: string;
+  connector?: string;
+}) {
+  return source.connector && source.url
+    ? {
+        location: source.filePath,
+        kind: "url" as const,
+        url: source.url,
+        originalName: source.displayName,
+      }
+    : {
+        location: source.filePath,
+        kind: "path" as const,
+        originalName: source.displayName,
+      };
+}
+
+/**
+ * Turn an uploaded filename into a table name accepted by python's TABLE_RE:
+ * lowercase letters/digits/underscores, starts with a letter, and leaves room
+ * within the 63-character limit for a `_N` deduplication suffix.
+ */
+export function sanitizeDatasetName(filename: string): string {
+  let base = path
+    .basename(filename, path.extname(filename))
+    .toLowerCase()
+    .replace(/[^a-z0-9_]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  if (base && !/^[a-z]/.test(base)) base = `d_${base}`;
+  return base.slice(0, 60) || "dataset";
+}
+
 export function chunkText(text: string, size = 900, overlap = 120): string[] {
   const clean = text.replace(/\s+/g, " ").trim();
   if (!clean) return [];
   const chunks: string[] = [];
   for (let i = 0; i < clean.length; i += size - overlap) {
     chunks.push(clean.slice(i, i + size));
+    if (i + size >= clean.length) break;
   }
   return chunks;
 }
@@ -82,11 +129,14 @@ export async function ingestSource(opts: {
 }) {
   const { accountId, sourceId, name, filePath, mime, kind, displayName, url, connector } = opts;
   await q(`UPDATE sources SET status='index' WHERE id=$1`, [sourceId]);
-  const ext = path.extname(filePath).toLowerCase();
-  const isTabular = EXT_TABULAR.has(ext) || mime.includes("csv") || mime.includes("spreadsheet") || mime.includes("excel");
+  const isTabular = isTabularSource(filePath, mime);
   try {
     if (isTabular) {
-      await py.registerDataset(accountId, name, filePath, "path", displayName, url);
+      await py.registerDataset(
+        accountId,
+        name,
+        datasetRegistrationForSource({ filePath, displayName, url, connector })
+      );
     }
     let text = "";
     try {
@@ -105,17 +155,46 @@ export async function ingestSource(opts: {
       content: c,
       embedding: `[${embeddings[i].join(",")}]`,
     }));
-    if (rows.length) {
-      await q(
-        `INSERT INTO chunks (account_id, source_id, source_name, content, embedding, meta)
-         SELECT $1, $2, $3, unnest($4::text[]), unnest($5::vector[]), $6::jsonb`,
-        [accountId, sourceId, displayName, rows.map((r) => r.content), rows.map((r) => r.embedding), JSON.stringify(meta)]
+    const sizeBytes = await fs.stat(filePath).then((stat) => stat.size);
+    const client = await pool.connect();
+    let inTransaction = false;
+    try {
+      await client.query("BEGIN");
+      inTransaction = true;
+      const lockedSource = await client.query(
+        `SELECT id FROM sources WHERE id=$1 AND account_id=$2 FOR UPDATE`,
+        [sourceId, accountId]
       );
+      if (!lockedSource.rows.length) throw new Error("source no longer exists");
+      await client.query(`DELETE FROM chunks WHERE source_id=$1 AND account_id=$2`, [sourceId, accountId]);
+      if (rows.length) {
+        await client.query(
+          `INSERT INTO chunks (account_id, source_id, source_name, content, embedding, meta)
+           SELECT $1, $2, $3, unnest($4::text[]), unnest($5::vector[]), $6::jsonb`,
+          [accountId, sourceId, displayName, rows.map((r) => r.content), rows.map((r) => r.embedding), JSON.stringify(meta)]
+        );
+      }
+      await client.query(
+        `UPDATE sources
+         SET status='ready', size_bytes=$3, meta=meta - 'error'
+         WHERE id=$1 AND account_id=$2`,
+        [sourceId, accountId, sizeBytes]
+      );
+      await client.query("COMMIT");
+      inTransaction = false;
+    } catch (error) {
+      if (inTransaction) await client.query("ROLLBACK").catch(() => {});
+      throw error;
+    } finally {
+      client.release();
     }
-    await q(`UPDATE sources SET status='ready', size_bytes=$2 WHERE id=$1`, [sourceId, await fs.stat(filePath).then((s) => s.size)]);
   } catch (e) {
     console.error("ingest failed", e);
-    await q(`UPDATE sources SET status='error' WHERE id=$1`, [sourceId]);
+    const detail = String(e instanceof Error ? e.message : e).slice(0, 500);
+    await q(
+      `UPDATE sources SET status='error', meta = meta || jsonb_build_object('error', $2::text) WHERE id=$1`,
+      [sourceId, detail]
+    );
     throw e;
   }
 }
@@ -128,11 +207,22 @@ export async function ingestSource(opts: {
  */
 export async function restoreDatasets(): Promise<void> {
   const sources = await q(
-    `SELECT account_id, name, file_path, display_name FROM sources WHERE kind='tabular' AND status='ready' AND file_path IS NOT NULL`
+    `SELECT account_id, name, file_path, display_name, url, connector
+     FROM sources
+     WHERE kind='tabular' AND status='ready' AND file_path IS NOT NULL`
   );
   for (const s of sources) {
     try {
-      await py.registerDataset(s.account_id, s.name, s.file_path, "path", s.display_name);
+      await py.registerDataset(
+        s.account_id,
+        s.name,
+        datasetRegistrationForSource({
+          filePath: s.file_path,
+          displayName: s.display_name,
+          url: s.url || undefined,
+          connector: s.connector || undefined,
+        })
+      );
     } catch (e) {
       console.warn("dataset restore failed:", s.name, String(e));
     }

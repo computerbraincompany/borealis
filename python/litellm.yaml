@@ -24,5 +24,5 @@ model_list:
       api_key: local-key
 
 general_settings:
-  master_key: sk-north-local
+  master_key: sk-borealis-local
   drop_params: true

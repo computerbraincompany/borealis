@@ -10,6 +10,12 @@ import {
 } from "echarts/components";
 import { CanvasRenderer } from "echarts/renderers";
 import { chartsApi, type ChartPayload } from "@/lib/api";
+import {
+  CANONICAL_CHART_PALETTE,
+  readChartThemeTokens,
+  themeChartOption,
+} from "@/lib/chartTheme";
+import { useTheme } from "@/components/ThemeProvider";
 import { Skeleton } from "@/components/ui/skeleton";
 
 echarts.use([
@@ -25,11 +31,9 @@ echarts.use([
   CanvasRenderer,
 ]);
 
-const AURORA_PALETTE = ["#2dd4bf", "#60a5fa", "#a78bfa", "#4ade80", "#fbbf24", "#fb7185", "#7dd3fc", "#f472b6"];
-
 /** Build a valid ECharts option from the canonical chart spec (normally the backend provides this too). */
 function optionFromSpec(spec: any): any {
-  const color = AURORA_PALETTE;
+  const color = CANONICAL_CHART_PALETTE;
   const isPie = spec.type === "pie" || spec.type === "donut";
   const series: any[] = isPie
     ? [
@@ -49,17 +53,18 @@ function optionFromSpec(spec: any): any {
       }));
   return {
     color,
-    title: { text: spec.title, subtext: spec.subtitle, left: "center", textStyle: { color: "#e2e8f0" }, subtextStyle: { color: "#94a3b8" } },
+    title: { text: spec.title, subtext: spec.subtitle, left: "center" },
     tooltip: { trigger: isPie ? "item" : "axis" },
-    legend: isPie ? { bottom: 0, textStyle: { color: "#94a3b8" } } : { top: "bottom", textStyle: { color: "#94a3b8" } },
+    legend: isPie ? { bottom: 0 } : { top: "bottom" },
     grid: isPie ? {} : { left: 48, right: 24, top: 56, bottom: 56, containLabel: true },
-    xAxis: isPie ? undefined : { type: "category", data: spec.categories || [], name: spec.x_label, axisLabel: { color: "#94a3b8" }, axisLine: { lineStyle: { color: "#2a3247" } }, nameTextStyle: { color: "#94a3b8" } },
-    yAxis: isPie ? undefined : { type: "value", name: spec.y_label, axisLabel: { color: "#94a3b8" }, splitLine: { lineStyle: { color: "#1c2334" } }, nameTextStyle: { color: "#94a3b8" } },
+    xAxis: isPie ? undefined : { type: "category", data: spec.categories || [], name: spec.x_label },
+    yAxis: isPie ? undefined : { type: "value", name: spec.y_label },
     series,
   };
 }
 
 export function ChartCard({ chartId, className }: { chartId: string; className?: string }) {
+  const { resolvedTheme } = useTheme();
   const ref = useRef<HTMLDivElement>(null);
   const [data, setData] = useState<ChartPayload | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -83,18 +88,19 @@ export function ChartCard({ chartId, className }: { chartId: string; className?:
 
   useEffect(() => {
     if (!data || !ref.current) return;
-    const option = data.echarts ?? (data.spec ? optionFromSpec(data.spec) : null);
-    if (!option) return;
+    const baseOption = data.echarts ?? (data.spec ? optionFromSpec(data.spec) : null);
+    if (!baseOption) return;
+    const themedOption = themeChartOption(baseOption, readChartThemeTokens());
     if (!chartRef.current) chartRef.current = echarts.init(ref.current);
-    chartRef.current.setOption(option);
+    chartRef.current.setOption(themedOption, { notMerge: true });
     const onResize = () => chartRef.current?.resize();
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
-  }, [data]);
+  }, [data, resolvedTheme]);
 
   if (error) {
     return (
-      <div className="embedded-chart py-4 text-center text-sm text-muted-foreground">
+      <div className="embedded-chart py-4 text-center text-sm text-destructive" role="alert">
         Couldn't load chart: {error}
       </div>
     );
@@ -117,7 +123,7 @@ export function ChartCard({ chartId, className }: { chartId: string; className?:
         {data.png_base64 && (
           <div className="flex items-center justify-end gap-3 px-2 pb-1">
             <a
-              className="text-[11px] text-muted-foreground hover:text-aurora-teal"
+              className="rounded-sm text-[11px] text-muted-foreground hover:text-aurora-teal focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               title="PNG export (from Python service)"
               href={`data:image/png;base64,${data.png_base64}`}
               download={`${title.replace(/\s+/g, "_")}.png`}

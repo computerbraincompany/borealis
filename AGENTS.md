@@ -1,4 +1,4 @@
-# Borealis — Cohere North open-source MVP clone
+# Borealis — open-source agentic data workspace
 
 Agentic chat over uploaded documents and tabular data, plus HTML/PDF report generation,
 backed by a local LiteLLM proxy that talks to LM Studio (any OpenAI-compatible API).
@@ -30,7 +30,7 @@ cd python && uv sync                           # first time; installs deps (fast
 cd python && env DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/lib .venv/bin/uvicorn app.main:app --port 8000
                                                # report service (8000); on macOS the DYLD var is REQUIRED so WeasyPrint finds glib/pango
 cd python && uv run litellm --config litellm.yaml --port 4000   # LLM proxy (4000); must run from uv env (Docker route commented out)
-cd server && npm install && cp .env.example .env   # server setup
+cd server && npm install && cp .env.example .env   # then set JWT_SECRET using: openssl rand -base64 32
 cd server && npm run dev                       # server (3000); on boot it re-registers tabular sources with the python service
 cd server && npm run typecheck                 # tsc --noEmit
 cd server && npm run build                     # tsc
@@ -38,8 +38,10 @@ cd web && npm install && npm run dev           # frontend (5173)
 cd web && npm run build                        # frontend typecheck + production build
 ```
 
-There are no tests yet. The docker-compose comment references `scripts/dev.sh`
-but that script does not exist.
+Test/typecheck gates (all offline, no services needed):
+`cd server && npm test`, `cd python && uv run pytest`, `cd web && npm run typecheck`
+— or run everything via `scripts/verify.sh`. Dev orchestration: `scripts/dev.sh`
+(brings up postgres, python service, litellm proxy, server, web).
 
 ## Data flow
 
@@ -47,10 +49,13 @@ but that script does not exist.
    `ingestSource` runs async: tabular files register with the Python service (which
    makes them DuckDB tables), all files are chunked and embedded into Postgres
    `chunks` (pgvector, HNSW index).
-2. Chat at `POST /api/chats/:id/messages` streams SSE agent events from
-   `server/src/agent.ts` (tool loop, max 8 iterations).
+2. Chat at `POST /api/chats/:id/messages` accepts the model, source mode,
+   concrete ready source IDs, and user message in one repeatable-read transaction,
+   then streams SSE agent events from `server/src/agent.ts` (max 8 iterations).
 3. Agent tools (`server/src/tools.ts`): `retrieve`, `list_sources`, `query_data`,
-   `describe_data`, `render_chart`, `create_report`, `fetch_url`.
+   `describe_data`, `render_chart`, `create_report`, `fetch_url`. Every stored-data
+   tool consumes that immutable source snapshot; `fetch_url` is the separate web
+   capability and does not use stored-source scope.
 4. Reports: agent assembles markdown sections + chart ids; Python builds a
    self-contained HTML (ECharts inlined) and a PDF (matplotlib PNGs + WeasyPrint);
    both are written to `reports_storage/` by the server.
@@ -68,7 +73,19 @@ but that script does not exist.
   now happens on **server boot**: `restoreDatasets()` in `ingest.ts` re-registers every
   `ready` tabular source from the DB. So after restarting the python service, restart
   the server (or re-upload) to repopulate the registry. Manual CSVs still need a
-  register via the API (or a server restart) — files don't hot-reload.
+  register via the API (or a server restart) because new files are not auto-discovered.
+  Files that are already registered are signature-checked and reload into a scoped
+  catalog on the next query or describe call after they change.
+- Chat source state has three load-bearing meanings: `all` dynamically includes
+  current/future account sources; `selected` plus rows is a stable allowlist;
+  `selected` plus zero rows means none and must never widen to all. New web chats
+  start selected-empty; legacy API omission remains all. Only ready attachments
+  enter a turn's concrete source/table arrays.
+- Python `/query` and `/describe` require the server-derived `allowed_tables`
+  list. Scoped DuckDB catalogs are keyed by account and sorted allowlist, capped
+  at eight per account, and disable external access after trusted files load.
+  New data-access tools must enforce the same immutable scope at their lowest
+  boundary rather than relying on UI filtering or prompt text.
 - `python/pyproject.toml` pins `fastapi>=0.140.6,<0.140.7`: fastapi 0.140.7 removed
   `get_flat_dependant`, which litellm 1.97.0's proxy still imports. Don't bump fastapi.
 - openai-node (>=4.104) defaults `encoding_format` to `base64` and blindly decodes
@@ -85,7 +102,8 @@ but that script does not exist.
   `nomic-embed`).
 - Storage paths are derived relative to the repo root in `server/src/config.ts`
   (`uploads/`, `reports_storage/`) and `python/app/main.py` + `datasets.py`
-  (`NORTH_STORAGE_DIR`, default `<repo>/uploads`). Override via env vars.
+  (`BOREALIS_STORAGE_DIR`, with legacy `NORTH_STORAGE_DIR` fallback; default
+  `<repo>/uploads`). Override via env vars.
   `.env` is gitignored; `server/.env.example` documents every variable.
 - Body limit is 20MB (server) / 150MB (uploads route).
 

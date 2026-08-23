@@ -1,13 +1,15 @@
 import type OpenAI from "openai";
 import { chatOnce, ChatMessage, streamingChat } from "./llm.js";
-import { TOOL_DEFS, executeTool } from "./tools.js";
+import { TOOL_DEFS, executeTool, type ToolRunContext } from "./tools.js";
 import { q } from "./db.js";
 import { py } from "./pythonClient.js";
+import type { ResolvedSourceScope } from "./sourceScope.js";
 
 export type AgentEvent =
   | { type: "step-start"; name: string; args: any }
   | { type: "step-end"; name: string; result: any }
   | { type: "delta"; text: string }
+  | { type: "reasoning"; text: string }
   | { type: "message"; roles: string[]; content: string; meta: any }
   | { type: "done" }
   | { type: "error"; message: string };
@@ -17,12 +19,13 @@ const MAX_ITERATIONS = 8;
 /** Qwen-style models sometimes prefix answers with a "Thinking:" block. */
 export function cleanFinal(text: string): string {
   let t = text.trim();
+  t = t.replace(/<think>[\s\S]*?<\/think>/gi, "").replace(/<think>[\s\S]*$/i, "").trim();
   // Strip a leading "Thinking Process/Thought/Reasoning: ..." block up to the
   // first blank line (the first line may carry intro text after the colon).
   const first = t.split("\n")[0] || "";
   if (/^\s*(Thinking Process|Thinking|Thought Process|Thought|Reasoning)[:\-]?\s*/i.test(first)) {
     const nl = t.search(/\n\s*\n/);
-    t = nl >= 0 ? t.slice(nl) : "";
+    t = nl >= 0 ? t.slice(nl) : t.replace(/^[^\n]*\n?/, "");
   }
   // Repeatedly strip leading "Final Answer:" / "Answer:" labels (loop-safe).
   let prev: string;
@@ -34,12 +37,16 @@ export function cleanFinal(text: string): string {
   return t.trim();
 }
 
-async function buildSystemPrompt(accountId: string): Promise<string> {
-  let catalog = "No tabular data sources connected yet.\n";
-  try {
-    const ds = await py.listDatasets(accountId);
-    if (ds.length) {
-      catalog = ds
+export async function buildSystemPrompt(accountId: string, sourceScope: ResolvedSourceScope): Promise<string> {
+  const allowedTables = new Set(sourceScope.readyTableNames);
+  let catalog = sourceScope.mode === "selected" && sourceScope.attached.length === 0
+    ? "No stored sources are attached to this chat."
+    : "No ready tabular data sources are attached to this chat.";
+  if (allowedTables.size) {
+    try {
+      const ds = (await py.listDatasets(accountId)).filter((dataset: any) => allowedTables.has(String(dataset.table)));
+      if (ds.length) {
+        catalog = ds
         .map((d: any) => {
           const cols = (d.columns || [])
             .map((c: any) => `${c.name}:${c.type}`)
@@ -47,11 +54,16 @@ async function buildSystemPrompt(accountId: string): Promise<string> {
           return `- table "${d.table}" (display "${d.original_name}", ${d.rows} rows)\n    columns: ${cols}`;
         })
         .join("\n");
+      }
+    } catch (e) {
+      catalog = "(selected catalog unavailable: " + String(e) + ")";
     }
-  } catch (e) {
-    catalog = "(catalog unavailable: " + String(e) + ")";
   }
-  return `You are North, a grounded agentic assistant for an organization. You help people get answers and polished deliverables from their connected data.
+  const unavailable = sourceScope.attached.filter((source) => source.status !== "ready");
+  const unavailableSummary = unavailable.length
+    ? unavailable.map((source) => `- ${source.display_name} (${source.kind}): ${source.status}`).join("\n")
+    : "None.";
+  return `You are Borealis, a grounded agentic assistant for an organization. You help people get answers and polished deliverables from their connected data.
 
 ## Behavior
 - Think step by step, but never show raw chain-of-thought. Explain what you are doing in a short lead-in before tool calls.
@@ -63,10 +75,13 @@ async function buildSystemPrompt(accountId: string): Promise<string> {
 
 ## Tool usage rules (hard requirements)
 - NEVER describe in prose a tool you are about to call. If you intend to use a tool — including at the very end of the turn — you MUST emit its function call instead of announcing it in text. Announces-without-calling are not allowed.
-- When the user asks for a report, PDF, deliverable or "final document", you MUST call create_report with the title, sections (markdown, including the key numbers), the chart ids from render_chart in THIS conversation, and any data tables. Then briefly summarize the created report in your answer.
+- When the user asks for a report, PDF, deliverable or "final document", you MUST call create_report with the title, sections (markdown, including the key numbers), the chart ids from render_chart in THIS run, and any data tables. Then briefly summarize the created report in your answer.
 
-## Connected data sources (exact DuckDB catalog — quote table/column names exactly, SQL identifiers are case-insensitive via read of schema here)
+## Stored data sources selected for this chat (exact ready DuckDB catalog — quote table/column names exactly, SQL identifiers are case-insensitive via read of schema here)
 ${catalog}
+
+## Attached sources not ready for this run
+${unavailableSummary}
 
 ## Data tips
 - Dates: prefer strftime or date_trunc. DuckDB supports standard SQL.
@@ -78,14 +93,22 @@ export async function runAgent(opts: {
   accountId: string;
   chatId: string;
   content: string;
+  model: string;
+  sourceScope: ResolvedSourceScope;
+  userMessage?: { id: number | string };
   emit: (event: AgentEvent) => Promise<void> | void;
 }): Promise<void> {
-  const { accountId, chatId, content, emit } = opts;
+  const { accountId, chatId, content, model, sourceScope, userMessage, emit } = opts;
   // load conversation
-  const prior = await q(
-    `SELECT role, content, meta FROM messages WHERE chat_id=$1 ORDER BY id`,
-    [chatId]
-  );
+  const prior = userMessage
+    ? await q(
+        `SELECT role, content, meta FROM messages WHERE chat_id=$1 AND id < $2 ORDER BY id`,
+        [chatId, userMessage.id]
+      )
+    : await q(
+        `SELECT role, content, meta FROM messages WHERE chat_id=$1 ORDER BY id`,
+        [chatId]
+      );
   const messages: ChatMessage[] = [];
   for (const m of prior) {
     if (!m.content) continue;
@@ -93,17 +116,28 @@ export async function runAgent(opts: {
   }
   messages.push({ role: "user", content });
 
-  const system: ChatMessage = { role: "system", content: await buildSystemPrompt(accountId) };
-  const context: { chartIds: string[]; reportId?: string; chatId?: string } = { chartIds: [], chatId };
+  const system: ChatMessage = { role: "system", content: await buildSystemPrompt(accountId, sourceScope) };
+  const context: ToolRunContext = {
+    chartIds: [],
+    chatId,
+    model,
+    sourceScope,
+    readySourceIds: Object.freeze([...sourceScope.readySourceIds]),
+    readyTableNames: Object.freeze([...sourceScope.readyTableNames]),
+  };
 
   let guard = 0;
   while (guard++ < MAX_ITERATIONS) {
-    const res = await chatOnce([system, ...messages], { maxTokens: 2400, tools: TOOL_DEFS });
+    const res = await chatOnce([system, ...messages], { model, maxTokens: 2400, tools: TOOL_DEFS });
     const msg = res.choices[0].message;
     let toolCalls = (msg.tool_calls as any[]) || [];
     if (!toolCalls.length) {
       // final answer — stream to the user; a tool call may still arrive in the stream
-      const streamed = await streamingChat([system, ...messages], { maxTokens: 2400, tools: TOOL_DEFS }, (t) => emit({ type: "delta", text: t }));
+      const streamed = await streamingChat(
+        [system, ...messages],
+        { model, maxTokens: 2400, tools: TOOL_DEFS, onReasoning: (t) => emit({ type: "reasoning", text: t }) },
+        (t) => emit({ type: "delta", text: t })
+      );
       const smsg = streamed.choices[0].message;
       toolCalls = (smsg.tool_calls as any[]) || [];
       if (toolCalls.length) {
@@ -119,6 +153,9 @@ export async function runAgent(opts: {
       const meta = {
         charts: context.chartIds,
         report: context.reportId || null,
+        model,
+        source_mode: sourceScope.mode,
+        source_ids: [...sourceScope.readySourceIds],
       };
       await q(`INSERT INTO messages (chat_id, role, content, meta) VALUES ($1,'assistant',$2,$3)`, [
         chatId,
@@ -138,10 +175,16 @@ export async function runAgent(opts: {
   }
   // exhausted guard
   const msg2 = (
-    await chatOnce([system, ...messages], { maxTokens: 2400, tools: TOOL_DEFS })
+    await chatOnce([system, ...messages], { model, maxTokens: 2400, tools: TOOL_DEFS })
   ).choices[0].message;
-  const final = msg2.content || "I ran into too many steps — try again with a more specific request.";
-  const meta = { charts: context.chartIds, report: context.reportId || null };
+  const final = cleanFinal(msg2.content || "I ran into too many steps — try again with a more specific request.");
+  const meta = {
+    charts: context.chartIds,
+    report: context.reportId || null,
+    model,
+    source_mode: sourceScope.mode,
+    source_ids: [...sourceScope.readySourceIds],
+  };
   await q(`INSERT INTO messages (chat_id, role, content, meta) VALUES ($1,'assistant',$2,$3)`, [chatId, final, JSON.stringify(meta)]);
   emit({ type: "delta", text: final });
   emit({ type: "message", roles: [], content: final, meta });
@@ -153,7 +196,7 @@ async function runToolRound(
   chatId: string,
   tc: any,
   messages: ChatMessage[],
-  context: { chartIds: string[]; reportId?: string },
+  context: ToolRunContext,
   emit: (event: AgentEvent) => void,
   maxMs = 120000
 ): Promise<void> {

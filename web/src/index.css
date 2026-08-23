@@ -4,32 +4,111 @@
 
 @layer base {
   :root {
+    color-scheme: light;
+    --background: 210 40% 98%;
+    --foreground: 222 47% 11%;
+    --card: 0 0% 100%;
+    --card-foreground: 222 47% 11%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 47% 11%;
+    --primary: 173 80% 28%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 214 32% 94%;
+    --secondary-foreground: 222 35% 18%;
+    --muted: 214 30% 95%;
+    --muted-foreground: 215 18% 37%;
+    --accent: 211 31% 92%;
+    --accent-foreground: 222 47% 11%;
+    --destructive: 0 72% 42%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 214 27% 84%;
+    --input: 215 18% 52%;
+    --ring: 217 91% 45%;
+    --sidebar: 212 38% 96%;
+    --surface-subtle: 214 34% 95%;
+    --code-background: 218 31% 94%;
+    --code-foreground: 222 47% 15%;
+    --success: 142 72% 29%;
+    --success-foreground: 0 0% 100%;
+    --warning: 32 92% 31%;
+    --warning-foreground: 0 0% 100%;
+    --aurora-teal: 173 80% 28%;
+    --aurora-blue: 217 91% 45%;
+    --aurora-violet: 263 70% 50%;
+    --aurora-green: 142 72% 29%;
+    --aurora-foreground: 0 0% 100%;
+    --chart-text: 222 47% 15%;
+    --chart-muted: 215 18% 37%;
+    --chart-grid: 214 27% 84%;
+    --chart-line: 215 18% 52%;
+    --chart-tooltip: 0 0% 100%;
+    --chart-tooltip-border: 214 27% 76%;
+    --chart-tooltip-foreground: 222 47% 11%;
+    --syntax-comment: 215 18% 37%;
+    --syntax-keyword: 263 70% 43%;
+    --syntax-string: 142 72% 26%;
+    --syntax-number: 217 91% 40%;
+    --syntax-title: 173 80% 25%;
+    --syntax-addition: 142 72% 26%;
+    --syntax-deletion: 0 72% 42%;
+    --radius: 0.75rem;
+  }
+
+  .dark {
+    color-scheme: dark;
     --background: 226 45% 8%;
     --foreground: 216 33% 94%;
     --card: 225 42% 11%;
     --card-foreground: 216 33% 94%;
     --popover: 225 42% 11%;
     --popover-foreground: 216 33% 94%;
-    --primary: 169 74% 50%;
+    --primary: 172 66% 50%;
     --primary-foreground: 226 45% 8%;
     --secondary: 227 30% 16%;
-    --secondary-foreground: 216 20% 80%;
+    --secondary-foreground: 216 20% 84%;
     --muted: 227 28% 15%;
-    --muted-foreground: 220 12% 62%;
+    --muted-foreground: 218 14% 68%;
     --accent: 227 30% 17%;
     --accent-foreground: 216 33% 94%;
-    --destructive: 0 72% 51%;
-    --destructive-foreground: 216 33% 94%;
-    --border: 226 25% 17%;
-    --input: 226 25% 17%;
-    --ring: 169 74% 50%;
-    --radius: 0.75rem;
+    --destructive: 0 85% 70%;
+    --destructive-foreground: 226 45% 8%;
+    --border: 226 25% 22%;
+    --input: 220 18% 44%;
+    --ring: 172 66% 50%;
+    --sidebar: 225 45% 9%;
+    --surface-subtle: 226 32% 13%;
+    --code-background: 226 40% 8%;
+    --code-foreground: 216 33% 94%;
+    --success: 142 69% 58%;
+    --success-foreground: 226 45% 8%;
+    --warning: 45 93% 58%;
+    --warning-foreground: 226 45% 8%;
+    --aurora-teal: 172 66% 50%;
+    --aurora-blue: 213 94% 68%;
+    --aurora-violet: 255 92% 76%;
+    --aurora-green: 142 69% 58%;
+    --aurora-foreground: 226 45% 8%;
+    --chart-text: 216 33% 94%;
+    --chart-muted: 218 14% 68%;
+    --chart-grid: 226 25% 22%;
+    --chart-line: 220 18% 44%;
+    --chart-tooltip: 225 42% 11%;
+    --chart-tooltip-border: 220 18% 44%;
+    --chart-tooltip-foreground: 216 33% 94%;
+    --syntax-comment: 218 14% 68%;
+    --syntax-keyword: 255 92% 76%;
+    --syntax-string: 142 69% 65%;
+    --syntax-number: 213 94% 73%;
+    --syntax-title: 172 66% 58%;
+    --syntax-addition: 142 69% 65%;
+    --syntax-deletion: 0 85% 74%;
   }
-}
 
-@layer base {
   * {
     @apply border-border;
+  }
+  html {
+    @apply bg-background;
   }
   body {
     @apply bg-background text-foreground antialiased;
@@ -39,12 +118,18 @@
 
 /* thin aurora glow bar under the top edge of the app */
 .aurora-top {
-  background: linear-gradient(90deg, #2dd4bf, #60a5fa, #a78bfa, #2dd4bf);
+  background: linear-gradient(
+    90deg,
+    hsl(var(--aurora-teal)),
+    hsl(var(--aurora-blue)),
+    hsl(var(--aurora-violet)),
+    hsl(var(--aurora-teal))
+  );
   background-size: 300% 100%;
 }
 
 ::selection {
-  background: rgba(45, 212, 191, 0.35);
+  background: hsl(var(--aurora-teal) / 0.25);
 }
 
 /* custom scrollbar */
@@ -56,19 +141,20 @@
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: hsl(227 25% 20%);
+  background: hsl(var(--muted-foreground) / 0.42);
   border-radius: 8px;
   border: 2px solid transparent;
   background-clip: content-box;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background-color: hsl(227 25% 28%);
+  background-color: hsl(var(--muted-foreground) / 0.65);
 }
 
 /* code blocks inside chat messages */
 .markdown-body pre {
-  background: hsl(226 40% 8%);
-  border: 1px solid hsl(226 25% 17%);
+  color: hsl(var(--code-foreground));
+  background: hsl(var(--code-background));
+  border: 1px solid hsl(var(--border));
   border-radius: 0.5rem;
   padding: 0.75rem 1rem;
   overflow-x: auto;
@@ -79,12 +165,12 @@
   font-family: "JetBrains Mono", ui-monospace, Menlo, monospace;
 }
 .markdown-body :not(pre) > code {
-  background: hsl(227 28% 15%);
-  border: 1px solid hsl(226 25% 19%);
+  background: hsl(var(--code-background));
+  border: 1px solid hsl(var(--border));
   border-radius: 0.35rem;
   padding: 0.1rem 0.35rem;
   font-size: 0.82em;
-  color: #7dd3fc;
+  color: hsl(var(--aurora-blue));
 }
 .markdown-body table {
   width: 100%;
@@ -94,16 +180,16 @@
 .markdown-body th {
   text-align: left;
   font-weight: 600;
-  color: hsl(216 33% 80%);
-  background: hsl(227 28% 15%);
+  color: hsl(var(--foreground));
+  background: hsl(var(--muted));
 }
 .markdown-body th,
 .markdown-body td {
-  border: 1px solid hsl(226 25% 17%);
+  border: 1px solid hsl(var(--border));
   padding: 0.4rem 0.6rem;
 }
 .markdown-body tr:nth-child(even) td {
-  background: hsl(227 20% 13%);
+  background: hsl(var(--surface-subtle));
 }
 .markdown-body h1, .markdown-body h2, .markdown-body h3 {
   font-weight: 700;
@@ -116,20 +202,72 @@
 .markdown-body ol { list-style: decimal; padding-left: 1.2rem; }
 .markdown-body li { margin: 0.2rem 0; }
 .markdown-body blockquote {
-  border-left: 3px solid hsl(169 74% 40%);
+  border-left: 3px solid hsl(var(--aurora-teal));
   padding-left: 0.9rem;
-  color: hsl(220 12% 70%);
+  color: hsl(var(--muted-foreground));
   margin: 0.6rem 0;
 }
-.markdown-body a { color: #5eead4; text-decoration: underline; }
+.markdown-body a { color: hsl(var(--aurora-blue)); text-decoration: underline; }
 .markdown-body p { margin: 0.5rem 0; }
-.markdown-body strong { font-weight: 700; color: hsl(216 33% 90%); }
+.markdown-body strong { font-weight: 700; color: hsl(var(--foreground)); }
 
 /* chart + report embeds inside answers */
 .embedded-chart {
-  border: 1px solid hsl(226 25% 17%);
+  border: 1px solid hsl(var(--border));
   border-radius: 0.75rem;
-  background: hsl(226 40% 9%);
+  background: hsl(var(--card));
   padding: 0.5rem;
   margin: 0.75rem 0;
+}
+
+/* compact local Highlight.js theme; values resolve with the app theme */
+.hljs {
+  color: hsl(var(--code-foreground));
+  background: hsl(var(--code-background));
+}
+.hljs-comment,
+.hljs-quote,
+.hljs-meta {
+  color: hsl(var(--syntax-comment));
+}
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-literal,
+.hljs-doctag {
+  color: hsl(var(--syntax-keyword));
+}
+.hljs-string,
+.hljs-regexp,
+.hljs-attribute {
+  color: hsl(var(--syntax-string));
+}
+.hljs-number,
+.hljs-symbol,
+.hljs-bullet {
+  color: hsl(var(--syntax-number));
+}
+.hljs-title,
+.hljs-section,
+.hljs-name,
+.hljs-built_in,
+.hljs-type {
+  color: hsl(var(--syntax-title));
+}
+.hljs-addition {
+  color: hsl(var(--syntax-addition));
+}
+.hljs-deletion {
+  color: hsl(var(--syntax-deletion));
+}
+.hljs-emphasis {
+  font-style: italic;
+}
+.hljs-strong {
+  font-weight: 700;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .aurora-top {
+    animation: none !important;
+  }
 }

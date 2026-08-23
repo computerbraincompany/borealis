@@ -19,6 +19,8 @@ export function ConnectorsView() {
   const [syncing, setSyncing] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [createNotice, setCreateNotice] = useState<string | null>(null);
+  const [createNoticeConnectorId, setCreateNoticeConnectorId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -34,7 +36,7 @@ export function ConnectorsView() {
     setError(null);
     setCreating(true);
     try {
-      await connectorsApi.create({
+      const created = await connectorsApi.create({
         name: name || undefined,
         type,
         config: { url, name: datasetName || undefined },
@@ -44,6 +46,12 @@ export function ConnectorsView() {
       setUrl("");
       setDatasetName("");
       await load();
+      const syncError = (created as Connector & { sync_error?: unknown }).sync_error;
+      if (syncError) {
+        setError(null);
+        setCreateNotice(String(syncError));
+        setCreateNoticeConnectorId(created.id);
+      }
     } catch (e: any) {
       setError(e.message || "create failed");
     } finally {
@@ -56,6 +64,10 @@ export function ConnectorsView() {
     try {
       await connectorsApi.sync(c.id);
       await load();
+      if (createNoticeConnectorId === c.id) {
+        setCreateNotice(null);
+        setCreateNoticeConnectorId(null);
+      }
     } catch (e: any) {
       alert(e.message || "sync failed");
     } finally {
@@ -66,6 +78,10 @@ export function ConnectorsView() {
   const remove = async (c: Connector) => {
     await connectorsApi.remove(c.id);
     await load();
+    if (createNoticeConnectorId === c.id) {
+      setCreateNotice(null);
+      setCreateNoticeConnectorId(null);
+    }
   };
 
   return (
@@ -86,7 +102,7 @@ export function ConnectorsView() {
         {connectors.map((c) => {
           const cfg = parseConfig(c.config);
           return (
-            <Card key={c.id} className="flex flex-col gap-3 p-5 transition-colors hover:border-white/10">
+            <Card key={c.id} className="flex flex-col gap-3 p-5 transition-colors hover:border-foreground/20">
               <div className="flex items-center gap-3">
                 <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-aurora-violet/15 text-aurora-violet">
                   {c.type === "url_csv" ? <Database className="h-5 w-5" /> : <Globe className="h-5 w-5" />}
@@ -105,6 +121,11 @@ export function ConnectorsView() {
                 <div className="flex items-center gap-2 truncate rounded-lg bg-secondary/60 px-3 py-2 text-xs text-muted-foreground">
                   <LinkIcon className="h-3.5 w-3.5 shrink-0 text-aurora-blue" />
                   <span className="truncate font-mono">{cfg.url}</span>
+                </div>
+              )}
+              {createNoticeConnectorId === c.id && createNotice && (
+                <div role="alert" className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                  Initial sync failed: {createNotice}
                 </div>
               )}
               <div className="flex items-center justify-between text-xs text-muted-foreground">
@@ -152,10 +173,10 @@ export function ConnectorsView() {
                     key={t}
                     onClick={() => setType(t)}
                     className={cn(
-                      "flex items-center justify-center gap-2 rounded-lg border px-3 py-2.5 text-sm font-medium transition-colors",
+                      "flex items-center justify-center gap-2 rounded-lg border px-3 py-2.5 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                       type === t
                         ? "border-aurora-teal/50 bg-aurora-teal/10 text-aurora-teal"
-                        : "border-input text-muted-foreground hover:border-white/20 hover:text-foreground"
+                        : "border-input text-muted-foreground hover:border-foreground/30 hover:text-foreground"
                     )}
                   >
                     {t === "url_csv" ? <Database className="h-4 w-4" /> : <Globe className="h-4 w-4" />}
@@ -179,7 +200,7 @@ export function ConnectorsView() {
               </div>
             </div>
             {error && (
-              <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive-foreground">{error}</div>
+              <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive" role="alert">{error}</div>
             )}
           </div>
           <DialogFooter>

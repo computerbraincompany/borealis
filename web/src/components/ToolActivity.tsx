@@ -22,12 +22,12 @@ const TOOL_META: Record<string, { icon: typeof Search; label: string }> = {
 export function ToolActivity({ steps, className }: { steps: ToolStep[]; className?: string }) {
   if (!steps.length) return null;
   return (
-    <div className={cn("my-3 space-y-1.5 rounded-xl border bg-[#0c1120]/90 p-3", className)}>
+    <div className={cn("my-3 space-y-1.5 rounded-xl border bg-surface-subtle/90 p-3", className)}>
       <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
         {steps.some((s) => s.status === "running") ? (
           <>
             <Loader2 className="h-3.5 w-3.5 animate-spin text-aurora-teal" />
-            North is working
+            Borealis is working
           </>
         ) : (
           <Check className="h-3.5 w-3.5 text-aurora-teal" />
@@ -41,11 +41,11 @@ export function ToolActivity({ steps, className }: { steps: ToolStep[]; classNam
         const Icon = meta.icon;
         const running = s.status === "running";
         return (
-          <div key={s.key} className={cn("flex items-start gap-2.5 rounded-lg px-2.5 py-2", running && "bg-white/[0.02]")}>
+          <div key={s.key} className={cn("flex items-start gap-2.5 rounded-lg px-2.5 py-2", running && "bg-accent/60")}>
             <div
               className={cn(
                 "mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border",
-                running ? "border-aurora-teal/30 bg-aurora-teal/10 text-aurora-teal" : "border-white/5 bg-white/[0.03] text-muted-foreground"
+                running ? "border-aurora-teal/30 bg-aurora-teal/10 text-aurora-teal" : "border-border bg-muted/70 text-muted-foreground"
               )}
             >
               <Icon className="h-3.5 w-3.5" />
@@ -61,13 +61,13 @@ export function ToolActivity({ steps, className }: { steps: ToolStep[]; classNam
                 </div>
               )}
               {s.status === "error" && (
-                <div className="mt-1 flex items-center gap-1.5 rounded-md bg-destructive/10 px-2 py-1 text-[11px] text-destructive-foreground">
+                <div className="mt-1 flex items-center gap-1.5 rounded-md bg-destructive/10 px-2 py-1 text-[11px] text-destructive">
                   <TriangleAlert className="h-3 w-3 shrink-0" />
                   <span className="truncate">{s.resultPreview || "tool failed"}</span>
                 </div>
               )}
             </div>
-            {s.status === "done" && <Check className="mt-1 h-3.5 w-3.5 shrink-0 text-emerald-400" />}
+            {s.status === "done" && <Check className="mt-1 h-3.5 w-3.5 shrink-0 text-success" />}
           </div>
         );
       })}

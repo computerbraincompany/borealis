@@ -1,4 +1,4 @@
-"""North report service — analysis, charts, and report generation.
+"""Borealis report service — analysis, charts, and report generation.
 
 Exposed to the Node backend over HTTP. Dataset access is namespaced by
 account_id so users can only reach their own tables.
@@ -9,10 +9,12 @@ from __future__ import annotations
 import base64
 import os
 import sys
+import tempfile
 import time
 import traceback
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 from fastapi import FastAPI, HTTPException, Response
@@ -21,10 +23,17 @@ from pydantic import BaseModel, Field
 from . import charts, datasets, reports
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-STORAGE_DIR = Path(os.environ.get("NORTH_STORAGE_DIR", REPO_ROOT / "uploads"))
+STORAGE_DIR = Path(
+    os.environ.get("BOREALIS_STORAGE_DIR")
+    or os.environ.get("NORTH_STORAGE_DIR")
+    or REPO_ROOT / "uploads"
+)
 STORAGE_DIR.mkdir(parents=True, exist_ok=True)
 
-app = FastAPI(title="North Report Service", version="0.1.0")
+_CACHE_SUFFIXES = (".csv", ".tsv", ".json", ".jsonl", ".xlsx", ".parquet")
+_EXT_BY_CT = {"application/json": ".json", "text/csv": ".csv"}
+
+app = FastAPI(title="Borealis Report Service", version="0.1.0")
 
 
 # --------------------------------------------------------------------------
@@ -42,11 +51,13 @@ class DatasetRegister(BaseModel):
 class QueryRequest(BaseModel):
     account_id: str
     sql: str
+    allowed_tables: list[str]
 
 
 class DescribeRequest(BaseModel):
     account_id: str
     table: str
+    allowed_tables: list[str]
 
 
 class ChartRequest(BaseModel):
@@ -77,7 +88,10 @@ def register(req: DatasetRegister) -> dict[str, Any]:
     if req.kind == "url":
         if not req.url:
             raise HTTPException(400, "url required for url datasets")
-        local_path = _fetch_url(req.url, req.account_id, req.name)
+        # The Node service may provide its already fetched cache path while
+        # rebuilding RAG chunks or restoring the registry after a restart.
+        # Keep URL provenance without downloading the same connector twice.
+        local_path = Path(req.location) if req.location else _fetch_url(req.url, req.account_id, req.name)
         original = req.original_name or Path(req.url).name or f"{req.name}.csv"
         return datasets.register(req.account_id, req.name, str(local_path), "url", original, req.url)
     if not req.location:
@@ -87,7 +101,15 @@ def register(req: DatasetRegister) -> dict[str, Any]:
 
 @app.post("/datasets/resync")
 def resync(req: DatasetRegister) -> dict[str, Any]:
-    return datasets.resync(req.account_id, req.name, fetcher=lambda url: str(_fetch_url(url, req.account_id, req.name, force=True)))
+    fetcher = lambda url: str(_fetch_url(url, req.account_id, req.name, force=True))
+    try:
+        return datasets.resync(req.account_id, req.name, fetcher=fetcher, url=req.url)
+    except HTTPException as exc:
+        if exc.status_code != 404 or not req.url:
+            raise
+        local_path = _fetch_url(req.url, req.account_id, req.name, force=True)
+        original = req.original_name or Path(req.url).name or f"{req.name}.csv"
+        return datasets.register(req.account_id, req.name, str(local_path), "url", original, req.url)
 
 
 @app.get("/datasets")
@@ -103,12 +125,12 @@ def delete_dataset(account_id: str, name: str) -> dict[str, str]:
 
 @app.post("/query")
 def run_query(req: QueryRequest) -> dict[str, Any]:
-    return datasets.query(req.account_id, req.sql)
+    return datasets.query(req.account_id, req.sql, req.allowed_tables)
 
 
 @app.post("/describe")
 def run_describe(req: DescribeRequest) -> dict[str, Any]:
-    return datasets.describe(req.account_id, req.table)
+    return datasets.describe(req.account_id, req.table, req.allowed_tables)
 
 
 # --------------------------------------------------------------------------
@@ -116,7 +138,10 @@ def run_describe(req: DescribeRequest) -> dict[str, Any]:
 # --------------------------------------------------------------------------
 @app.post("/chart")
 def render_chart(req: ChartRequest) -> dict[str, Any]:
-    spec = charts.normalize(req.spec)
+    try:
+        spec = charts.normalize(req.spec)
+    except charts.ChartSpecError as e:
+        raise HTTPException(400, str(e)) from e
     png = charts.render_png_base64(spec)
     option = charts.echarts_option(spec)
     return {"png_base64": png, "echarts": option, "spec": spec}
@@ -125,9 +150,8 @@ def render_chart(req: ChartRequest) -> dict[str, Any]:
 # --------------------------------------------------------------------------
 # report endpoints
 # --------------------------------------------------------------------------
-@app.post("/reports/build")
-def build_report(req: ReportRequest) -> dict[str, Any]:
-    report = {
+def _report_dict(req: ReportRequest) -> dict[str, Any]:
+    return {
         "title": req.title,
         "subtitle": req.subtitle or "",
         "generated_at": req.generated_at or time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime()),
@@ -135,8 +159,12 @@ def build_report(req: ReportRequest) -> dict[str, Any]:
         "charts": req.charts,
         "tables": req.tables,
     }
+
+
+@app.post("/reports/build")
+def build_report(req: ReportRequest) -> dict[str, Any]:
     try:
-        html = reports.build_html(report)
+        html = reports.build_html(_report_dict(req))
     except Exception:  # noqa: BLE001
         traceback.print_exc(file=sys.stderr)
         raise HTTPException(422, f"report build failed: {traceback.format_exc(limit=3)}")
@@ -145,16 +173,8 @@ def build_report(req: ReportRequest) -> dict[str, Any]:
 
 @app.post("/reports/pdf")
 def report_pdf(req: ReportRequest) -> Response:
-    report = {
-        "title": req.title,
-        "subtitle": req.subtitle or "",
-        "generated_at": req.generated_at or time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime()),
-        "sections": req.sections,
-        "charts": req.charts,
-        "tables": req.tables,
-    }
     try:
-        pdf = reports.build_pdf(report)
+        pdf = reports.build_pdf(_report_dict(req))
     except Exception:  # noqa: BLE001
         traceback.print_exc(file=sys.stderr)
         raise HTTPException(422, f"pdf build failed: {traceback.format_exc(limit=3)}")
@@ -175,16 +195,48 @@ def html_to_pdf(html: str) -> Response:
     return Response(content=pdf, media_type="application/pdf")
 
 
+def _cache_ext(url: str, content_type: str) -> str:
+    suffix = Path(urlparse(url).path).suffix.lower()
+    if suffix in _CACHE_SUFFIXES:
+        return suffix
+    return _EXT_BY_CT.get(content_type.split(";")[0].strip().lower(), ".csv")
+
+
 def _fetch_url(url: str, account_id: str, name: str, force: bool = False) -> Path:
-    path = STORAGE_DIR / f"url_{account_id}_{name}.csv"
-    # allow csv/xlsx/json/parquet from plain URLs
-    # Cached copy avoids re-download on restart; pass force=True from resync to refresh.
-    if path.exists() and not force:
-        return path
+    stem = STORAGE_DIR / f"url_{account_id}_{name}"
+    preferred_suffix = _cache_ext(url, "")
+    candidate_suffixes = dict.fromkeys((preferred_suffix, ".csv", *_CACHE_SUFFIXES))
+    if not force:
+        for suffix in candidate_suffixes:
+            candidate = Path(f"{stem}{suffix}")
+            if candidate.exists():
+                return candidate
+
     with httpx.Client(timeout=60, follow_redirects=True) as client:
         r = client.get(url)
         r.raise_for_status()
-        if "text/html" in r.headers.get("content-type", "") and "<" in (r.text[:200] or ""):
+        content_type = r.headers.get("content-type", "")
+        if "text/html" in content_type.lower() and "<" in (r.text[:200] or ""):
             raise HTTPException(422, "URL returned HTML, not tabular data")
-        path.write_bytes(r.content)
-    return path
+
+    target = Path(f"{stem}{_cache_ext(url, content_type)}")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            dir=target.parent,
+            prefix=f".{target.name}.",
+            delete=False,
+        ) as temp_file:
+            temp_path = Path(temp_file.name)
+            temp_file.write(r.content)
+        temp_path.replace(target)
+    finally:
+        if temp_path is not None:
+            temp_path.unlink(missing_ok=True)
+
+    for suffix in _CACHE_SUFFIXES:
+        sibling = Path(f"{stem}{suffix}")
+        if sibling != target:
+            sibling.unlink(missing_ok=True)
+    return target

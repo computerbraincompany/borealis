@@ -18,6 +18,9 @@ coverage/
 .python-version
 .playwright-mcp/
 
+# Local clean-room product research; existing tracked history is intentionally retained.
+docs/cohere-north/
+
 # tsc build artifacts
 *.tsbuildinfo
 web/vite.config.js

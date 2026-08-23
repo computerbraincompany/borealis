@@ -1,9 +1,35 @@
 <!doctype html>
-<html lang="en" class="dark">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/aurora.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="" />
+    <script>
+      (() => {
+        const key = "borealis_theme";
+        const isTheme = (value) => value === "light" || value === "dark" || value === "system";
+        let choice = "system";
+        try {
+          const stored = window.localStorage.getItem(key);
+          choice = isTheme(stored) ? stored : "system";
+        } catch {
+          choice = "light";
+        }
+
+        let resolved = choice === "dark" ? "dark" : "light";
+        if (choice === "system") {
+          try {
+            resolved = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+          } catch {
+            resolved = "light";
+          }
+        }
+
+        document.documentElement.classList.toggle("dark", resolved === "dark");
+        document.documentElement.style.colorScheme = resolved;
+      })();
+    </script>
     <title>Borealis</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />

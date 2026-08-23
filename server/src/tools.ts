@@ -4,6 +4,7 @@ import { q } from "./db.js";
 import { retrieve } from "./retrieve.js";
 import { py } from "./pythonClient.js";
 import { config } from "./config.js";
+import type { ResolvedSourceScope } from "./sourceScope.js";
 
 export interface ToolDef {
   type: "function";
@@ -30,7 +31,7 @@ export const TOOL_DEFS: ToolDef[] = [
     function: {
       name: "retrieve",
       description:
-        "Search every connected document and data source (uploaded files) for passages relevant to a user question. Use before answering anything grounded in uploaded files, and re-use the returned passages in your answer.",
+        "Search the stored documents and data sources selected for this chat for passages relevant to a user question. Use before answering anything grounded in selected files, and re-use the returned passages in your answer.",
       parameters: {
         type: "object",
         properties: {
@@ -47,7 +48,7 @@ export const TOOL_DEFS: ToolDef[] = [
     function: {
       name: "list_sources",
       description:
-        "List every connected data source (uploaded tables and connector datasets) available for this account, including table names for SQL and their file names.",
+        "List only the stored data sources selected for this chat, including attachment status and ready table names for SQL.",
       parameters: { type: "object", properties: {}, additionalProperties: false },
     },
   },
@@ -56,7 +57,7 @@ export const TOOL_DEFS: ToolDef[] = [
     function: {
       name: "query_data",
       description:
-        "Run a DuckDB SQL query against the connected tabular data sources (see the catalog in your system prompt for exact table names and columns). Use aggregation, window functions and date filtering to answer quantitative questions precisely. SELECT/WITH only. Results limited to 500 rows.",
+        "Run a DuckDB SQL query against the ready tabular data sources selected for this chat (see the catalog in your system prompt for exact table names and columns). Use aggregation, window functions and date filtering to answer quantitative questions precisely. SELECT/WITH only. Results limited to 500 rows.",
       parameters: {
         type: "object",
         properties: { sql: { type: "string", description: "The SQL statement, referencing catalog tables only" } },
@@ -70,7 +71,7 @@ export const TOOL_DEFS: ToolDef[] = [
     function: {
       name: "describe_data",
       description:
-        "Return detailed statistics about a connected dataset's columns (ranges, averages, distinct values, top categories) to help plan analysis or charts.",
+        "Return detailed statistics about a ready dataset selected for this chat (ranges, averages, distinct values, top categories) to help plan analysis or charts.",
       parameters: {
         type: "object",
         properties: { table: { type: "string", description: "Name of the dataset table from the catalog" } },
@@ -138,7 +139,7 @@ export const TOOL_DEFS: ToolDef[] = [
           charts: {
             type: "array",
             description:
-              "Exact chart id UUIDs previously returned by render_chart in THIS conversation — copy them precisely (e.g. a1111111-2222-3333-4444-555555555555). Do not invent or alter them.",
+              "Exact chart id UUIDs returned by render_chart in THIS run — copy them precisely (e.g. a1111111-2222-3333-4444-555555555555). Do not invent or alter them.",
             items: { type: "string" },
           },
           tables: {
@@ -159,16 +160,26 @@ export const TOOL_DEFS: ToolDef[] = [
     function: {
       name: "fetch_url",
       description:
-        "Fetch the text content of a URL (web access). Useful when the user asks about current information or an external site. Returns readable text (plain HTML stripped).",
+        "Fetch the text content of a URL using the separate web capability. This is independent of the chat's stored-source selection. Useful when the user asks about current information or an external site. Returns readable text (plain HTML stripped).",
       parameters: { type: "object", properties: { url: { type: "string" } }, required: ["url"], additionalProperties: false },
     },
   },
 ];
 
-export async function executeTool(accountId: string, name: string, args: any, context: { chartIds: string[]; reportId?: string; chatId?: string }): Promise<any> {
+export interface ToolRunContext {
+  chartIds: string[];
+  reportId?: string;
+  chatId: string;
+  model: string;
+  sourceScope: ResolvedSourceScope;
+  readySourceIds: readonly string[];
+  readyTableNames: readonly string[];
+}
+
+export async function executeTool(accountId: string, name: string, args: any, context: ToolRunContext): Promise<any> {
   switch (name) {
     case "retrieve": {
-      const res = await retrieve(accountId, args.query || "", args.top_k || 6);
+      const res = await retrieve(accountId, args.query || "", context.readySourceIds, args.top_k || 6);
       return {
         passages: res.map((c) => ({ source: c.source_name, score: c.score, content: c.content })),
         instruction:
@@ -176,14 +187,23 @@ export async function executeTool(accountId: string, name: string, args: any, co
       };
     }
     case "list_sources": {
-      const ds = await py.listDatasets(accountId);
-      const docs = await q(`SELECT id, display_name, kind, status FROM sources WHERE account_id=$1`, [accountId]);
-      return { datasets: ds, documents: docs };
+      const allowedTables = new Set(context.readyTableNames);
+      const ds = allowedTables.size ? await py.listDatasets(accountId) : [];
+      const datasets = ds
+        .filter((dataset: any) => allowedTables.has(String(dataset.table)))
+        .map(sanitizeDatasetSummary);
+      const sources = context.sourceScope.attached.map((source) => ({ ...source }));
+      return { source_mode: context.sourceScope.mode, sources, datasets };
     }
     case "query_data":
-      return await py.query(accountId, args.sql);
-    case "describe_data":
-      return await py.describe(accountId, args.table);
+      return await py.query(accountId, args.sql, context.readyTableNames);
+    case "describe_data": {
+      const table = typeof args.table === "string" ? args.table : "";
+      if (!context.readyTableNames.includes(table)) {
+        return { error: "that table is not selected and ready for this chat" };
+      }
+      return await py.describe(accountId, table, context.readyTableNames);
+    }
     case "render_chart": {
       const spec = args.spec || {};
       const res = await py.chart(accountId, spec);
@@ -218,7 +238,15 @@ export async function executeTool(accountId: string, name: string, args: any, co
         [uuid(), accountId, context.chatId || null, reportPayload.title, reportPayload.subtitle || "", htmlPath, pdfPath]
       );
       context.reportId = rep.id;
-      return { report_id: rep.id, title: reportPayload.title, html: htmlName, pdf: pdfName };
+      return {
+        report_id: rep.id,
+        title: reportPayload.title,
+        html: htmlName,
+        pdf: pdfName,
+        ...(reportPayload.unresolved_chart_ids?.length
+          ? { unresolved_chart_ids: reportPayload.unresolved_chart_ids }
+          : {}),
+      };
     }
     case "fetch_url": {
       const res = await fetch(args.url);
@@ -237,25 +265,29 @@ export async function executeTool(accountId: string, name: string, args: any, co
   }
 }
 
-async function makeReportPayload(accountId: string, args: any, context: { chartIds: string[]; reportId?: string; chatId?: string }): Promise<any> {
+type ReportRunContext = Pick<ToolRunContext, "chartIds"> & Partial<Pick<ToolRunContext, "reportId" | "chatId">>;
+
+export async function makeReportPayload(accountId: string, args: any, context: ReportRunContext): Promise<any> {
   const title = args.title;
   const sections = (args.sections || []).map((s: any) => ({ heading: s.heading || "", markdown: s.markdown || "" }));
   const charts: any[] = [];
-  const ids = (args.charts || []).filter((s: any) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(s)));
-  // resolve inline chart ids from this conversation (spec lookup)
-  for (const cid of ids) {
+  const requested: string[] = (args.charts || []).map((s: any) => String(s));
+  const unresolved: string[] = [];
+  // Resolve only chart ids created in this agent run. Historical account
+  // charts are not an authorization source for a new report.
+  for (const raw of requested) {
     try {
-      const [row] = await q(`SELECT spec FROM charts WHERE id=$1 AND account_id=$2`, [cid, accountId]);
-      if (row) charts.push({ id: cid, spec: row.spec });
-      else {
-        // model sometimes garbles/excerpts a long uuid — match by 12-char prefix
-        const [fuzzy] = await q(
-          `SELECT spec FROM charts WHERE account_id=$1 AND left(id::text,12)=left($2::text,12) ORDER BY created_at DESC LIMIT 1`,
-          [accountId, cid]
-        );
-        if (fuzzy) charts.push({ id: cid, spec: fuzzy.spec });
+      const chartId = matchCurrentRunChartId(raw, context.chartIds);
+      if (!chartId) {
+        unresolved.push(raw);
+        continue;
       }
-    } catch {}
+      const [row] = await q(`SELECT spec FROM charts WHERE id::text=$1 AND account_id=$2`, [chartId, accountId]);
+      if (!row) unresolved.push(raw);
+      else charts.push({ id: chartId, spec: row.spec });
+    } catch {
+      unresolved.push(raw);
+    }
   }
   const tables = (args.tables || []).filter((t: any) => Array.isArray(t.columns) && Array.isArray(t.rows));
   return {
@@ -265,5 +297,27 @@ async function makeReportPayload(accountId: string, args: any, context: { chartI
     sections,
     charts,
     tables,
+    ...(unresolved.length ? { unresolved_chart_ids: unresolved } : {}),
+  };
+}
+
+function matchCurrentRunChartId(raw: string, chartIds: readonly string[]): string | undefined {
+  const exact = chartIds.find((id) => id.toLowerCase() === raw.toLowerCase());
+  if (exact) return exact;
+  const prefix = raw.replace(/[^0-9a-f]/gi, "").toLowerCase();
+  if (prefix.length < 12) return undefined;
+  const matches = chartIds.filter((id) => id.replace(/-/g, "").toLowerCase().startsWith(prefix.slice(0, 12)));
+  return matches.length === 1 ? matches[0] : undefined;
+}
+
+function sanitizeDatasetSummary(dataset: any) {
+  return {
+    table: String(dataset.table || ""),
+    original_name: String(dataset.original_name || ""),
+    rows: Number(dataset.rows || 0),
+    columns: Array.isArray(dataset.columns)
+      ? dataset.columns.map((column: any) => ({ name: String(column.name || ""), type: String(column.type || "") }))
+      : [],
+    exists: Boolean(dataset.exists),
   };
 }
