@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Plus, Trash2, MessageSquareText, Send, Square, Sparkles, X } from "lucide-react";
+import { Plus, Send, Square, Sparkles, X } from "lucide-react";
 import {
   chatsApi,
   modelsApi,
@@ -23,6 +23,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { ChatMessage } from "@/components/ChatMessage";
 import { ModelSelector } from "@/components/ModelSelector";
 import { ChatSourcePicker } from "@/components/ChatSourcePicker";
+import { ChatHistory } from "@/components/ChatHistory";
 import { ToolActivity, type ToolStep } from "@/components/ToolActivity";
 
 const SUGGESTIONS = [
@@ -75,6 +76,7 @@ export function ChatView({ chatId }: { chatId?: string }) {
   const [modelCatalogFailed, setModelCatalogFailed] = useState(false);
   const [modelSavingByChat, setModelSavingByChat] = useState<Record<string, boolean>>({});
   const [modelErrorsByChat, setModelErrorsByChat] = useState<Record<string, string>>({});
+  const [titleSavingByChat, setTitleSavingByChat] = useState<Record<string, boolean>>({});
   const [sources, setSources] = useState<Source[]>([]);
   const [sourcesLoading, setSourcesLoading] = useState(true);
   const [sourcesError, setSourcesError] = useState<string | null>(null);
@@ -89,6 +91,7 @@ export function ChatView({ chatId }: { chatId?: string }) {
   const pendingUploadedSourcesRef = useRef(new Map<string, Source>());
   const bottomRef = useRef<HTMLDivElement>(null);
   const stepKeyRef = useRef(0);
+  const chatListRequestRef = useRef(0);
 
   const updateStream = useCallback((id: string, updater: (state: StreamState) => StreamState) => {
     setStreamsByChat((current) => {
@@ -101,8 +104,10 @@ export function ChatView({ chatId }: { chatId?: string }) {
   const stream = detail?.id ? streamsByChat[detail.id] ?? EMPTY_STREAM_STATE : EMPTY_STREAM_STATE;
 
   const loadChats = useCallback(async () => {
+    const requestId = ++chatListRequestRef.current;
     try {
-      setChats(await chatsApi.list());
+      const latest = await chatsApi.list();
+      if (requestId === chatListRequestRef.current) setChats(latest);
     } catch {}
   }, []);
 
@@ -218,14 +223,15 @@ export function ChatView({ chatId }: { chatId?: string }) {
 
   const openNewChat = async () => {
     const c = await chatsApi.create();
-    setChats((prev) => [c, ...prev]);
+    chatListRequestRef.current += 1;
+    setChats((prev) => [c, ...prev.filter((chat) => chat.id !== c.id)]);
     await loadChat(c.id);
   };
 
-  const deleteChat = async (e: React.MouseEvent, id: string) => {
-    e.stopPropagation();
-    if (sourceSavingByChat[id] || modelSavingByChat[id] || streamsByChat[id]?.running || abortByChatRef.current.has(id)) return;
+  const deleteChat = async (id: string) => {
+    if (sourceSavingByChat[id] || modelSavingByChat[id] || titleSavingByChat[id] || streamsByChat[id]?.running || abortByChatRef.current.has(id)) return;
     await chatsApi.remove(id);
+    chatListRequestRef.current += 1;
     setChats((prev) => prev.filter((c) => c.id !== id));
     setStreamsByChat((current) => {
       if (!(id in current)) return current;
@@ -247,6 +253,34 @@ export function ChatView({ chatId }: { chatId?: string }) {
     }
   };
 
+  const renameChat = async (id: string, title: string) => {
+    if (sourceSavingByChat[id] || modelSavingByChat[id] || titleSavingByChat[id] || streamsByChat[id]?.running || abortByChatRef.current.has(id)) {
+      throw new Error("Wait for this chat to finish its current activity.");
+    }
+
+    setTitleSavingByChat((current) => ({ ...current, [id]: true }));
+    try {
+      const updated = await chatsApi.updateTitle(id, title);
+      chatListRequestRef.current += 1;
+      setChats((current) => sortChatsByActivity(current.map((chat) => (chat.id === id ? { ...chat, ...updated } : chat))));
+      setDetail((current) =>
+        current?.id === id
+          ? { ...current, title: updated.title, updated_at: updated.updated_at }
+          : current
+      );
+      // Reconcile any concurrent background turn activity after the local
+      // rename response, while retaining the immediate optimistic ordering if
+      // the authoritative refresh is temporarily unavailable.
+      await loadChats();
+    } finally {
+      setTitleSavingByChat((current) => {
+        const next = { ...current };
+        delete next[id];
+        return next;
+      });
+    }
+  };
+
   const selectModel = async (nextModel: string) => {
     if (!detail) return;
     const targetChatId = detail.id;
@@ -254,6 +288,7 @@ export function ChatView({ chatId }: { chatId?: string }) {
       nextModel === detail.model ||
       modelSavingByChat[targetChatId] ||
       sourceSavingByChat[targetChatId] ||
+      titleSavingByChat[targetChatId] ||
       streamsByChat[targetChatId]?.running ||
       abortByChatRef.current.has(targetChatId)
     ) {
@@ -305,6 +340,7 @@ export function ChatView({ chatId }: { chatId?: string }) {
     if (
       sourceSavingByChat[targetChatId] ||
       modelSavingByChat[targetChatId] ||
+      titleSavingByChat[targetChatId] ||
       streamsByChat[targetChatId]?.running ||
       abortByChatRef.current.has(targetChatId)
     ) {
@@ -380,6 +416,7 @@ export function ChatView({ chatId }: { chatId?: string }) {
     if (
       modelSavingByChat[runChatId] ||
       sourceSavingByChat[runChatId] ||
+      titleSavingByChat[runChatId] ||
       streamsByChat[runChatId]?.running ||
       abortByChatRef.current.has(runChatId)
     ) {
@@ -562,6 +599,7 @@ export function ChatView({ chatId }: { chatId?: string }) {
   const isEmpty = messages.length === 0 && !stream.running && !hasStreamActivity;
   const isModelSaving = detail ? Boolean(modelSavingByChat[detail.id]) : false;
   const isSourceSaving = detail ? Boolean(sourceSavingByChat[detail.id]) : false;
+  const isTitleSaving = detail ? Boolean(titleSavingByChat[detail.id]) : false;
   const modelDiscovery = modelCatalog?.discovery ?? (modelCatalogFailed ? "unavailable" : null);
   const modelOptions = modelCatalog?.models ?? [];
 
@@ -574,41 +612,26 @@ export function ChatView({ chatId }: { chatId?: string }) {
             <Plus className="h-4 w-4" /> New chat
           </Button>
         </div>
-        <div className="flex-1 space-y-0.5 overflow-y-auto px-2 pb-4">
-          {chats.map((c) => {
-            const active = c.id === detail?.id;
-            const chatRunning = Boolean(streamsByChat[c.id]?.running);
-            const chatBusy = chatRunning || Boolean(sourceSavingByChat[c.id]) || Boolean(modelSavingByChat[c.id]);
-            return (
-              <div
-                key={c.id}
-                onClick={() => loadChat(c.id)}
-                className={cn(
-                  "group flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-2.5 transition-colors",
-                  active ? "bg-gradient-to-r from-aurora-teal/12 to-aurora-violet/12 text-foreground" : "text-muted-foreground hover:bg-secondary hover:text-foreground"
-                )}
-              >
-                <MessageSquareText className={cn("h-4 w-4 shrink-0", active ? "text-aurora-teal" : "text-muted-foreground group-hover:text-foreground")} />
-                <span className="min-w-0 flex-1 truncate text-[13px]">{c.title}</span>
-                <button
-                  onClick={(e) => deleteChat(e, c.id)}
-                  disabled={chatBusy}
-                  className="shrink-0 rounded-md p-1 text-muted-foreground opacity-0 transition-opacity hover:text-destructive group-hover:opacity-100 disabled:cursor-not-allowed disabled:opacity-30"
-                  title={chatRunning ? "Stop generating before deleting this chat" : chatBusy ? "Wait for chat settings to save" : "Delete chat"}
-                >
-                  <Trash2 className="h-3.5 w-3.5" />
-                </button>
-              </div>
-            );
-          })}
-          {chats.length === 0 && (
-            <div className="px-3 py-8 text-center text-xs text-muted-foreground">
-              No conversations yet.
-              <br />
-              Start a new chat to begin.
-            </div>
+        <ChatHistory
+          chats={chats}
+          activeChatId={detail?.id}
+          busyChatIds={new Set(
+            chats
+              .filter((chat) =>
+                Boolean(
+                  streamsByChat[chat.id]?.running ||
+                    sourceSavingByChat[chat.id] ||
+                    modelSavingByChat[chat.id] ||
+                    titleSavingByChat[chat.id] ||
+                    abortByChatRef.current.has(chat.id)
+                )
+              )
+              .map((chat) => chat.id)
           )}
-        </div>
+          onOpen={(id) => void loadChat(id)}
+          onDelete={deleteChat}
+          onRename={renameChat}
+        />
         <div className="px-5 pb-4 pt-2 text-[11px] leading-relaxed text-muted-foreground">
           <span className="text-aurora-teal">●</span> OpenAI-compatible stack · LiteLLM + LM Studio
         </div>
@@ -709,7 +732,7 @@ export function ChatView({ chatId }: { chatId?: string }) {
                   <button
                     key={s}
                     onClick={() => send(s)}
-                    disabled={!detail || isModelSaving || isSourceSaving}
+                    disabled={!detail || isModelSaving || isSourceSaving || isTitleSaving}
                     className="group rounded-xl border bg-surface-subtle p-3 text-left text-[13px] text-muted-foreground transition-colors hover:border-aurora-teal/30 hover:bg-aurora-teal/5 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
                   >
                     <span className="flex items-center gap-2">
@@ -752,7 +775,7 @@ export function ChatView({ chatId }: { chatId?: string }) {
                             models={modelOptions}
                             discovery={modelDiscovery}
                             loading={modelCatalogLoading}
-                            pending={isModelSaving || isSourceSaving}
+                            pending={isModelSaving || isSourceSaving || isTitleSaving}
                             streaming={stream.running}
                             error={modelErrorsByChat[detail.id] || null}
                             onChange={(model) => void selectModel(model)}
@@ -766,7 +789,7 @@ export function ChatView({ chatId }: { chatId?: string }) {
                             sources={sources}
                             sourcesLoading={sourcesLoading}
                             sourcesError={sourcesError}
-                            disabled={isModelSaving || isSourceSaving || stream.running}
+                            disabled={isModelSaving || isSourceSaving || isTitleSaving || stream.running}
                             saving={isSourceSaving}
                             hasMessages={messages.length > 0}
                             onApply={saveSourceScope}
@@ -777,7 +800,7 @@ export function ChatView({ chatId }: { chatId?: string }) {
                         <ActiveSourceScope
                           mode={detail.source_mode}
                           sources={detail.sources}
-                          disabled={isModelSaving || isSourceSaving || stream.running}
+                          disabled={isModelSaving || isSourceSaving || isTitleSaving || stream.running}
                           error={sourceErrorsByChat[detail.id] || null}
                           onRemove={removeAttachedSource}
                           onDismissError={() => dismissSourceError(detail.id)}
@@ -802,7 +825,7 @@ export function ChatView({ chatId }: { chatId?: string }) {
                       variant="aurora"
                       size="icon"
                       className="size-11 shrink-0 rounded-xl"
-                      disabled={!detail || !draft.trim() || isModelSaving || isSourceSaving}
+                      disabled={!detail || !draft.trim() || isModelSaving || isSourceSaving || isTitleSaving}
                       onClick={() => send()}
                       title="Send"
                     >
@@ -945,6 +968,18 @@ function sameAttachedSources(left: AttachedSource[], right: AttachedSource[]): b
       );
     })
   );
+}
+
+function sortChatsByActivity(chats: Chat[]): Chat[] {
+  return [...chats].sort((left, right) => {
+    const leftTime = Date.parse(left.updated_at);
+    const rightTime = Date.parse(right.updated_at);
+    const safeLeftTime = Number.isFinite(leftTime) ? leftTime : Date.parse(left.created_at) || 0;
+    const safeRightTime = Number.isFinite(rightTime) ? rightTime : Date.parse(right.created_at) || 0;
+    if (safeLeftTime !== safeRightTime) return safeRightTime - safeLeftTime;
+    if (left.id === right.id) return 0;
+    return left.id < right.id ? 1 : -1;
+  });
 }
 
 function summarizeResult(result: any): string {

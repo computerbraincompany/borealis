@@ -43,12 +43,16 @@ export async function routes(app: FastifyInstance) {
 
   // ---------------------------------------------------------------- chats
   app.get("/api/chats", { preHandler: requireAuth }, async (req, reply) => {
-    const rows = await q(`SELECT id, title, model, source_mode, created_at FROM chats WHERE account_id=$1 ORDER BY created_at DESC`, [getAccountId(req)]);
+    const rows = await q(
+      `SELECT id, title, model, source_mode, created_at, updated_at
+       FROM chats WHERE account_id=$1 ORDER BY updated_at DESC, id DESC`,
+      [getAccountId(req)]
+    );
     return reply.send(rows);
   });
 
   app.post("/api/chats", { preHandler: requireAuth }, async (req, reply) => {
-    let parsed: { title: string; scope: SourceScopeInput };
+    let parsed: { title: string; titleIsManual: boolean; scope: SourceScopeInput };
     try {
       parsed = parseChatCreateBody(req.body);
     } catch (error) {
@@ -60,10 +64,10 @@ export async function routes(app: FastifyInstance) {
     // A legacy/all chat needs only one statement, which is already atomic.
     if (parsed.scope.source_mode === "all") {
       const [row] = await q(
-        `INSERT INTO chats (id, account_id, title, model, source_mode)
-         VALUES ($1,$2,$3,$4,'all')
-         RETURNING id, title, model, source_mode, created_at`,
-        [chatId, accountId, parsed.title, config.chatModel]
+        `INSERT INTO chats (id, account_id, title, title_is_manual, model, source_mode)
+         VALUES ($1,$2,$3,$4,$5,'all')
+         RETURNING id, title, model, source_mode, created_at, updated_at`,
+        [chatId, accountId, parsed.title, parsed.titleIsManual, config.chatModel]
       );
       return reply.send(row);
     }
@@ -75,10 +79,10 @@ export async function routes(app: FastifyInstance) {
       inTransaction = true;
       await assertSelectedSourcesAvailable(client, accountId, parsed.scope.source_ids);
       const insert = await client.query(
-        `INSERT INTO chats (id, account_id, title, model, source_mode)
-         VALUES ($1,$2,$3,$4,'selected')
-         RETURNING id, title, model, source_mode, created_at`,
-        [chatId, accountId, parsed.title, config.chatModel]
+        `INSERT INTO chats (id, account_id, title, title_is_manual, model, source_mode)
+         VALUES ($1,$2,$3,$4,$5,'selected')
+         RETURNING id, title, model, source_mode, created_at, updated_at`,
+        [chatId, accountId, parsed.title, parsed.titleIsManual, config.chatModel]
       );
       if (parsed.scope.source_ids.length) {
         await client.query(
@@ -107,7 +111,7 @@ export async function routes(app: FastifyInstance) {
       await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
       inTransaction = true;
       const chatResult = await client.query(
-        `SELECT id, title, model, created_at FROM chats WHERE id=$1 AND account_id=$2`,
+        `SELECT id, title, model, created_at, updated_at FROM chats WHERE id=$1 AND account_id=$2`,
         [chatId, account]
       );
       const chat = chatResult.rows[0];
@@ -148,25 +152,45 @@ export async function routes(app: FastifyInstance) {
   app.patch("/api/chats/:id", { preHandler: requireAuth }, async (req, reply) => {
     const body = req.body;
     if (!body || typeof body !== "object" || Array.isArray(body)) {
-      return reply.code(400).send({ error: "body must contain exactly model" });
+      return reply.code(400).send({ error: "body must contain exactly one of model or title" });
     }
     const keys = Object.keys(body);
-    if (keys.length !== 1 || keys[0] !== "model" || typeof (body as { model?: unknown }).model !== "string") {
-      return reply.code(400).send({ error: "body must contain exactly model" });
+    if (keys.length !== 1 || (keys[0] !== "model" && keys[0] !== "title")) {
+      return reply.code(400).send({ error: "body must contain exactly one of model or title" });
     }
-    const model = (body as { model: string }).model.trim();
-    if (model.length < 1 || model.length > 256) {
-      return reply.code(400).send({ error: "model must contain between 1 and 256 characters" });
+    const chatId = (req.params as any).id;
+    const accountId = getAccountId(req);
+    let chat;
+    if (keys[0] === "model") {
+      if (typeof (body as { model?: unknown }).model !== "string") {
+        return reply.code(400).send({ error: "model must contain between 1 and 256 characters" });
+      }
+      const model = (body as { model: string }).model.trim();
+      if (model.length < 1 || model.length > 256) {
+        return reply.code(400).send({ error: "model must contain between 1 and 256 characters" });
+      }
+      if (model === config.embedModel) {
+        return reply.code(400).send({ error: "embedding model cannot be selected for chat" });
+      }
+      [chat] = await q(
+        `UPDATE chats SET model=$3 WHERE id=$1 AND account_id=$2
+         RETURNING id, title, model, source_mode, created_at, updated_at`,
+        [chatId, accountId, model]
+      );
+    } else {
+      let title: string;
+      try {
+        title = parseChatTitle((body as { title?: unknown }).title);
+      } catch (error) {
+        return sendSourceScopeError(reply, error);
+      }
+      [chat] = await q(
+        `UPDATE chats SET title=$3, title_is_manual=true, updated_at=now()
+         WHERE id=$1 AND account_id=$2
+         RETURNING id, title, model, source_mode, created_at, updated_at`,
+        [chatId, accountId, title]
+      );
     }
-    if (model === config.embedModel) {
-      return reply.code(400).send({ error: "embedding model cannot be selected for chat" });
-    }
-
-    const [chat] = await q(
-      `UPDATE chats SET model=$3 WHERE id=$1 AND account_id=$2
-       RETURNING id, title, model, source_mode, created_at`,
-      [(req.params as any).id, getAccountId(req), model]
-    );
     if (!chat) return reply.code(404).send({ error: "chat not found" });
     return reply.send(chat);
   });
@@ -464,7 +488,7 @@ export async function routes(app: FastifyInstance) {
   });
 }
 
-function parseChatCreateBody(body: unknown): { title: string; scope: SourceScopeInput } {
+function parseChatCreateBody(body: unknown): { title: string; titleIsManual: boolean; scope: SourceScopeInput } {
   const value = body ?? {};
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new SourceScopeError(400, "invalid chat body");
@@ -474,10 +498,8 @@ function parseChatCreateBody(body: unknown): { title: string; scope: SourceScope
   if (Object.keys(record).some((key) => !allowed.has(key))) {
     throw new SourceScopeError(400, "invalid chat body");
   }
-  if (record.title !== undefined && typeof record.title !== "string") {
-    throw new SourceScopeError(400, "invalid chat body");
-  }
-  const title = (record.title as string | undefined) || "New chat";
+  const titleIsManual = Object.prototype.hasOwnProperty.call(record, "title");
+  const title = titleIsManual ? parseChatTitle(record.title) : "New chat";
   const hasMode = Object.prototype.hasOwnProperty.call(record, "source_mode");
   const hasIds = Object.prototype.hasOwnProperty.call(record, "source_ids");
   const scope = !hasMode && !hasIds
@@ -485,7 +507,19 @@ function parseChatCreateBody(body: unknown): { title: string; scope: SourceScope
     : parseSourceScopeInput(Object.fromEntries(
         Object.entries(record).filter(([key]) => key === "source_mode" || key === "source_ids")
       ));
-  return { title, scope };
+  return { title, titleIsManual, scope };
+}
+
+function parseChatTitle(value: unknown): string {
+  if (typeof value !== "string") {
+    throw new SourceScopeError(400, "title must contain between 1 and 80 characters");
+  }
+  const title = value.trim();
+  const length = Array.from(title).length;
+  if (length < 1 || length > 80) {
+    throw new SourceScopeError(400, "title must contain between 1 and 80 characters");
+  }
+  return title;
 }
 
 function sendSourceScopeError(reply: any, error: unknown) {

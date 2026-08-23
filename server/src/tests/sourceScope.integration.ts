@@ -270,7 +270,123 @@ describe("source-scope database isolation", () => {
       await cleanupUsers(users);
     }
   });
+
+  it("updates activity after commit without overwriting manual or explicit title provenance", async () => {
+    const users: string[] = [];
+    try {
+      const accountId = await insertUser("history");
+      users.push(accountId);
+      const token = signToken({ userId: accountId, email: "history@example.test" });
+      const headers = { authorization: `Bearer ${token}` };
+
+      const automaticCreate = await app.inject({
+        method: "POST",
+        url: "/api/chats",
+        headers,
+        payload: {},
+      });
+      expect(automaticCreate.statusCode).toBe(200);
+      const automaticId = automaticCreate.json().id as string;
+      expect(automaticCreate.json()).toHaveProperty("updated_at");
+      expect(automaticCreate.json()).not.toHaveProperty("title_is_manual");
+      await pool.query(`UPDATE chats SET updated_at='2000-01-01T00:00:00Z' WHERE id=$1`, [automaticId]);
+
+      const automaticTurn = await acceptChatTurn(accountId, automaticId, "Automatic title from first message");
+      const automatic = await getChatState(automaticId);
+      expect(automatic).toMatchObject({
+        title: "Automatic title from first message",
+        title_is_manual: false,
+      });
+      expect(automatic.updated_at.getTime()).toBeGreaterThanOrEqual(
+        new Date(automaticTurn.userMessage.created_at).getTime()
+      );
+
+      const explicitCreate = await app.inject({
+        method: "POST",
+        url: "/api/chats",
+        headers,
+        payload: { title: "Explicit project title" },
+      });
+      expect(explicitCreate.statusCode).toBe(200);
+      const explicitId = explicitCreate.json().id as string;
+      expect((await getChatState(explicitId)).title_is_manual).toBe(true);
+      await acceptChatTurn(accountId, explicitId, "First message must not replace explicit title");
+      expect(await getChatState(explicitId)).toMatchObject({
+        title: "Explicit project title",
+        title_is_manual: true,
+      });
+
+      const renamed = await acceptFirstTurnWithConcurrentRename(accountId, headers, "Manual race winner");
+      expect(await getChatState(renamed)).toMatchObject({
+        title: "Manual race winner",
+        title_is_manual: true,
+      });
+
+      const literal = await acceptFirstTurnWithConcurrentRename(accountId, headers, "New chat");
+      expect(await getChatState(literal)).toMatchObject({
+        title: "New chat",
+        title_is_manual: true,
+      });
+
+      const monotonicId = await insertChat(accountId);
+      await pool.query(`INSERT INTO messages (chat_id, role, content) VALUES ($1,'assistant','seed')`, [monotonicId]);
+      const futureActivity = new Date("2099-01-01T00:00:00.000Z");
+      await pool.query(`UPDATE chats SET updated_at=$2 WHERE id=$1`, [monotonicId, futureActivity]);
+      await acceptChatTurn(accountId, monotonicId, "Activity must not move backward");
+      expect((await getChatState(monotonicId)).updated_at.toISOString()).toBe(futureActivity.toISOString());
+    } finally {
+      await cleanupUsers(users);
+    }
+  });
 });
+
+async function getChatState(chatId: string): Promise<{
+  title: string;
+  title_is_manual: boolean;
+  updated_at: Date;
+}> {
+  const result = await pool.query<{
+    title: string;
+    title_is_manual: boolean;
+    updated_at: Date;
+  }>(`SELECT title, title_is_manual, updated_at FROM chats WHERE id=$1`, [chatId]);
+  return result.rows[0];
+}
+
+async function acceptFirstTurnWithConcurrentRename(
+  accountId: string,
+  headers: { authorization: string },
+  title: string
+): Promise<string> {
+  const created = await app.inject({ method: "POST", url: "/api/chats", headers, payload: {} });
+  expect(created.statusCode).toBe(200);
+  const chatId = created.json().id as string;
+  const snapshotAccepted = deferred();
+  const allowAcceptance = deferred();
+  const acceptance = acceptChatTurn(accountId, chatId, "Generated title must lose", {
+    afterSnapshot: async () => {
+      snapshotAccepted.resolve();
+      await allowAcceptance.promise;
+    },
+  });
+  await snapshotAccepted.promise;
+
+  let renamed;
+  try {
+    renamed = await app.inject({
+      method: "PATCH",
+      url: `/api/chats/${chatId}`,
+      headers,
+      payload: { title },
+    });
+  } finally {
+    allowAcceptance.resolve();
+  }
+  await acceptance;
+  expect(renamed.statusCode).toBe(200);
+  expect(renamed.json()).not.toHaveProperty("title_is_manual");
+  return chatId;
+}
 
 async function expectMessageMetaMatches(turn: AcceptedChatTurn): Promise<void> {
   const result = await pool.query<{ meta: Record<string, unknown> }>(

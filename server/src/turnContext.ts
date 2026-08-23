@@ -86,14 +86,24 @@ export async function acceptChatTurn(
     inTransaction = false;
     const row = messageResult.rows[0];
     const userMessage = Object.freeze({ ...row, meta });
-    // Title generation is presentation state, not accepted-turn provenance.
-    // Run it after the load-bearing snapshot transaction so a concurrent
-    // source/model update cannot abort or rewrite an already accepted turn.
-    if (isFirst) {
+    // Activity and title generation are presentation state, not accepted-turn
+    // provenance. Keep this single write after the load-bearing snapshot
+    // commits so concurrent source/model/title updates stay non-blocking.
+    try {
       await client.query(
-        `UPDATE chats SET title=$2 WHERE id=$1 AND account_id=$3`,
-        [chatId, content.slice(0, 80), accountId]
-      ).catch(() => {});
+        `UPDATE chats
+         SET updated_at=GREATEST(updated_at, $2::timestamptz),
+             title=CASE
+               WHEN $3::boolean AND title='New chat' AND title_is_manual=false THEN $4
+               ELSE title
+             END
+         WHERE id=$1 AND account_id=$5`,
+        [chatId, row.created_at, isFirst, Array.from(content).slice(0, 80).join(""), accountId]
+      );
+    } catch {
+      // The message is already committed; never expose database details or
+      // turn presentation bookkeeping into an acceptance failure.
+      console.warn("chat activity update failed");
     }
     return Object.freeze({ ...snapshot, userMessage });
   } catch (error) {

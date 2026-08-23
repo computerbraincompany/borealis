@@ -58,12 +58,22 @@ CREATE TABLE IF NOT EXISTS chats (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   account_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   title TEXT NOT NULL DEFAULT 'New chat',
+  title_is_manual BOOLEAN NOT NULL DEFAULT false,
   model TEXT,
   source_mode TEXT NOT NULL DEFAULT 'all',
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 ALTER TABLE chats ADD COLUMN IF NOT EXISTS model TEXT;
 ALTER TABLE chats ADD COLUMN IF NOT EXISTS source_mode TEXT NOT NULL DEFAULT 'all';
+ALTER TABLE chats ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ;
+UPDATE chats SET updated_at=created_at WHERE updated_at IS NULL;
+ALTER TABLE chats ALTER COLUMN updated_at SET DEFAULT now();
+ALTER TABLE chats ALTER COLUMN updated_at SET NOT NULL;
+ALTER TABLE chats ADD COLUMN IF NOT EXISTS title_is_manual BOOLEAN;
+UPDATE chats SET title_is_manual=false WHERE title_is_manual IS NULL;
+ALTER TABLE chats ALTER COLUMN title_is_manual SET DEFAULT false;
+ALTER TABLE chats ALTER COLUMN title_is_manual SET NOT NULL;
 DO $$
 BEGIN
   IF NOT EXISTS (
@@ -79,6 +89,7 @@ BEGIN
 END
 $$;
 CREATE UNIQUE INDEX IF NOT EXISTS chats_id_account_uidx ON chats (id, account_id);
+CREATE INDEX IF NOT EXISTS chats_account_activity_idx ON chats (account_id, updated_at DESC, id DESC);
 
 CREATE TABLE IF NOT EXISTS chat_sources (
   chat_id UUID NOT NULL,

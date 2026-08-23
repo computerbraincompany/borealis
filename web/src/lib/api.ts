@@ -116,6 +116,7 @@ export interface Chat {
   model: string;
   source_mode: SourceMode;
   created_at: string;
+  updated_at: string;
 }
 
 export interface Message {
@@ -335,6 +336,8 @@ export const chatsApi = {
   get: (id: string) => api<ChatDetail>(`/api/chats/${id}`),
   updateModel: (id: string, model: string) =>
     api<Chat>(`/api/chats/${id}`, { method: "PATCH", body: JSON.stringify({ model }) }),
+  updateTitle: (id: string, title: string) =>
+    api<Chat>(`/api/chats/${id}`, { method: "PATCH", body: JSON.stringify({ title }) }),
   updateSources: (id: string, scope: SourceScopeInput) =>
     api<{ source_mode: SourceMode; sources: AttachedSource[] }>(`/api/chats/${id}/sources`, {
       method: "PUT",
