@@ -73,6 +73,38 @@ between these steps as long as their own ordering is preserved.
 | 022  | Select data sources per chat and enforce the immutable turn scope across prompt, RAG, DuckDB and reports | P1 | L | 013, 014, 015, 017, 019, 020, 021 | DONE (unit/integration/Python/web gates + live scoped API probes) |
 | 023  | Persistent Light/Dark/System app theme, semantic tokens and theme-aware chat charts | P2 | M | 013, 014, 019, 021, 022 | DONE (web build + static sweeps + Light/Dark/System chart/browser matrix) |
 
+### Pass 7 (official North-doc gap review 2026-08-23, commit `67cc7db`)
+
+This pass compared the implemented Borealis MVP with Cohere's current official
+North user documentation. It deliberately selects adjacent improvements to the
+existing local chat/source/data/report loop rather than reproducing North's
+enterprise platform. Recommended execution is strictly **024 → 025 → 026 →
+027** because all four touch the live chat surface.
+
+| Plan | Title | Priority | Effort | Depends on | Status |
+|------|-------|----------|--------|------------|--------|
+| 024 | Upload and attach files from chat; recover from source-catalog errors | P1 | M | 022, 023 | TODO |
+| 025 | Persist and show bounded retrieved evidence below grounded answers | P1 | M | 024 | TODO |
+| 026 | Preserve scoped SQL results as inline tables with safe CSV export | P1 | M | 025 | TODO |
+| 027 | Search, rename, group and activity-sort private chat history | P2 | M | 026 | TODO |
+
+#### Vetted discrepancy summary
+
+| North behavior (official docs) | Borealis at `67cc7db` | MVP decision |
+|--------------------------------|------------------------|--------------|
+| Upload/select files in the chat bar with visible readiness | Upload exists only on Sources; a failed catalog appears permanently loading | Plan 024 reuses the upload API and source picker; defers `@` mentions/previews |
+| Citation pill and source-snippet inspection | Retrieval evidence is transient and model-authored `[source]` text is unvalidated | Plan 025 shows trusted response-level retrieved passages; defers claim offsets |
+| Inspectable tabular tool output and downloadable generated data | `query_data` rows collapse to “N rows” and disappear on reload | Plan 026 persists a capped preview and exports only that authorized snapshot |
+| Searchable, renamable history ordered by recent work | Flat creation-time list; delete only; auto-title cannot be corrected | Plan 027 adds activity order, local search/date groups, and owned rename |
+
+Official sources checked:
+
+- <https://private.docs.cohere.com/docs/get-started/north-chat>
+- <https://private.docs.cohere.com/docs/get-started/chat-history>
+- <https://private.docs.cohere.com/docs/get-started/using-citations>
+- <https://private.docs.cohere.com/docs/get-started/tools/my-files/home>
+- <https://private.docs.cohere.com/docs/get-started/tools/data-interpreter/home>
+
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (one-line reason) | REJECTED (one-line rationale).
 
 ## Dependency notes
@@ -129,6 +161,21 @@ Status values: TODO | IN PROGRESS | DONE | BLOCKED (one-line reason) | REJECTED 
 - Empty-source semantics are load-bearing: legacy/existing chats default to
   dynamic `all`; new web chats explicitly start `selected + []`; deleting the
   last selected source must remain none, never fall back to all.
+
+### Pass 7 dependency notes
+
+- The chain is sequential because every plan touches `ChatView.tsx`; 025 and
+  026 also extend the same final assistant metadata object in `agent.ts`.
+- 024 does not change ingestion or scope semantics: an uploaded processing file
+  can be selected, but it is excluded from turns until ready.
+- 025 intentionally says “retrieved evidence,” not “claim citations.” Exact
+  highlighted claim spans require a model/provider citation contract Borealis
+  cannot assume across arbitrary OpenAI-compatible endpoints.
+- 026 stores only bounded rows in message metadata. A future full-result export
+  must use a separately authorized artifact, not inflate chat history.
+- 027 updates activity after the accepted-turn transaction commits, using the
+  accepted message timestamp with `GREATEST`; it must not lock/write the chat
+  row inside the immutable model/source snapshot established by 022.
 
 ## Findings considered and rejected (Pass 2 deep audit — do not re-audit without new evidence)
 
