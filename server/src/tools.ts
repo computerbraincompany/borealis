@@ -169,6 +169,7 @@ export const TOOL_DEFS: ToolDef[] = [
 export interface ToolRunContext {
   chartIds: string[];
   evidence: RetrievedEvidence[];
+  queryResults: QueryResultArtifact[];
   reportId?: string;
   chatId: string;
   model: string;
@@ -185,9 +186,26 @@ export interface RetrievedEvidence {
   score: number;
 }
 
+export type QueryResultCell = string | number | boolean | null;
+
+export interface QueryResultArtifact {
+  id: string;
+  sql: string;
+  columns: string[];
+  rows: QueryResultCell[][];
+  row_count: number;
+  truncated: boolean;
+}
+
 const MAX_EVIDENCE_PASSAGES = 8;
 const MAX_EVIDENCE_SOURCE_LENGTH = 200;
 const MAX_EVIDENCE_EXCERPT_LENGTH = 800;
+const MAX_QUERY_ARTIFACTS = 3;
+const MAX_QUERY_SQL_LENGTH = 2_000;
+const MAX_QUERY_COLUMNS = 50;
+const MAX_QUERY_COLUMN_LENGTH = 200;
+const MAX_QUERY_ROWS = 100;
+const MAX_QUERY_CELL_LENGTH = 500;
 
 /** Keep only the stable, bounded retrieval evidence safe to persist in message metadata. */
 export function sanitizeRetrievedEvidence(passages: readonly unknown[]): RetrievedEvidence[] {
@@ -230,6 +248,96 @@ export function sanitizeRetrievedEvidence(passages: readonly unknown[]): Retriev
   return evidence;
 }
 
+/** Add one bounded display snapshot without changing the full result returned to the model. */
+export function captureQueryResult(
+  current: readonly QueryResultArtifact[],
+  sqlValue: unknown,
+  result: unknown
+): QueryResultArtifact[] {
+  const accepted = current.slice(0, MAX_QUERY_ARTIFACTS);
+  if (accepted.length >= MAX_QUERY_ARTIFACTS) return accepted;
+  if (!result || typeof result !== "object" || Array.isArray(result)) return accepted;
+  const record = result as { columns?: unknown; rows?: unknown; row_count?: unknown; error?: unknown };
+  if (Object.prototype.hasOwnProperty.call(record, "error")) return accepted;
+  if (!Array.isArray(record.columns) || !Array.isArray(record.rows)) return accepted;
+
+  let truncated = false;
+  const rawSql = typeof sqlValue === "string" ? sqlValue : "";
+  if (rawSql.length > MAX_QUERY_SQL_LENGTH) truncated = true;
+  const sql = rawSql.slice(0, MAX_QUERY_SQL_LENGTH);
+
+  if (record.columns.length > MAX_QUERY_COLUMNS) truncated = true;
+  const columns = record.columns.slice(0, MAX_QUERY_COLUMNS).map((column) => {
+    const text = typeof column === "string" ? column : String(column ?? "");
+    if (typeof column !== "string" || text.length > MAX_QUERY_COLUMN_LENGTH) truncated = true;
+    return text.slice(0, MAX_QUERY_COLUMN_LENGTH);
+  });
+
+  const rows: QueryResultCell[][] = [];
+  for (const candidate of record.rows) {
+    if (!Array.isArray(candidate)) {
+      truncated = true;
+      continue;
+    }
+    if (rows.length >= MAX_QUERY_ROWS) {
+      truncated = true;
+      continue;
+    }
+    if (candidate.length !== columns.length) truncated = true;
+    rows.push(columns.map((_, index) => {
+      if (index >= candidate.length) return null;
+      const cell = sanitizeQueryCell(candidate[index]);
+      if (cell.truncated) truncated = true;
+      return cell.value;
+    }));
+  }
+
+  const rawRowCount = record.row_count;
+  const rowCount = typeof rawRowCount === "number" && Number.isFinite(rawRowCount) && rawRowCount >= 0
+    ? Math.trunc(rawRowCount)
+    : record.rows.length;
+  if (rowCount !== rawRowCount || rowCount > rows.length) truncated = true;
+
+  return [...accepted, {
+    id: `query-${accepted.length + 1}`,
+    sql,
+    columns,
+    rows,
+    row_count: rowCount,
+    truncated,
+  }];
+}
+
+function sanitizeQueryCell(value: unknown): { value: QueryResultCell; truncated: boolean } {
+  if (value === null) return { value: null, truncated: false };
+  if (typeof value === "number") {
+    return Number.isFinite(value)
+      ? { value, truncated: false }
+      : { value: null, truncated: true };
+  }
+  if (typeof value === "boolean") return { value, truncated: false };
+
+  let text: string;
+  if (typeof value === "string") {
+    text = value;
+  } else if (value instanceof Date && Number.isFinite(value.getTime())) {
+    text = value.toISOString();
+  } else if (value && typeof value === "object") {
+    try {
+      const serialized = JSON.stringify(value);
+      text = typeof serialized === "string" ? serialized : String(value);
+    } catch {
+      text = String(value);
+    }
+  } else {
+    text = String(value);
+  }
+  return {
+    value: text.slice(0, MAX_QUERY_CELL_LENGTH),
+    truncated: text.length > MAX_QUERY_CELL_LENGTH,
+  };
+}
+
 export async function executeTool(accountId: string, name: string, args: any, context: ToolRunContext): Promise<any> {
   switch (name) {
     case "retrieve": {
@@ -250,8 +358,11 @@ export async function executeTool(accountId: string, name: string, args: any, co
       const sources = context.sourceScope.attached.map((source) => ({ ...source }));
       return { source_mode: context.sourceScope.mode, sources, datasets };
     }
-    case "query_data":
-      return await py.query(accountId, args.sql, context.readyTableNames);
+    case "query_data": {
+      const result = await py.query(accountId, args.sql, context.readyTableNames);
+      context.queryResults = captureQueryResult(context.queryResults, args.sql, result);
+      return result;
+    }
     case "describe_data": {
       const table = typeof args.table === "string" ? args.table : "";
       if (!context.readyTableNames.includes(table)) {

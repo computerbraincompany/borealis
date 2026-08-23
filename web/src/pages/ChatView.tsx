@@ -3,6 +3,7 @@ import { Plus, Trash2, MessageSquareText, Send, Square, Sparkles, X } from "luci
 import {
   chatsApi,
   modelsApi,
+  parseQueryResultArtifacts,
   sourcesApi,
   streamAgentChat,
   type AttachedSource,
@@ -10,6 +11,7 @@ import {
   type ChatDetail,
   type Message,
   type ModelsResponse,
+  type QueryResultArtifact,
   type RetrievedEvidence,
   type Source,
   type SourceMode,
@@ -40,6 +42,7 @@ interface StreamState {
   finalCharts: string[];
   finalReport: string | null;
   finalEvidence: RetrievedEvidence[];
+  finalQueryResults: QueryResultArtifact[];
 }
 
 function newStreamState(): StreamState {
@@ -53,6 +56,7 @@ function newStreamState(): StreamState {
     finalCharts: [],
     finalReport: null,
     finalEvidence: [],
+    finalQueryResults: [],
   };
 }
 
@@ -400,6 +404,7 @@ export function ChatView({ chatId }: { chatId?: string }) {
       finalCharts: [],
       finalReport: null,
       finalEvidence: [],
+      finalQueryResults: [],
     };
     const runRevision = (runRevisionByChatRef.current.get(runChatId) ?? 0) + 1;
     runRevisionByChatRef.current.set(runChatId, runRevision);
@@ -481,6 +486,7 @@ export function ChatView({ chatId }: { chatId?: string }) {
           finalCharts: ev.meta?.charts || [],
           finalReport: ev.meta?.report || null,
           finalEvidence: Array.isArray(ev.meta?.evidence) ? ev.meta.evidence : [],
+          finalQueryResults: parseQueryResultArtifacts(ev.meta?.query_results),
         }));
       } else if (ev.type === "error") {
         runError = ev.message || "stream failed";
@@ -545,7 +551,12 @@ export function ChatView({ chatId }: { chatId?: string }) {
 
   const messages = detail?.messages || [];
   const hasStreamMessage = Boolean(
-    stream.text || stream.reasoning || stream.finalCharts.length || stream.finalReport || stream.finalEvidence.length
+    stream.text ||
+      stream.reasoning ||
+      stream.finalCharts.length ||
+      stream.finalReport ||
+      stream.finalEvidence.length ||
+      stream.finalQueryResults.length
   );
   const hasStreamActivity = hasStreamMessage || stream.steps.length > 0;
   const isEmpty = messages.length === 0 && !stream.running && !hasStreamActivity;
@@ -631,6 +642,7 @@ export function ChatView({ chatId }: { chatId?: string }) {
                   report={m.meta?.report || undefined}
                   model={m.meta?.model}
                   evidence={m.meta?.evidence}
+                  queryResults={parseQueryResultArtifacts(m.meta?.query_results)}
                 />
               )
             )}
@@ -647,6 +659,7 @@ export function ChatView({ chatId }: { chatId?: string }) {
                     report={stream.finalReport}
                     model={stream.model || detail?.model}
                     evidence={stream.finalEvidence}
+                    queryResults={stream.finalQueryResults}
                   />
                 ) : stream.running && stream.steps.length === 0 ? (
                   <div className="flex justify-start">

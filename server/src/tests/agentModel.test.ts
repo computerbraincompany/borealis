@@ -72,6 +72,7 @@ describe("runAgent model snapshot", () => {
       source_mode: "selected",
       source_ids: [],
       evidence: [],
+      query_results: [],
     });
     expect(emitted).toContainEqual({
       type: "message",
@@ -84,6 +85,7 @@ describe("runAgent model snapshot", () => {
         source_mode: "selected",
         source_ids: [],
         evidence: [],
+        query_results: [],
       },
     });
   });
@@ -131,9 +133,85 @@ describe("runAgent model snapshot", () => {
     const insert = qMock.mock.calls.find(([sql]) => String(sql).includes("INSERT INTO messages"));
     const persistedMeta = JSON.parse(String(insert?.[1]?.[2]));
     expect(persistedMeta.evidence).toEqual(evidence);
+    expect(persistedMeta.query_results).toEqual([]);
     expect(emitted).toContainEqual(expect.objectContaining({
       type: "message",
       content: "grounded answer",
+      meta: persistedMeta,
+    }));
+  });
+
+  it("persists and emits query artifacts without dropping prior evidence metadata", async () => {
+    const evidence = [{
+      source_id: "11111111-1111-4111-8111-111111111111",
+      chunk_id: "42",
+      source: "Allowed.pdf",
+      excerpt: "A grounded passage",
+      score: 0.91,
+    }];
+    const queryResults = [{
+      id: "query-1",
+      sql: "SELECT category, sum(amount) FROM ledger GROUP BY category",
+      columns: ["category", "amount"],
+      rows: [["Food", 42]],
+      row_count: 1,
+      truncated: false,
+    }];
+    qMock.mockResolvedValue([]);
+    listDatasetsMock.mockResolvedValue([]);
+    chatOnceMock
+      .mockResolvedValueOnce({
+        choices: [{ message: {
+          role: "assistant",
+          content: "",
+          tool_calls: [
+            { id: "retrieve-1", type: "function", function: { name: "retrieve", arguments: '{"query":"grounding"}' } },
+            { id: "query-1", type: "function", function: { name: "query_data", arguments: '{"sql":"SELECT 42"}' } },
+          ],
+        } }],
+      } as any)
+      .mockResolvedValueOnce({ choices: [{ message: { role: "assistant", content: "draft", tool_calls: [] } }] } as any);
+    executeToolMock.mockImplementation(async (_accountId, name, _args, context) => {
+      if (name === "retrieve") {
+        context.evidence = evidence;
+        return { passages: [] };
+      }
+      if (name === "query_data") {
+        context.queryResults = queryResults;
+        return { columns: ["category", "amount"], rows: [["Food", 42]], row_count: 1 };
+      }
+      throw new Error(`unexpected tool ${name}`);
+    });
+    streamingChatMock.mockResolvedValueOnce({
+      choices: [{ message: { role: "assistant", content: "grounded data answer", tool_calls: [] } }],
+    } as any);
+    const emitted: any[] = [];
+
+    await runAgent({
+      accountId: "account-1",
+      chatId: "chat-1",
+      content: "question",
+      model: "selected-chat-model",
+      sourceScope: emptyScope,
+      emit: (event) => {
+        emitted.push(event);
+      },
+    });
+
+    const insert = qMock.mock.calls.find(([sql]) => String(sql).includes("INSERT INTO messages"));
+    const persistedMeta = JSON.parse(String(insert?.[1]?.[2]));
+    expect(persistedMeta).toEqual({
+      charts: [],
+      report: null,
+      model: "selected-chat-model",
+      source_mode: "selected",
+      source_ids: [],
+      evidence,
+      query_results: queryResults,
+    });
+    expect(emitted).toContainEqual(expect.objectContaining({
+      type: "message",
+      content: "grounded data answer",
       meta: persistedMeta,
     }));
   });
@@ -186,6 +264,7 @@ describe("runAgent model snapshot", () => {
       source_mode: "selected",
       source_ids: [],
       evidence,
+      query_results: [],
     });
     expect(emitted).toContainEqual(expect.objectContaining({ type: "message", meta: persistedMeta }));
   });
@@ -208,6 +287,7 @@ describe("runAgent model snapshot", () => {
     const context = {
       chartIds: [],
       evidence: [priorEvidence],
+      queryResults: [],
       chatId: "chat-1",
       model: "selected-chat-model",
       sourceScope: emptyScope,
@@ -242,6 +322,62 @@ describe("runAgent model snapshot", () => {
     completeLateRetrieval?.();
     await Promise.resolve();
     expect(context.evidence).toEqual([priorEvidence]);
+  });
+
+  it("does not accept query artifacts from a query that resolves after its timeout", async () => {
+    const priorQuery = {
+      id: "query-1",
+      sql: "SELECT 1",
+      columns: ["n"],
+      rows: [[1]],
+      row_count: 1,
+      truncated: false,
+    };
+    const lateQuery = {
+      id: "query-2",
+      sql: "SELECT 2",
+      columns: ["n"],
+      rows: [[2]],
+      row_count: 1,
+      truncated: false,
+    };
+    const context = {
+      chartIds: [],
+      evidence: [],
+      queryResults: [priorQuery],
+      chatId: "chat-1",
+      model: "selected-chat-model",
+      sourceScope: emptyScope,
+      readySourceIds: emptyScope.readySourceIds,
+      readyTableNames: emptyScope.readyTableNames,
+    };
+    let completeLateQuery: (() => void) | undefined;
+    executeToolMock.mockImplementationOnce((_accountId, _name, _args, isolatedContext) => (
+      new Promise((resolve) => {
+        completeLateQuery = () => {
+          isolatedContext.queryResults = [...isolatedContext.queryResults, lateQuery];
+          resolve({ columns: ["n"], rows: [[2]], row_count: 1 });
+        };
+      })
+    ));
+    const emitted: any[] = [];
+
+    await runToolRound(
+      "account-1",
+      "chat-1",
+      { id: "query-timeout", function: { name: "query_data", arguments: '{"sql":"SELECT 2"}' } },
+      [],
+      context,
+      (event) => emitted.push(event),
+      0
+    );
+
+    expect(context.queryResults).toEqual([priorQuery]);
+    expect(emitted).toContainEqual({ type: "step-end", name: "query_data", result: { error: "tool timed out" } });
+    expect(completeLateQuery).toBeTypeOf("function");
+    completeLateQuery?.();
+    await Promise.resolve();
+    expect(context.queryResults).toEqual([priorQuery]);
   });
 
   it("builds the catalog only from selected tables and names attached unready sources", async () => {

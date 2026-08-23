@@ -120,6 +120,7 @@ export async function runAgent(opts: {
   const context: ToolRunContext = {
     chartIds: [],
     evidence: [],
+    queryResults: [],
     chatId,
     model,
     sourceScope,
@@ -158,6 +159,7 @@ export async function runAgent(opts: {
         source_mode: sourceScope.mode,
         source_ids: [...sourceScope.readySourceIds],
         evidence: context.evidence,
+        query_results: context.queryResults,
       };
       await q(`INSERT INTO messages (chat_id, role, content, meta) VALUES ($1,'assistant',$2,$3)`, [
         chatId,
@@ -187,6 +189,7 @@ export async function runAgent(opts: {
     source_mode: sourceScope.mode,
     source_ids: [...sourceScope.readySourceIds],
     evidence: context.evidence,
+    query_results: context.queryResults,
   };
   await q(`INSERT INTO messages (chat_id, role, content, meta) VALUES ($1,'assistant',$2,$3)`, [chatId, final, JSON.stringify(meta)]);
   emit({ type: "delta", text: final });
@@ -212,10 +215,12 @@ export async function runToolRound(
   }
   emit({ type: "step-start", name, args: parsedArgs });
   let result: any;
-  // Retrieval builds trusted evidence as a side effect. Isolate that ledger so
-  // a promise that loses the timeout race cannot mutate evidence later.
-  const toolContext = name === "retrieve"
-    ? { ...context, evidence: [...context.evidence] }
+  // Trusted display artifacts are side effects of successful data tools.
+  // Isolate both ledgers so a promise that loses the timeout race cannot
+  // mutate accepted message metadata later.
+  const capturesArtifacts = name === "retrieve" || name === "query_data";
+  const toolContext = capturesArtifacts
+    ? { ...context, evidence: [...context.evidence], queryResults: [...context.queryResults] }
     : context;
   try {
     result = await Promise.race([
@@ -224,6 +229,9 @@ export async function runToolRound(
     ]);
     if (name === "retrieve" && !isToolErrorResult(result)) {
       context.evidence = [...toolContext.evidence];
+    }
+    if (name === "query_data" && !isToolErrorResult(result)) {
+      context.queryResults = [...toolContext.queryResults];
     }
   } catch (e: any) {
     result = { error: String(e?.message || e) };

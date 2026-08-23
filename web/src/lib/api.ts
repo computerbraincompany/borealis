@@ -129,6 +129,7 @@ export interface Message {
     source_mode?: SourceMode;
     source_ids?: string[];
     evidence?: RetrievedEvidence[];
+    query_results?: QueryResultArtifact[];
   } | null;
   created_at: string;
 }
@@ -139,6 +140,109 @@ export interface RetrievedEvidence {
   source: string;
   excerpt: string;
   score: number;
+}
+
+export type QueryResultCell = string | number | boolean | null;
+
+export interface QueryResultArtifact {
+  id: string;
+  sql: string;
+  columns: string[];
+  rows: QueryResultCell[][];
+  row_count: number;
+  truncated: boolean;
+}
+
+const MAX_QUERY_RESULTS = 3;
+const MAX_QUERY_SQL_LENGTH = 2000;
+const MAX_QUERY_COLUMNS = 50;
+const MAX_QUERY_COLUMN_LENGTH = 200;
+const MAX_QUERY_ROWS = 100;
+const MAX_QUERY_CELL_LENGTH = 500;
+
+/**
+ * Treat message metadata as untrusted JSON. Older or manually-edited rows may
+ * predate the bounded query-result contract, so malformed artifacts are
+ * omitted instead of being allowed to break or inflate the chat UI.
+ */
+export function parseQueryResultArtifacts(value: unknown): QueryResultArtifact[] {
+  if (!Array.isArray(value)) return [];
+
+  const artifacts: QueryResultArtifact[] = [];
+  for (const candidate of value) {
+    if (artifacts.length >= MAX_QUERY_RESULTS) break;
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) continue;
+
+    const artifact = candidate as Record<string, unknown>;
+    if (
+      typeof artifact.id !== "string" ||
+      artifact.id.trim().length === 0 ||
+      artifact.id.length > 100 ||
+      typeof artifact.sql !== "string" ||
+      artifact.sql.trim().length === 0 ||
+      artifact.sql.length > MAX_QUERY_SQL_LENGTH ||
+      !Array.isArray(artifact.columns) ||
+      artifact.columns.length === 0 ||
+      artifact.columns.length > MAX_QUERY_COLUMNS ||
+      !Array.isArray(artifact.rows) ||
+      artifact.rows.length > MAX_QUERY_ROWS ||
+      !Number.isSafeInteger(artifact.row_count) ||
+      (artifact.row_count as number) < artifact.rows.length ||
+      typeof artifact.truncated !== "boolean"
+    ) {
+      continue;
+    }
+
+    const columns: string[] = [];
+    let valid = true;
+    for (let index = 0; index < artifact.columns.length; index += 1) {
+      const column = artifact.columns[index];
+      if (typeof column !== "string" || column.length > MAX_QUERY_COLUMN_LENGTH) {
+        valid = false;
+        break;
+      }
+      columns.push(column);
+    }
+    if (!valid) continue;
+
+    const rows: QueryResultCell[][] = [];
+    for (let rowIndex = 0; rowIndex < artifact.rows.length; rowIndex += 1) {
+      const candidateRow = artifact.rows[rowIndex];
+      if (!Array.isArray(candidateRow) || candidateRow.length !== columns.length) {
+        valid = false;
+        break;
+      }
+
+      const row: QueryResultCell[] = [];
+      for (let cellIndex = 0; cellIndex < candidateRow.length; cellIndex += 1) {
+        const cell = candidateRow[cellIndex];
+        if (
+          cell !== null &&
+          typeof cell !== "boolean" &&
+          !(typeof cell === "number" && Number.isFinite(cell)) &&
+          !(typeof cell === "string" && cell.length <= MAX_QUERY_CELL_LENGTH)
+        ) {
+          valid = false;
+          break;
+        }
+        row.push(cell as QueryResultCell);
+      }
+      if (!valid) break;
+      rows.push(row);
+    }
+    if (!valid) continue;
+
+    artifacts.push({
+      id: artifact.id,
+      sql: artifact.sql,
+      columns,
+      rows,
+      row_count: artifact.row_count as number,
+      truncated: artifact.truncated,
+    });
+  }
+
+  return artifacts;
 }
 
 export interface ChatDetail extends Chat {

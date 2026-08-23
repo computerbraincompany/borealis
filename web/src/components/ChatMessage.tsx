@@ -4,8 +4,14 @@ import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
 import { Bot, User, FileText, ExternalLink } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { openProtected, reportsApi, type RetrievedEvidence as RetrievedEvidenceItem } from "@/lib/api";
+import {
+  openProtected,
+  reportsApi,
+  type QueryResultArtifact,
+  type RetrievedEvidence as RetrievedEvidenceItem,
+} from "@/lib/api";
 import { ChartCard } from "@/components/ChartCard";
+import { DataResultCard } from "@/components/DataResultCard";
 import { RetrievedEvidence } from "@/components/RetrievedEvidence";
 
 function ReportLink({ reportId }: { reportId: string }) {
@@ -56,6 +62,7 @@ export const ChatMessage = memo(function ChatMessage({
   report,
   model,
   evidence,
+  queryResults,
   streaming,
   className,
 }: {
@@ -66,6 +73,7 @@ export const ChatMessage = memo(function ChatMessage({
   report?: string | null;
   model?: string;
   evidence?: RetrievedEvidenceItem[];
+  queryResults?: QueryResultArtifact[];
   streaming?: boolean;
   className?: string;
 }) {
@@ -96,6 +104,13 @@ export const ChatMessage = memo(function ChatMessage({
               </ReactMarkdown>
             </div>
             {evidence && evidence.length > 0 && <RetrievedEvidence evidence={evidence} />}
+            {queryResults && queryResults.length > 0 && (
+              <div className="mt-3 space-y-3">
+                {queryResults.map((artifact, index) => (
+                  <DataResultCard key={`${artifact.id}-${index}`} artifact={artifact} index={index} />
+                ))}
+              </div>
+            )}
             {model && (
               <div className="mt-2 flex min-w-0 items-center gap-1.5 text-[10px] text-muted-foreground">
                 <span>Model</span>

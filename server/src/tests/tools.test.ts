@@ -16,7 +16,13 @@ vi.mock("../pythonClient.js", () => ({
 import { q } from "../db.js";
 import { py } from "../pythonClient.js";
 import { retrieve } from "../retrieve.js";
-import { executeTool, makeReportPayload, sanitizeRetrievedEvidence, type ToolRunContext } from "../tools.js";
+import {
+  captureQueryResult,
+  executeTool,
+  makeReportPayload,
+  sanitizeRetrievedEvidence,
+  type ToolRunContext,
+} from "../tools.js";
 import type { ResolvedSourceScope } from "../sourceScope.js";
 
 const qMock = vi.mocked(q);
@@ -45,6 +51,7 @@ function context(chartIds: string[] = []): ToolRunContext {
   return {
     chartIds,
     evidence: [],
+    queryResults: [],
     chatId: "chat-1",
     model: "chat-model",
     sourceScope,
@@ -118,9 +125,20 @@ describe("source-scoped tools", () => {
   });
 
   it("forwards the exact immutable table allowlist to query", async () => {
-    queryMock.mockResolvedValueOnce({ columns: [], rows: [], row_count: 0 });
-    await executeTool("account", "query_data", { sql: "SELECT 1" }, context());
-    expect(queryMock).toHaveBeenCalledWith("account", "SELECT 1", ["allowed_table"]);
+    const runContext = context();
+    const queryResult = { columns: ["answer"], rows: [[1]], row_count: 1 };
+    queryMock.mockResolvedValueOnce(queryResult);
+    const result = await executeTool("account", "query_data", { sql: "SELECT 1 AS answer" }, runContext);
+    expect(result).toBe(queryResult);
+    expect(queryMock).toHaveBeenCalledWith("account", "SELECT 1 AS answer", ["allowed_table"]);
+    expect(runContext.queryResults).toEqual([{
+      id: "query-1",
+      sql: "SELECT 1 AS answer",
+      columns: ["answer"],
+      rows: [[1]],
+      row_count: 1,
+      truncated: false,
+    }]);
   });
 
   it("short-circuits describe for an unselected table", async () => {
@@ -133,6 +151,69 @@ describe("source-scoped tools", () => {
     describeMock.mockResolvedValueOnce({ table: "allowed_table" });
     await executeTool("account", "describe_data", { table: "allowed_table" }, context());
     expect(describeMock).toHaveBeenCalledWith("account", "allowed_table", ["allowed_table"]);
+  });
+});
+
+describe("query result artifact capture", () => {
+  it("keeps at most three successful artifacts with deterministic ids", () => {
+    let artifacts: ReturnType<typeof captureQueryResult> = [];
+    for (let index = 0; index < 4; index += 1) {
+      artifacts = captureQueryResult(artifacts, `SELECT ${index}`, {
+        columns: ["value"],
+        rows: [[index]],
+        row_count: 1,
+      });
+    }
+
+    expect(artifacts).toHaveLength(3);
+    expect(artifacts.map((artifact) => artifact.id)).toEqual(["query-1", "query-2", "query-3"]);
+    expect(artifacts.map((artifact) => artifact.rows[0][0])).toEqual([0, 1, 2]);
+  });
+
+  it("bounds SQL, columns, rows, labels, and cells", () => {
+    const columns = Array.from({ length: 51 }, (_, index) => index === 0 ? "c".repeat(220) : `column_${index}`);
+    const rows = Array.from({ length: 101 }, (_, rowIndex) => (
+      Array.from({ length: 51 }, (_, columnIndex) => columnIndex === 0 ? "x".repeat(550) : rowIndex + columnIndex)
+    ));
+
+    const [artifact] = captureQueryResult([], "S".repeat(2_100), { columns, rows, row_count: 101 });
+
+    expect(artifact.sql).toHaveLength(2_000);
+    expect(artifact.columns).toHaveLength(50);
+    expect(artifact.columns[0]).toHaveLength(200);
+    expect(artifact.rows).toHaveLength(100);
+    expect(artifact.rows.every((row) => row.length === 50)).toBe(true);
+    expect(String(artifact.rows[0][0])).toHaveLength(500);
+    expect(artifact.row_count).toBe(101);
+    expect(artifact.truncated).toBe(true);
+  });
+
+  it("rectangularizes rows and safely converts supported and complex cells", () => {
+    const [artifact] = captureQueryResult([], "SELECT values", {
+      columns: ["nullish", "number", "boolean", "text", "object", "array", "date"],
+      rows: [
+        [Number.NaN, -42, true, "hello", { nested: 1 }, ["a", "b"], new Date("2026-08-23T00:00:00Z")],
+        [null, 2],
+        "malformed",
+      ],
+      row_count: 3,
+    });
+
+    expect(artifact.rows).toEqual([
+      [null, -42, true, "hello", '{"nested":1}', '["a","b"]', "2026-08-23T00:00:00.000Z"],
+      [null, 2, null, null, null, null, null],
+    ]);
+    expect(artifact.truncated).toBe(true);
+  });
+
+  it("records nothing for returned or thrown query errors", async () => {
+    const prior = captureQueryResult([], "SELECT 1", { columns: ["n"], rows: [[1]], row_count: 1 });
+    expect(captureQueryResult(prior, "SELECT broken", { error: "query failed" })).toEqual(prior);
+
+    const runContext = context();
+    queryMock.mockRejectedValueOnce(new Error("query failed"));
+    await expect(executeTool("account", "query_data", { sql: "SELECT broken" }, runContext)).rejects.toThrow("query failed");
+    expect(runContext.queryResults).toEqual([]);
   });
 });
 
