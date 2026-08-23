@@ -247,15 +247,15 @@ Verify these cases:
 
 ## Done criteria
 
-- [ ] Chats have idempotently migrated activity and manual-title provenance.
-- [ ] Accepted turns advance activity through post-commit monotonic bookkeeping;
+- [x] Chats have idempotently migrated activity and manual-title provenance.
+- [x] Accepted turns advance activity through post-commit monotonic bookkeeping;
       title changes advance activity and list order is stable.
-- [ ] Account-owned titles can be renamed with strict validation.
-- [ ] First-message auto-title cannot overwrite an explicit create title or a
+- [x] Account-owned titles can be renamed with strict validation.
+- [x] First-message auto-title cannot overwrite an explicit create title or a
       concurrent manual rename, including the literal title `New chat`.
-- [ ] History supports keyword filtering and the four date groups.
-- [ ] Existing stream/model/source/evidence/query behavior remains intact.
-- [ ] Server/web/full gates and guarded integration pass.
+- [x] History supports keyword filtering and the four date groups.
+- [x] Existing stream/model/source/evidence/query behavior remains intact.
+- [x] Server/web/full gates and guarded integration pass.
 
 ## STOP conditions
 

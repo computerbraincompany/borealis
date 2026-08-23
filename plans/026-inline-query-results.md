@@ -194,13 +194,13 @@ number, and formula-looking string cases; inspect the resulting CSV text.
 
 ## Done criteria
 
-- [ ] Successful queries create at most three bounded artifacts per answer.
-- [ ] Query artifacts survive reload and failed final detail refresh.
-- [ ] Users can inspect the stored rows and SQL without opening tool internals.
-- [ ] CSV downloads only the authorized stored snapshot and mitigates formula
+- [x] Successful queries create at most three bounded artifacts per answer.
+- [x] Query artifacts survive reload and failed final detail refresh.
+- [x] Users can inspect the stored rows and SQL without opening tool internals.
+- [x] CSV downloads only the authorized stored snapshot and mitigates formula
       injection.
-- [ ] Existing evidence/charts/reports/model/source metadata remains intact.
-- [ ] Server/web/full verification gates pass.
+- [x] Existing evidence/charts/reports/model/source metadata remains intact.
+- [x] Server/web/full verification gates pass.
 
 ## STOP conditions
 

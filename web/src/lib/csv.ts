@@ -6,7 +6,7 @@ const FORMULA_PREFIX = /^\s*[=+\-@]/u;
 function serializeField(value: QueryResultCell): string {
   let text: string;
   if (value === null) {
-    text = "";
+    text = "null";
   } else if (typeof value === "string") {
     text = FORMULA_PREFIX.test(value) ? `'${value}` : value;
   } else {

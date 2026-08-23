@@ -22,12 +22,14 @@
 
 ## Why this matters
 
-North supports uploading a file from the chat bar and immediately using it in
-that conversation. Borealis already has a durable upload API and a per-chat
-source picker, but the user must leave chat, visit Sources, upload, wait, return,
-and select the file. A transient source-list error also leaves the picker
-looking permanently busy with no explanation or retry. This plan closes both
-gaps inside the existing upload and source-scope architecture.
+North supports uploading and selecting a file from the chat bar while exposing
+its processing state. North may use a file while its Smart Search enhancement
+continues; Borealis intentionally waits for ingestion to reach `ready` before a
+turn snapshot can use it. Borealis already has a durable upload API and a
+per-chat source picker, but the user must leave chat, visit Sources, upload,
+wait, return, and select the file. A transient source-list error also leaves the
+picker looking permanently busy with no explanation or retry. This plan closes
+the upload/selection and recovery gaps without claiming immediate-use parity.
 
 Official behavior references:
 
@@ -186,14 +188,14 @@ Run the app and check this matrix:
 
 ## Done criteria
 
-- [ ] A file can be uploaded from the source picker without leaving chat.
-- [ ] Selected mode adds the new processing source only to the local draft;
+- [x] A file can be uploaded from the source picker without leaving chat.
+- [x] Selected mode adds the new processing source only to the local draft;
       all mode remains all.
-- [ ] A failed source-list request has a visible Retry path and no permanent
+- [x] A failed source-list request has a visible Retry path and no permanent
       loading spinner.
-- [ ] Active chips and prior successful catalog data survive transient errors.
-- [ ] `cd web && npm run typecheck && npm run build` exits 0.
-- [ ] `./scripts/verify.sh` reports `ALL GATES GREEN`.
+- [x] Active chips and prior successful catalog data survive transient errors.
+- [x] `cd web && npm run typecheck && npm run build` exits 0.
+- [x] `./scripts/verify.sh` reports `ALL GATES GREEN`.
 
 ## STOP conditions
 

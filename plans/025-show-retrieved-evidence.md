@@ -214,12 +214,12 @@ source cases in Light and Dark themes.
 
 ## Done criteria
 
-- [ ] Every successful `retrieve` can contribute stable, bounded evidence.
-- [ ] Evidence is persisted in assistant metadata and included in final SSE.
-- [ ] Historical and just-streamed answers show the same disclosure.
-- [ ] UI calls it retrieved evidence, not claim-level citations.
-- [ ] No internal paths, URLs, connector config, or account-wide data leak.
-- [ ] Server tests/typecheck/build, web typecheck/build, and full verify pass.
+- [x] Every successful `retrieve` can contribute stable, bounded evidence.
+- [x] Evidence is persisted in assistant metadata and included in final SSE.
+- [x] Historical and just-streamed answers show the same disclosure.
+- [x] UI calls it retrieved evidence, not claim-level citations.
+- [x] No internal paths, URLs, connector config, or account-wide data leak.
+- [x] Server tests/typecheck/build, web typecheck/build, and full verify pass.
 
 ## STOP conditions
 
