@@ -11,9 +11,9 @@
 > green. Do not delete `python/` until Phase 5.
 >
 > **Drift check (run first)**:
-> `git diff --stat 7d5576d..HEAD -- python/ server/src/pythonClient.ts server/src/ingest.ts server/src/tools.ts server/src/agent.ts server/src/llm.ts server/src/config.ts server/src/networkPolicy.ts server/src/storageArtifacts.ts server/src/routes/connectors.ts server/src/routes/sources.ts scripts/dev.sh scripts/verify.sh .github/workflows/ci.yml README.md AGENTS.md docs/API.md server/.env.example data/generate_sample.py web/src/lib/chartOption.ts plans/README.md`
-> Reconcile live code with "Current state" and "Node-facing contracts".
-> Any unexplained mismatch is a STOP condition.
+> `git diff --stat 130481b..HEAD -- python/ server/src/pythonClient.ts server/src/ingest.ts server/src/ingestionFailures.ts server/src/systemHealth.ts server/src/routes/system.ts server/src/tools.ts server/src/agent.ts server/src/llm.ts server/src/config.ts server/src/networkPolicy.ts server/src/storageArtifacts.ts server/src/routes/connectors.ts server/src/routes/sources.ts scripts/dev.sh scripts/verify.sh .github/workflows/ci.yml README.md AGENTS.md docs/API.md server/.env.example data/generate_sample.py web/src/lib/chartOption.ts web/src/components/SystemHealthPanel.tsx web/src/pages/SettingsView.tsx plans/README.md`
+> Reconcile live code with "Current state", "Tree since this plan was written",
+> and "Node-facing contracts". Any unexplained mismatch is a STOP condition.
 
 ## Status
 
@@ -23,6 +23,7 @@
 - **Depends on**: `plans/028-deep-audit-remediation.md`
 - **Category**: architecture / ops
 - **Planned at**: commit `7d5576d`, 2026-08-25
+- **Reconciled against**: commit `130481b`, 2026-08-26
 
 ## Why this matters
 
@@ -79,6 +80,42 @@ Target: web → Fastify:3000 → datasets worker (DuckDB, ExcelJS)
   `url_cache/<sha256[:24]>/<table>/<32hex>.{csv,json}` cleanup proofs.
 - `scripts/dev.sh` starts uvicorn :8000 and `uv run litellm` :4000.
 - CI installs pango/glib + uv; Node tests mock `pythonClient`.
+
+## Tree since this plan was written (`7d5576d` → `130481b`)
+
+Do not treat these as optional. They landed after the first draft:
+
+- `9521180` — public ingest failures (`server/src/ingestionFailures.ts`).
+  `PythonServiceError` 422 → `DATASET_PARSE_FAILED`, 404 →
+  `SOURCE_UNAVAILABLE`, 429/5xx → `DATA_SERVICE_UNAVAILABLE`. Sources UI
+  shows `summary` / `detail` / `stage`. Keep these **codes and envelopes**.
+  In-process DuckDB/XLSX must map the same statuses. After Python is gone,
+  rewrite `DATA_SERVICE_UNAVAILABLE` copy (it still says “restore the
+  local data-processing service”).
+- `2f63da0` — authenticated `GET /api/health` (`systemHealth.ts`,
+  `routes/system.ts`, Settings → System). Probes: `api`, `database`
+  (Postgres `SELECT 1`), `data_service` (`py.health()` → :8000),
+  `model_gateway` (`${LITELLM_BASE_URL}/health/liveliness`),
+  `model_runtime` (`${LM_STUDIO_BASE_URL}/v1/models`). New env
+  `LM_STUDIO_BASE_URL` (default `http://localhost:1234`). Docs in
+  `docs/API.md`. **User-visible names still say “LiteLLM gateway”.**
+- `dd003f4` / later — Settings is a **workspace modal**
+  (`SettingsView.tsx`: System, Models, Appearance, Account), not a page
+  to invent later.
+- `130481b` — unify selection chrome (`border-l-2` → `bg-accent`).
+  Cosmetic only. Settings sections, health cards, and ingest envelopes
+  are unchanged. Tests still assert the user-visible name
+  “LiteLLM gateway”.
+
+Phase 1: `data_service` health becomes the DuckDB worker smoke test;
+keep the service id. Phase 4: LiteLLM’s `/health/liveliness` goes away.
+Retarget `model_gateway` at `config.llmBaseUrl` (OpenAI-compatible
+`/v1/models` or `/health` if present). If `llmBaseUrl` and
+`lmStudioBaseUrl` are the same origin after the default moves to :1234,
+do **not** show two identical cards — keep `model_runtime` as the local
+LM Studio probe only when the configured chat endpoint is a different
+origin (cloud). Update `SystemHealthPanel` / API.md copy so “LiteLLM”
+and “Python data service” are gone by Phase 5. Keep `LM_STUDIO_BASE_URL`.
 
 Characterization tests that **are** the spec:
 
@@ -243,6 +280,10 @@ each of the four results with the exact package version.
   cleanup at the worker. Keep method names, timeouts (65s default, 120s
   prepare), and `AbortSignal` behavior.
 - Ingest/tools/connectors keep importing `py`.
+- Keep `ingestionFailureCode` mapping from `PythonServiceError` statuses
+  (or the in-process equivalent) onto the public codes in
+  `ingestionFailures.ts`. `py.health()` / `GET /api/health` `data_service`
+  becomes the worker `SELECT 1`.
 
 **Verify:**
 
@@ -282,7 +323,12 @@ must still pass.
   hides the embedding model.
 - Default `LITELLM_BASE_URL` to `http://127.0.0.1:1234`. Accept
   `LLM_BASE_URL` as an alias. Keep `encoding_format: "float"`.
-- Remove LiteLLM from `scripts/dev.sh`.
+- Keep `LM_STUDIO_BASE_URL` for the Settings runtime probe.
+- Retarget `systemHealth.ts` `model_gateway` off LiteLLM
+  `/health/liveliness`. Deduplicate gateway vs runtime when both URLs
+  are loopback :1234.
+- Remove LiteLLM from `scripts/dev.sh`. Update Settings / API.md strings
+  that say “LiteLLM”.
 
 **Verify:** `cd server && npm test` (llm + config). Manual: chat + embed
 against a running LM Studio still work.
@@ -305,14 +351,17 @@ against a running LM Studio still work.
 Phase 0–3 (additive, Python still present): `server/package.json`,
 `server/src/data/**`, `server/src/pythonClient.ts`,
 `server/src/networkPolicy.ts`, `server/src/storageArtifacts.ts`,
+`server/src/systemHealth.ts`, `server/src/ingestionFailures.ts`,
 `server/src/tests/**`, `web/src/lib/chartOption.ts` (comment only).
 
 Phase 4: `server/src/llm.ts`, `server/src/llmAliases.ts`,
-`server/src/config.ts`, `scripts/dev.sh`.
+`server/src/config.ts`, `server/src/systemHealth.ts`,
+`web/src/components/SystemHealthPanel.tsx`, `web/src/pages/SettingsView.tsx`
+(copy only), `scripts/dev.sh`, `docs/API.md`.
 
 Phase 5: delete `python/`; `scripts/verify.sh`; `.github/workflows/ci.yml`;
 `server/.env.example`; `data/generate_sample.ts`; `README.md`; `AGENTS.md`;
-`docs/API.md`; this index.
+`docs/API.md`; `ingestionFailures.ts` copy; this index.
 
 Do not change agent tool names, SSE event shapes, or public `/api/*` routes
 except env/docs that mention Python/LiteLLM.
@@ -331,8 +380,11 @@ except env/docs that mention Python/LiteLLM.
   proves no network/file fetch; tests are not skipped.
 - [ ] LiteLLM process is gone; LM Studio aliases still work; embeddings
   still send `encoding_format: "float"`.
-- [ ] `python/` is deleted. `rg -n "uvicorn|weasyprint|openpyxl|litellm|PYTHON_SERVICE_|BOREALIS_SERVICE_TOKEN|from openpyxl|uv run" --glob '!plans/**' --glob '!docs/cohere-north/**'`
+- [ ] `python/` is deleted. `rg -n "uvicorn|weasyprint|openpyxl|litellm|PYTHON_SERVICE_|BOREALIS_SERVICE_TOKEN|from openpyxl|uv run|LiteLLM gateway|Python data service" --glob '!plans/**' --glob '!docs/cohere-north/**'`
   returns no runtime/docs hits outside historical plan text.
+- [ ] `GET /api/health` still returns the same service **ids**; copy no
+  longer names Python or LiteLLM. Public ingest failure **codes** are
+  unchanged.
 - [ ] `rg -n '"xlsx"' server/package.json server/package-lock.json` returns
   no SheetJS dependency.
 - [ ] `scripts/dev.sh` starts only postgres + server + web (plus requiring

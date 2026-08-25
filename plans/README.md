@@ -11,6 +11,10 @@ engineering audit. The three separate product-direction options were excluded
 at the maintainer's request.
 Plan 029 is the next architecture pass: replace the FastAPI report service and
 the LiteLLM proxy with in-process TypeScript. It is written, not executed.
+Plan 030 packages that Node-only tree as a macOS Electron app with a SQLite
+ledger, LanceDB embeddings, and cloud-optional LLM settings. It depends on
+029 and is also written, not executed. Do not ship sqlite-vec, pgvector, or
+Docker Postgres on the desktop/dev happy path.
 Execute in the order below unless dependencies say otherwise. Each executor:
 read the plan fully before starting, honor its STOP conditions, and update your
 row when done.
@@ -124,13 +128,27 @@ cross-service request context are now implemented rather than deferred.
 
 ### Pass 9 (Python → TypeScript rewrite, commit `7d5576d`)
 
-Written 2026-08-25. Do not execute until an executor is assigned. Ship the six
-phases in `029` sequentially; each phase must leave `scripts/verify.sh` green.
+Written 2026-08-25 and reconciled to `130481b` (Settings modal, `GET
+/api/health`, public ingest failure codes; `130481b` is selection-chrome
+only). Do not execute until assigned.
+Ship the six phases sequentially; each must leave `scripts/verify.sh` green.
 Do not delete `python/` until Phase 5.
 
 | Plan | Title | Priority | Effort | Depends on | Status |
 |------|-------|----------|--------|------------|--------|
 | 029  | Replace Python 100% with TypeScript / Node.js (in-process DuckDB + Playwright PDF + LM Studio, no LiteLLM) | P2 | XL | 028 | TODO |
+
+### Pass 10 (macOS Electron desktop, commit `7d5576d`)
+
+Written 2026-08-26 after the desktop brainstorm; reconciled to `130481b`.
+Do not execute until 029 is DONE. Electron without deleting Python would
+still ship uv, WeasyPrint, and LiteLLM inside the `.app`. Extend the
+existing Settings modal and `/api/health` — do not invent a second
+settings surface.
+
+| Plan | Title | Priority | Effort | Depends on | Status |
+|------|-------|----------|--------|------------|--------|
+| 030  | Ship Borealis as a macOS Electron app (SQLite ledger + LanceDB embeddings, cloud-optional LLM, no Docker) | P2 | XL | 029 | TODO |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (one-line reason) | REJECTED (one-line rationale).
 
@@ -217,6 +235,20 @@ Status values: TODO | IN PROGRESS | DONE | BLOCKED (one-line reason) | REJECTED 
   Python while an earlier phase is unfinished is a STOP condition.
 - Do not run 029 concurrently with any other plan that edits `python/`,
   `server/src/pythonClient.ts`, `scripts/dev.sh`, or `scripts/verify.sh`.
+
+### Pass 10 dependency notes
+
+- 030 is blocked on 029 Phase 5. The `.app` must not contain FastAPI,
+  WeasyPrint, OpenPyXL, uv, or LiteLLM.
+- 030 replaces Postgres/pgvector with **SQLite (ledger) + LanceDB
+  (embeddings)** for dev and desktop. DuckDB stays for user-table SQL.
+  Do not keep a pgvector schema. Docker Compose Postgres leaves the happy
+  path in 030 Phase A.
+- LLM remains external: Settings default to LM Studio on `:1234` and accept
+  any OpenAI-compatible cloud base URL. Bundled weights are out of scope.
+- Electron PDF/PNG must keep 028's deny-by-default resource rule. Playwright
+  stays for headless CI only.
+- Do not run 030 concurrently with 029.
 
 ## Historical Pass 2 deferrals
 
