@@ -15,6 +15,7 @@ import {
   sanitizeDatasetName,
   wakeIngestionWorkers,
 } from "../ingest.js";
+import { publicIngestionFailure } from "../ingestionFailures.js";
 import { py } from "../pythonClient.js";
 import { sourceReferencedByActiveRun } from "../sourceMutationGuard.js";
 import {
@@ -44,10 +45,11 @@ export async function sourceRoutes(app: FastifyInstance): Promise<void> {
   app.get("/api/sources", { preHandler: requireAuth }, async (req, reply) => {
     const account = getAccountId(req);
     const rows = await q(
-      `SELECT id, name, kind, display_name, mime, size_bytes, status,
-              CASE WHEN meta ? 'error' THEN jsonb_build_object('error', left(meta->>'error', 300)) ELSE '{}'::jsonb END AS meta,
-              created_at
-       FROM sources WHERE account_id=$1 ORDER BY created_at DESC`,
+      `SELECT s.id, s.name, s.kind, s.display_name, s.mime, s.size_bytes, s.status, s.meta, s.created_at,
+              j.attempts AS ingestion_attempts, j.updated_at AS ingestion_updated_at
+       FROM sources s
+       LEFT JOIN ingestion_jobs j ON j.source_id=s.id AND j.account_id=s.account_id
+       WHERE s.account_id=$1 ORDER BY s.created_at DESC`,
       [account]
     );
     let tabular: any[] = [];
@@ -67,10 +69,31 @@ export async function sourceRoutes(app: FastifyInstance): Promise<void> {
       ])
     );
     return reply.send(
-      rows.map((source) => ({
-        ...source,
-        ...(source.name && tabularByName.has(source.name) ? { tabular: tabularByName.get(source.name) } : {}),
-      }))
+      rows.map((source) => {
+        const rawMeta = source.meta && typeof source.meta === "object" ? source.meta : {};
+        const failure = source.status === "error" ? publicIngestionFailure(rawMeta.error_code) : null;
+        const { ingestion_attempts: attempts, ingestion_updated_at: updatedAt, meta: _meta, ...publicSource } = source;
+        return {
+          ...publicSource,
+          meta: failure
+            ? {
+                error: failure.summary,
+                error_code: failure.code,
+                error_detail: failure.detail,
+                error_stage: failure.stage,
+              }
+            : {},
+          ...(failure
+            ? {
+                ingestion: {
+                  attempts: Math.max(0, Math.min(100, Number(attempts) || 0)),
+                  updated_at: updatedAt,
+                },
+              }
+            : {}),
+          ...(source.name && tabularByName.has(source.name) ? { tabular: tabularByName.get(source.name) } : {}),
+        };
+      })
     );
   });
 
@@ -204,7 +227,8 @@ export async function sourceRoutes(app: FastifyInstance): Promise<void> {
         }
         updated = (
           await client.query(
-            `UPDATE sources SET name=$2, status='index', meta=meta - 'error'
+            `UPDATE sources SET name=$2, status='index',
+                 meta=meta - 'error' - 'error_code' - 'error_detail' - 'error_stage'
              WHERE id=$1 AND account_id=$3 RETURNING *`,
             [id, name, account]
           )

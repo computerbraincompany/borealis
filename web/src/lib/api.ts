@@ -367,7 +367,13 @@ export interface Source {
   display_name: string;
   mime: string;
   status: string;
-  meta?: { error?: string } | null;
+  meta?: {
+    error?: string;
+    error_code?: string;
+    error_detail?: string;
+    error_stage?: string;
+  } | null;
+  ingestion?: { attempts: number; updated_at: string };
   created_at: string;
   tabular?: { rows: number; table: string; original_name: string };
 }
@@ -405,10 +411,37 @@ export function parseSourceListPayload(payload: unknown): Source[] {
         ? {
             error:
               typeof (value.meta as Record<string, unknown>).error === "string"
-                ? String((value.meta as Record<string, unknown>).error)
+                ? String((value.meta as Record<string, unknown>).error).slice(0, 300)
+                : undefined,
+            error_code:
+              typeof (value.meta as Record<string, unknown>).error_code === "string"
+                ? String((value.meta as Record<string, unknown>).error_code).slice(0, 80)
+                : undefined,
+            error_detail:
+              typeof (value.meta as Record<string, unknown>).error_detail === "string"
+                ? String((value.meta as Record<string, unknown>).error_detail).slice(0, 500)
+                : undefined,
+            error_stage:
+              typeof (value.meta as Record<string, unknown>).error_stage === "string"
+                ? String((value.meta as Record<string, unknown>).error_stage).slice(0, 40)
                 : undefined,
           }
         : null;
+    const rawIngestion = value.ingestion;
+    const ingestion =
+      rawIngestion &&
+      typeof rawIngestion === "object" &&
+      !Array.isArray(rawIngestion) &&
+      typeof (rawIngestion as Record<string, unknown>).attempts === "number" &&
+      typeof (rawIngestion as Record<string, unknown>).updated_at === "string"
+        ? {
+            attempts: Math.max(
+              0,
+              Math.min(100, Math.trunc(Number((rawIngestion as Record<string, unknown>).attempts))),
+            ),
+            updated_at: String((rawIngestion as Record<string, unknown>).updated_at),
+          }
+        : undefined;
     const rawTabular = value.tabular;
     const tabular =
       rawTabular &&
@@ -436,6 +469,7 @@ export function parseSourceListPayload(payload: unknown): Source[] {
         mime: typeof value.mime === "string" ? value.mime : "application/octet-stream",
         created_at: typeof value.created_at === "string" ? value.created_at : "",
         meta,
+        ingestion,
         tabular,
       } satisfies Source,
     ];

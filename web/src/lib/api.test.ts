@@ -6,6 +6,7 @@ import {
   formatApiError,
   openProtected,
   parseConnectorListPayload,
+  parseSourceListPayload,
   streamAgentChat,
   type SourceScopeInput,
 } from "@/lib/api";
@@ -127,6 +128,35 @@ describe("typed API contracts", () => {
     const failure = new ApiError(500, "internal server error", undefined, "<script>alert(1)</script>");
     expect(formatApiError(failure, "fallback")).toBe("internal server error");
     expect(formatApiError(new Error("secret provider trace"), "fallback")).toBe("fallback");
+  });
+
+  it("bounds structured source failure details from the catalog", () => {
+    const [source] = parseSourceListPayload([
+      {
+        id: "source-1",
+        name: "ledger",
+        display_name: "Ledger.csv",
+        kind: "tabular",
+        status: "error",
+        mime: "text/csv",
+        created_at: "2026-08-25T21:34:12.000Z",
+        meta: {
+          error: "The embedding service was unavailable.",
+          error_code: "EMBEDDING_UNAVAILABLE",
+          error_detail: "x".repeat(800),
+          error_stage: "embedding",
+        },
+        ingestion: { attempts: 3.9, updated_at: "2026-08-25T21:34:47.000Z" },
+      },
+    ]);
+
+    expect(source.meta).toEqual({
+      error: "The embedding service was unavailable.",
+      error_code: "EMBEDDING_UNAVAILABLE",
+      error_detail: "x".repeat(500),
+      error_stage: "embedding",
+    });
+    expect(source.ingestion).toEqual({ attempts: 3, updated_at: "2026-08-25T21:34:47.000Z" });
   });
 
   it("mounts report HTML only inside an opaque sandboxed preview", async () => {

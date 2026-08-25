@@ -63,6 +63,7 @@ import {
   removeReportArtifacts,
   removeSourceArtifact,
 } from "../storageArtifacts.js";
+import { py } from "../pythonClient.js";
 
 const ACCOUNT = "11111111-1111-4111-8111-111111111111";
 const auth = { authorization: `Bearer ${signToken({ userId: ACCOUNT, email: "owner@example.test" })}` };
@@ -76,6 +77,7 @@ const removeArtifactMock = vi.mocked(removeSourceArtifact);
 const removeReportArtifactsMock = vi.mocked(removeReportArtifacts);
 const createDirectoryMock = vi.mocked(createUploadResourceDirectory);
 const cleanupCreatedMock = vi.mocked(cleanupCreatedUploadResource);
+const listDatasetSummariesMock = vi.mocked(py.listDatasetSummaries);
 const apps: FastifyInstance[] = [];
 
 async function buildApp(): Promise<FastifyInstance> {
@@ -129,6 +131,8 @@ beforeEach(async () => {
   cleanupCreatedMock.mockImplementation(async (_accountId, _sourceId, filePath) => {
     await fs.rm(path.dirname(filePath), { recursive: true, force: true });
   });
+  listDatasetSummariesMock.mockReset();
+  listDatasetSummariesMock.mockResolvedValue([]);
   await fs.rm(testState.uploadDir, { recursive: true, force: true });
 });
 
@@ -138,6 +142,47 @@ afterEach(async () => {
 });
 
 describe("source upload boundaries", () => {
+  it("returns bounded, actionable ingestion details without exposing stored raw errors", async () => {
+    qMock.mockResolvedValueOnce([
+      {
+        id: "22222222-2222-4222-8222-222222222222",
+        name: "ledger",
+        kind: "tabular",
+        display_name: "Ledger.csv",
+        mime: "text/csv",
+        size_bytes: 42,
+        status: "error",
+        meta: {
+          error: "raw provider trace must not escape",
+          error_code: "EMBEDDING_UNAVAILABLE",
+          error_detail: "raw detail must not escape",
+        },
+        created_at: "2026-08-25T21:34:12.000Z",
+        ingestion_attempts: 3,
+        ingestion_updated_at: "2026-08-25T21:34:47.000Z",
+      },
+    ]);
+    const app = await buildApp();
+
+    const response = await app.inject({ method: "GET", url: "/api/sources", headers: auth });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual([
+      expect.objectContaining({
+        meta: {
+          error: "The embedding service was unavailable.",
+          error_code: "EMBEDDING_UNAVAILABLE",
+          error_detail:
+            "Borealis read the file but could not reach the configured embedding model. Start the model service, then retry.",
+          error_stage: "embedding",
+        },
+        ingestion: { attempts: 3, updated_at: "2026-08-25T21:34:47.000Z" },
+      }),
+    ]);
+    expect(response.body).not.toContain("raw provider trace");
+    expect(response.body).not.toContain("raw detail");
+  });
+
   it("persists the authoritative streamed file size", async () => {
     let insertedPath = "";
     const client = {

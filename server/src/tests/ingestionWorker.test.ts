@@ -112,7 +112,7 @@ describe("durable ingestion worker", () => {
 
     expect(qMock.mock.calls[2]).toEqual([
       expect.stringContaining("status='pending'"),
-      [source.id, job.generation, 2, job.lease_token],
+      [source.id, job.generation, 2, job.lease_token, "INGEST_FAILED"],
     ]);
     expect(qMock.mock.calls[3][0]).toContain("THEN 'ready'");
     expect(qMock.mock.calls[3][0]).toContain("sources.connector IS NOT NULL THEN 'index'");

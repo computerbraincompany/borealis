@@ -290,7 +290,8 @@ async function syncConnector(
         await mutationClient.query(
           `UPDATE sources
          SET status='index',
-             meta=(meta - 'error' - 'connector_previous_location' - 'connector_candidate_location' -
+             meta=(meta - 'error' - 'error_code' - 'error_detail' - 'error_stage' -
+                   'connector_previous_location' - 'connector_candidate_location' -
                    'connector_activation_previous_location') ||
                   jsonb_build_object('connector_refresh_version',$3::text)
          WHERE id=$1 AND account_id=$2`,
@@ -343,7 +344,8 @@ async function syncConnector(
        ), updated_source AS (
          UPDATE sources
          SET url=$3, display_name=$4, mime=$5, status='index',
-             meta=(meta - 'error' - 'connector_previous_location' - 'connector_refresh_version' -
+             meta=(meta - 'error' - 'error_code' - 'error_detail' - 'error_stage' -
+                   'connector_previous_location' - 'connector_refresh_version' -
                    'connector_candidate_location' - 'connector_activation_previous_location') ||
                jsonb_build_object(
                  'connector_refresh_version',$6::text,
@@ -422,7 +424,8 @@ async function syncConnector(
                         SELECT 1 FROM chunks c WHERE c.source_id=s.id
                       ) THEN 'ready' ELSE 'error' END,
                meta=(meta - 'connector_refresh_version' - 'connector_candidate_location' -
-                     'connector_activation_previous_location' - 'connector_previous_location' - 'error') ||
+                     'connector_activation_previous_location' - 'connector_previous_location' - 'error' -
+                     'error_code' - 'error_detail' - 'error_stage') ||
                     CASE WHEN s.file_path IS NOT NULL AND EXISTS (
                            SELECT 1 FROM chunks c WHERE c.source_id=s.id
                          ) THEN '{}'::jsonb

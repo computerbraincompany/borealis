@@ -11,6 +11,7 @@ import { PythonServiceError } from "./pythonClient.js";
 import { appLog } from "./appLogger.js";
 import { runWithRequestContext } from "./requestContext.js";
 import { resolveSourceArtifact } from "./storageArtifacts.js";
+import { IngestionStageError, publicIngestionFailure, type IngestionFailureCode } from "./ingestionFailures.js";
 
 GlobalWorkerOptions.workerSrc = "";
 
@@ -375,7 +376,14 @@ export async function ingestSource(opts: IngestSourceOptions): Promise<void> {
     for (let start = 0; start < chunks.length; start += EMBED_BATCH_SIZE) {
       await assertIngestLease(sourceId, generation, leaseToken);
       const batch = chunks.slice(start, start + EMBED_BATCH_SIZE);
-      const embeddings = await embed(batch);
+      let embeddings: number[][];
+      try {
+        embeddings = await embed(batch);
+      } catch {
+        // Provider errors can include local endpoints or response bodies. Keep
+        // the durable/public failure specific without carrying raw details.
+        throw new IngestionStageError("EMBEDDING_UNAVAILABLE");
+      }
       if (
         embeddings.length !== batch.length ||
         embeddings.some(
@@ -385,7 +393,7 @@ export async function ingestSource(opts: IngestSourceOptions): Promise<void> {
             value.some((coordinate) => typeof coordinate !== "number" || !Number.isFinite(coordinate))
         )
       ) {
-        throw new Error("embedding response shape mismatch");
+        throw new IngestionStageError("EMBEDDING_INVALID_RESPONSE");
       }
       for (let offset = 0; offset < batch.length; offset += STAGING_BATCH_SIZE) {
         await assertIngestLease(sourceId, generation, leaseToken);
@@ -471,7 +479,8 @@ export async function ingestSource(opts: IngestSourceOptions): Promise<void> {
         `UPDATE sources
          SET status='ready', size_bytes=$3,
              file_path=CASE WHEN $4::text IS NULL THEN file_path ELSE $4::text END,
-             meta=meta - 'error' - 'connector_refresh_version' - 'connector_candidate_location' -
+             meta=meta - 'error' - 'error_code' - 'error_detail' - 'error_stage' -
+                  'connector_refresh_version' - 'connector_candidate_location' -
                   'connector_activation_previous_location'
          WHERE id=$1 AND account_id=$2`,
         [sourceId, accountId, sizeBytes, refreshVersion ? ingestFilePath : null]
@@ -509,19 +518,34 @@ export async function ingestSource(opts: IngestSourceOptions): Promise<void> {
       }
       throw error;
     }
-    const publicDetail = ingestErrorCode(error);
+    const failure = ingestionFailure(error);
     await q(
       `UPDATE sources
        SET status=CASE WHEN sources.connector IS NOT NULL THEN 'error'
                        WHEN EXISTS (SELECT 1 FROM chunks c WHERE c.source_id=sources.id) THEN 'ready'
                        ELSE 'error' END,
-           meta=meta || jsonb_build_object('error',$3::text)
+           meta=(meta - 'error' - 'error_code' - 'error_detail' - 'error_stage') ||
+                jsonb_build_object(
+                  'error',$3::text,
+                  'error_code',$4::text,
+                  'error_detail',$5::text,
+                  'error_stage',$6::text
+                )
        WHERE id=$1 AND account_id=$2
-         AND ($4::int=0 OR EXISTS (
-           SELECT 1 FROM ingestion_jobs j WHERE j.source_id=$1 AND j.generation=$4
-             AND j.status='running' AND ($5::uuid IS NULL OR j.lease_token=$5)
+         AND ($7::int=0 OR EXISTS (
+           SELECT 1 FROM ingestion_jobs j WHERE j.source_id=$1 AND j.generation=$7
+             AND j.status='running' AND ($8::uuid IS NULL OR j.lease_token=$8)
          ))`,
-      [sourceId, accountId, publicDetail, generation, leaseToken ?? null]
+      [
+        sourceId,
+        accountId,
+        failure.summary,
+        failure.code,
+        failure.detail,
+        failure.stage,
+        generation,
+        leaseToken ?? null,
+      ]
     );
     if (connector) {
       await q(
@@ -554,12 +578,22 @@ async function assertIngestLease(sourceId: string, generation: number, leaseToke
   if (!rows.length) throw new Error("source ingestion superseded");
 }
 
-function ingestErrorCode(error: unknown): string {
+function ingestionFailureCode(error: unknown): IngestionFailureCode {
+  if (error instanceof IngestionStageError) return error.failureCode;
+  if (error instanceof PythonServiceError) {
+    if (error.status === 422) return "DATASET_PARSE_FAILED";
+    if (error.status === 404) return "SOURCE_UNAVAILABLE";
+    if (error.status === 429 || error.status >= 500) return "DATA_SERVICE_UNAVAILABLE";
+  }
   const message = error instanceof Error ? error.message : "";
-  if (message.includes("no readable text")) return "No readable text could be extracted.";
-  if (message.includes("not supported")) return "This file format is not supported.";
-  if (message.includes("embedding")) return "Embedding failed.";
-  return "Ingestion failed. Retry after checking the service logs.";
+  if (message.includes("no readable text")) return "NO_READABLE_TEXT";
+  if (message.includes("not supported")) return "UNSUPPORTED_FORMAT";
+  if (message.includes("artifact is unavailable")) return "SOURCE_UNAVAILABLE";
+  return "INGEST_FAILED";
+}
+
+function ingestionFailure(error: unknown) {
+  return publicIngestionFailure(ingestionFailureCode(error));
 }
 
 let workerPump: Promise<void> | undefined;
@@ -779,11 +813,13 @@ export async function processOneJob(runIngest: typeof ingestSource = ingestSourc
     } catch (error) {
       const activatedRefresh = error instanceof Error && error.name === "ConnectorRefreshActivatedError";
       const retrying = activatedRefresh || (job.attempts < MAX_JOB_ATTEMPTS && isRetryableIngestError(error));
+      const failureCode = ingestionFailureCode(error);
       appLog.warn(
         {
           source_id: job.source_id,
           generation: job.generation,
           error_code: retrying ? "TRANSIENT_FAILURE" : "INGEST_FAILED",
+          failure_code: failureCode,
           retrying,
         },
         "ingestion job failed"
@@ -791,11 +827,11 @@ export async function processOneJob(runIngest: typeof ingestSource = ingestSourc
       if (retrying) {
         const reserved = await q(
           `UPDATE ingestion_jobs
-         SET status='pending', leased_at=NULL, lease_token=NULL, last_error='TRANSIENT_FAILURE',
+         SET status='pending', leased_at=NULL, lease_token=NULL, last_error=$5,
              available_at=now()+($3::int * interval '1 second'), updated_at=now()
          WHERE source_id=$1 AND generation=$2 AND lease_token=$4
          RETURNING source_id`,
-          [job.source_id, job.generation, Math.min(300, 2 ** Math.min(job.attempts, 8)), job.lease_token]
+          [job.source_id, job.generation, Math.min(300, 2 ** Math.min(job.attempts, 8)), job.lease_token, failureCode]
         );
         if (reserved.length) {
           await q(
@@ -824,10 +860,10 @@ export async function processOneJob(runIngest: typeof ingestSource = ingestSourc
       } else {
         const terminal = await q(
           `UPDATE ingestion_jobs SET status='error', leased_at=NULL, lease_token=NULL,
-             last_error='INGEST_FAILED', updated_at=now()
+             last_error=$4, updated_at=now()
          WHERE source_id=$1 AND generation=$2 AND lease_token=$3
          RETURNING source_id`,
-          [job.source_id, job.generation, job.lease_token]
+          [job.source_id, job.generation, job.lease_token, failureCode]
         );
         if (terminal.length && source.connector) {
           const restored = await rollbackConnectorLastGood(source, job.generation).catch(() => false);
@@ -912,7 +948,8 @@ async function rollbackConnectorLastGood(source: any, generation: number): Promi
                     SELECT 1 FROM chunks c WHERE c.source_id=s.id
                   ) THEN 'ready' ELSE 'error' END,
            meta=(meta - 'connector_refresh_version' - 'connector_candidate_location' -
-                 'connector_activation_previous_location' - 'connector_previous_location' - 'error') ||
+                 'connector_activation_previous_location' - 'connector_previous_location' - 'error' -
+                 'error_code' - 'error_detail' - 'error_stage') ||
                 CASE WHEN s.file_path IS NOT NULL AND EXISTS (
                        SELECT 1 FROM chunks c WHERE c.source_id=s.id
                      ) THEN '{}'::jsonb
@@ -951,7 +988,7 @@ async function rollbackConnectorLastGood(source: any, generation: number): Promi
     `UPDATE sources s
      SET file_path=$3,
          status=CASE WHEN EXISTS (SELECT 1 FROM chunks c WHERE c.source_id=s.id) THEN 'ready' ELSE 'error' END,
-         meta=(meta - 'error' - 'connector_previous_location') ||
+         meta=(meta - 'error' - 'error_code' - 'error_detail' - 'error_stage' - 'connector_previous_location') ||
               CASE WHEN EXISTS (SELECT 1 FROM chunks c WHERE c.source_id=s.id) THEN '{}'::jsonb
                    ELSE jsonb_build_object('error','Connector indexing failed.') END
      WHERE s.id=$1 AND s.account_id=$2
@@ -969,6 +1006,7 @@ async function rollbackConnectorLastGood(source: any, generation: number): Promi
 }
 
 function isRetryableIngestError(error: unknown): boolean {
+  if (error instanceof IngestionStageError) return error.failureCode === "EMBEDDING_UNAVAILABLE";
   if (error instanceof PythonServiceError) return error.status === 429 || error.status >= 500;
   const message = error instanceof Error ? error.message : "";
   if (
@@ -1221,7 +1259,8 @@ async function terminalizePreparingConnector(job: any, source: any, errorCode: s
                     SELECT 1 FROM chunks c WHERE c.source_id=s.id
                   ) THEN 'ready' ELSE 'error' END,
            meta=(meta - 'connector_refresh_version' - 'connector_candidate_location' -
-                 'connector_activation_previous_location' - 'connector_previous_location' - 'error') ||
+                 'connector_activation_previous_location' - 'connector_previous_location' - 'error' -
+                 'error_code' - 'error_detail' - 'error_stage') ||
                 CASE WHEN s.file_path IS NOT NULL AND EXISTS (
                        SELECT 1 FROM chunks c WHERE c.source_id=s.id
                      ) THEN '{}'::jsonb
@@ -1296,7 +1335,8 @@ export async function recoverExpiredIngestionLeases(startup = false): Promise<nu
         `UPDATE sources SET status=CASE WHEN EXISTS (
            SELECT 1 FROM chunks c WHERE c.source_id=sources.id
          ) THEN 'ready' ELSE 'error' END,
-         meta=meta || jsonb_build_object('error','Ingestion lease expired.')
+         meta=(meta - 'error' - 'error_code' - 'error_detail' - 'error_stage') ||
+              jsonb_build_object('error','Ingestion lease expired.')
          WHERE id=$1 AND account_id=$2`,
         [job.source_id, job.account_id]
       );

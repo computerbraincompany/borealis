@@ -155,7 +155,10 @@ describe("ingest lifecycle", () => {
     expect(qMock).toHaveBeenCalledWith(expect.stringContaining("UPDATE sources"), [
       SOURCE,
       ACCOUNT,
-      "Ingestion failed. Retry after checking the service logs.",
+      "Source processing failed.",
+      "INGEST_FAILED",
+      "Borealis could not finish preparing this source. Retry the operation; if it fails again, check the local services.",
+      "storage",
       0,
       null,
     ]);
@@ -185,7 +188,10 @@ describe("ingest lifecycle", () => {
     expect(qMock).toHaveBeenCalledWith(expect.stringContaining("UPDATE sources"), [
       SOURCE,
       ACCOUNT,
-      "No readable text could be extracted.",
+      "No readable content was found.",
+      "NO_READABLE_TEXT",
+      "The file did not contain extractable text or table rows.",
+      "reading",
       0,
       null,
     ]);
@@ -217,7 +223,10 @@ describe("ingest lifecycle", () => {
     expect(qMock).toHaveBeenCalledWith(expect.stringContaining("UPDATE sources"), [
       SOURCE,
       ACCOUNT,
-      "Ingestion failed. Retry after checking the service logs.",
+      "The uploaded file is unavailable.",
+      "SOURCE_UNAVAILABLE",
+      "Borealis can no longer access the stored file for this source. Upload the file again.",
+      "storage",
       0,
       null,
     ]);
@@ -248,7 +257,7 @@ describe("ingest lifecycle", () => {
         kind: "tabular",
         displayName: "Ledger.csv",
       })
-    ).rejects.toThrow("embedding response shape mismatch");
+    ).rejects.toThrow("EMBEDDING_INVALID_RESPONSE");
 
     expect(connectMock).not.toHaveBeenCalled();
     expect(qMock.mock.calls.some(([sql]) => String(sql).includes("::vector[]"))).toBe(false);
@@ -278,7 +287,18 @@ describe("ingest lifecycle", () => {
         url: "https://example.invalid/ledger.csv",
         generation: 7,
       })
-    ).rejects.toThrow("embedding service unavailable");
+    ).rejects.toThrow("EMBEDDING_UNAVAILABLE");
+
+    expect(qMock).toHaveBeenCalledWith(expect.stringContaining("error_code"), [
+      SOURCE,
+      ACCOUNT,
+      "The embedding service was unavailable.",
+      "EMBEDDING_UNAVAILABLE",
+      "Borealis read the file but could not reach the configured embedding model. Start the model service, then retry.",
+      "embedding",
+      7,
+      null,
+    ]);
 
     const connectorFailure = qMock.mock.calls.find(([sql]) => String(sql).includes("Connector indexing failed"));
     expect(connectorFailure?.[0]).toContain("j.generation=$3");

@@ -9,6 +9,8 @@ and 019 received pre-execution safety corrections at the same time.
 Plan 028 records the complete implementation of the subsequent 29-item deep
 engineering audit. The three separate product-direction options were excluded
 at the maintainer's request.
+Plan 029 is the next architecture pass: replace the FastAPI report service and
+the LiteLLM proxy with in-process TypeScript. It is written, not executed.
 Execute in the order below unless dependencies say otherwise. Each executor:
 read the plan fully before starting, honor its STOP conditions, and update your
 row when done.
@@ -120,6 +122,16 @@ offline XLSX parsing, single-pass streaming agent rounds, durable cancellation,
 report preview, CI, cached chart PNGs, formatting/linting, and structured
 cross-service request context are now implemented rather than deferred.
 
+### Pass 9 (Python → TypeScript rewrite, commit `7d5576d`)
+
+Written 2026-08-25. Do not execute until an executor is assigned. Ship the six
+phases in `029` sequentially; each phase must leave `scripts/verify.sh` green.
+Do not delete `python/` until Phase 5.
+
+| Plan | Title | Priority | Effort | Depends on | Status |
+|------|-------|----------|--------|------------|--------|
+| 029  | Replace Python 100% with TypeScript / Node.js (in-process DuckDB + Playwright PDF + LM Studio, no LiteLLM) | P2 | XL | 028 | TODO |
+
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (one-line reason) | REJECTED (one-line rationale).
 
 ## Dependency notes
@@ -191,6 +203,20 @@ Status values: TODO | IN PROGRESS | DONE | BLOCKED (one-line reason) | REJECTED 
 - 027 updates activity after the accepted-turn transaction commits, using the
   accepted message timestamp with `GREATEST`; it must not lock/write the chat
   row inside the immutable model/source snapshot established by 022.
+
+### Pass 9 dependency notes
+
+- 029 depends on 028 because the port must keep 028's security contracts:
+  scoped DuckDB catalogs, exact-location CAS connector refresh, deny-by-default
+  PDF resources, offline ZIP-bounded XLSX, and public-only DNS-pinned fetches.
+  It changes the *language*, not those invariants.
+- 029 does **not** supersede 028's finding ledger. It supersedes only the
+  runtime choice that those jobs live in FastAPI/WeasyPrint/OpenPyXL/LiteLLM.
+- Execute 029's six phases in order (spike → datasets → charts/HTML →
+  Playwright → LiteLLM removal → delete `python/`). A later phase that deletes
+  Python while an earlier phase is unfinished is a STOP condition.
+- Do not run 029 concurrently with any other plan that edits `python/`,
+  `server/src/pythonClient.ts`, `scripts/dev.sh`, or `scripts/verify.sh`.
 
 ## Historical Pass 2 deferrals
 
