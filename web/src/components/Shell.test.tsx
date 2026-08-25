@@ -38,7 +38,10 @@ describe("Shell", () => {
   it("keeps the account controls and signs out to the login route", () => {
     render(<Shell>content</Shell>);
 
-    expect(screen.getByText("user@example.test")).toBeInTheDocument();
+    const email = screen.getByText("user@example.test");
+    expect(email).toBeInTheDocument();
+    expect(email).toHaveClass("break-words");
+    expect(email).not.toHaveClass("truncate");
     fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
 
     expect(apiMocks.clearSession).toHaveBeenCalledOnce();

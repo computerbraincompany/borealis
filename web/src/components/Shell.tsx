@@ -61,14 +61,16 @@ export function Shell({ children }: { children: React.ReactNode }) {
 
         {/* user */}
         <div className="border-t px-3 py-3">
-          <div className="flex items-center gap-2.5 rounded-lg px-2 py-1.5">
-            <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary text-xs font-bold text-primary-foreground">
-              {user?.email?.slice(0, 2).toUpperCase() ?? "B"}
+          <div className="rounded-lg px-2 py-1.5">
+            <div className="flex min-w-0 items-start gap-2.5">
+              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary text-xs font-bold text-primary-foreground">
+                {user?.email?.slice(0, 2).toUpperCase() ?? "B"}
+              </div>
+              <div className="min-w-0 flex-1 pt-1.5">
+                <div className="break-words text-[13px] font-medium leading-5 text-foreground">{user?.email}</div>
+              </div>
             </div>
-            <div className="min-w-0 flex-1">
-              <div className="truncate text-[13px] font-medium text-foreground">{user?.email}</div>
-            </div>
-            <div className="flex shrink-0 items-center">
+            <div className="mt-1 flex items-center justify-end border-t border-border/60 pt-1">
               <ThemeMenu />
               <button
                 title="Sign out"

@@ -13,7 +13,6 @@ import {
   type ChatRunTerminalStatus,
   type Message,
   type Source,
-  type SourceMode,
   type SourceScopeInput,
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
@@ -1165,7 +1164,6 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
                           />
                         </div>
                         <ActiveSourceScope
-                          mode={detail.source_mode}
                           sources={detail.sources}
                           disabled={creatingChat || isModelSaving || isSourceSaving || isTitleSaving || stream.running}
                           error={sourceErrorsByChat[detail.id] || null}
@@ -1204,7 +1202,6 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
                           />
                         </div>
                         <ActiveSourceScope
-                          mode={newChatSourceScope.source_mode}
                           sources={newChatAttachedSources}
                           disabled={creatingChat}
                           error={null}
@@ -1256,7 +1253,6 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
 }
 
 interface ActiveSourceScopeProps {
-  mode: SourceMode;
   sources: AttachedSource[];
   disabled: boolean;
   error: string | null;
@@ -1264,21 +1260,15 @@ interface ActiveSourceScopeProps {
   onDismissError: () => void;
 }
 
-function ActiveSourceScope({ mode, sources, disabled, error, onRemove, onDismissError }: ActiveSourceScopeProps) {
+function ActiveSourceScope({ sources, disabled, error, onRemove, onDismissError }: ActiveSourceScopeProps) {
+  if (sources.length === 0 && !error) return null;
+
   return (
     <div className="flex flex-col gap-1.5 px-2" role="group" aria-label="Active chat sources">
-      <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-        <span className="text-[10px] font-medium uppercase tracking-[0.12em] text-muted-foreground">Sources</span>
-        {mode === "all" ? (
-          <span className="inline-flex h-6 items-center rounded-md border bg-secondary px-2 text-[11px] text-secondary-foreground">
-            All sources
-          </span>
-        ) : sources.length === 0 ? (
-          <span className="inline-flex h-6 items-center rounded-md border bg-muted px-2 text-[11px] text-muted-foreground">
-            No sources
-          </span>
-        ) : (
-          sources.map((source) => (
+      {sources.length > 0 && (
+        <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+          <span className="text-[10px] font-medium uppercase tracking-[0.12em] text-muted-foreground">Attached</span>
+          {sources.map((source) => (
             <span
               key={source.id}
               className="inline-flex h-6 min-w-0 max-w-52 items-center rounded-md border bg-secondary pl-2 text-[11px] text-secondary-foreground"
@@ -1303,9 +1293,9 @@ function ActiveSourceScope({ mode, sources, disabled, error, onRemove, onDismiss
                 <X />
               </Button>
             </span>
-          ))
-        )}
-      </div>
+          ))}
+        </div>
+      )}
 
       {error && (
         <div className="flex items-start gap-2 text-xs text-destructive" role="alert">

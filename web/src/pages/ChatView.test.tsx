@@ -390,6 +390,8 @@ describe("ChatView orchestration", () => {
 
     expect(await screen.findByRole("button", { name: "Chat model: qwen-chat" })).toBeEnabled();
     expect(await screen.findByRole("button", { name: "Chat sources: No sources" })).toBeEnabled();
+    expect(screen.getAllByText("No sources")).toHaveLength(1);
+    expect(screen.queryByRole("group", { name: "Active chat sources" })).not.toBeInTheDocument();
     expect(chatsApi.create).not.toHaveBeenCalled();
   });
 
