@@ -24,9 +24,9 @@ export function DataResultCard({ artifact, index }: { artifact: QueryResultArtif
   const resultNumber = index + 1;
 
   return (
-    <section className="overflow-hidden rounded-xl border bg-card text-sm" aria-labelledby={headingId}>
+    <section className="overflow-hidden rounded-lg border bg-card text-sm" aria-labelledby={headingId}>
       <div className="flex flex-wrap items-center gap-2 px-3 py-2.5">
-        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border bg-surface-subtle text-aurora-teal">
+        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border bg-surface-subtle text-primary">
           <Table2 className="h-4 w-4" aria-hidden="true" />
         </span>
         <div className="min-w-0 flex-1">

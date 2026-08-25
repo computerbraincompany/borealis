@@ -17,9 +17,9 @@ const THEME_OPTIONS: Array<{
   description: string;
   icon: typeof Sun;
 }> = [
-  { value: "light", label: "Light", description: "Snowfield canvas", icon: Sun },
-  { value: "dark", label: "Dark", description: "Polar-night canvas", icon: Moon },
-  { value: "system", label: "System", description: "Follow this device", icon: Monitor },
+  { value: "light", label: "Light", description: "Always use the light theme", icon: Sun },
+  { value: "dark", label: "Dark", description: "Always use the dark theme", icon: Moon },
+  { value: "system", label: "System", description: "Match this device", icon: Monitor },
 ];
 
 export function ThemeMenu() {

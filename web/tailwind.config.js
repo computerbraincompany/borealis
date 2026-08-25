@@ -52,13 +52,6 @@ export default {
         surface: {
           subtle: "hsl(var(--surface-subtle) / <alpha-value>)",
         },
-        aurora: {
-          teal: "hsl(var(--aurora-teal) / <alpha-value>)",
-          violet: "hsl(var(--aurora-violet) / <alpha-value>)",
-          blue: "hsl(var(--aurora-blue) / <alpha-value>)",
-          green: "hsl(var(--aurora-green) / <alpha-value>)",
-          foreground: "hsl(var(--aurora-foreground) / <alpha-value>)",
-        },
       },
       borderRadius: {
         lg: "var(--radius)",
@@ -67,21 +60,16 @@ export default {
       },
       fontFamily: {
         sans: ["Inter", "system-ui", "-apple-system", "sans-serif"],
-        mono: ["ui-monospace", "SFMono-Regular", "Menlo", "monospace"],
+        mono: ["JetBrains Mono", "ui-monospace", "SFMono-Regular", "Menlo", "monospace"],
       },
       keyframes: {
-        "aurora-pulse": {
-          "0%, 100%": { opacity: "0.5" },
+        "status-pulse": {
+          "0%, 100%": { opacity: "0.35" },
           "50%": { opacity: "1" },
-        },
-        shimmer: {
-          "0%": { backgroundPosition: "-200% 0" },
-          "100%": { backgroundPosition: "200% 0" },
         },
       },
       animation: {
-        "aurora-pulse": "aurora-pulse 6s ease-in-out infinite",
-        shimmer: "shimmer 2.4s linear infinite",
+        "status-pulse": "status-pulse 1.2s ease-in-out infinite",
       },
     },
   },

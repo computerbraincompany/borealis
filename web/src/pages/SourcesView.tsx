@@ -86,7 +86,7 @@ export function SourcesView() {
             className="hidden"
             onChange={(e) => onFiles(e.target.files)}
           />
-          <Button variant="aurora" size="sm" onClick={() => fileRef.current?.click()} disabled={busy}>
+          <Button size="sm" onClick={() => fileRef.current?.click()} disabled={busy}>
             <UploadCloud className="h-4 w-4" />
             {uploading ? "Uploading…" : "Upload files"}
           </Button>
@@ -94,15 +94,15 @@ export function SourcesView() {
       </div>
 
       {uploading && (
-        <div className="mt-4 rounded-xl border border-aurora-teal/20 bg-aurora-teal/5 px-4 py-3 text-sm text-foreground">
-          <Loader2 className="mr-2 inline h-4 w-4 animate-spin text-aurora-teal" />
+        <div className="mt-4 rounded-lg border border-primary/25 bg-primary/5 px-4 py-3 text-sm text-foreground">
+          <Loader2 className="mr-2 inline h-4 w-4 animate-spin text-primary" />
           Uploading <span className="font-mono text-foreground">{uploading}</span> — chunking and embedding in progress…
         </div>
       )}
 
       {(operationError || catalogError) && (
         <div
-          className="mt-4 rounded-xl border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive"
+          className="mt-4 rounded-lg border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive"
           role="alert"
         >
           {operationError || catalogError}
@@ -129,8 +129,8 @@ export function SourcesView() {
           <Card key={s.id} className="flex items-center gap-4 p-4 transition-colors hover:border-foreground/20">
             <div
               className={cn(
-                "flex h-11 w-11 shrink-0 items-center justify-center rounded-xl",
-                s.kind === "tabular" ? "bg-aurora-teal/15 text-aurora-teal" : "bg-aurora-violet/15 text-aurora-violet",
+                "flex h-11 w-11 shrink-0 items-center justify-center rounded-lg",
+                s.kind === "tabular" ? "bg-primary/10 text-primary" : "bg-secondary text-muted-foreground",
               )}
             >
               {s.kind === "tabular" ? <FileSpreadsheet className="h-5 w-5" /> : <FileDoc className="h-5 w-5" />}
@@ -151,7 +151,7 @@ export function SourcesView() {
                 <span className="font-mono">{s.name}</span>
                 <span>· {s.mime}</span>
                 {s.tabular && (
-                  <span className="text-aurora-teal">· {s.tabular.rows.toLocaleString()} rows · DuckDB table</span>
+                  <span className="text-primary">· {s.tabular.rows.toLocaleString()} rows · DuckDB table</span>
                 )}
                 <span>· uploaded {formatDate(s.created_at)}</span>
               </div>

@@ -2,7 +2,21 @@ import { StrictMode } from "react";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import * as apiModule from "@/lib/api";
-import { ApiError, chatsApi, modelsApi, sourcesApi, type Chat, type ChatDetail, type Message } from "@/lib/api";
+import {
+  ApiError,
+  chatsApi,
+  modelsApi,
+  sourcesApi,
+  type AttachedSource,
+  type Chat,
+  type ChatDetail,
+  type ChatModelOption,
+  type Message,
+  type Source,
+  type SourceMode,
+  type SourceScopeInput,
+} from "@/lib/api";
+import { resetModelCatalogStoreForTests } from "@/hooks/useModelCatalog";
 import { ChatView } from "@/pages/ChatView";
 
 vi.mock("@/components/ChatHistory", () => ({
@@ -33,11 +47,93 @@ vi.mock("@/components/ChatMessage", () => ({
 }));
 
 vi.mock("@/components/ModelSelector", () => ({
-  ModelSelector: () => <div data-testid="model-selector" />,
+  ModelSelector: ({
+    model,
+    models,
+    pending,
+    streaming,
+    onChange,
+  }: {
+    model: string;
+    models: ChatModelOption[];
+    pending: boolean;
+    streaming: boolean;
+    onChange: (model: string) => void;
+  }) => (
+    <div data-testid="model-selector">
+      <button type="button" aria-label={`Chat model: ${model}`} disabled={pending || streaming}>
+        {model}
+      </button>
+      {models
+        .filter((option) => option.id !== model)
+        .map((option) => (
+          <button
+            key={option.id}
+            type="button"
+            aria-label={`Select model: ${option.id}`}
+            disabled={pending || streaming}
+            onClick={() => onChange(option.id)}
+          >
+            {option.id}
+          </button>
+        ))}
+    </div>
+  ),
 }));
 
 vi.mock("@/components/ChatSourcePicker", () => ({
-  ChatSourcePicker: () => <div data-testid="source-picker" />,
+  ChatSourcePicker: ({
+    sourceMode,
+    attachedSources,
+    sources,
+    sourcesLoading,
+    disabled,
+    saving,
+    onApply,
+  }: {
+    sourceMode: SourceMode;
+    attachedSources: AttachedSource[];
+    sources: Source[];
+    sourcesLoading: boolean;
+    disabled: boolean;
+    saving: boolean;
+    onApply: (scope: SourceScopeInput) => Promise<void>;
+  }) => {
+    const sourceLabel =
+      sourceMode === "all"
+        ? "All sources"
+        : attachedSources.length === 0
+          ? "No sources"
+          : `${attachedSources.length} ${attachedSources.length === 1 ? "source" : "sources"}`;
+    const selectionDisabled = disabled || saving || sourcesLoading;
+
+    return (
+      <div data-testid="source-picker">
+        <button type="button" aria-label={`Chat sources: ${sourceLabel}`} disabled={selectionDisabled}>
+          {sourceLabel}
+        </button>
+        <button
+          type="button"
+          aria-label="Select source scope: all sources"
+          disabled={selectionDisabled}
+          onClick={() => void onApply({ source_mode: "all" })}
+        >
+          All sources
+        </button>
+        {sources.map((source) => (
+          <button
+            key={source.id}
+            type="button"
+            aria-label={`Select source: ${source.display_name}`}
+            disabled={selectionDisabled}
+            onClick={() => void onApply({ source_mode: "selected", source_ids: [source.id] })}
+          >
+            {source.display_name}
+          </button>
+        ))}
+      </div>
+    );
+  },
 }));
 
 vi.mock("@/components/ToolActivity", () => ({
@@ -69,6 +165,24 @@ const chatB: Chat = {
   title: "Beta",
 };
 
+const source: Source = {
+  id: "source-1",
+  name: "quarterly-revenue.pdf",
+  kind: "document",
+  display_name: "Quarterly revenue.pdf",
+  mime: "application/pdf",
+  status: "ready",
+  created_at: "2026-01-01T00:00:00Z",
+};
+
+const attachedSource: AttachedSource = {
+  id: source.id,
+  name: source.name,
+  display_name: source.display_name,
+  kind: source.kind,
+  status: source.status,
+};
+
 function message(id: string, content = id): Message {
   return {
     id,
@@ -91,10 +205,13 @@ function detail(overrides: Partial<ChatDetail> = {}): ChatDetail {
 
 describe("ChatView orchestration", () => {
   beforeEach(() => {
+    resetModelCatalogStoreForTests();
     window.location.hash = "#/chat";
     vi.spyOn(chatsApi, "list").mockResolvedValue([chat]);
     vi.spyOn(chatsApi, "get").mockResolvedValue(detail());
     vi.spyOn(chatsApi, "create").mockResolvedValue(chat);
+    vi.spyOn(chatsApi, "updateModel").mockImplementation(async (id, model) => ({ ...chat, id, model }));
+    vi.spyOn(chatsApi, "updateSources").mockResolvedValue({ source_mode: "selected", sources: [] });
     vi.spyOn(chatsApi, "remove").mockResolvedValue({ ok: true });
     vi.spyOn(chatsApi, "cancelRun").mockResolvedValue({ ok: true, run_id: "run-1", status: "cancelling" });
     vi.spyOn(modelsApi, "list").mockResolvedValue({
@@ -103,6 +220,25 @@ describe("ChatView orchestration", () => {
       discovery: "live",
     });
     vi.spyOn(sourcesApi, "list").mockResolvedValue([]);
+  });
+
+  it("links the conversation footer to Settings with truthful model availability", async () => {
+    render(<ChatView />);
+
+    expect(await screen.findByRole("link", { name: "1 chat model available" })).toHaveAttribute("href", "#/settings");
+  });
+
+  it("reports unavailable model discovery without showing implementation details", async () => {
+    vi.mocked(modelsApi.list).mockResolvedValue({
+      models: [],
+      default_model: "qwen-chat",
+      discovery: "unavailable",
+    });
+
+    render(<ChatView />);
+
+    expect(await screen.findByRole("link", { name: "Model catalog unavailable" })).toBeInTheDocument();
+    expect(screen.queryByText(/LiteLLM|LM Studio|OpenAI-compatible/i)).not.toBeInTheDocument();
   });
 
   it("keeps stop-before-runId connected, then cancels the owned run before aborting", async () => {
@@ -247,6 +383,283 @@ describe("ChatView orchestration", () => {
     await waitFor(() => expect(chatsApi.get).toHaveBeenCalledWith("chat-new", { limit: 50 }));
     expect(chatsApi.create).toHaveBeenCalledTimes(1);
     expect(window.location.hash).toBe("#/chat/chat-new");
+  });
+
+  it("shows model and source selectors at the empty chat root without creating a chat", async () => {
+    render(<ChatView />);
+
+    expect(await screen.findByRole("button", { name: "Chat model: qwen-chat" })).toBeEnabled();
+    expect(await screen.findByRole("button", { name: "Chat sources: No sources" })).toBeEnabled();
+    expect(chatsApi.create).not.toHaveBeenCalled();
+  });
+
+  it("creates once with the selected root scope, saves the selected model, and streams once to that chat", async () => {
+    const user = userEvent.setup();
+    const created = { ...chat, id: "chat-new", title: "New chat" };
+    const selectedModel = "analysis-chat";
+    const streamResponse = deferred<void>();
+    vi.mocked(modelsApi.list).mockResolvedValue({
+      models: [{ id: chat.model }, { id: selectedModel }],
+      default_model: chat.model,
+      discovery: "live",
+    });
+    vi.mocked(sourcesApi.list).mockResolvedValue([source]);
+    vi.mocked(chatsApi.create).mockResolvedValue(created);
+    vi.mocked(chatsApi.updateModel).mockResolvedValue({ ...created, model: selectedModel });
+    vi.mocked(chatsApi.get).mockResolvedValue(detail({ ...created, sources: [attachedSource] }));
+    vi.spyOn(apiModule, "streamAgentChat").mockReturnValue(streamResponse.promise);
+
+    render(<ChatView />);
+    await user.click(await screen.findByRole("button", { name: `Select model: ${selectedModel}` }));
+    const sourceChoice = await screen.findByRole("button", { name: `Select source: ${source.display_name}` });
+    await waitFor(() => expect(sourceChoice).toBeEnabled());
+    await user.click(sourceChoice);
+
+    expect(screen.getByRole("button", { name: `Chat model: ${selectedModel}` })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Chat sources: 1 source" })).toBeEnabled();
+
+    const composer = screen.getByPlaceholderText("Ask Borealis about your data…");
+    await user.type(composer, "analyze the selected source");
+    await user.click(screen.getByTitle("Send"));
+
+    await waitFor(() => expect(apiModule.streamAgentChat).toHaveBeenCalledTimes(1));
+    expect(chatsApi.create).toHaveBeenCalledTimes(1);
+    expect(chatsApi.create).toHaveBeenCalledWith(undefined, {
+      source_mode: "selected",
+      source_ids: [source.id],
+    });
+    expect(chatsApi.updateModel).toHaveBeenCalledOnce();
+    expect(chatsApi.updateModel).toHaveBeenCalledWith(created.id, selectedModel);
+    expect(apiModule.streamAgentChat).toHaveBeenCalledWith(
+      created.id,
+      "analyze the selected source",
+      expect.any(Function),
+      expect.any(AbortSignal),
+    );
+    expect(vi.mocked(chatsApi.updateModel).mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(apiModule.streamAgentChat).mock.invocationCallOrder[0],
+    );
+
+    await act(async () => streamResponse.resolve());
+  });
+
+  it("preserves the root draft and shows a safe inline error when the selected model cannot be saved", async () => {
+    const user = userEvent.setup();
+    const created = { ...chat, id: "chat-new", title: "New chat" };
+    const selectedModel = "analysis-chat";
+    const modelUpdate = deferred<Chat>();
+    vi.mocked(modelsApi.list).mockResolvedValue({
+      models: [{ id: chat.model }, { id: selectedModel }],
+      default_model: chat.model,
+      discovery: "live",
+    });
+    vi.mocked(chatsApi.create).mockResolvedValue(created);
+    vi.mocked(chatsApi.get).mockResolvedValue(detail(created));
+    vi.mocked(chatsApi.updateModel).mockReturnValue(modelUpdate.promise);
+    vi.spyOn(apiModule, "streamAgentChat");
+
+    render(<ChatView />);
+    await user.click(await screen.findByRole("button", { name: `Select model: ${selectedModel}` }));
+    const composer = screen.getByPlaceholderText("Ask Borealis about your data…");
+    await user.type(composer, "keep this model-specific draft");
+    await user.click(screen.getByTitle("Send"));
+    await waitFor(() => expect(chatsApi.updateModel).toHaveBeenCalledWith(created.id, selectedModel));
+
+    await act(async () => modelUpdate.reject(new Error("provider URL and credentials must not reach the UI")));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Could not apply the selected chat model");
+    expect(screen.getByRole("alert")).not.toHaveTextContent("provider URL and credentials");
+    expect(composer).toHaveValue("keep this model-specific draft");
+    expect(chatsApi.create).toHaveBeenCalledTimes(1);
+    expect(apiModule.streamAgentChat).not.toHaveBeenCalled();
+  });
+
+  it("keeps a manually opened chat when the root model update resolves later", async () => {
+    const user = userEvent.setup();
+    const created = { ...chat, id: "chat-new", title: "New chat" };
+    const selectedModel = "analysis-chat";
+    const modelUpdate = deferred<Chat>();
+    vi.mocked(modelsApi.list).mockResolvedValue({
+      models: [{ id: chat.model }, { id: selectedModel }],
+      default_model: chat.model,
+      discovery: "live",
+    });
+    vi.mocked(chatsApi.create).mockResolvedValue(created);
+    vi.mocked(chatsApi.updateModel).mockReturnValue(modelUpdate.promise);
+    vi.mocked(chatsApi.get).mockImplementation(async (id) =>
+      id === created.id
+        ? detail({ ...created, messages: [message("created-detail", "Created chat detail")] })
+        : detail({ ...chat, messages: [message("alpha-detail", "Authoritative Alpha detail")] }),
+    );
+    vi.spyOn(apiModule, "streamAgentChat");
+
+    render(<ChatView />);
+    await user.click(await screen.findByRole("button", { name: `Select model: ${selectedModel}` }));
+    const composer = screen.getByPlaceholderText("Ask Borealis about your data…");
+    await user.type(composer, "do not send after I navigate");
+    await user.click(screen.getByTitle("Send"));
+    await waitFor(() => expect(chatsApi.updateModel).toHaveBeenCalledWith(created.id, selectedModel));
+
+    await user.click(screen.getByRole("button", { name: "Open Alpha" }));
+    expect(await screen.findByText("Authoritative Alpha detail")).toBeInTheDocument();
+    expect(window.location.hash).toBe("#/chat/chat-a");
+
+    await act(async () => modelUpdate.resolve({ ...created, model: selectedModel }));
+    await waitFor(() => expect(chatsApi.list).toHaveBeenCalledTimes(2));
+
+    expect(screen.getByRole("heading", { name: "Alpha" })).toBeInTheDocument();
+    expect(screen.getByText("Authoritative Alpha detail")).toBeInTheDocument();
+    expect(screen.queryByText("Created chat detail")).not.toBeInTheDocument();
+    expect(window.location.hash).toBe("#/chat/chat-a");
+    expect(chatsApi.get).toHaveBeenCalledTimes(2);
+    expect(apiModule.streamAgentChat).not.toHaveBeenCalled();
+  });
+
+  it("creates a selected-empty chat on root Enter, sends once, and skips the route replay detail reload", async () => {
+    const user = userEvent.setup();
+    const created = { ...chat, id: "chat-new", title: "New chat" };
+    const streamResponse = deferred<void>();
+    let emit!: (event: unknown) => void;
+    vi.mocked(chatsApi.create).mockResolvedValue(created);
+    vi.mocked(chatsApi.get).mockResolvedValue(detail(created));
+    vi.spyOn(apiModule, "streamAgentChat").mockImplementation(
+      async (_chatId, _content, onEvent) =>
+        new Promise<void>((resolve, reject) => {
+          emit = onEvent;
+          streamResponse.promise.then(resolve, reject);
+        }),
+    );
+
+    const { rerender } = render(<ChatView />);
+    const composer = await screen.findByPlaceholderText("Ask Borealis about your data…");
+    expect(composer).toBeEnabled();
+    expect(screen.getByText("qwen-chat")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Chat sources: No sources" })).toBeInTheDocument();
+
+    await user.type(composer, "start from the root{enter}");
+
+    await waitFor(() =>
+      expect(apiModule.streamAgentChat).toHaveBeenCalledWith(
+        "chat-new",
+        "start from the root",
+        expect.any(Function),
+        expect.any(AbortSignal),
+      ),
+    );
+    expect(chatsApi.create).toHaveBeenCalledTimes(1);
+    expect(chatsApi.create).toHaveBeenCalledWith(undefined, { source_mode: "selected", source_ids: [] });
+    expect(chatsApi.updateModel).not.toHaveBeenCalled();
+    expect(chatsApi.get).toHaveBeenCalledTimes(1);
+    expect(window.location.hash).toBe("#/chat/chat-new");
+
+    rerender(<ChatView chatId="chat-new" />);
+    await act(async () => undefined);
+    expect(chatsApi.get).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      emit({ type: "run-started", run_id: "run-new" });
+      emit({ type: "run-ended", run_id: "run-new", status: "completed" });
+    });
+    await act(async () => streamResponse.resolve());
+    await waitFor(() => expect(chatsApi.get).toHaveBeenCalledTimes(2));
+  });
+
+  it("single-flights a double Send click while creating the first chat", async () => {
+    const user = userEvent.setup();
+    const createResponse = deferred<Chat>();
+    const created = { ...chat, id: "chat-new", title: "New chat" };
+    vi.mocked(chatsApi.create).mockReturnValue(createResponse.promise);
+    vi.mocked(chatsApi.get).mockResolvedValue(detail(created));
+    vi.spyOn(apiModule, "streamAgentChat").mockImplementation(async (_chatId, _content, onEvent) => {
+      onEvent({ type: "run-started", run_id: "run-new" });
+      onEvent({ type: "run-ended", run_id: "run-new", status: "completed" });
+    });
+
+    render(<ChatView />);
+    const composer = await screen.findByPlaceholderText("Ask Borealis about your data…");
+    await user.type(composer, "one first turn");
+    const sendButton = screen.getByTitle("Send");
+    fireEvent.click(sendButton);
+    fireEvent.click(sendButton);
+
+    expect(chatsApi.create).toHaveBeenCalledTimes(1);
+    await act(async () => createResponse.resolve(created));
+    await waitFor(() => expect(apiModule.streamAgentChat).toHaveBeenCalledTimes(1));
+    expect(apiModule.streamAgentChat).toHaveBeenCalledWith(
+      "chat-new",
+      "one first turn",
+      expect.any(Function),
+      expect.any(AbortSignal),
+    );
+  });
+
+  it("creates and submits directly from a root suggestion", async () => {
+    const user = userEvent.setup();
+    const created = { ...chat, id: "chat-new", title: "New chat" };
+    vi.mocked(chatsApi.create).mockResolvedValue(created);
+    vi.mocked(chatsApi.get).mockResolvedValue(detail(created));
+    vi.spyOn(apiModule, "streamAgentChat").mockImplementation(async (_chatId, _content, onEvent) => {
+      onEvent({ type: "run-started", run_id: "run-new" });
+      onEvent({ type: "run-ended", run_id: "run-new", status: "completed" });
+    });
+
+    render(<ChatView />);
+    const suggestion = "Summarize the documents I uploaded";
+    await user.click(await screen.findByRole("button", { name: suggestion }));
+
+    await waitFor(() =>
+      expect(apiModule.streamAgentChat).toHaveBeenCalledWith(
+        "chat-new",
+        suggestion,
+        expect.any(Function),
+        expect.any(AbortSignal),
+      ),
+    );
+    expect(chatsApi.create).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the first draft and shows only a safe inline error when creation fails", async () => {
+    const user = userEvent.setup();
+    vi.mocked(chatsApi.create).mockRejectedValue(new ApiError(503, "Chat service is temporarily unavailable"));
+    vi.spyOn(apiModule, "streamAgentChat");
+
+    render(<ChatView />);
+    const composer = await screen.findByPlaceholderText("Ask Borealis about your data…");
+    await user.type(composer, "keep this draft");
+    await user.click(screen.getByTitle("Send"));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Chat service is temporarily unavailable");
+    expect(composer).toHaveValue("keep this draft");
+    expect(window.location.hash).toBe("#/chat");
+    expect(apiModule.streamAgentChat).not.toHaveBeenCalled();
+  });
+
+  it("does not redirect or send when navigation changes while the new detail is loading", async () => {
+    const user = userEvent.setup();
+    const created = { ...chat, id: "chat-new", title: "New chat" };
+    const createdDetail = deferred<ChatDetail>();
+    vi.mocked(chatsApi.create).mockResolvedValue(created);
+    vi.mocked(chatsApi.get).mockImplementation(async (id) => {
+      if (id === created.id) return createdDetail.promise;
+      return detail();
+    });
+    vi.spyOn(apiModule, "streamAgentChat");
+
+    render(<ChatView />);
+    const composer = await screen.findByPlaceholderText("Ask Borealis about your data…");
+    await user.type(composer, "do not send after navigation");
+    await user.click(screen.getByTitle("Send"));
+    await waitFor(() => expect(chatsApi.get).toHaveBeenCalledWith("chat-new", { limit: 50 }));
+
+    await user.click(screen.getByRole("button", { name: "Open Alpha" }));
+    expect(await screen.findByRole("heading", { name: "Alpha" })).toBeInTheDocument();
+    expect(window.location.hash).toBe("#/chat/chat-a");
+
+    await act(async () => createdDetail.resolve(detail(created)));
+    await waitFor(() => expect(chatsApi.list).toHaveBeenCalledTimes(2));
+    expect(apiModule.streamAgentChat).not.toHaveBeenCalled();
+    expect(window.location.hash).toBe("#/chat/chat-a");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
   it("rehydrates an active run, cancels it without a local stream, and polls to a terminal UI", async () => {

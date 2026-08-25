@@ -7,6 +7,7 @@ import {
   openProtected,
   parseConnectorListPayload,
   streamAgentChat,
+  type SourceScopeInput,
 } from "@/lib/api";
 
 describe("typed API contracts", () => {
@@ -61,6 +62,39 @@ describe("typed API contracts", () => {
 
     expect(fetchMock.mock.calls[0][0]).toBe("/api/chats/chat-1");
     expect(fetchMock.mock.calls[1][0]).toBe("/api/chats/chat-1?before_message_id=42&limit=50");
+  });
+
+  const chatCreateCases: Array<[string, string | undefined, SourceScopeInput | undefined, Record<string, unknown>]> = [
+    ["the selected-empty default", undefined, undefined, { source_mode: "selected", source_ids: [] }],
+    ["an all-sources scope", "All data", { source_mode: "all" }, { title: "All data", source_mode: "all" }],
+    [
+      "an explicit selected-source scope",
+      undefined,
+      { source_mode: "selected", source_ids: ["11111111-1111-4111-8111-111111111111"] },
+      { source_mode: "selected", source_ids: ["11111111-1111-4111-8111-111111111111"] },
+    ],
+  ];
+
+  it.each(chatCreateCases)("serializes %s exactly when creating a chat", async (_label, title, scope, expectedBody) => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({}), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    if (scope === undefined) {
+      await chatsApi.create();
+    } else {
+      await chatsApi.create(title, scope);
+    }
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [path, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(path).toBe("/api/chats");
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(String(init.body))).toEqual(expectedBody);
   });
 
   it.each([

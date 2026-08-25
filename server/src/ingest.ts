@@ -813,7 +813,7 @@ export async function processOneJob(runIngest: typeof ingestSource = ingestSourc
           await q(
             `UPDATE connectors c SET sync_status='indexing', sync_error=NULL
              FROM sources s
-             WHERE s.id=$1 AND s.account_id=$2 AND s.connector=c.id AND c.account_id=$2
+             WHERE s.id=$1 AND s.account_id=$2 AND s.connector=c.id::text AND c.account_id=$2
                AND EXISTS (
                  SELECT 1 FROM ingestion_jobs j
                  WHERE j.source_id=$1 AND j.generation=$3 AND j.status='pending'
@@ -846,7 +846,7 @@ export async function processOneJob(runIngest: typeof ingestSource = ingestSourc
             await q(`UPDATE sources SET status='index' WHERE id=$1 AND account_id=$2`, [job.source_id, job.account_id]);
             await q(
               `UPDATE connectors c SET sync_status='indexing', sync_error=NULL
-               FROM sources s WHERE s.id=$1 AND s.account_id=$2 AND s.connector=c.id AND c.account_id=$2`,
+               FROM sources s WHERE s.id=$1 AND s.account_id=$2 AND s.connector=c.id::text AND c.account_id=$2`,
               [job.source_id, job.account_id]
             );
           }
@@ -1001,7 +1001,7 @@ export async function startIngestionWorkers(): Promise<void> {
   await q(
     `UPDATE connectors c SET sync_status='indexing', sync_error=NULL
      FROM sources s JOIN ingestion_jobs j ON j.source_id=s.id
-     WHERE s.connector=c.id AND s.account_id=c.account_id AND s.status='index'
+     WHERE s.connector=c.id::text AND s.account_id=c.account_id AND s.status='index'
        AND j.status IN ('pending','running')
        AND c.sync_status IN ('idle','syncing','error')`
   );
@@ -1088,7 +1088,7 @@ export async function processOnePreparingConnectorRefresh(): Promise<boolean> {
       `SELECT s.id, s.account_id, s.name, s.file_path, s.display_name, s.url, s.mime, s.meta,
               c.id AS connector_id, c.type, c.target_table, c.config
        FROM sources s
-       JOIN connectors c ON c.id=s.connector AND c.account_id=s.account_id
+       JOIN connectors c ON c.id::text=s.connector AND c.account_id=s.account_id
        WHERE s.id=$1 AND s.account_id=$2 AND s.status='index'`,
       [job.source_id, job.account_id]
     );
@@ -1231,7 +1231,7 @@ async function terminalizePreparingConnector(job: any, source: any, errorCode: s
        RETURNING s.connector, s.account_id
      )
      UPDATE connectors c SET sync_status='error', sync_error='Connector sync failed.'
-     FROM restored_source s WHERE c.id=s.connector AND c.account_id=s.account_id
+     FROM restored_source s WHERE c.id::text=s.connector AND c.account_id=s.account_id
      RETURNING c.id`,
     [job.source_id, job.account_id, job.generation, job.lease_token, errorCode]
   );

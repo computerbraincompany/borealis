@@ -433,7 +433,7 @@ async function syncConnector(
          )
          UPDATE connectors c SET sync_status='error', sync_error='Connector sync failed.'
          FROM restored_source s
-         WHERE c.id=s.connector AND c.account_id=s.account_id
+         WHERE c.id::text=s.connector AND c.account_id=s.account_id
          RETURNING c.id`,
         [source.id, account, prepareLeaseToken]
       ).catch(() => {});

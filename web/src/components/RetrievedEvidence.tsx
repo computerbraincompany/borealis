@@ -36,9 +36,9 @@ export function RetrievedEvidence({ evidence }: { evidence: RetrievedEvidenceIte
   const groups = groupBySource(evidence);
 
   return (
-    <details className="group/evidence mt-3 overflow-hidden rounded-xl border bg-surface-subtle text-sm">
-      <summary className="flex cursor-pointer list-none items-center gap-2 rounded-xl px-3 py-2.5 font-medium text-foreground transition-colors hover:bg-secondary/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
-        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border bg-card text-aurora-teal">
+    <details className="group/evidence mt-3 overflow-hidden rounded-lg border bg-surface-subtle text-sm">
+      <summary className="flex cursor-pointer list-none items-center gap-2 rounded-lg px-3 py-2.5 font-medium text-foreground transition-colors hover:bg-secondary/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
+        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border bg-card text-primary">
           <Library className="h-3.5 w-3.5" aria-hidden="true" />
         </span>
         <span className="min-w-0 flex-1">Evidence · {groups.length} sources</span>

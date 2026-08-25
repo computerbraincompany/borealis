@@ -108,7 +108,7 @@ export function ReportsView() {
       {loading ? (
         <div className="mt-8 space-y-3">
           {[0, 1, 2].map((i) => (
-            <Skeleton key={i} className="h-24 w-full rounded-xl" />
+            <Skeleton key={i} className="h-24 w-full rounded-lg" />
           ))}
         </div>
       ) : reports.length === 0 ? (
@@ -122,13 +122,13 @@ export function ReportsView() {
         <div className="mt-8 space-y-3">
           {reports.map((r) => (
             <Card key={r.id} className="flex items-center gap-4 p-4 transition-colors hover:border-foreground/20">
-              <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-aurora-teal/20 to-aurora-violet/20 text-aurora-teal">
+              <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
                 <FileText className="h-5 w-5" />
               </div>
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2">
                   <span className="truncate font-medium text-foreground">{r.title}</span>
-                  <Badge variant="aurora">HTML + PDF</Badge>
+                  <Badge variant="secondary">HTML + PDF</Badge>
                 </div>
                 <div className="mt-1 truncate text-xs text-muted-foreground">{r.subtitle || "No subtitle"}</div>
                 <div className="mt-1.5 flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
@@ -136,7 +136,7 @@ export function ReportsView() {
                   {r.chat_id && (
                     <a
                       href={`#/chat/${r.chat_id}`}
-                      className="inline-flex items-center gap-1 text-aurora-teal hover:underline"
+                      className="inline-flex items-center gap-1 text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                     >
                       <MessageSquare className="h-3 w-3" />
                       {r.chat_title || "source chat"}
@@ -153,7 +153,7 @@ export function ReportsView() {
                   size="icon"
                   onClick={() => void download(r)}
                   title="Download PDF"
-                  className="text-muted-foreground hover:text-aurora-teal"
+                  className="text-muted-foreground hover:text-primary"
                 >
                   <Download className="h-4 w-4" />
                 </Button>
@@ -185,14 +185,14 @@ export function ReportsView() {
             {previewHtml ? (
               <iframe
                 srcDoc={previewHtml}
-                className="h-[70vh] w-full rounded-xl border bg-white"
+                className="h-[70vh] w-full rounded-lg border bg-white"
                 sandbox="allow-scripts"
                 referrerPolicy="no-referrer"
                 title="Report preview"
               />
             ) : previewErr ? (
               <div
-                className="flex h-[calc(70vh-2rem)] items-center justify-center rounded-xl border border-destructive/30 bg-destructive/10 text-sm text-destructive"
+                className="flex h-[calc(70vh-2rem)] items-center justify-center rounded-lg border border-destructive/30 bg-destructive/10 text-sm text-destructive"
                 role="alert"
               >
                 {previewErr}

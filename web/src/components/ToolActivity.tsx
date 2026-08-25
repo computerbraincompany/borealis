@@ -17,15 +17,15 @@ const TOOL_META: Record<string, { icon: typeof Search; label: string }> = {
 export function ToolActivity({ steps, className }: { steps: ToolStep[]; className?: string }) {
   if (!steps.length) return null;
   return (
-    <div className={cn("my-3 space-y-1.5 rounded-xl border bg-surface-subtle/90 p-3", className)}>
+    <div className={cn("my-3 space-y-1.5 rounded-lg border bg-surface-subtle p-3", className)}>
       <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
         {steps.some((s) => s.status === "running") ? (
           <>
-            <Loader2 className="h-3.5 w-3.5 animate-spin text-aurora-teal" />
+            <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />
             Borealis is working
           </>
         ) : (
-          <Check className="h-3.5 w-3.5 text-aurora-teal" />
+          <Check className="h-3.5 w-3.5 text-success" />
         )}
         <span className="ml-auto flex items-center gap-1">
           {steps.filter((s) => s.status === "done").length}/{steps.length} steps
@@ -41,7 +41,7 @@ export function ToolActivity({ steps, className }: { steps: ToolStep[]; classNam
               className={cn(
                 "mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border",
                 running
-                  ? "border-aurora-teal/30 bg-aurora-teal/10 text-aurora-teal"
+                  ? "border-primary/30 bg-primary/10 text-primary"
                   : "border-border bg-muted/70 text-muted-foreground",
               )}
             >
@@ -50,7 +50,7 @@ export function ToolActivity({ steps, className }: { steps: ToolStep[]; classNam
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2 text-[13px] font-medium text-foreground">
                 {meta.label}
-                {running && <Loader2 className="h-3 w-3 animate-spin text-aurora-teal" />}
+                {running && <Loader2 className="h-3 w-3 animate-spin text-primary" />}
               </div>
               {s.summary && <div className="mt-0.5 text-[11px] leading-relaxed text-muted-foreground">{s.summary}</div>}
               {s.status === "error" && (

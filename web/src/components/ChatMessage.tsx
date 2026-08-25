@@ -44,8 +44,8 @@ function ReportLink({ reportId }: { reportId: string }) {
     }
   };
   return (
-    <div className="mt-3 flex flex-wrap items-center gap-2 rounded-xl border border-aurora-teal/20 bg-gradient-to-r from-aurora-teal/10 to-aurora-violet/10 p-3">
-      <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-gradient-to-br from-aurora-teal to-aurora-violet text-aurora-foreground">
+    <div className="mt-3 flex flex-wrap items-center gap-2 rounded-lg border border-primary/25 bg-surface-subtle p-3">
+      <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary text-primary-foreground">
         <FileText className="h-5 w-5" />
       </div>
       <div className="min-w-0 flex-1">
@@ -55,7 +55,7 @@ function ReportLink({ reportId }: { reportId: string }) {
       {info?.hasHtml && (
         <button
           onClick={() => void openReport("html")}
-          className="inline-flex h-8 items-center gap-1.5 rounded-md border bg-card/60 px-3 text-xs font-medium text-foreground transition-colors hover:border-aurora-teal/50 hover:text-aurora-teal focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="inline-flex h-8 items-center gap-1.5 rounded-md border bg-card px-3 text-xs font-medium text-foreground transition-colors hover:border-primary/50 hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
           <ExternalLink className="h-3.5 w-3.5" /> View HTML
         </button>
@@ -63,7 +63,7 @@ function ReportLink({ reportId }: { reportId: string }) {
       {info?.hasPdf && (
         <button
           onClick={() => void openReport("pdf")}
-          className="inline-flex h-8 items-center gap-1.5 rounded-md bg-gradient-to-r from-aurora-teal to-aurora-blue px-3 text-xs font-semibold text-aurora-foreground transition-opacity hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="inline-flex h-8 items-center gap-1.5 rounded-md bg-primary px-3 text-xs font-semibold text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
         >
           Download PDF
         </button>
@@ -102,17 +102,17 @@ export const ChatMessage = memo(function ChatMessage({
   return (
     <div className={cn("group flex w-full gap-3", isUser ? "justify-end" : "justify-start", className)}>
       {!isUser && (
-        <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-aurora-teal to-aurora-violet shadow">
-          <Bot className="h-[18px] w-[18px] text-aurora-foreground" />
+        <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary shadow-sm">
+          <Bot className="h-[18px] w-[18px] text-primary-foreground" />
         </div>
       )}
       <div className={cn("max-w-[78%] md:max-w-[70%]", isUser ? "items-end text-right" : "items-start")}>
         {isUser ? (
-          <div className="inline-block whitespace-pre-wrap rounded-2xl rounded-tr-md bg-secondary px-4 py-3 text-[15px] leading-relaxed text-secondary-foreground">
+          <div className="inline-block whitespace-pre-wrap rounded-lg rounded-tr-sm bg-secondary px-4 py-3 text-[15px] leading-relaxed text-secondary-foreground">
             {content}
           </div>
         ) : (
-          <div className="rounded-2xl rounded-tl-md text-[15px] leading-relaxed text-foreground/90">
+          <div className="rounded-lg rounded-tl-sm text-[15px] leading-relaxed text-foreground/90">
             <div className="markdown-body">
               <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>
                 {content || (streaming ? "" : "_no response_")}
@@ -139,8 +139,8 @@ export const ChatMessage = memo(function ChatMessage({
                 {[0, 1, 2].map((i) => (
                   <span
                     key={i}
-                    className="h-2 w-2 rounded-full bg-aurora-teal"
-                    style={{ animation: `aurora-pulse 1.2s ${i * 0.2}s infinite` }}
+                    className="h-2 w-2 animate-status-pulse rounded-full bg-primary"
+                    style={{ animationDelay: `${i * 0.2}s` }}
                   />
                 ))}
               </div>

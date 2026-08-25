@@ -137,7 +137,6 @@ export function ConnectorsView() {
           </p>
         </div>
         <Button
-          variant="aurora"
           size="sm"
           onClick={() => {
             setError(null);
@@ -163,23 +162,23 @@ export function ConnectorsView() {
           return (
             <Card key={c.id} className="flex flex-col gap-3 p-5 transition-colors hover:border-foreground/20">
               <div className="flex items-center gap-3">
-                <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-aurora-violet/15 text-aurora-violet">
+                <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
                   {c.type === "url_csv" ? <Database className="h-5 w-5" /> : <Globe className="h-5 w-5" />}
                 </div>
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2">
                     <span className="truncate font-medium text-foreground">{c.name}</span>
-                    <Badge variant="aurora">{c.type === "url_csv" ? "URL · CSV" : "URL · JSON"}</Badge>
+                    <Badge variant="secondary">{c.type === "url_csv" ? "URL · CSV" : "URL · JSON"}</Badge>
                     <ConnectorStatus status={c.sync_status} />
                   </div>
                   <div className="mt-0.5 truncate text-xs text-muted-foreground">
-                    table <span className="font-mono text-aurora-teal">{c.target_table}</span>
+                    table <span className="font-mono text-primary">{c.target_table}</span>
                   </div>
                 </div>
               </div>
               {cfg.url && (
                 <div className="flex items-center gap-2 truncate rounded-lg bg-secondary/60 px-3 py-2 text-xs text-muted-foreground">
-                  <LinkIcon className="h-3.5 w-3.5 shrink-0 text-aurora-blue" />
+                  <LinkIcon className="h-3.5 w-3.5 shrink-0 text-primary" />
                   <span className="truncate font-mono">{cfg.url}</span>
                 </div>
               )}
@@ -260,7 +259,7 @@ export function ConnectorsView() {
                     className={cn(
                       "flex items-center justify-center gap-2 rounded-lg border px-3 py-2.5 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                       type === t
-                        ? "border-aurora-teal/50 bg-aurora-teal/10 text-aurora-teal"
+                        ? "border-primary bg-primary/5 text-primary ring-1 ring-primary/20"
                         : "border-input text-muted-foreground hover:border-foreground/30 hover:text-foreground",
                     )}
                   >
@@ -328,11 +327,7 @@ export function ConnectorsView() {
             <Button variant="ghost" onClick={() => setOpen(false)}>
               Cancel
             </Button>
-            <Button
-              variant="aurora"
-              onClick={create}
-              disabled={creating || !url.trim() || !name.trim() || !targetTable.trim()}
-            >
+            <Button onClick={create} disabled={creating || !url.trim() || !name.trim() || !targetTable.trim()}>
               {creating && <Loader2 className="animate-spin" />} Connect
             </Button>
           </DialogFooter>

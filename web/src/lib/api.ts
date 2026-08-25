@@ -533,10 +533,10 @@ export const authApi = {
 // ------------------------------------------------------------------ chats
 export const chatsApi = {
   list: () => api<Chat[]>("/api/chats"),
-  create: (title?: string) =>
+  create: (title?: string, scope: SourceScopeInput = { source_mode: "selected", source_ids: [] }) =>
     api<Chat>("/api/chats", {
       method: "POST",
-      body: JSON.stringify({ title, source_mode: "selected", source_ids: [] }),
+      body: JSON.stringify({ title, ...scope }),
     }),
   get: (id: string, page?: { beforeMessageId?: string; limit?: number }) => {
     const params = new URLSearchParams();

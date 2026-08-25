@@ -1,10 +1,9 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
-import { Loader2, Plus, Send, Square, Sparkles, X } from "lucide-react";
+import { Cpu, Loader2, Plus, Send, Square, Sparkles, X } from "lucide-react";
 import {
   ApiError,
   chatsApi,
   formatApiError,
-  modelsApi,
   parseQueryResultArtifacts,
   sourcesApi,
   streamAgentChat,
@@ -13,7 +12,6 @@ import {
   type ChatDetail,
   type ChatRunTerminalStatus,
   type Message,
-  type ModelsResponse,
   type Source,
   type SourceMode,
   type SourceScopeInput,
@@ -29,6 +27,7 @@ import { ToolActivity } from "@/components/ToolActivity";
 import { createStreamState, EMPTY_STREAM_STATE, streamsByChatReducer, type StreamState } from "@/lib/chatStream";
 import { useSourceCatalog } from "@/hooks/useSourceCatalog";
 import { useChatSessionController } from "@/hooks/useChatSessionController";
+import { useModelCatalog } from "@/hooks/useModelCatalog";
 import { cancelRunThenAbort } from "@/lib/chatRun";
 import { prependOlderMessages } from "@/lib/chatHistoryPage";
 import { reconcileAttachedSources, sameAttachedSources } from "@/lib/sourceScope";
@@ -48,9 +47,6 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
     return m ? decodeURIComponent(m[1]) : "";
   });
   const [streamsByChat, dispatchStream] = useReducer(streamsByChatReducer, {});
-  const [modelCatalog, setModelCatalog] = useState<ModelsResponse | null>(null);
-  const [modelCatalogLoading, setModelCatalogLoading] = useState(false);
-  const [modelCatalogFailed, setModelCatalogFailed] = useState(false);
   const [modelSavingByChat, setModelSavingByChat] = useState<Record<string, boolean>>({});
   const [modelErrorsByChat, setModelErrorsByChat] = useState<Record<string, string>>({});
   const [titleSavingByChat, setTitleSavingByChat] = useState<Record<string, boolean>>({});
@@ -59,6 +55,11 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
   const [olderMessagesLoading, setOlderMessagesLoading] = useState(false);
   const [olderMessagesError, setOlderMessagesError] = useState<string | null>(null);
   const [newChatError, setNewChatError] = useState<string | null>(null);
+  const [newChatModelSelection, setNewChatModelSelection] = useState<string | null>(null);
+  const [newChatSourceScope, setNewChatSourceScope] = useState<SourceScopeInput>({
+    source_mode: "selected",
+    source_ids: [],
+  });
   const abortByChatRef = useRef(new Map<string, AbortController>());
   const runRevisionByChatRef = useRef(new Map<string, number>());
   const rehydratedRunByChatRef = useRef(new Map<string, string>());
@@ -69,8 +70,11 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
   const bottomRef = useRef<HTMLDivElement>(null);
   const stepKeyRef = useRef(0);
   const chatListRequestRef = useRef(0);
-  const modelCatalogRequestRef = useRef(0);
   const newChatRequestRef = useRef<string | null>(null);
+  const appliedDetailChatIdRef = useRef<string | null>(null);
+  const firstSubmitInFlightRef = useRef(false);
+  const firstSubmitTargetChatIdRef = useRef<string | null>(null);
+  const firstSubmitSetupCompleteRef = useRef(false);
   const preserveScrollRef = useRef(false);
   const {
     creatingChat,
@@ -83,7 +87,19 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
     createChat,
   } = useChatSessionController();
 
+  const releaseFirstSubmit = useCallback(() => {
+    firstSubmitInFlightRef.current = false;
+    firstSubmitTargetChatIdRef.current = null;
+    firstSubmitSetupCompleteRef.current = false;
+  }, []);
+
   const stream = detail?.id ? (streamsByChat[detail.id] ?? EMPTY_STREAM_STATE) : EMPTY_STREAM_STATE;
+  const {
+    catalog: modelCatalog,
+    loading: modelCatalogLoading,
+    error: modelCatalogError,
+    refresh: refreshModels,
+  } = useModelCatalog();
 
   const loadChats = useCallback(async () => {
     const requestId = ++chatListRequestRef.current;
@@ -93,31 +109,19 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
     } catch {}
   }, [isMounted]);
 
-  const loadModels = useCallback(
-    async (refresh = false) => {
-      const requestId = ++modelCatalogRequestRef.current;
-      setModelCatalogLoading(true);
-      try {
-        const latest = await modelsApi.list(refresh);
-        if (!isMounted() || requestId !== modelCatalogRequestRef.current) return;
-        setModelCatalog(latest);
-        setModelCatalogFailed(false);
-      } catch {
-        if (!isMounted() || requestId !== modelCatalogRequestRef.current) return;
-        setModelCatalog(null);
-        setModelCatalogFailed(true);
-      } finally {
-        if (isMounted() && requestId === modelCatalogRequestRef.current) setModelCatalogLoading(false);
-      }
-    },
-    [isMounted],
-  );
-
   const reconcileCatalog = useCallback((catalog: Source[]) => {
     setDetail((current) => {
       if (!current) return current;
       const reconciled = reconcileAttachedSources(current.source_mode, current.sources, catalog);
       return sameAttachedSources(current.sources, reconciled) ? current : { ...current, sources: reconciled };
+    });
+    setNewChatSourceScope((current) => {
+      if (current.source_mode === "all") return current;
+      const availableIds = new Set(catalog.map((source) => source.id));
+      const sourceIds = current.source_ids.filter((id) => availableIds.has(id));
+      return sourceIds.length === current.source_ids.length
+        ? current
+        : { source_mode: "selected", source_ids: sourceIds };
     });
   }, []);
   const {
@@ -129,6 +133,7 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
   } = useSourceCatalog({ onCatalog: reconcileCatalog });
 
   const applyChatDetail = useCallback((next: ChatDetail) => {
+    appliedDetailChatIdRef.current = next.id;
     setDetail(next);
     setOlderMessagesLoading(false);
     const activeRun = next.active_run;
@@ -179,21 +184,24 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
   }, []);
 
   const loadChat = useCallback(
-    async (id: string) => {
+    async (id: string): Promise<ChatDetail | null> => {
       const request = selectChat(id);
       try {
         const next = await chatsApi.get(id, { limit: 50 });
-        if (!ownsDetailRequest(request)) return;
+        if (!ownsDetailRequest(request)) return null;
         dispatchStream({ type: "select-chat", chatId: id });
         applyChatDetail(next);
         setOlderMessagesLoading(false);
         setOlderMessagesError(null);
         window.location.hash = `/chat/${id}`;
+        return next;
       } catch (error: unknown) {
         if (ownsDetailRequest(request)) {
           console.error(formatApiError(error, "Could not open this chat"));
+          appliedDetailChatIdRef.current = null;
           setDetail(null);
         }
+        return null;
       }
     },
     [applyChatDetail, ownsDetailRequest, selectChat],
@@ -202,20 +210,36 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
   // Route selection is also an ownership boundary. Returning to the chat root
   // invalidates deferred detail/creation navigation without choosing a chat.
   useEffect(() => {
-    loadChats();
+    void loadChats();
+  }, [loadChats]);
+
+  useEffect(() => {
     if (chatId) {
-      void loadChat(chatId);
+      // `loadChat` updates the hash after applying an owned detail. The route
+      // render that follows must not issue a duplicate request for that same
+      // already-owned detail.
+      if (currentChatId() !== chatId || appliedDetailChatIdRef.current !== chatId) {
+        void loadChat(chatId);
+      }
     } else if (!newChatRequest) {
       clearSelection();
+      releaseFirstSubmit();
+      appliedDetailChatIdRef.current = null;
       setDetail(null);
       setOlderMessagesLoading(false);
       setOlderMessagesError(null);
     }
-  }, [chatId, clearSelection, loadChats, loadChat, newChatRequest]);
+  }, [chatId, clearSelection, currentChatId, loadChat, newChatRequest, releaseFirstSubmit]);
 
+  // Keep the explicit first-submit guard until React has rendered the newly
+  // owned detail and the controller has completed synchronous run setup. This
+  // closes the small gap between the create callback resolving and the detail
+  // state becoming visible to a second submit event.
   useEffect(() => {
-    void loadModels();
-  }, [loadModels]);
+    if (!creatingChat && firstSubmitSetupCompleteRef.current && detail?.id === firstSubmitTargetChatIdRef.current) {
+      releaseFirstSubmit();
+    }
+  }, [creatingChat, detail?.id, releaseFirstSubmit]);
 
   useEffect(() => {
     void refreshSources(true);
@@ -310,6 +334,7 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
     // chat, while still clearing a chat opened after its deletion began.
     if (currentChatId() === id) {
       clearSelection(id);
+      appliedDetailChatIdRef.current = null;
       setDetail((current) => (current?.id === id ? null : current));
       if (currentChatId() === null) window.location.hash = "/chat";
     }
@@ -500,6 +525,29 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
     return uploaded;
   };
 
+  const selectNewChatModel = (model: string) => {
+    setNewChatError(null);
+    setNewChatModelSelection(model);
+  };
+
+  const saveNewChatSourceScope = async (scope: SourceScopeInput) => {
+    setNewChatError(null);
+    setNewChatSourceScope(
+      scope.source_mode === "all"
+        ? { source_mode: "all" }
+        : { source_mode: "selected", source_ids: [...scope.source_ids] },
+    );
+  };
+
+  const removeNewChatSource = (sourceId: string) => {
+    setNewChatError(null);
+    setNewChatSourceScope((current) =>
+      current.source_mode === "selected"
+        ? { source_mode: "selected", source_ids: current.source_ids.filter((id) => id !== sourceId) }
+        : current,
+    );
+  };
+
   const dismissStreamError = () => {
     if (!detail) return;
     dispatchStream({ type: "patch", chatId: detail.id, patch: { error: null } });
@@ -559,10 +607,8 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
     void cancelKnownRun(detail.id, activeRun.id, controller).catch(() => undefined);
   }, [cancelKnownRun, detail]);
 
-  const send = async (text?: string) => {
-    const content = (text ?? draft).trim();
-    if (!content || !detail) return;
-    const runChatId = detail.id;
+  const sendToChat = (runDetail: ChatDetail, content: string) => {
+    const runChatId = runDetail.id;
     if (
       modelSavingByChat[runChatId] ||
       sourceSavingByChat[runChatId] ||
@@ -588,7 +634,7 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
       created_at: new Date().toISOString(),
     };
 
-    const st: StreamState = { ...createStreamState(detail.model), running: true };
+    const st: StreamState = { ...createStreamState(runDetail.model), running: true };
     const runRevision = (runRevisionByChatRef.current.get(runChatId) ?? 0) + 1;
     runRevisionByChatRef.current.set(runChatId, runRevision);
     const abort = new AbortController();
@@ -661,102 +707,188 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
         void cancelKnownRun(runChatId, currentRunId, abort).catch(() => undefined);
       }
     };
-    try {
-      await streamAgentChat(runChatId, content, emit, abort.signal);
-    } catch (error: unknown) {
-      if (!(error instanceof Error && error.name === "AbortError") && isActiveRun()) {
-        requestRejected = error instanceof ApiError;
-        runError = formatApiError(error, "The generation stream failed");
-        dispatchStream({ type: "patch", chatId: runChatId, patch: { error: runError } });
-      }
-    } finally {
-      cancelPendingFlush();
-      flush();
+    void (async () => {
+      try {
+        await streamAgentChat(runChatId, content, emit, abort.signal);
+      } catch (error: unknown) {
+        if (!(error instanceof Error && error.name === "AbortError") && isActiveRun()) {
+          requestRejected = error instanceof ApiError;
+          runError = formatApiError(error, "The generation stream failed");
+          dispatchStream({ type: "patch", chatId: runChatId, patch: { error: runError } });
+        }
+      } finally {
+        cancelPendingFlush();
+        flush();
 
-      const cancellationAccepted =
-        terminalStatus === "cancelled" || Boolean(cancellationAcceptedByChatRef.current.get(runChatId));
-      // A `cancelling` response acknowledges the request but is not terminal.
-      // Keep mutation gates closed and retry detail just as we do for an
-      // ambiguous dropped connection until durable state proves the run ended.
-      const needsAuthoritativeRecovery = terminalStatus === null && !requestRejected;
-      if (needsAuthoritativeRecovery && !cancellationAccepted) {
-        runError = "The generation connection was interrupted. Checking the server run status…";
-      }
-      if (isActiveRun()) {
-        dispatchStream({
-          type: "patch",
-          chatId: runChatId,
-          patch: {
-            // A dropped SSE connection is not a terminal run state. Keep all
-            // mutation gates closed until the durable detail endpoint confirms
-            // whether the accepted run is still active.
-            running: needsAuthoritativeRecovery,
-            stopping:
-              needsAuthoritativeRecovery && (cancellationAccepted || stopRequestedByChatRef.current.has(runChatId)),
-            terminalStatus,
-            error: cancellationAccepted ? null : runError,
-          },
-        });
-        abortByChatRef.current.delete(runChatId);
-      }
+        const cancellationAccepted =
+          terminalStatus === "cancelled" || Boolean(cancellationAcceptedByChatRef.current.get(runChatId));
+        // A `cancelling` response acknowledges the request but is not terminal.
+        // Keep mutation gates closed and retry detail just as we do for an
+        // ambiguous dropped connection until durable state proves the run ended.
+        const needsAuthoritativeRecovery = terminalStatus === null && !requestRejected;
+        if (needsAuthoritativeRecovery && !cancellationAccepted) {
+          runError = "The generation connection was interrupted. Checking the server run status…";
+        }
+        if (isActiveRun()) {
+          dispatchStream({
+            type: "patch",
+            chatId: runChatId,
+            patch: {
+              // A dropped SSE connection is not a terminal run state. Keep all
+              // mutation gates closed until the durable detail endpoint confirms
+              // whether the accepted run is still active.
+              running: needsAuthoritativeRecovery,
+              stopping:
+                needsAuthoritativeRecovery && (cancellationAccepted || stopRequestedByChatRef.current.has(runChatId)),
+              terminalStatus,
+              error: cancellationAccepted ? null : runError,
+            },
+          });
+          abortByChatRef.current.delete(runChatId);
+        }
 
-      let appliedAuthoritativeDetail = false;
-      let authoritativeHasActiveRun = false;
-      if (ownsRun() && currentChatId() === runChatId) {
-        let failedAttempts = 0;
-        while (ownsRun() && isMounted() && currentChatId() === runChatId) {
-          const detailRequest = beginDetailRequest(runChatId);
-          try {
-            const authoritative = await chatsApi.get(runChatId, { limit: 50 });
-            if (!ownsRun() || !ownsDetailRequest(detailRequest)) break;
-            authoritativeHasActiveRun = Boolean(authoritative.active_run);
-            applyChatDetail(authoritative);
-            appliedAuthoritativeDetail = true;
-            if (needsAuthoritativeRecovery && !authoritativeHasActiveRun) {
-              runError = null;
-              if (cancellationAccepted) {
-                dispatchStream({
-                  type: "replace",
-                  chatId: runChatId,
-                  state: {
-                    ...createStreamState(detail.model),
-                    runId: currentRunId,
-                    terminalStatus: "cancelled",
-                  },
-                });
-              } else {
-                // The durable detail is now the complete source of truth. Drop
-                // partial SSE text/artifacts as well as the synthetic transport
-                // warning so a response committed just before disconnect is not
-                // rendered twice beside its persisted assistant message.
-                dispatchStream({ type: "clear", chatId: runChatId });
+        let appliedAuthoritativeDetail = false;
+        let authoritativeHasActiveRun = false;
+        if (ownsRun() && currentChatId() === runChatId) {
+          let failedAttempts = 0;
+          while (ownsRun() && isMounted() && currentChatId() === runChatId) {
+            const detailRequest = beginDetailRequest(runChatId);
+            try {
+              const authoritative = await chatsApi.get(runChatId, { limit: 50 });
+              if (!ownsRun() || !ownsDetailRequest(detailRequest)) break;
+              authoritativeHasActiveRun = Boolean(authoritative.active_run);
+              applyChatDetail(authoritative);
+              appliedAuthoritativeDetail = true;
+              if (needsAuthoritativeRecovery && !authoritativeHasActiveRun) {
+                runError = null;
+                if (cancellationAccepted) {
+                  dispatchStream({
+                    type: "replace",
+                    chatId: runChatId,
+                    state: {
+                      ...createStreamState(runDetail.model),
+                      runId: currentRunId,
+                      terminalStatus: "cancelled",
+                    },
+                  });
+                } else {
+                  // The durable detail is now the complete source of truth. Drop
+                  // partial SSE text/artifacts as well as the synthetic transport
+                  // warning so a response committed just before disconnect is not
+                  // rendered twice beside its persisted assistant message.
+                  dispatchStream({ type: "clear", chatId: runChatId });
+                }
               }
+              break;
+            } catch {
+              if (!needsAuthoritativeRecovery) break;
+              failedAttempts += 1;
+              const delay = Math.min(500 * 2 ** (failedAttempts - 1), 5000);
+              await new Promise((resolve) => window.setTimeout(resolve, delay));
             }
-            break;
-          } catch {
-            if (!needsAuthoritativeRecovery) break;
-            failedAttempts += 1;
-            const delay = Math.min(500 * 2 ** (failedAttempts - 1), 5000);
-            await new Promise((resolve) => window.setTimeout(resolve, delay));
           }
         }
+
+        await loadChats();
+
+        if (ownsRun()) {
+          if (requestRejected && currentChatId() === runChatId && isMounted()) {
+            setDraft((current) => current || content);
+          }
+          const canDiscardStoppedState = currentChatId() !== runChatId || appliedAuthoritativeDetail;
+          if (!runError && !cancellationAccepted && !authoritativeHasActiveRun && canDiscardStoppedState) {
+            dispatchStream({ type: "clear", chatId: runChatId });
+          }
+          if (!authoritativeHasActiveRun) {
+            cancellationAcceptedByChatRef.current.delete(runChatId);
+            stopRequestedByChatRef.current.delete(runChatId);
+          }
+          runRevisionByChatRef.current.delete(runChatId);
+        }
       }
+    })();
+  };
 
+  const send = async (text?: string) => {
+    const content = (text ?? draft).trim();
+    if (!content) return;
+    setNewChatError(null);
+
+    if (detail) {
+      sendToChat(detail, content);
+      return;
+    }
+
+    if (firstSubmitInFlightRef.current) return;
+    firstSubmitInFlightRef.current = true;
+    firstSubmitTargetChatIdRef.current = null;
+    firstSubmitSetupCompleteRef.current = false;
+    const selectedModel = newChatModelSelection ?? modelCatalog?.default_model ?? null;
+    const selectedSourceScope: SourceScopeInput =
+      newChatSourceScope.source_mode === "all"
+        ? { source_mode: "all" }
+        : { source_mode: "selected", source_ids: [...newChatSourceScope.source_ids] };
+    let createdChatId: string | null = null;
+
+    try {
+      await createChat(
+        () => chatsApi.create(undefined, selectedSourceScope),
+        async (created) => {
+          createdChatId = created.id;
+          chatListRequestRef.current += 1;
+          setChats((current) => [created, ...current.filter((chat) => chat.id !== created.id)]);
+          firstSubmitTargetChatIdRef.current = created.id;
+          let createdDetail = await loadChat(created.id);
+
+          // Selection/navigation owns the first turn just as it owns the detail.
+          // If the user moved elsewhere while creation or detail loading was in
+          // flight, leave the created chat in history but do not redirect or send.
+          if (!createdDetail) {
+            if (currentChatId() === created.id && isMounted()) {
+              setNewChatError("The chat was created, but could not be opened. Try selecting it from the chat list.");
+            }
+            return;
+          }
+          if (currentChatId() !== created.id) return;
+
+          // Source scope is part of the atomic create request. The model remains
+          // a per-chat PATCH, so hold the first turn until the displayed root
+          // selection is durably applied and verify ownership again afterward.
+          if (selectedModel && selectedModel !== createdDetail.model) {
+            const updated = await chatsApi.updateModel(created.id, selectedModel);
+            if (!isMounted() || currentChatId() !== created.id) return;
+            createdDetail = { ...createdDetail, model: updated.model, updated_at: updated.updated_at };
+            setDetail((current) =>
+              current?.id === created.id
+                ? { ...current, model: updated.model, updated_at: updated.updated_at }
+                : current,
+            );
+            setChats((current) => current.map((chat) => (chat.id === created.id ? { ...chat, ...updated } : chat)));
+          }
+          if (!isMounted() || currentChatId() !== created.id) return;
+
+          sendToChat(createdDetail, content);
+          setNewChatModelSelection(null);
+          setNewChatSourceScope({ source_mode: "selected", source_ids: [] });
+          firstSubmitSetupCompleteRef.current = true;
+        },
+      );
       await loadChats();
-
-      if (ownsRun()) {
-        if (requestRejected && currentChatId() === runChatId && isMounted()) {
-          setDraft((current) => current || content);
-        }
-        const canDiscardStoppedState = currentChatId() !== runChatId || appliedAuthoritativeDetail;
-        if (!runError && !cancellationAccepted && !authoritativeHasActiveRun && canDiscardStoppedState) {
-          dispatchStream({ type: "clear", chatId: runChatId });
-        }
-        if (!authoritativeHasActiveRun) {
-          cancellationAcceptedByChatRef.current.delete(runChatId);
-          stopRequestedByChatRef.current.delete(runChatId);
-        }
-        runRevisionByChatRef.current.delete(runChatId);
+    } catch (error: unknown) {
+      if (!isMounted()) return;
+      setDraft((current) => current || content);
+      if (!createdChatId || currentChatId() === createdChatId) {
+        setNewChatError(
+          formatApiError(
+            error,
+            createdChatId ? "Could not apply the selected chat model" : "Could not create a new chat",
+          ),
+        );
+      }
+      await loadChats();
+    } finally {
+      if (!firstSubmitSetupCompleteRef.current || currentChatId() !== firstSubmitTargetChatIdRef.current) {
+        releaseFirstSubmit();
       }
     }
   };
@@ -789,22 +921,33 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
   const isModelSaving = detail ? Boolean(modelSavingByChat[detail.id]) : false;
   const isSourceSaving = detail ? Boolean(sourceSavingByChat[detail.id]) : false;
   const isTitleSaving = detail ? Boolean(titleSavingByChat[detail.id]) : false;
-  const modelDiscovery = modelCatalog?.discovery ?? (modelCatalogFailed ? "unavailable" : null);
+  const modelDiscovery = modelCatalog?.discovery ?? (modelCatalogError ? "unavailable" : null);
   const modelOptions = modelCatalog?.models ?? [];
+  const newChatModel = newChatModelSelection ?? modelCatalog?.default_model ?? "Server default model";
+  const newChatAttachedSources =
+    newChatSourceScope.source_mode === "selected"
+      ? newChatSourceScope.source_ids.flatMap((id) => {
+          const source = sources.find((candidate) => candidate.id === id);
+          return source ? [source] : [];
+        })
+      : [];
+  const modelStatus = modelCatalogLoading
+    ? "Checking available models…"
+    : !modelCatalog || modelCatalog.discovery === "unavailable"
+      ? "Model catalog unavailable"
+      : modelOptions.length === 0
+        ? "No chat models advertised"
+        : `${modelOptions.length} chat ${modelOptions.length === 1 ? "model" : "models"} available`;
+  const answerCount = messages.filter((message) => message.role === "assistant").length;
 
   return (
     <div className="flex h-full">
       {/* conversations column */}
       <div className="flex w-[260px] shrink-0 flex-col border-r bg-sidebar/70">
         <div className="px-3 pb-2 pt-4">
-          <Button variant="aurora" className="w-full" onClick={openNewChat} disabled={creatingChat}>
+          <Button className="w-full" onClick={openNewChat} disabled={creatingChat}>
             {creatingChat ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />} New chat
           </Button>
-          {newChatError && (
-            <p className="mt-2 text-xs text-destructive" role="alert">
-              {newChatError}
-            </p>
-          )}
         </div>
         <ChatHistory
           chats={chats}
@@ -828,23 +971,22 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
           onDelete={deleteChat}
           onRename={renameChat}
         />
-        <div className="px-5 pb-4 pt-2 text-[11px] leading-relaxed text-muted-foreground">
-          <span className="text-aurora-teal">●</span> OpenAI-compatible stack · LiteLLM + LM Studio
-        </div>
+        <a
+          href="#/settings"
+          className="mx-3 mb-3 flex items-center gap-2 rounded-md border-l-2 border-transparent px-3 py-2 text-[11px] leading-relaxed text-muted-foreground transition-colors hover:border-primary hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          <Cpu className="size-3.5 shrink-0 text-primary" aria-hidden="true" />
+          <span>{modelStatus}</span>
+        </a>
       </div>
 
       {/* chat area */}
       <div className="flex h-full min-w-0 flex-1 flex-col">
         {/* header */}
         <header className="flex h-14 shrink-0 items-center justify-between border-b px-6">
-          <div className="flex min-w-0 items-center gap-2">
-            <h2 className="truncate text-[15px] font-semibold">{detail?.title || "Chat with Borealis"}</h2>
-            <span className="hidden items-center gap-1 rounded-md bg-aurora-violet/15 px-2 py-0.5 text-[11px] font-medium text-aurora-violet sm:inline-flex">
-              <Sparkles className="h-3 w-3" /> agentic · grounded in your data
-            </span>
-          </div>
+          <h2 className="min-w-0 truncate text-[15px] font-semibold">{detail?.title || "Chat with Borealis"}</h2>
           <div className="text-xs text-muted-foreground">
-            {messages.filter((m) => m.role === "assistant").length} answers
+            {answerCount} {answerCount === 1 ? "answer" : "answers"}
           </div>
         </header>
 
@@ -907,8 +1049,8 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
                         {[0, 1, 2].map((i) => (
                           <span
                             key={i}
-                            className="h-2 w-2 rounded-full bg-aurora-teal"
-                            style={{ animation: `aurora-pulse 1.2s ${i * 0.2}s infinite` }}
+                            className="h-2 w-2 animate-status-pulse rounded-full bg-primary"
+                            style={{ animationDelay: `${i * 0.2}s` }}
                           />
                         ))}
                       </span>
@@ -947,39 +1089,39 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
         </div>
 
         {/* composer */}
-        <div className="border-t bg-gradient-to-t from-background via-background to-transparent px-6 pb-5 pt-3">
+        <div className="border-t bg-background px-6 pb-5 pt-3">
           <div className="mx-auto max-w-4xl">
             {isEmpty && (
               <div className="mb-6 grid gap-2 sm:grid-cols-2">
                 {SUGGESTIONS.map((s) => (
                   <button
                     key={s}
-                    onClick={() => send(s)}
-                    disabled={!detail || isModelSaving || isSourceSaving || isTitleSaving}
-                    className="group rounded-xl border bg-surface-subtle p-3 text-left text-[13px] text-muted-foreground transition-colors hover:border-aurora-teal/30 hover:bg-aurora-teal/5 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+                    onClick={() => void send(s)}
+                    disabled={creatingChat || isModelSaving || isSourceSaving || isTitleSaving}
+                    className="group rounded-lg border bg-card p-3 text-left text-[13px] text-muted-foreground transition-colors hover:border-primary/40 hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
                   >
                     <span className="flex items-center gap-2">
-                      <Sparkles className="h-3.5 w-3.5 text-aurora-teal/70" />
+                      <Sparkles className="h-3.5 w-3.5 text-primary" />
                       {s}
                     </span>
                   </button>
                 ))}
               </div>
             )}
-            <div className="rounded-2xl bg-gradient-to-r from-border via-primary/50 to-border p-px shadow-xl focus-within:via-primary">
-              <div className="rounded-[calc(1rem-1px)] bg-card/90 p-2 backdrop-blur">
+            <div className="rounded-xl border bg-card shadow-sm transition-colors focus-within:border-ring focus-within:ring-2 focus-within:ring-ring/20">
+              <div className="rounded-xl p-2">
                 <Textarea
                   value={draft}
                   onChange={(e) => setDraft(e.target.value)}
                   onKeyDown={(e) => {
                     if (e.key === "Enter" && !e.shiftKey) {
                       e.preventDefault();
-                      send();
+                      void send();
                     }
                   }}
-                  placeholder={detail ? "Ask Borealis about your data…" : "Open or create a chat to get started"}
+                  placeholder="Ask Borealis about your data…"
                   rows={1}
-                  disabled={!detail}
+                  disabled={creatingChat}
                   className="max-h-40 min-h-[44px] w-full resize-none border-0 bg-transparent px-3 py-2.5 text-[15px] shadow-none focus-visible:ring-0"
                   style={{ height: "auto" }}
                   onInput={(e) => {
@@ -998,11 +1140,11 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
                             models={modelOptions}
                             discovery={modelDiscovery}
                             loading={modelCatalogLoading}
-                            pending={isModelSaving || isSourceSaving || isTitleSaving}
+                            pending={creatingChat || isModelSaving || isSourceSaving || isTitleSaving}
                             streaming={stream.running}
                             error={modelErrorsByChat[detail.id] || null}
                             onChange={(model) => void selectModel(model)}
-                            onRetry={() => void loadModels(true)}
+                            onRetry={() => void refreshModels(true)}
                             onDismissError={() => dismissModelError(detail.id)}
                           />
                           <ChatSourcePicker
@@ -1012,7 +1154,9 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
                             sources={sources}
                             sourcesLoading={sourcesLoading}
                             sourcesError={sourcesError}
-                            disabled={isModelSaving || isSourceSaving || isTitleSaving || stream.running}
+                            disabled={
+                              creatingChat || isModelSaving || isSourceSaving || isTitleSaving || stream.running
+                            }
                             saving={isSourceSaving}
                             hasMessages={messages.length > 0}
                             onApply={saveSourceScope}
@@ -1023,21 +1167,58 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
                         <ActiveSourceScope
                           mode={detail.source_mode}
                           sources={detail.sources}
-                          disabled={isModelSaving || isSourceSaving || isTitleSaving || stream.running}
+                          disabled={creatingChat || isModelSaving || isSourceSaving || isTitleSaving || stream.running}
                           error={sourceErrorsByChat[detail.id] || null}
                           onRemove={removeAttachedSource}
                           onDismissError={() => dismissSourceError(detail.id)}
                         />
                       </>
                     ) : (
-                      <span className="px-2 text-xs text-muted-foreground">Select a chat to choose its model</span>
+                      <>
+                        <div className="flex flex-wrap items-start gap-2">
+                          <ModelSelector
+                            model={newChatModel}
+                            models={modelOptions}
+                            discovery={modelDiscovery}
+                            loading={modelCatalogLoading}
+                            pending={creatingChat}
+                            streaming={false}
+                            error={null}
+                            onChange={selectNewChatModel}
+                            onRetry={() => void refreshModels(true)}
+                            onDismissError={() => undefined}
+                          />
+                          <ChatSourcePicker
+                            key="new-chat"
+                            sourceMode={newChatSourceScope.source_mode}
+                            attachedSources={newChatAttachedSources}
+                            sources={sources}
+                            sourcesLoading={sourcesLoading}
+                            sourcesError={sourcesError}
+                            disabled={creatingChat}
+                            saving={creatingChat}
+                            hasMessages={false}
+                            onApply={saveNewChatSourceScope}
+                            onUpload={uploadSource}
+                            onRetrySources={() => refreshSources(true)}
+                          />
+                        </div>
+                        <ActiveSourceScope
+                          mode={newChatSourceScope.source_mode}
+                          sources={newChatAttachedSources}
+                          disabled={creatingChat}
+                          error={null}
+                          onRemove={removeNewChatSource}
+                          onDismissError={() => undefined}
+                        />
+                      </>
                     )}
                   </div>
                   {stream.running ? (
                     <Button
                       variant="outline"
                       size="icon"
-                      className="size-11 shrink-0 rounded-xl"
+                      className="size-11 shrink-0 rounded-lg"
                       onClick={() => void stop()}
                       disabled={stream.stopping}
                       title={stream.stopping ? "Stopping…" : "Stop generating"}
@@ -1046,19 +1227,24 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
                     </Button>
                   ) : (
                     <Button
-                      variant="aurora"
+                      variant="default"
                       size="icon"
-                      className="size-11 shrink-0 rounded-xl"
-                      disabled={!detail || !draft.trim() || isModelSaving || isSourceSaving || isTitleSaving}
-                      onClick={() => send()}
-                      title="Send"
+                      className="size-11 shrink-0 rounded-lg"
+                      disabled={creatingChat || !draft.trim() || isModelSaving || isSourceSaving || isTitleSaving}
+                      onClick={() => void send()}
+                      title={creatingChat ? "Creating chat…" : "Send"}
                     >
-                      <Send />
+                      {creatingChat ? <Loader2 className="animate-spin" /> : <Send />}
                     </Button>
                   )}
                 </div>
               </div>
             </div>
+            {newChatError && (
+              <p className="mt-2 text-sm text-destructive" role="alert">
+                {newChatError}
+              </p>
+            )}
             <p className="mt-2 text-center text-[11px] text-muted-foreground">
               Borealis can make mistakes — verify important results against your source data.
             </p>

@@ -5,6 +5,7 @@ import { ChatView } from "@/pages/ChatView";
 import { SourcesView } from "@/pages/SourcesView";
 import { ConnectorsView } from "@/pages/ConnectorsView";
 import { ReportsView } from "@/pages/ReportsView";
+import { SettingsView } from "@/pages/SettingsView";
 import { getUser } from "@/lib/api";
 
 function useHashRoute(): string {
@@ -29,7 +30,7 @@ export default function App() {
     return <AuthPage />;
   }
 
-  // route: /chat[:/id] | /sources | /connectors | /reports | /login
+  // route: /chat[:/id] | /sources | /connectors | /reports | /settings | /login
   if (route.startsWith("/login")) {
     window.location.hash = "/chat";
     return null;
@@ -48,6 +49,7 @@ export default function App() {
   } else if (route.startsWith("/sources")) page = <SourcesView />;
   else if (route.startsWith("/connectors")) page = <ConnectorsView />;
   else if (route.startsWith("/reports")) page = <ReportsView />;
+  else if (route.startsWith("/settings")) page = <SettingsView />;
   else page = <ChatView chatId={undefined} />;
 
   return <Shell>{page}</Shell>;

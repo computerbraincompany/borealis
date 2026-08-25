@@ -108,7 +108,7 @@ export function ChatHistory({ chats, activeChatId, busyChatIds, onOpen, onDelete
             value={search}
             onChange={(event) => setSearch(event.target.value)}
             placeholder="Search conversations"
-            className="h-9 w-full rounded-lg border bg-card/70 pl-8 pr-8 text-xs text-foreground outline-none transition-colors placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/30"
+            className="h-9 w-full rounded-lg border bg-card pl-8 pr-8 text-xs text-foreground outline-none transition-colors placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/30"
           />
           {search && (
             <button
@@ -136,7 +136,7 @@ export function ChatHistory({ chats, activeChatId, busyChatIds, onOpen, onDelete
             <button
               type="button"
               onClick={() => setSearch("")}
-              className="mt-2 block w-full rounded-md font-medium text-aurora-teal hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="mt-2 block w-full rounded-md font-medium text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
               Clear search
             </button>
@@ -160,10 +160,10 @@ export function ChatHistory({ chats, activeChatId, busyChatIds, onOpen, onDelete
                       <div
                         key={chat.id}
                         className={cn(
-                          "group rounded-lg transition-colors",
+                          "group rounded-lg border-l-2 transition-colors",
                           active
-                            ? "bg-gradient-to-r from-aurora-teal/12 to-aurora-violet/12 text-foreground"
-                            : "text-muted-foreground hover:bg-secondary hover:text-foreground",
+                            ? "border-primary bg-primary/10 text-foreground"
+                            : "border-transparent text-muted-foreground hover:bg-secondary hover:text-foreground",
                         )}
                       >
                         {editing ? (
@@ -174,7 +174,7 @@ export function ChatHistory({ chats, activeChatId, busyChatIds, onOpen, onDelete
                             }}
                           >
                             <div className="flex items-center gap-1.5">
-                              <MessageSquareText className="h-4 w-4 shrink-0 text-aurora-teal" aria-hidden="true" />
+                              <MessageSquareText className="h-4 w-4 shrink-0 text-primary" aria-hidden="true" />
                               <input
                                 autoFocus
                                 value={rename.draft}
@@ -241,14 +241,14 @@ export function ChatHistory({ chats, activeChatId, busyChatIds, onOpen, onDelete
                               <MessageSquareText
                                 className={cn(
                                   "h-4 w-4 shrink-0",
-                                  active ? "text-aurora-teal" : "text-muted-foreground group-hover:text-foreground",
+                                  active ? "text-primary" : "text-muted-foreground group-hover:text-foreground",
                                 )}
                                 aria-hidden="true"
                               />
                               <span className="min-w-0 flex-1 truncate text-[13px]">{chat.title}</span>
                               {busy && (
                                 <LoaderCircle
-                                  className="h-3.5 w-3.5 shrink-0 animate-spin text-aurora-teal"
+                                  className="h-3.5 w-3.5 shrink-0 animate-spin text-primary"
                                   aria-label="Chat is busy"
                                 />
                               )}

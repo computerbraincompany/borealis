@@ -39,39 +39,32 @@ export function AuthPage() {
 
   return (
     <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-background px-4">
-      {/* ambient aurora blobs */}
-      <div className="pointer-events-none absolute -left-32 -top-32 h-96 w-96 rounded-full bg-aurora-teal/10 blur-3xl animate-aurora-pulse" />
-      <div className="pointer-events-none absolute -right-24 top-1/4 h-96 w-96 rounded-full bg-aurora-violet/10 blur-3xl animate-aurora-pulse [animation-delay:2s]" />
-      <div className="pointer-events-none absolute bottom-0 left-1/3 h-80 w-80 rounded-full bg-aurora-blue/10 blur-3xl animate-aurora-pulse [animation-delay:4s]" />
-      <div className="aurora-top fixed inset-x-0 top-0 z-50 h-[2px] animate-shimmer" />
-      <div className="absolute right-4 top-4 z-20 rounded-lg border bg-card/80 shadow-sm backdrop-blur">
+      <div className="pointer-events-none absolute inset-y-0 left-0 hidden w-[44%] border-r bg-sidebar lg:block" />
+      <div className="absolute right-4 top-4 z-20 rounded-lg border bg-card shadow-sm">
         <ThemeMenu />
       </div>
 
-      <div className="relative z-10 grid w-full max-w-4xl items-center gap-12 lg:grid-cols-2">
+      <div className="relative z-10 grid w-full max-w-5xl items-center gap-14 lg:grid-cols-[1.05fr_0.95fr]">
         {/* left: pitch */}
         <div className="hidden lg:block">
           <div className="mb-6 flex items-center gap-3">
-            <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-gradient-to-br from-aurora-teal to-aurora-violet shadow-xl shadow-aurora-violet/25">
-              <Sparkles className="h-6 w-6 text-aurora-foreground" />
+            <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-primary shadow-sm">
+              <Sparkles className="h-6 w-6 text-primary-foreground" />
             </div>
             <div>
               <div className="text-2xl font-bold tracking-tight">Borealis</div>
-              <div className="text-sm text-muted-foreground">ask your data · open-source MVP</div>
+              <div className="text-sm text-muted-foreground">AI data workspace</div>
             </div>
           </div>
           <h1 className="text-4xl font-extrabold leading-[1.15] tracking-tight">
-            Chat with your{" "}
-            <span className="bg-gradient-to-r from-aurora-teal via-aurora-blue to-aurora-violet bg-clip-text text-transparent">
-              connected data
-            </span>
+            Chat with your <span className="text-primary">connected data</span>
             .
             <br />
             Answer with charts &amp; reports.
           </h1>
           <p className="mt-4 max-w-md text-[15px] leading-relaxed text-muted-foreground">
-            Upload spreadsheets and documents, connect external URLs, then ask questions. The agent writes SQL, renders
-            charts, and assembles polished HTML + PDF reports — fully local on an OpenAI-compatible stack.
+            Upload spreadsheets and documents, connect shared datasets, then ask questions. Borealis queries your data,
+            builds charts, and assembles HTML + PDF reports.
           </p>
           <ul className="mt-8 space-y-3">
             {[
@@ -80,7 +73,7 @@ export function AuthPage() {
               "One-click HTML & PDF reports",
             ].map((t) => (
               <li key={t} className="flex items-center gap-2.5 text-sm text-muted-foreground">
-                <span className="flex h-5 w-5 items-center justify-center rounded-full bg-aurora-teal/15 text-aurora-teal text-xs">
+                <span className="flex h-5 w-5 items-center justify-center rounded-full bg-primary/10 text-xs text-primary">
                   ✓
                 </span>
                 {t}
@@ -90,19 +83,24 @@ export function AuthPage() {
         </div>
 
         {/* right: form */}
-        <Card className="w-full border bg-card/80 shadow-2xl backdrop-blur-xl">
+        <Card className="w-full border-l-2 border-l-primary bg-card shadow-sm">
           <CardContent className="p-8">
             <div className="mb-7 flex items-center gap-3 lg:hidden">
-              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-aurora-teal to-aurora-violet">
-                <Sparkles className="h-5 w-5 text-aurora-foreground" />
+              <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary">
+                <Sparkles className="h-5 w-5 text-primary-foreground" />
               </div>
-              <div className="text-xl font-bold">Borealis</div>
+              <div>
+                <div className="text-xl font-bold">Borealis</div>
+                <div className="text-xs text-muted-foreground">AI data workspace</div>
+              </div>
             </div>
             <h2 className="text-2xl font-bold tracking-tight">
               {mode === "login" ? "Welcome back" : "Create your account"}
             </h2>
             <p className="mt-1 text-sm text-muted-foreground">
-              {mode === "login" ? "Sign in to start a conversation." : "Self-hosted — your data stays local."}
+              {mode === "login"
+                ? "Sign in to start a conversation."
+                : "Create a workspace account to start analyzing data."}
             </p>
 
             <form onSubmit={submit} className="mt-7 space-y-4">
@@ -116,7 +114,7 @@ export function AuthPage() {
                   placeholder="you@example.com"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
-                  className="h-11 bg-background/60"
+                  className="h-11 bg-background"
                 />
               </div>
               <div className="space-y-2">
@@ -129,7 +127,7 @@ export function AuthPage() {
                   placeholder="••••••••"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  className="h-11 bg-background/60"
+                  className="h-11 bg-background"
                 />
               </div>
               {error && (
@@ -140,7 +138,7 @@ export function AuthPage() {
                   {error}
                 </div>
               )}
-              <Button type="submit" disabled={busy} className="h-11 w-full" variant="aurora">
+              <Button type="submit" disabled={busy} className="h-11 w-full">
                 {busy && <Loader2 className="animate-spin" />}
                 {mode === "login" ? "Sign in" : "Create account"}
               </Button>
@@ -149,7 +147,7 @@ export function AuthPage() {
             <p className="mt-5 text-center text-sm text-muted-foreground">
               {mode === "login" ? "New here?" : "Already have an account?"}{" "}
               <button
-                className="font-medium text-aurora-teal hover:underline"
+                className="font-medium text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 onClick={() => {
                   setMode(mode === "login" ? "register" : "login");
                   setError(null);
@@ -171,7 +169,7 @@ export function AuthPage() {
               onClick={() => {
                 window.location.hash = `/chat?q=${encodeURIComponent(p.prompt)}`;
               }}
-              className="rounded-full border bg-card/70 px-3 py-1.5 text-xs text-muted-foreground backdrop-blur transition-colors hover:border-aurora-teal/40 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="rounded-md border bg-card px-3 py-1.5 text-xs text-muted-foreground shadow-sm transition-colors hover:border-primary/40 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
               {p.title}
             </button>
