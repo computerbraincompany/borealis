@@ -1,7 +1,10 @@
 import { fireEvent, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { ThemeProvider } from "@/components/ThemeProvider";
 
 const apiMocks = vi.hoisted(() => ({
   clearSession: vi.fn(),
+  setTheme: vi.fn(),
 }));
 
 vi.mock("@/lib/api", () => ({
@@ -9,18 +12,31 @@ vi.mock("@/lib/api", () => ({
   clearSession: apiMocks.clearSession,
 }));
 
-vi.mock("@/components/ThemeMenu", () => ({ ThemeMenu: () => null }));
+vi.mock("@/components/ThemeProvider", () => ({
+  ThemeProvider: ({ children }: { children: React.ReactNode }) => children,
+  useTheme: () => ({ theme: "system", resolvedTheme: "light", setTheme: apiMocks.setTheme }),
+}));
 
 import { Shell } from "@/components/Shell";
+
+function renderShell() {
+  return render(
+    <ThemeProvider>
+      <Shell>content</Shell>
+    </ThemeProvider>,
+  );
+}
 
 describe("Shell", () => {
   beforeEach(() => {
     apiMocks.clearSession.mockReset();
+    apiMocks.setTheme.mockReset();
+    window.localStorage.clear();
     window.location.hash = "/reports";
   });
 
   it("renders the cleaned navigation with one truthful active destination", () => {
-    const { container } = render(<Shell>content</Shell>);
+    const { container } = renderShell();
 
     expect(screen.getByText("AI data workspace")).toBeInTheDocument();
     expect(screen.queryByText("ask your data · open source")).not.toBeInTheDocument();
@@ -35,16 +51,33 @@ describe("Shell", () => {
     expect(screen.getByRole("link", { name: "Settings" })).toHaveAttribute("href", "#/settings");
   });
 
-  it("keeps the account controls and signs out to the login route", () => {
-    render(<Shell>content</Shell>);
+  it("opens a compact account menu with the full email and signs out", async () => {
+    const user = userEvent.setup();
+    renderShell();
 
-    const email = screen.getByText("user@example.test");
-    expect(email).toBeInTheDocument();
-    expect(email).toHaveClass("break-words");
-    expect(email).not.toHaveClass("truncate");
-    fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
+    const trigger = screen.getByRole("button", { name: "Account menu for user@example.test" });
+    expect(trigger).toHaveAttribute("title", "user@example.test");
+    expect(screen.queryByRole("menuitem", { name: "Sign out" })).not.toBeInTheDocument();
+
+    await user.click(trigger);
+
+    expect(screen.getAllByText("user@example.test")).toHaveLength(2);
+    expect(screen.getByRole("link", { name: "Settings" })).toHaveAttribute("href", "#/settings");
+    await user.click(screen.getByRole("menuitem", { name: "Sign out" }));
 
     expect(apiMocks.clearSession).toHaveBeenCalledOnce();
     expect(window.location.hash).toBe("#/login");
+  });
+
+  it("offers appearance choices in a nested account submenu", async () => {
+    const user = userEvent.setup();
+    renderShell();
+    await user.click(screen.getByRole("button", { name: "Account menu for user@example.test" }));
+
+    await user.hover(screen.getByRole("menuitem", { name: /Appearance System/ }));
+    const dark = await screen.findByRole("menuitemradio", { name: /Dark Always use dark/ });
+    fireEvent.click(dark);
+
+    expect(apiMocks.setTheme).toHaveBeenCalledWith("dark");
   });
 });

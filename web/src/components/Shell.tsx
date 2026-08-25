@@ -1,7 +1,6 @@
-import { MessageSquare, Database, Plug, FileText, LogOut, Settings2, Sparkles } from "lucide-react";
+import { MessageSquare, Database, Plug, FileText, Settings2, Sparkles } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { getUser, clearSession } from "@/lib/api";
-import { ThemeMenu } from "@/components/ThemeMenu";
+import { AccountMenu } from "@/components/AccountMenu";
 
 const NAV_ITEMS = [
   { href: "/chat", label: "Chat", icon: MessageSquare },
@@ -13,7 +12,6 @@ const NAV_ITEMS = [
 
 export function Shell({ children }: { children: React.ReactNode }) {
   const active = (window.location.hash || "#/chat").replace(/^#/, "").split("?")[0];
-  const user = getUser();
 
   return (
     <div className="flex h-screen overflow-hidden bg-background">
@@ -60,31 +58,8 @@ export function Shell({ children }: { children: React.ReactNode }) {
         </nav>
 
         {/* user */}
-        <div className="border-t px-3 py-3">
-          <div className="rounded-lg px-2 py-1.5">
-            <div className="flex min-w-0 items-start gap-2.5">
-              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary text-xs font-bold text-primary-foreground">
-                {user?.email?.slice(0, 2).toUpperCase() ?? "B"}
-              </div>
-              <div className="min-w-0 flex-1 pt-1.5">
-                <div className="break-words text-[13px] font-medium leading-5 text-foreground">{user?.email}</div>
-              </div>
-            </div>
-            <div className="mt-1 flex items-center justify-end border-t border-border/60 pt-1">
-              <ThemeMenu />
-              <button
-                title="Sign out"
-                aria-label="Sign out"
-                onClick={() => {
-                  clearSession();
-                  window.location.hash = "/login";
-                }}
-                className="rounded-md p-2 text-muted-foreground transition-colors hover:bg-secondary hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              >
-                <LogOut className="h-4 w-4" />
-              </button>
-            </div>
-          </div>
+        <div className="border-t px-2 py-2">
+          <AccountMenu />
         </div>
       </aside>
 
