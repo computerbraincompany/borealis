@@ -11,6 +11,7 @@ vi.mock("../chatRuns.js", () => ({
   cancelRun: vi.fn(),
   isRunCancellation: vi.fn(() => false),
 }));
+vi.mock("../systemHealth.js", () => ({ checkSystemHealth: vi.fn() }));
 
 import { signToken } from "../auth.js";
 import { config } from "../config.js";
@@ -20,6 +21,7 @@ import { runAgent } from "../agent.js";
 import { routes } from "../routes.js";
 import { acceptChatTurn } from "../turnContext.js";
 import { beginRun, cancelRun, completeRunWithAssistant, finishRunDurably, isRunCancellation } from "../chatRuns.js";
+import { checkSystemHealth } from "../systemHealth.js";
 
 const qMock = vi.mocked(q);
 const runAgentMock = vi.mocked(runAgent);
@@ -29,6 +31,7 @@ const completeRunMock = vi.mocked(completeRunWithAssistant);
 const finishRunMock = vi.mocked(finishRunDurably);
 const cancelRunMock = vi.mocked(cancelRun);
 const isRunCancellationMock = vi.mocked(isRunCancellation);
+const checkSystemHealthMock = vi.mocked(checkSystemHealth);
 const accountId = "11111111-1111-4111-8111-111111111111";
 const otherAccountId = "22222222-2222-4222-8222-222222222222";
 const chatId = "33333333-3333-4333-8333-333333333333";
@@ -76,6 +79,7 @@ afterEach(async () => {
   cancelRunMock.mockReset();
   isRunCancellationMock.mockReset();
   isRunCancellationMock.mockReturnValue(false);
+  checkSystemHealthMock.mockReset();
   vi.restoreAllMocks();
   await Promise.all(apps.splice(0).map((app) => app.close()));
 });
@@ -139,6 +143,40 @@ describe("model catalog route", () => {
     expect(document.paths["/health"].get.security).toEqual([]);
     expect(document.paths["/api/register"].post.security).toEqual([]);
     expect(document.paths["/api/login"].post.security).toEqual([]);
+  });
+});
+
+describe("system health route", () => {
+  const systemHealth = {
+    status: "operational" as const,
+    checked_at: "2026-08-26T09:30:00.000Z",
+    services: [
+      {
+        id: "api" as const,
+        name: "Borealis API",
+        description: "The application server is accepting requests.",
+        status: "operational" as const,
+        latency_ms: 0,
+      },
+    ],
+  };
+
+  it("requires authentication before probing dependencies", async () => {
+    const app = await buildApp();
+    const response = await app.inject({ method: "GET", url: "/api/health" });
+
+    expect(response.statusCode).toBe(401);
+    expect(checkSystemHealthMock).not.toHaveBeenCalled();
+  });
+
+  it("returns the protected readiness result", async () => {
+    checkSystemHealthMock.mockResolvedValue(systemHealth);
+    const app = await buildApp();
+    const response = await app.inject({ method: "GET", url: "/api/health", headers: authHeader });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual(systemHealth);
+    expect(checkSystemHealthMock).toHaveBeenCalledOnce();
   });
 });
 

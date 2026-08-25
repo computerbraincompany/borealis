@@ -16,6 +16,14 @@ loopback Vite origins.
 
 An authenticated OpenAPI snapshot is available at `GET /api/openapi.json`.
 
+The public `GET /health` endpoint is a fast process-liveness probe. Authenticated
+clients can use `GET /api/health` for dependency readiness. It reports bounded
+status and latency for the Borealis API, PostgreSQL, the Python data service,
+LiteLLM, and LM Studio without returning service URLs, credentials, model IDs,
+or raw upstream errors. A degraded dependency does not change the liveness
+endpoint, which avoids restarting a healthy API process because an upstream
+service is temporarily unavailable.
+
 ## Minimal authenticated flow
 
 The examples deliberately use placeholders. Keep tokens out of shell history,
@@ -128,6 +136,7 @@ runs failed; it never presents them as completed.
 
 ### Models and chats
 
+- `GET /api/health`
 - `GET /api/models[?refresh=1]`
 - `GET /api/chats`
 - `POST /api/chats`

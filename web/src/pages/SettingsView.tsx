@@ -1,8 +1,10 @@
 import { Check, Cpu, LogOut, Monitor, Moon, RefreshCw, Sun, UserRound } from "lucide-react";
 import { useTheme, type ThemeChoice } from "@/components/ThemeProvider";
+import { SystemHealthPanel } from "@/components/SystemHealthPanel";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { useModelCatalog } from "@/hooks/useModelCatalog";
+import { useSystemHealth } from "@/hooks/useSystemHealth";
 import { clearSession, getUser } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
@@ -19,6 +21,7 @@ const APPEARANCE_OPTIONS: Array<{
 
 export function SettingsView() {
   const { catalog, loading, error, refresh } = useModelCatalog();
+  const systemHealth = useSystemHealth();
   const { theme, resolvedTheme, setTheme } = useTheme();
   const user = getUser();
   const discoveryLive = catalog?.discovery === "live";
@@ -30,15 +33,22 @@ export function SettingsView() {
 
   return (
     <div className="h-full overflow-y-auto">
-      <div className="mx-auto max-w-5xl px-6 py-10">
+      <div className="mx-auto max-w-5xl px-4 py-8 sm:px-6 sm:py-10">
         <div>
           <h1 className="text-2xl font-bold tracking-tight text-foreground">Settings</h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            Review available chat models, choose an appearance, and manage your session.
+            Monitor service readiness, review available models, and manage this workspace.
           </p>
         </div>
 
         <div className="mt-8 space-y-6">
+          <SystemHealthPanel
+            health={systemHealth.health}
+            checking={systemHealth.checking}
+            error={systemHealth.error}
+            onRefresh={() => void systemHealth.refresh()}
+          />
+
           <Card className="overflow-hidden rounded-lg shadow-none">
             <section aria-labelledby="models-heading">
               <div className="flex flex-wrap items-start justify-between gap-4 p-5">

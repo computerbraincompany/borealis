@@ -132,6 +132,7 @@ export const config = {
   // LiteLLM / any OpenAI-compatible endpoint
   llmBaseUrl: parseServiceOrigin(process.env.LITELLM_BASE_URL, "http://localhost:4000", "LITELLM_BASE_URL"),
   llmApiKey: LITELLM_API_KEY,
+  lmStudioBaseUrl: parseServiceOrigin(process.env.LM_STUDIO_BASE_URL, "http://localhost:1234", "LM_STUDIO_BASE_URL"),
   chatModel: modelIds.chatModel,
   embedModel: modelIds.embedModel,
   embeddingDim: boundedPositiveInteger(process.env.EMBEDDING_DIM, 768, "EMBEDDING_DIM", 16_384),

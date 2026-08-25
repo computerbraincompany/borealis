@@ -1,16 +1,22 @@
 import { fireEvent, render, screen } from "@testing-library/react";
-import type { ModelsResponse } from "@/lib/api";
+import type { ModelsResponse, SystemHealthResponse } from "@/lib/api";
 
 const mocks = vi.hoisted(() => ({
   clearSession: vi.fn(),
   modelCatalog: vi.fn(),
   refresh: vi.fn(),
   setTheme: vi.fn(),
+  systemHealth: vi.fn(),
+  systemRefresh: vi.fn(),
   theme: vi.fn(),
 }));
 
 vi.mock("@/hooks/useModelCatalog", () => ({
   useModelCatalog: mocks.modelCatalog,
+}));
+
+vi.mock("@/hooks/useSystemHealth", () => ({
+  useSystemHealth: mocks.systemHealth,
 }));
 
 vi.mock("@/components/ThemeProvider", () => ({
@@ -34,12 +40,61 @@ const liveCatalog: ModelsResponse = {
   models: [{ id: "qwen-chat", owned_by: "LM Studio" }, { id: "analysis-large" }],
 };
 
+const healthySystem: SystemHealthResponse = {
+  status: "operational",
+  checked_at: "2026-08-26T09:30:00.000Z",
+  services: [
+    {
+      id: "api",
+      name: "Borealis API",
+      description: "The application server is accepting requests.",
+      status: "operational",
+      latency_ms: 1,
+    },
+    {
+      id: "database",
+      name: "Database",
+      description: "Chats, sources, and reports can be stored.",
+      status: "operational",
+      latency_ms: 3,
+    },
+    {
+      id: "data_service",
+      name: "Data service",
+      description: "Dataset queries, charts, and reports are available.",
+      status: "operational",
+      latency_ms: 5,
+    },
+    {
+      id: "model_gateway",
+      name: "LiteLLM gateway",
+      description: "Model requests can reach the configured gateway.",
+      status: "operational",
+      latency_ms: 8,
+    },
+    {
+      id: "model_runtime",
+      name: "LM Studio runtime",
+      description: "The local model runtime is responding.",
+      status: "operational",
+      latency_ms: 13,
+    },
+  ],
+};
+
 describe("SettingsView", () => {
   beforeEach(() => {
     mocks.clearSession.mockReset();
     mocks.refresh.mockReset();
+    mocks.systemRefresh.mockReset();
     mocks.setTheme.mockReset();
     mocks.modelCatalog.mockReturnValue({ catalog: liveCatalog, loading: false, error: null, refresh: mocks.refresh });
+    mocks.systemHealth.mockReturnValue({
+      health: healthySystem,
+      checking: false,
+      error: null,
+      refresh: mocks.systemRefresh,
+    });
     mocks.theme.mockReturnValue({ theme: "light", resolvedTheme: "light", setTheme: mocks.setTheme });
     window.location.hash = "/settings";
   });
@@ -55,6 +110,48 @@ describe("SettingsView", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Refresh models" }));
     expect(mocks.refresh).toHaveBeenCalledWith(true);
+  });
+
+  it("shows the dependency request path and refreshes it independently", () => {
+    render(<SettingsView />);
+
+    expect(screen.getByRole("heading", { name: "All systems ready" })).toBeInTheDocument();
+    expect(screen.getByRole("list", { name: "Service dependency status" })).toBeInTheDocument();
+    for (const name of ["Borealis API", "Database", "Data service", "LiteLLM gateway", "LM Studio runtime"]) {
+      expect(screen.getByRole("heading", { name })).toBeInTheDocument();
+    }
+    expect(screen.getAllByText("Ready")).toHaveLength(5);
+    fireEvent.click(screen.getByRole("button", { name: "Check now" }));
+    expect(mocks.systemRefresh).toHaveBeenCalledOnce();
+  });
+
+  it("makes degraded dependencies actionable without exposing raw errors", () => {
+    mocks.systemHealth.mockReturnValue({
+      health: {
+        ...healthySystem,
+        status: "degraded",
+        services: healthySystem.services.map((service) =>
+          service.id === "model_runtime"
+            ? {
+                ...service,
+                status: "unavailable" as const,
+                description: "LiteLLM cannot complete model work until LM Studio is available.",
+              }
+            : service,
+        ),
+      },
+      checking: false,
+      error: null,
+      refresh: mocks.systemRefresh,
+    });
+    render(<SettingsView />);
+
+    expect(screen.getByRole("heading", { name: "Service attention required" })).toBeInTheDocument();
+    expect(
+      screen.getByText("1 dependency is unavailable. Follow the affected service below to restore full operation."),
+    ).toBeInTheDocument();
+    expect(screen.getByText("LiteLLM cannot complete model work until LM Studio is available.")).toBeInTheDocument();
+    expect(screen.getByText("Unavailable")).toBeInTheDocument();
   });
 
   it("changes the persisted appearance and exposes the signed-in account controls", () => {

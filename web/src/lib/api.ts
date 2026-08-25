@@ -360,6 +360,22 @@ export interface ModelsResponse {
   discovery: "live" | "unavailable";
 }
 
+export type ServiceHealthId = "api" | "database" | "data_service" | "model_gateway" | "model_runtime";
+
+export interface ServiceHealth {
+  id: ServiceHealthId;
+  name: string;
+  description: string;
+  status: "operational" | "unavailable";
+  latency_ms: number;
+}
+
+export interface SystemHealthResponse {
+  status: "operational" | "degraded";
+  checked_at: string;
+  services: ServiceHealth[];
+}
+
 export interface Source {
   id: string;
   name: string;
@@ -601,6 +617,11 @@ export const chatsApi = {
 // ------------------------------------------------------------------ models
 export const modelsApi = {
   list: (refresh = false) => api<ModelsResponse>(`/api/models${refresh ? "?refresh=1" : ""}`),
+};
+
+// ------------------------------------------------------------------ system
+export const systemApi = {
+  health: (signal?: AbortSignal) => api<SystemHealthResponse>("/api/health", { signal }),
 };
 
 // ------------------------------------------------------------------ sources

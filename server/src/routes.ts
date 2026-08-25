@@ -9,6 +9,7 @@ import { connectorRoutes } from "./routes/connectors.js";
 import { modelRoutes } from "./routes/models.js";
 import { reportRoutes } from "./routes/reports.js";
 import { sourceRoutes } from "./routes/sources.js";
+import { systemRoutes } from "./routes/system.js";
 
 export { publicAgentFailureMessage } from "./routes/chats.js";
 
@@ -33,6 +34,7 @@ export async function routes(app: FastifyInstance): Promise<void> {
   });
 
   await app.register(modelRoutes);
+  await app.register(systemRoutes);
   await app.register(chatRoutes);
   await app.register(sourceRoutes);
   await app.register(connectorRoutes);
