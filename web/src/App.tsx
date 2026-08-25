@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Shell } from "@/components/Shell";
 import { AuthPage } from "@/pages/AuthPage";
 import { ChatView } from "@/pages/ChatView";
@@ -23,6 +23,7 @@ function useHashRoute(): string {
 
 export default function App() {
   const route = useHashRoute();
+  const lastWorkspaceRoute = useRef("/chat");
   const user = getUser();
   const loggedIn = useMemo(() => Boolean(user && user.id), [user]);
 
@@ -36,21 +37,29 @@ export default function App() {
     return null;
   }
 
+  const settingsOpen = route.startsWith("/settings");
+  if (!settingsOpen) lastWorkspaceRoute.current = route;
+  const workspaceRoute = settingsOpen ? lastWorkspaceRoute.current : route;
+
   let page: React.ReactNode;
-  const [routePath] = route.split("?");
+  const [routePath] = workspaceRoute.split("?");
   const chatSegment = routePath.split("/")[2];
-  if (route.startsWith("/chat")) {
+  if (workspaceRoute.startsWith("/chat")) {
     page = (
       <ChatView
         chatId={chatSegment && chatSegment !== "new" ? chatSegment : undefined}
-        newChatRequest={chatSegment === "new" ? route : undefined}
+        newChatRequest={chatSegment === "new" ? workspaceRoute : undefined}
       />
     );
-  } else if (route.startsWith("/sources")) page = <SourcesView />;
-  else if (route.startsWith("/connectors")) page = <ConnectorsView />;
-  else if (route.startsWith("/reports")) page = <ReportsView />;
-  else if (route.startsWith("/settings")) page = <SettingsView />;
+  } else if (workspaceRoute.startsWith("/sources")) page = <SourcesView />;
+  else if (workspaceRoute.startsWith("/connectors")) page = <ConnectorsView />;
+  else if (workspaceRoute.startsWith("/reports")) page = <ReportsView />;
   else page = <ChatView chatId={undefined} />;
 
-  return <Shell>{page}</Shell>;
+  return (
+    <Shell>
+      {page}
+      {settingsOpen && <SettingsView onClose={() => (window.location.hash = lastWorkspaceRoute.current)} />}
+    </Shell>
+  );
 }

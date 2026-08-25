@@ -28,6 +28,7 @@ interface SystemHealthPanelProps {
   checking: boolean;
   error: string | null;
   onRefresh: () => void;
+  embedded?: boolean;
 }
 
 function checkedLabel(value: string): string {
@@ -36,12 +37,12 @@ function checkedLabel(value: string): string {
   return `Last checked ${date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}`;
 }
 
-export function SystemHealthPanel({ health, checking, error, onRefresh }: SystemHealthPanelProps) {
+export function SystemHealthPanel({ health, checking, error, onRefresh, embedded = false }: SystemHealthPanelProps) {
   const degraded = health?.status === "degraded";
   const unavailableCount = health?.services.filter((service) => service.status === "unavailable").length ?? 0;
 
   return (
-    <Card className="overflow-hidden rounded-lg shadow-none">
+    <Card className={cn("overflow-hidden rounded-lg shadow-none", embedded && "rounded-none border-0 bg-transparent")}>
       <section aria-labelledby="system-health-heading">
         <div className={cn("border-b px-5 py-5", health && (degraded ? "bg-warning/[0.06]" : "bg-success/[0.055]"))}>
           <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">

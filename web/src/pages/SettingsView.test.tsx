@@ -82,8 +82,8 @@ const healthySystem: SystemHealthResponse = {
   ],
 };
 
-function selectSettingsTab(name: string | RegExp) {
-  fireEvent.mouseDown(screen.getByRole("tab", { name }), { button: 0, ctrlKey: false });
+function selectSettingsSection(name: string | RegExp) {
+  fireEvent.click(screen.getByRole("button", { name }));
 }
 
 describe("SettingsView", () => {
@@ -105,7 +105,7 @@ describe("SettingsView", () => {
 
   it("shows the configured default, advertised models, providers, and forced refresh", () => {
     render(<SettingsView />);
-    selectSettingsTab("Models");
+    selectSettingsSection("Models");
 
     expect(screen.getAllByText("qwen-chat")).toHaveLength(2);
     expect(screen.getByText("analysis-large")).toBeInTheDocument();
@@ -120,7 +120,8 @@ describe("SettingsView", () => {
   it("shows the dependency request path and refreshes it independently", () => {
     render(<SettingsView />);
 
-    expect(screen.getByRole("tab", { name: /System.*ready/ })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("dialog", { name: "Settings" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /System.*ready/ })).toHaveAttribute("aria-current", "page");
     expect(screen.getByRole("heading", { name: "All systems ready" })).toBeInTheDocument();
     expect(screen.getByRole("list", { name: "Service dependency status" })).toBeInTheDocument();
     for (const name of ["Borealis API", "Database", "Data service", "LiteLLM gateway", "LM Studio runtime"]) {
@@ -165,7 +166,7 @@ describe("SettingsView", () => {
     render(<SettingsView />);
 
     expect(screen.queryByRole("heading", { name: "Appearance" })).not.toBeInTheDocument();
-    selectSettingsTab("Appearance");
+    selectSettingsSection("Appearance");
     expect(screen.getByRole("button", { name: /Light Always use the light theme/i })).toHaveAttribute(
       "aria-pressed",
       "true",
@@ -174,7 +175,7 @@ describe("SettingsView", () => {
     expect(mocks.setTheme).toHaveBeenCalledWith("dark");
 
     expect(screen.queryByText("analyst@example.test")).not.toBeInTheDocument();
-    selectSettingsTab("Account");
+    selectSettingsSection("Account");
     expect(screen.getByText("analyst@example.test")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
     expect(mocks.clearSession).toHaveBeenCalledOnce();
@@ -189,7 +190,7 @@ describe("SettingsView", () => {
       refresh: mocks.refresh,
     });
     const { unmount } = render(<SettingsView />);
-    selectSettingsTab("Models");
+    selectSettingsSection("Models");
     expect(
       screen.getByText("Model discovery is unavailable. New chats can still use the configured default."),
     ).toBeInTheDocument();
@@ -202,7 +203,7 @@ describe("SettingsView", () => {
       refresh: mocks.refresh,
     });
     render(<SettingsView />);
-    selectSettingsTab("Models");
+    selectSettingsSection("Models");
     expect(screen.getByText("No chat models advertised.")).toBeInTheDocument();
   });
 
@@ -214,11 +215,19 @@ describe("SettingsView", () => {
       refresh: mocks.refresh,
     });
     render(<SettingsView />);
-    selectSettingsTab("Models");
+    selectSettingsSection("Models");
 
     expect(screen.getByRole("alert")).toHaveTextContent(
       "Showing the last available catalog. The model catalog is temporarily unavailable.",
     );
     expect(screen.getByText("analysis-large")).toBeInTheDocument();
+  });
+
+  it("closes the modal through the shared dialog control", () => {
+    const onClose = vi.fn();
+    render(<SettingsView onClose={onClose} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    expect(onClose).toHaveBeenCalledOnce();
   });
 });
