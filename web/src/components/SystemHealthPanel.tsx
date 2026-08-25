@@ -44,7 +44,7 @@ export function SystemHealthPanel({ health, checking, error, onRefresh }: System
     <Card className="overflow-hidden rounded-lg shadow-none">
       <section aria-labelledby="system-health-heading">
         <div className={cn("border-b px-5 py-5", health && (degraded ? "bg-warning/[0.06]" : "bg-success/[0.055]"))}>
-          <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+          <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
             <div className="flex min-w-0 items-start gap-3">
               <div
                 className={cn(
@@ -118,7 +118,7 @@ export function SystemHealthPanel({ health, checking, error, onRefresh }: System
                 const Icon = SERVICE_ICONS[service.id];
                 const operational = service.status === "operational";
                 return (
-                  <li key={service.id} className="relative flex gap-3 pb-5 last:pb-0">
+                  <li key={service.id} className="relative flex gap-3 pb-3 last:pb-0">
                     {index < health.services.length - 1 && (
                       <span className="absolute left-[17px] top-9 h-[calc(100%-2.25rem)] border-l" aria-hidden="true" />
                     )}
@@ -130,12 +130,9 @@ export function SystemHealthPanel({ health, checking, error, onRefresh }: System
                     >
                       <Icon className="size-4" />
                     </div>
-                    <div className="min-w-0 flex-1 pt-0.5">
-                      <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-1">
-                        <div>
-                          <h3 className="text-sm font-semibold text-foreground">{service.name}</h3>
-                          <p className="mt-0.5 text-sm leading-5 text-muted-foreground">{service.description}</p>
-                        </div>
+                    <div className="min-w-0 flex-1 py-1">
+                      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
+                        <h3 className="text-sm font-semibold text-foreground">{service.name}</h3>
                         <div className="flex shrink-0 items-center gap-2">
                           <span className="font-mono text-[11px] tabular-nums text-muted-foreground">
                             {service.latency_ms} ms
@@ -153,6 +150,7 @@ export function SystemHealthPanel({ health, checking, error, onRefresh }: System
                           </span>
                         </div>
                       </div>
+                      {!operational && <p className="mt-1 text-sm leading-5 text-destructive">{service.description}</p>}
                     </div>
                   </li>
                 );
