@@ -97,7 +97,10 @@ describe("ChatSourcePicker", () => {
     const { onApply } = renderPicker({ attachedSources: [attached()] });
     await user.click(screen.getByRole("button", { name: "Chat sources: 1 source" }));
 
-    await user.click(screen.getByRole("menuitemcheckbox", { name: "Remove source: Quarterly revenue.csv" }));
+    const selectedSource = screen.getByRole("menuitemcheckbox", { name: "Remove source: Quarterly revenue.csv" });
+    expect(selectedSource).toHaveClass("bg-accent", "font-medium");
+    expect(selectedSource).not.toHaveClass("border-l-2", "border-l-primary");
+    await user.click(selectedSource);
 
     await waitFor(() => expect(onApply).toHaveBeenCalledWith({ source_mode: "selected", source_ids: [] }));
   });

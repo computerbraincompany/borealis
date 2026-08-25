@@ -39,10 +39,10 @@ export function Shell({ children }: { children: React.ReactNode }) {
                 href={`#${item.href}`}
                 aria-current={isActive ? "page" : undefined}
                 className={cn(
-                  "group flex items-center gap-3 rounded-md border-l-2 px-3 py-2.5 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar",
+                  "group flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar",
                   isActive
-                    ? "border-primary bg-secondary text-foreground"
-                    : "border-transparent text-muted-foreground hover:bg-secondary hover:text-foreground",
+                    ? "bg-accent font-semibold text-foreground"
+                    : "text-muted-foreground hover:bg-accent/70 hover:text-foreground",
                 )}
               >
                 <Icon

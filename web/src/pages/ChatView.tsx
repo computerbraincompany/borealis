@@ -972,7 +972,7 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
         />
         <a
           href="#/settings"
-          className="mx-3 mb-3 flex items-center gap-2 rounded-md border-l-2 border-transparent px-3 py-2 text-[11px] leading-relaxed text-muted-foreground transition-colors hover:border-primary hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="mx-3 mb-3 flex items-center gap-2 rounded-lg px-3 py-2 text-[11px] leading-relaxed text-muted-foreground transition-colors hover:bg-accent/70 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
           <Cpu className="size-3.5 shrink-0 text-primary" aria-hidden="true" />
           <span>{modelStatus}</span>

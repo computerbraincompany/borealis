@@ -45,7 +45,7 @@ export function AccountMenu() {
           type="button"
           aria-label={`Account menu for ${email}`}
           title={email}
-          className="group/account flex w-full min-w-0 items-center gap-2.5 rounded-lg border border-transparent border-l-2 px-2.5 py-2 text-left outline-none transition-colors hover:bg-secondary focus-visible:ring-2 focus-visible:ring-ring data-[state=open]:border-primary/40 data-[state=open]:bg-secondary"
+          className="group/account flex w-full min-w-0 items-center gap-2.5 rounded-lg border border-transparent px-2.5 py-2 text-left outline-none transition-colors hover:bg-secondary focus-visible:ring-2 focus-visible:ring-ring data-[state=open]:border-border data-[state=open]:bg-secondary"
         >
           <span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-primary/15 text-xs font-bold text-primary">
             {initials}
@@ -101,7 +101,7 @@ export function AccountMenu() {
                     key={option.value}
                     value={option.value}
                     onSelect={() => setTheme(option.value)}
-                    className={active ? "border-l-2 border-l-primary bg-primary/5" : "border-l-2 border-l-transparent"}
+                    className={active ? "bg-accent font-medium" : undefined}
                   >
                     <Icon className="mr-2 size-4" />
                     <span className="flex min-w-0 flex-1 flex-col">

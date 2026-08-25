@@ -330,8 +330,8 @@ export function ChatSourcePicker({
                     onCheckedChange={() => toggleSource(source.id)}
                     onSelect={(event) => event.preventDefault()}
                     className={cn(
-                      "group/source min-h-12 items-start gap-2 border-l-2 border-transparent py-2 pl-8 pr-2.5",
-                      selected && "border-l-primary bg-primary/5",
+                      "group/source min-h-12 items-start gap-2 py-2 pl-8 pr-2.5",
+                      selected && "bg-accent font-medium",
                     )}
                   >
                     <span className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">

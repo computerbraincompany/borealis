@@ -160,10 +160,10 @@ export function ChatHistory({ chats, activeChatId, busyChatIds, onOpen, onDelete
                       <div
                         key={chat.id}
                         className={cn(
-                          "group rounded-lg border-l-2 transition-colors",
+                          "group rounded-lg transition-colors",
                           active
-                            ? "border-primary bg-primary/10 text-foreground"
-                            : "border-transparent text-muted-foreground hover:bg-secondary hover:text-foreground",
+                            ? "bg-accent font-semibold text-foreground"
+                            : "text-muted-foreground hover:bg-accent/70 hover:text-foreground",
                         )}
                       >
                         {editing ? (

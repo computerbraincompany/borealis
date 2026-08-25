@@ -83,7 +83,7 @@ export function AuthPage() {
         </div>
 
         {/* right: form */}
-        <Card className="w-full border-l-2 border-l-primary bg-card shadow-sm">
+        <Card className="w-full bg-card shadow-sm">
           <CardContent className="p-8">
             <div className="mb-7 flex items-center gap-3 lg:hidden">
               <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary">

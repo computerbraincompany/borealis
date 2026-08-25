@@ -46,6 +46,8 @@ describe("Shell", () => {
 
     const reports = screen.getByRole("link", { name: "Reports" });
     expect(reports).toHaveAttribute("aria-current", "page");
+    expect(reports).toHaveClass("rounded-lg", "bg-accent", "font-semibold");
+    expect(reports).not.toHaveClass("border-l-2", "border-primary");
     expect(reports.querySelector("span")).toBeNull();
     expect(screen.getByRole("link", { name: "Chat" })).not.toHaveAttribute("aria-current");
     expect(screen.getByRole("link", { name: "Settings" })).toHaveAttribute("href", "#/settings");
@@ -76,6 +78,9 @@ describe("Shell", () => {
 
     await user.hover(screen.getByRole("menuitem", { name: /Appearance System/ }));
     const dark = await screen.findByRole("menuitemradio", { name: /Dark Always use dark/ });
+    const system = screen.getByRole("menuitemradio", { name: /System Match this device/ });
+    expect(system).toHaveClass("bg-accent", "font-medium");
+    expect(system).not.toHaveClass("border-l-2", "border-l-primary");
     fireEvent.click(dark);
 
     expect(apiMocks.setTheme).toHaveBeenCalledWith("dark");

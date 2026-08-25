@@ -79,10 +79,10 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                     aria-current={selected ? "page" : undefined}
                     onClick={() => setSection(item.value)}
                     className={cn(
-                      "flex h-10 items-center gap-2 rounded-md border-l-2 px-3 text-left text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                      "flex h-10 items-center gap-2 rounded-lg px-3 text-left text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                       selected
-                        ? "border-primary bg-secondary text-foreground"
-                        : "border-transparent text-muted-foreground hover:bg-secondary/70 hover:text-foreground",
+                        ? "bg-accent font-semibold text-foreground"
+                        : "text-muted-foreground hover:bg-accent/70 hover:text-foreground",
                     )}
                   >
                     {item.value === "system" ? (
@@ -98,7 +98,7 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                         aria-hidden="true"
                       />
                     ) : (
-                      <Icon className="size-4 shrink-0" />
+                      <Icon className={cn("size-4 shrink-0", selected && "text-primary")} />
                     )}
                     <span>{item.label}</span>
                     {item.value === "system" && (

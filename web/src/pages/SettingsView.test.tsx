@@ -121,7 +121,10 @@ describe("SettingsView", () => {
     render(<SettingsView />);
 
     expect(screen.getByRole("dialog", { name: "Settings" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /System.*ready/ })).toHaveAttribute("aria-current", "page");
+    const systemSection = screen.getByRole("button", { name: /System.*ready/ });
+    expect(systemSection).toHaveAttribute("aria-current", "page");
+    expect(systemSection).toHaveClass("rounded-lg", "bg-accent", "font-semibold");
+    expect(systemSection).not.toHaveClass("border-l-2", "border-primary");
     expect(screen.getByRole("heading", { name: "All systems ready" })).toBeInTheDocument();
     expect(screen.getByRole("list", { name: "Service dependency status" })).toBeInTheDocument();
     for (const name of ["Borealis API", "Database", "Data service", "LiteLLM gateway", "LM Studio runtime"]) {
