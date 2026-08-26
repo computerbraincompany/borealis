@@ -147,6 +147,45 @@ export async function resolveSourceArtifact(input: {
   return undefined;
 }
 
+/** Distinguish a missing exact upload location from an unsafe location. */
+export async function isMissingOwnedSourceArtifact(input: {
+  accountId: string;
+  sourceId: string;
+  filePath: string;
+}): Promise<boolean> {
+  if (!UUID_RE.test(input.accountId) || !UUID_RE.test(input.sourceId)) return false;
+  const root = await realRoot(config.uploadDir);
+  const lexicalCandidate = path.resolve(input.filePath);
+  const lexicalRoot = [path.resolve(config.uploadDir), root].find(
+    (candidateRoot) => path.dirname(lexicalCandidate) === path.join(candidateRoot, input.accountId, input.sourceId)
+  );
+  if (!lexicalRoot) return false;
+
+  const accountDirectory = path.join(lexicalRoot, input.accountId);
+  const sourceDirectory = path.join(accountDirectory, input.sourceId);
+  const canonicalAccountDirectory = path.join(root, input.accountId);
+  const canonicalSourceDirectory = path.join(canonicalAccountDirectory, input.sourceId);
+  const accountStat = await fs.lstat(accountDirectory).catch(() => undefined);
+  if (!accountStat) return true;
+  if (
+    accountStat.isSymbolicLink() ||
+    !accountStat.isDirectory() ||
+    (await fs.realpath(accountDirectory).catch(() => undefined)) !== canonicalAccountDirectory
+  ) {
+    return false;
+  }
+  const sourceStat = await fs.lstat(sourceDirectory).catch(() => undefined);
+  if (!sourceStat) return true;
+  if (
+    sourceStat.isSymbolicLink() ||
+    !sourceStat.isDirectory() ||
+    (await fs.realpath(sourceDirectory).catch(() => undefined)) !== canonicalSourceDirectory
+  ) {
+    return false;
+  }
+  return !(await fs.lstat(lexicalCandidate).catch(() => undefined));
+}
+
 /** Delete exactly one source-owned artifact, never an inferred broad parent. */
 export async function removeSourceArtifact(input: {
   accountId: string;
@@ -176,7 +215,7 @@ export async function removeSourceArtifact(input: {
     return removeExactFileAndEmptyDirectory(lexicalCandidate, expectedDirectory);
   }
 
-  // Python connector caches are scoped under a deterministic hash of the full
+  // Connector caches are scoped under a deterministic hash of the full
   // account id. Prove that boundary before removing exactly one immutable
   // cache version. Arbitrary legacy shared-prefix uploads fail closed because
   // their truncated directory name cannot prove tenant ownership.
@@ -210,8 +249,8 @@ export async function removeReportArtifacts(input: {
   reportId: string;
   htmlPath?: string | null;
   pdfPath?: string | null;
-}): Promise<void> {
-  if (!UUID_RE.test(input.accountId) || !UUID_RE.test(input.reportId)) return;
+}): Promise<boolean> {
+  if (!UUID_RE.test(input.accountId) || !UUID_RE.test(input.reportId)) return false;
   const root = await realRoot(config.reportDir);
   const lexicalRoot = path.resolve(config.reportDir);
   const accountDirectory = path.join(lexicalRoot, input.accountId);
@@ -225,13 +264,18 @@ export async function removeReportArtifacts(input: {
   if (
     candidates.length === 0 ||
     candidates.some(([value, fileName]) => path.resolve(value) !== path.join(expectedDirectory, fileName)) ||
-    !isWithin(canonicalExpectedDirectory, root) ||
-    !(await isExactDirectory(accountDirectory, canonicalAccountDirectory)) ||
-    !(await isExactDirectory(expectedDirectory, canonicalExpectedDirectory))
+    !isWithin(canonicalExpectedDirectory, root)
   ) {
-    return;
+    return false;
   }
+  const accountStat = await fs.lstat(accountDirectory).catch(() => undefined);
+  if (!accountStat) return true;
+  if (!(await isExactDirectory(accountDirectory, canonicalAccountDirectory))) return false;
+  const reportStat = await fs.lstat(expectedDirectory).catch(() => undefined);
+  if (!reportStat) return true;
+  if (!(await isExactDirectory(expectedDirectory, canonicalExpectedDirectory))) return false;
   await fs.rm(expectedDirectory, { recursive: true, force: true });
+  return true;
 }
 
 /** Resolve an owned report file for read access, failing closed on path drift. */

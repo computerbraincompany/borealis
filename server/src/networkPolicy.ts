@@ -70,6 +70,10 @@ export function explicitHttpUrls(text: string): ReadonlySet<string> {
 }
 
 export function normalizeHttpUrl(value: string): string {
+  return parseHttpUrl(value).toString();
+}
+
+export function parseHttpUrl(value: string, options: { allowNonDefaultPort?: boolean } = {}): URL {
   let url: URL;
   try {
     url = new URL(value);
@@ -78,12 +82,13 @@ export function normalizeHttpUrl(value: string): string {
   }
   if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) throw new UrlPolicyError();
   if (
-    (url.protocol === "http:" && url.port && url.port !== "80") ||
-    (url.protocol === "https:" && url.port && url.port !== "443")
+    !options.allowNonDefaultPort &&
+    ((url.protocol === "http:" && url.port && url.port !== "80") ||
+      (url.protocol === "https:" && url.port && url.port !== "443"))
   )
     throw new UrlPolicyError();
   url.hash = "";
-  return url.toString();
+  return url;
 }
 
 export function resolveRedirectTarget(current: URL, location: string): URL {
@@ -101,7 +106,7 @@ function isUnsafeIp(address: string): boolean {
   return true;
 }
 
-interface ResolvedAddress {
+export interface ResolvedAddress {
   address: string;
   family: 4 | 6;
 }
@@ -111,7 +116,7 @@ export interface PublicFetchTransport {
   request(url: URL, addresses: ResolvedAddress[], signal: AbortSignal): Promise<IncomingMessage>;
 }
 
-async function resolvePublicDestination(url: URL, signal: AbortSignal): Promise<ResolvedAddress[]> {
+export async function resolvePublicDestination(url: URL, signal: AbortSignal): Promise<ResolvedAddress[]> {
   const hostname = url.hostname.toLowerCase().replace(/^\[|\]$/g, "");
   if (hostname === "localhost" || hostname.endsWith(".localhost") || hostname.endsWith(".local")) {
     throw new UrlPolicyError();
@@ -130,12 +135,17 @@ async function resolvePublicDestination(url: URL, signal: AbortSignal): Promise<
   return addresses.map(({ address, family }) => ({ address, family: family as 4 | 6 }));
 }
 
-function combineSignals(signal: AbortSignal | undefined, timeoutMs: number): AbortSignal {
+export function combineSignals(signal: AbortSignal | undefined, timeoutMs: number): AbortSignal {
   const timeout = AbortSignal.timeout(timeoutMs);
   return signal ? AbortSignal.any([signal, timeout]) : timeout;
 }
 
-function requestPinned(url: URL, addresses: ResolvedAddress[], signal: AbortSignal): Promise<IncomingMessage> {
+export function requestPinned(
+  url: URL,
+  addresses: ResolvedAddress[],
+  signal: AbortSignal,
+  headers: Record<string, string> = { Accept: "text/plain,text/html,application/json;q=0.8" }
+): Promise<IncomingMessage> {
   const selected = addresses[0];
   const request = url.protocol === "https:" ? httpsRequest : httpRequest;
   return new Promise((resolve, reject) => {
@@ -144,7 +154,7 @@ function requestPinned(url: URL, addresses: ResolvedAddress[], signal: AbortSign
       {
         method: "GET",
         signal,
-        headers: { Accept: "text/plain,text/html,application/json;q=0.8" },
+        headers,
         // Pin the validated DNS result so a second lookup cannot redirect the
         // socket to a private address (DNS-rebinding TOCTOU).
         lookup: ((_hostname: string, _options: unknown, callback: (...args: unknown[]) => void) => {

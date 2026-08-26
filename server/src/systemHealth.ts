@@ -1,6 +1,6 @@
-import { config } from "./config.js";
-import { pool } from "./db.js";
-import { py } from "./pythonClient.js";
+import { dataService } from "./dataService.js";
+import { getRuntimeSettings } from "./runtimeSettings.js";
+import { storageRuntime } from "./storageRuntime.js";
 
 export type ServiceHealthStatus = "operational" | "unavailable";
 
@@ -33,14 +33,21 @@ export interface SystemHealthDependencies {
   database: () => Promise<boolean>;
   dataService: () => Promise<boolean>;
   modelGateway: () => Promise<boolean>;
-  modelRuntime: () => Promise<boolean>;
+  modelRuntime?: () => Promise<boolean>;
 }
 
 const HEALTH_TIMEOUT_MS = 2_000;
 
-async function fetchOk(url: string, headers?: Record<string, string>): Promise<boolean> {
+async function fetchOk(url: string, apiKey?: string): Promise<boolean> {
   try {
-    const response = await fetch(url, { headers, signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS) });
+    const headers: Record<string, string> = { Accept: "application/json", "Cache-Control": "no-store" };
+    if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+    const response = await fetch(url, {
+      method: "GET",
+      headers,
+      redirect: "error",
+      signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS),
+    });
     await response.body?.cancel().catch(() => undefined);
     return response.ok;
   } catch {
@@ -52,7 +59,11 @@ async function databaseHealthy(): Promise<boolean> {
   let timeout: NodeJS.Timeout | undefined;
   try {
     await Promise.race([
-      pool.query("SELECT 1"),
+      storageRuntime()
+        .ledger.health()
+        .then((healthy) => {
+          if (!healthy) throw new Error("ledger health check failed");
+        }),
       new Promise<never>((_resolve, reject) => {
         timeout = setTimeout(() => reject(new Error("health check timed out")), HEALTH_TIMEOUT_MS);
         timeout.unref();
@@ -99,19 +110,21 @@ export function createSystemHealthCheck(dependencies: SystemHealthDependencies) 
       },
       {
         id: "model_gateway",
-        name: "LiteLLM gateway",
-        operational: "Model requests can reach the configured gateway.",
-        unavailable: "Chat and embedding requests cannot reach LiteLLM.",
+        name: "Model endpoint",
+        operational: "Model requests can reach the configured endpoint.",
+        unavailable: "Chat and embedding requests cannot reach the configured endpoint.",
         check: dependencies.modelGateway,
       },
-      {
+    ];
+    if (dependencies.modelRuntime) {
+      definitions.push({
         id: "model_runtime",
         name: "LM Studio runtime",
         operational: "The local model runtime is responding.",
-        unavailable: "LiteLLM cannot complete model work until LM Studio is available.",
+        unavailable: "The local LM Studio runtime is unavailable.",
         check: dependencies.modelRuntime,
-      },
-    ];
+      });
+    }
 
     const services = await Promise.all(
       definitions.map(async (definition): Promise<ServiceHealth> => {
@@ -141,10 +154,14 @@ export function createSystemHealthCheck(dependencies: SystemHealthDependencies) 
   };
 }
 
-export const checkSystemHealth = createSystemHealthCheck({
-  database: databaseHealthy,
-  dataService: () => py.health(),
-  modelGateway: () =>
-    fetchOk(`${config.llmBaseUrl}/health/liveliness`, { Authorization: `Bearer ${config.llmApiKey}` }),
-  modelRuntime: () => fetchOk(`${config.lmStudioBaseUrl}/v1/models`),
-});
+export async function checkSystemHealth(): Promise<SystemHealth> {
+  const runtime = await getRuntimeSettings();
+  return createSystemHealthCheck({
+    database: databaseHealthy,
+    dataService: () => dataService.health(),
+    modelGateway: () => fetchOk(`${runtime.settings.llmBaseUrl}/v1/models`, runtime.settings.apiKey),
+    ...(runtime.settings.lmStudioBaseUrl
+      ? { modelRuntime: () => fetchOk(`${runtime.settings.lmStudioBaseUrl}/v1/models`) }
+      : {}),
+  })();
+}

@@ -1,162 +1,280 @@
 # Borealis — open-source agentic data workspace
 
-Agentic chat over uploaded documents and tabular data, plus HTML/PDF report generation,
-backed by a local LiteLLM proxy that talks to LM Studio (any OpenAI-compatible API).
+Agentic chat over uploaded documents and tabular data, plus HTML/PDF report
+generation. Model calls go directly to LM Studio or another OpenAI-compatible
+API.
 
-Repo: `computerbraincompany/borealis` on GitHub (formerly *north-clone*).
+Repo: `computerbraincompany/borealis` on GitHub (formerly _north-clone_).
 
 ## Architecture
 
-- `server/` — Node.js (TypeScript, ESM) Fastify API on port 3000. Agent loop,
-  durable ingestion jobs, RAG chunking, embeddings, cancellable chat SSE runs,
-  report file storage. Resource routes live under `server/src/routes/`.
-- `python/` — FastAPI "report service" (uv-managed, port 8000): DuckDB query layer,
-  chart rendering (matplotlib PNG / ECharts option), HTML + PDF report building
-  (WeasyPrint), and the LiteLLM proxy (port 4000) used by the agent.
-- `web/` — Vite + React + TS + Tailwind + shadcn-style UI, port 5173 (dev proxy
-  `/api` → 3000). Pages: auth, chat (SSE streaming, tool feed, ECharts charts,
-  report link), sources, URL connectors, reports (preview + PDF download).
-  Build with `npm run build` (tsc -b + vite), run with `npm run dev`.
-- `docker-compose.yml` — Postgres with pgvector (required). Zitadel/Redpanda are
-  intentional non-goals for the MVP.
-- `data/` — `generate_sample.py` + `data/sample/*.csv` (personal finance sample
-  data used to verify the end-to-end use case).
-- `uploads/` and `reports_storage/` — runtime dirs for ingest files and reports.
+- `server/` — Node.js 22 (TypeScript, ESM) Fastify API. It owns authentication,
+  the agent loop, durable ingestion and chat runs, retrieval, connectors,
+  reports, and static web hosting. Resource routes live under
+  `server/src/routes/`; data internals live under `server/src/data/`.
+- `server/src/db/` — SQLite migrations, codecs, and async store facades for the
+  relational ledger and chunk text. `server/src/storageRuntime.ts` composes the
+  SQLite stores with LanceDB.
+- LanceDB — vector-only index keyed by stable chunk UUID, account, source, and
+  ingestion generation. It never stores passage text.
+- DuckDB — analytical engine for user tabular files only, isolated in a worker
+  thread. It is not the application ledger.
+- `web/` — Vite + React + TypeScript + Tailwind UI. Pages cover auth, chat,
+  sources, URL connectors, reports, and the workspace Settings modal. Browser
+  development proxies `/api` to port 3000.
+- `desktop/` — Electron main/preload shell for Apple Silicon macOS 13+. It runs
+  the compiled Fastify backend in a utility process and serves the built web UI
+  from the backend's exact loopback origin.
+- `data/` — deterministic TypeScript generator and personal-finance CSV fixtures
+  used by end-to-end verification.
 
 ## Commands
 
 ```bash
-docker compose up -d postgres                  # database (only service required)
-cd python
-uv sync --locked                               # first time; installs deps (fastapi pinned, see gotchas)
-export BOREALIS_SERVICE_TOKEN='<same random value as server PYTHON_SERVICE_TOKEN>'
-env DYLD_FALLBACK_LIBRARY_PATH="$(brew --prefix)/lib${DYLD_FALLBACK_LIBRARY_PATH:+:$DYLD_FALLBACK_LIBRARY_PATH}" .venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000
-                                               # report service (8000); DYLD is required on macOS; use separate terminals
-export LITELLM_MASTER_KEY='<same random value as server LITELLM_API_KEY>'
-export LM_STUDIO_API_KEY='<random local upstream value>'
-uv run litellm --config litellm.yaml --host 127.0.0.1 --port 4000
-                                               # LLM proxy (4000); must run from uv env
-cd ../server
-npm ci && cp .env.example .env                 # set all three required random credentials
-npm run dev                                    # server (3000); reconciles durable jobs and datasets
-npm run typecheck                              # tsc --noEmit
-npm run build                                  # tsc
+# Browser development; embedded engines need no external service.
+./scripts/dev.sh
+
+# Server
+cd server
+npm ci
+npx playwright install chromium
+npm run typecheck
+npm run test
+npm run test:integration
+npm run build
+
+# Web
 cd ../web
-npm ci && npm run dev                          # frontend (5173)
-npm run build                                  # frontend typecheck + production build
+npm ci
+npm run verify
+
+# Desktop (Apple Silicon macOS 13+)
+cd ../desktop
+npm ci
+npm run verify
+npm run dev
+npm run package:unsigned
+npm run package:native:smoke
+
+# Complete repository gate
+cd ..
+./scripts/verify.sh
 ```
 
-Run the full local typecheck, lint, format, unit-test, and build matrix with
-`scripts/verify.sh`. Set `TEST_DATABASE_URL` to an explicitly disposable database
-whose name ends in `_test` to include the PostgreSQL isolation/concurrency suite.
-CI always includes that suite. Dev orchestration: `scripts/dev.sh` (validates
-Node 22.13+/Python 3.12/uv 0.11.26, syncs every lockfile, brings up postgres, waits for
-Python, then starts the remaining services).
+No `.env` file or manually created credential is required. The model endpoint
+defaults to loopback LM Studio and can be changed in Settings. Browser
+development renders PNG/PDF with Playwright; the packaged app uses Electron and
+does not include Playwright's Chromium download.
+
+## Durable storage
+
+Browser development defaults to `<repo>/.borealis/`. Electron passes exact paths
+below `~/Library/Application Support/Borealis/`:
+
+- `borealis.sqlite` — relational ledger and chunk text;
+- `lancedb/` — embedding vectors;
+- `uploads/` — account/source-scoped input and connector files;
+- `reports/` — HTML/PDF artifacts;
+- `settings.json` — provider settings, atomically written with mode `0600`;
+- `jwt.secret` — generated once with mode `0600`.
+
+Environment overrides are documented in `server/.env.example`. A configured
+`JWT_SECRET` wins and must be strong. Without one, `config.ts` opens or creates
+the secret file without following symlinks and repairs its mode to `0600`.
+
+SQLite and LanceDB are one logical store. Back them up and restore them together,
+with Borealis stopped. Prefer copying the complete application-data directory so
+SQLite WAL state, uploads, reports, settings, and the signing secret stay with
+the matching vector index.
 
 ## Data flow
 
-1. Uploaded files land in UUID-scoped `uploads/<account-id>/<source-id>/`
-   directories. A `sources` row and durable `ingestion_jobs` entry are created;
-   workers extract within configured budgets, stage embeddings incrementally,
-   then atomically replace live `chunks` (pgvector, HNSW index). Tabular preview
-   extraction is delegated to Python instead of loading workbooks into Node.
-2. Chat at `POST /api/chats/:id/messages` accepts the model, source mode,
-   concrete ready source IDs, user message, and one durable `chat_runs` row in a
-   repeatable-read transaction, then streams sanitized SSE events from
-   `server/src/agent.ts` (max 8 iterations). One active run is allowed per chat;
-   `DELETE /api/chats/:id/runs/:runId` requests cancellation.
-3. Agent tools (`server/src/tools.ts`): `retrieve`, `list_sources`, `query_data`,
-   `describe_data`, `render_chart`, `create_report`, `fetch_url`. Every stored-data
-   tool consumes that immutable source snapshot; `fetch_url` is the separate web
-   capability and does not use stored-source scope. It may fetch only a public
-   HTTP(S) URL written explicitly in the current user turn, with redirects and
-   response size bounded.
-4. Reports: agent assembles markdown sections + chart ids; Python builds a
-   self-contained HTML (ECharts inlined) and a PDF (matplotlib PNGs + WeasyPrint);
-   both are written to `reports_storage/` by the server.
+1. Uploaded files land in UUID-scoped
+   `uploads/<account-id>/<source-id>/` directories. SQLite records the source and
+   durable ingestion job. Workers extract within configured budgets, assign
+   stable chunk UUIDs, stage text in SQLite and vectors in LanceDB, then promote
+   one generation using the two-store protocol.
+2. `POST /api/chats/:id/messages` commits the user message, model, source mode,
+   concrete ready source IDs, and durable run in one SQLite transaction. It then
+   streams sanitized SSE events from `server/src/agent.ts` for at most eight
+   iterations. One active run is allowed per chat; deletion of the run requests
+   cancellation.
+3. Agent tools in `server/src/tools.ts` are `retrieve`, `list_sources`,
+   `query_data`, `describe_data`, `render_chart`, `create_report`, and
+   `fetch_url`. Every stored-data tool consumes the immutable source snapshot.
+   `fetch_url` is separate and can access only a public HTTP(S) URL written
+   explicitly in the current user turn, within redirect, time, and byte limits.
+4. Retrieval prefilters LanceDB by account and ready source allowlist before
+   KNN, then joins hits to SQLite by stable chunk UUID under the same scope.
+   Missing SQLite text drops the vector hit.
+5. The agent assembles markdown sections, tables, and chart IDs. The server
+   builds self-contained ECharts HTML and a static PDF, then stores both below
+   the report directory.
 
-## Conventions & gotchas
+## Two-store consistency
 
-- Server is ESM (`"type": "module"`): always import local modules with the `.js`
-  extension (e.g. `./config.js`) and use `import`, not `require`.
-- Auth: JWT over bcrypt in `server/src/auth.ts`. Registration and login are the
-  explicit public `/api/*` exceptions; resource routes use `requireAuth`. The
-  FastAPI service separately requires `Authorization: Bearer` with
-  `BOREALIS_SERVICE_TOKEN` on every route except `/health`; Node supplies the same
-  value from `PYTHON_SERVICE_TOKEN`. Both services propagate a sanitized
-  `X-Request-ID` and must never log tokens, prompts, SQL results, signed URLs, or
-  uploaded content.
-- Credentialed browser CORS uses the exact `CORS_ORIGINS` allowlist (the two
-  loopback Vite origins by default); never restore arbitrary origin reflection.
-- Chart canonical spec is defined in `python/app/charts.py` docstring and mirrored
-  in `tools.ts` — a single spec drives ECharts (UI/HTML) and matplotlib (PDF).
-- Python keeps an in-memory DuckDB registry, while Postgres is the durable source
-  and ingestion ledger. Node retries/reconciles ready tables after service loss and
-  safely resumes interrupted ingestion leases. Files already registered are
-  signature-checked and reload into a scoped catalog on the next query or describe
-  call after they change.
-- XLSX ingestion is deliberately offline and bounded through OpenPyXL's read-only
-  mode plus ZIP/row/cell/output limits. Legacy `.xls` and `.doc` inputs are not
-  supported. Do not reintroduce DuckDB extension auto-install or Node SheetJS.
-- Chat source state has three load-bearing meanings: `all` dynamically includes
-  current/future account sources; `selected` plus rows is a stable allowlist;
-  `selected` plus zero rows means none and must never widen to all. New web chats
-  start selected-empty; legacy API omission remains all. Only ready attachments
-  enter a turn's concrete source/table arrays.
-- Python `/query`, `/describe`, and `/datasets/extract` require the server-derived
-  `allowed_tables` list. Scoped DuckDB catalogs are keyed by account and sorted
-  allowlist, capped at eight per account, protected by per-account locks, and
-  disable external access after trusted files load.
-  New data-access tools must enforce the same immutable scope at their lowest
-  boundary rather than relying on UI filtering or prompt text.
-- `python/pyproject.toml` pins `fastapi>=0.140.6,<0.140.7`: fastapi 0.140.7 removed
-  `get_flat_dependant`, which litellm 1.97.0's proxy still imports. Don't bump fastapi.
-- openai-node (>=4.104) defaults `encoding_format` to `base64` and blindly decodes
-  the response — with litellm/LM Studio returning plain floats this corrupts vectors
-  (768 floats → 192). `server/src/llm.ts` sends `encoding_format: "float"` explicitly.
-- Agent tools are wired via `TOOL_DEFS` in the single streaming loop (`agent.ts`).
-  Never expose provider reasoning fields, raw tool arguments/results, or exception
-  text in SSE events; UI activity receives only the stable summaries defined by
-  the server.
-  The model sometimes garbles long chart uuids — `makeReportPayload` falls back to a
-  12-char prefix match, and Python's `reports.py` strips inline `chart:`/`:::` tokens.
-- Embedding dimension is set at DB init time (schema uses `vector(${dim})`); changing
-  `EMBEDDING_DIM` or the embed model after tables exist breaks queries.
-- OpenAI-compatible everywhere: `server/src/llm.ts` points at
-  `${LITELLM_BASE_URL}/v1`; the LiteLLM proxy in turn points at LM Studio
-  `http://localhost:1234/v1`. Model names are the LiteLLM aliases (`qwen-chat`,
-  `nomic-embed`). `LITELLM_API_KEY`/`LITELLM_MASTER_KEY` is required and must not
-  be a committed placeholder; the proxy and application services bind to loopback
-  by default.
-- Storage paths are derived relative to the repo root in `server/src/config.ts`
-  (`uploads/`, `reports_storage/`) and `python/app/main.py` + `datasets.py`
-  (`BOREALIS_STORAGE_DIR`, with legacy `NORTH_STORAGE_DIR` fallback; default
-  `<repo>/uploads`). Override via env vars.
-  `.env` is gitignored; `server/.env.example` documents every variable.
-- Upload, message, history, extracted-text, and chunk-count budgets are configured
-  in `server/.env.example`. Connector, query/extract, chart, report, outbound-web,
-  and tool-duration limits are fixed at their lowest processing boundary and
-  summarized in `docs/API.md`; keep tests for over-limit and partial/truncated
-  input whenever changing them.
+- A chunk UUID is assigned at staging time and used in both engines.
+- A new generation may be visible to retrieval only after SQLite promotion
+  commits. SQLite `ready_generation` is authoritative.
+- Failed or superseded jobs delete only their staged generation's vectors.
+- Source deletion records durable pending cleanup before removing vector and
+  filesystem artifacts.
+- Startup repair removes stale generations, orphan vectors, and unfinished
+  source deletions. Log only aggregate counts, never IDs, paths, or content.
+- Do not scan a broad vector set and filter it in JavaScript. Account and source
+  predicates belong in the LanceDB search itself; the SQLite join is an
+  additional fail-closed check.
+- Do not put embeddings into SQLite or application ledger tables into DuckDB.
+
+## Conventions and security invariants
+
+- Server code is ESM. Local imports always include the `.js` extension and use
+  `import`, not `require`.
+- Authentication is JWT over bcrypt. Registration and login are the public API
+  exceptions; resource and Settings routes use `requireAuth`. Electron creates
+  one local user and sends a fresh bootstrap session exactly once through the
+  context-isolated preload. The desktop happy path is register-free.
+- The desktop backend binds exactly `127.0.0.1` on an OS-assigned port. Fastify
+  serves the production UI from that origin, so it needs no cross-origin
+  headers. Vite development keeps the exact `CORS_ORIGINS` allowlist. Never
+  reflect arbitrary origins.
+- Requests propagate a sanitized `X-Request-ID`. Never log credentials, prompts,
+  uploaded content, SQL results, signed URLs, raw tool arguments/results, or
+  provider exception bodies.
+- `server/src/dataService.ts` is the opaque facade over in-process dataset,
+  connector, chart, and report operations. Its public internal error is
+  `DataServiceError` with code `DATA_SERVICE_ERROR`; ingest deliberately keeps
+  the public `DATA_SERVICE_UNAVAILABLE` envelope.
+- The canonical chart contract lives in `server/src/data/charts.ts` and is
+  consumed by the agent, stored charts, web fallback, interactive reports, and
+  both static render backends. One spec must keep every renderer in sync.
+- Rendering is deny-by-default. Both Playwright and the Electron hidden window
+  accept only `about:blank` and bounded canonical PNG data. They must not
+  navigate to user content or load local files, HTTP(S), WebSocket, or other
+  resources. Electron render replies must validate PNG/PDF magic bytes.
+- Scoped DuckDB catalogs are keyed by account plus sorted table allowlist,
+  capped at eight scopes per account, and protected by per-account locks.
+  Trusted files load before external access is disabled; user SQL cannot
+  re-enable it.
+- Query, describe, catalog, and extraction enforce server-derived
+  `allowed_tables` at the worker boundary. Selected-empty is a valid empty scope
+  and must never widen to all sources.
+- SQL is exactly one read-only SELECT/WITH/VALUES statement. Query and extraction
+  time, rows, columns, cells, and returned characters are bounded at the worker
+  boundary.
+- XLSX ingestion is offline and bounded: ZIP member and expansion checks precede
+  the streaming ExcelJS first-sheet reader. Legacy `.xls` and `.doc` inputs are
+  unsupported. Never add npm `xlsx` or enable DuckDB extension auto-install.
+- Connector refresh is prepare → extract → activate/abort. Downloads use the
+  shared SSRF policy, DNS pinning, identity encoding, bounded redirects/time,
+  and immutable version-cache files. Activation is exact-location
+  compare-and-swap; cleanup never keys on table name alone.
+- File reads and deletions must prove lexical and real paths belong to the exact
+  UUID-scoped account/resource directory, with no symlink component. Never build
+  a recursive deletion target from an unvalidated stored path or filename.
+- Chat source state has three meanings: `all` dynamically includes current and
+  future sources; `selected` with rows is a stable allowlist; `selected` with no
+  rows means none. New web chats start selected-empty. Only ready attachments
+  enter a turn snapshot.
+- The OpenAI Node client defaults embeddings to base64 and decodes responses.
+  Compatible local runtimes return float arrays, so `server/src/llm.ts` must
+  continue sending `encoding_format: "float"` explicitly.
+- Agent tools are wired through `TOOL_DEFS` in one streaming loop. Never expose
+  provider reasoning, raw tool payloads, or exceptions in SSE. The UI receives
+  only stable server-defined summaries.
+- `makeReportPayload` keeps its 12-character chart-ID prefix fallback because
+  models can garble long UUIDs. Report normalization strips inline
+  `chart:`/`:::` tokens.
+- Changing `EMBEDDING_DIM` or the embedding model after ingestion makes stored
+  vectors incompatible. The LanceDB table dimension is fixed at creation time;
+  keep the configured model compatible and reingest existing sources after a
+  deliberate change.
+
+## Model endpoint and Settings
+
+Settings persist the OpenAI-compatible endpoint, redacted API key, optional
+distinct LM Studio health endpoint, and default chat/embed model IDs. The local
+endpoint default is `http://127.0.0.1:1234`; non-loopback endpoints require
+HTTPS. Values are read dynamically, so saving Settings updates later model
+operations without restarting the process.
+
+Environment values win over `settings.json` and disable the corresponding field.
+`PATCH /api/settings` never returns the key; an omitted key preserves it and
+`null` clears it. `POST /api/settings/test` performs a body-free `GET /v1/models`
+against the draft effective configuration without persisting it.
+
+Canonical operator overrides are `LLM_BASE_URL`, `LLM_API_KEY`,
+`LLM_CHAT_MODEL`, and `LLM_EMBED_MODEL`. The corresponding `LITELLM_*` names
+remain lower-precedence compatibility aliases only. Do not infer or reintroduce
+an intermediary model-proxy process from those legacy environment names.
+
+When a remote provider is configured, prompts and selected source context leave
+the machine under that provider's data policy. Parsing, DuckDB analytics,
+embedded stores, and report rendering remain local. Keep that boundary visible
+in Settings and user documentation.
+
+Stable logical aliases live in `server/src/llmAliases.ts`. Outbound chat and
+embedding calls resolve known aliases to physical model IDs. Discovery maps
+known physical IDs back to aliases, preserves unknown IDs, and hides the
+embedding identity from the chat picker. Chat and embedding roles must remain
+distinct.
+
+## Electron and packaging
+
+- `desktop/src/main.ts` resolves every durable path under Electron `userData`,
+  starts the copied `runtime/server/dist/desktopHost.js` in `utilityProcess`, and
+  loads the exact Fastify loopback URL in a hardened `BrowserWindow`.
+- Renderer windows use context isolation, sandboxing, no Node integration, deny
+  permission requests and arbitrary navigation/popups. The main window may open
+  only the controlled `about:blank` report-preview window; that child has an
+  empty preload and embeds report HTML in an opaque-origin sandbox. The main
+  preload exposes only the one-shot bootstrap operation.
+- On quit, main requests orderly backend shutdown. The backend aborts active
+  runs, stops ingestion, closes DuckDB, LanceDB, and SQLite, then acknowledges;
+  main applies a bounded kill timeout.
+- `RENDER_BACKEND=electron` sends bounded self-contained documents to the hidden
+  renderer. Browser development and headless server CI use Playwright.
+- Rebuild `better-sqlite3`, `@lancedb/lancedb`, and `@duckdb/node-api` for
+  Electron's ABI. Keep their native assets unpacked from the application archive.
+- Packaging targets arm64 DMG and ZIP with minimum macOS 13. Signed distribution
+  builds use Apple's hardened runtime; version 1 intentionally does not enable
+  the Mac App Store sandbox. `package:unsigned` explicitly disables identity and
+  notarization, while `package:mac` consumes signing/notarization credentials
+  only from the release environment.
+- `desktop/build/entitlements.mac*.plist` are tracked packaging inputs. Keep the
+  root `.gitignore` exceptions for that directory; a clean checkout must be able
+  to package without locally generated entitlement files.
+- Never copy Playwright's downloaded browser into the packaged application.
+
+## Resource budgets
+
+Upload, message, history, extracted-text, and chunk-count budgets are documented
+in `server/.env.example`. Connector, query/extract, chart, report, outbound-web,
+render-payload, and tool-duration limits are fixed at their lowest processing
+boundary and summarized in `docs/API.md`. Keep over-limit, partial-input,
+cancellation, and safe-error tests whenever changing them.
 
 ## Before touching sensitive areas
 
-- Read `python/app/charts.py` docstring before changing the chart spec — it is the
-  contract between the LLM, Node tools, ECharts and matplotlib.
-- Read `server/src/agent.ts` + `tools.ts` before changing agent behavior.
-- Schema lives in `server/src/db.ts` SCHEMA (idempotent, created at startup).
-- File deletion and reads must prove a path belongs to the exact UUID-scoped
-  account/resource directory before touching it. Never derive a recursive deletion
-  target from an unvalidated database path or filename.
+- Read `server/src/data/charts.ts` before changing the chart contract.
+- Read `server/src/agent.ts` and `server/src/tools.ts` before changing agent
+  behavior.
+- Read `server/src/data/datasets.ts`, `datasetsWorker.ts`, and `xlsx.ts` before
+  changing data access or file parsing.
+- Read `server/src/db/migrations.ts`, the relevant store, and
+  `server/src/storageRuntime.ts` before changing durable state.
+- Read `server/src/ingest.ts`, `server/src/retrieve.ts`, and their crash/repair
+  tests before changing the SQLite/LanceDB protocol.
+- Read `server/src/data/playwrightRender.ts`, `server/src/electronRender.ts`, and
+  `desktop/src/electronRenderer.ts` before changing static rendering.
+- Read `server/src/serverApp.ts`, `server/src/desktopHost.ts`, and
+  `desktop/src/main.ts` before changing startup or shutdown.
 
-## E2E verification
+## End-to-end use case
 
-Goal use case: `data/generate_sample.py` → upload CSVs → chat asks for a personal
-finance analysis → agent queries DuckDB, renders charts, creates a report → open
-HTML/PDF from `reports_storage/` or the `/api/reports/:id` endpoints, or from the
-web UI (Reports page / chat report link). Verified end-to-end on 2026-08-22 with
-`data/sample/*.csv` (4 tables, 697 transactions) producing two charts and an HTML+PDF
-report (`has_html`/`has_pdf` true, PDF downloads as a valid v1.7 document).
-PDF depends on WeasyPrint system libs: on macOS run uvicorn with
-`DYLD_FALLBACK_LIBRARY_PATH="$(brew --prefix)/lib${DYLD_FALLBACK_LIBRARY_PATH:+:$DYLD_FALLBACK_LIBRARY_PATH}"`
-after `brew install pango glib`.
+Run `data/generate_sample.ts`, upload the four CSV fixtures, and ask for a
+personal-finance analysis. Verify that the agent queries DuckDB, renders charts,
+and creates a report. Report routes must return self-contained HTML and a PDF
+beginning with `%PDF`; chart PNGs must have the PNG signature. In the desktop
+build, also verify first-launch bootstrap, exact loopback/same-origin hosting,
+offline Electron rendering, and clean utility-process shutdown.

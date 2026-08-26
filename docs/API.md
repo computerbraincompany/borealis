@@ -2,8 +2,8 @@
 
 The Fastify API listens on `http://127.0.0.1:3000` by default. Registration and
 login are public; every other `/api/*` endpoint requires a JWT in
-`Authorization: Bearer <token>`. The Python service on port 8000 is an internal
-service and is not part of this public contract.
+`Authorization: Bearer <token>`. Dataset processing and report rendering are
+in-process implementation details and are not separate public services.
 
 Responses include `X-Request-ID`. Clients may send a request ID containing only
 letters, digits, `.`, `_`, or `-` (maximum 128 characters); invalid values are
@@ -12,17 +12,27 @@ not include provider responses, SQL, local paths, or exception text.
 
 Browser origins are not reflected. Configure an exact comma-separated
 `CORS_ORIGINS` allowlist when the frontend is not served from the default
-loopback Vite origins.
+loopback Vite origins. The packaged UI is served by Fastify from the same exact
+loopback origin and does not use cross-origin headers.
 
 An authenticated OpenAPI snapshot is available at `GET /api/openapi.json`.
 
 The public `GET /health` endpoint is a fast process-liveness probe. Authenticated
 clients can use `GET /api/health` for dependency readiness. It reports bounded
-status and latency for the Borealis API, PostgreSQL, the Python data service,
-LiteLLM, and LM Studio without returning service URLs, credentials, model IDs,
-or raw upstream errors. A degraded dependency does not change the liveness
-endpoint, which avoids restarting a healthy API process because an upstream
-service is temporarily unavailable.
+status and latency for the Borealis API, embedded SQLite ledger, in-process
+DuckDB service, configured model endpoint, and an optional distinct LM Studio
+runtime without returning service URLs, credentials, model IDs, or raw upstream errors. A
+degraded dependency does not change the liveness endpoint, which avoids
+restarting a healthy API process because an upstream service is temporarily
+unavailable.
+
+The macOS app creates its single local account and passes a fresh session from
+Electron main through the trusted preload exactly once. That bootstrap is not an
+HTTP endpoint and does not change the public registration/login contract. The
+desktop token lives in Chromium session storage rather than persistent local
+storage; reopening Borealis mints a new seven-day session for the same local
+account, so the passwordless desktop profile intentionally has no sign-out
+action.
 
 ## Minimal authenticated flow
 
@@ -79,8 +89,8 @@ A chat has exactly one of these states:
 
 Only ready sources are included in a turn. The accepted model, source mode, and
 concrete ready source IDs are committed with the user message and run in one
-repeatable-read transaction. Later model or source changes affect the next turn,
-not an already accepted run.
+SQLite transaction. Later model or source changes affect the next turn, not an
+already accepted run.
 
 ## Chat history and runs
 
@@ -106,17 +116,17 @@ returned as an unbounded response.
 `POST /api/chats/:id/messages` accepts `{"content":"..."}` and returns
 `text/event-stream`. Every frame is JSON in an SSE `data:` field. Event types are:
 
-| Type | Stable fields | Meaning |
-| --- | --- | --- |
-| `run-started` | `run_id` | Durable run identity; retain it for cancellation. |
-| `user-saved` | `message_id` | The user message and immutable turn snapshot committed. |
-| `step-start` | `name`, `summary` | A sanitized operation summary; never raw arguments. |
-| `step-end` | `name`, `summary`, `status` | Sanitized completion state (`ok` or `error`). |
-| `delta` | `text` | Final answer text. Provider reasoning is never emitted. |
-| `message` | `content`, `meta` | Persisted assistant message and bounded display artifacts. |
-| `error` | `message` | Public cancellation or failure message. |
-| `done` | — | Legacy success marker, emitted only after the durable run completes. |
-| `run-ended` | `run_id`, `status` | Authoritative terminal state: `completed`, `cancelled`, or `failed`. |
+| Type          | Stable fields               | Meaning                                                              |
+| ------------- | --------------------------- | -------------------------------------------------------------------- |
+| `run-started` | `run_id`                    | Durable run identity; retain it for cancellation.                    |
+| `user-saved`  | `message_id`                | The user message and immutable turn snapshot committed.              |
+| `step-start`  | `name`, `summary`           | A sanitized operation summary; never raw arguments.                  |
+| `step-end`    | `name`, `summary`, `status` | Sanitized completion state (`ok` or `error`).                        |
+| `delta`       | `text`                      | Final answer text. Provider reasoning is never emitted.              |
+| `message`     | `content`, `meta`           | Persisted assistant message and bounded display artifacts.           |
+| `error`       | `message`                   | Public cancellation or failure message.                              |
+| `done`        | —                           | Legacy success marker, emitted only after the durable run completes. |
+| `run-ended`   | `run_id`, `status`          | Authoritative terminal state: `completed`, `cancelled`, or `failed`. |
 
 Only one run may be active per chat. After receiving `run-started`, cancel with:
 
@@ -134,7 +144,7 @@ runs failed; it never presents them as completed.
 
 ## Resources
 
-### Models and chats
+### Health, models, and chats
 
 - `GET /api/health`
 - `GET /api/models[?refresh=1]`
@@ -146,6 +156,56 @@ runs failed; it never presents them as completed.
 - `DELETE /api/chats/:id`
 - `POST /api/chats/:id/messages` (SSE)
 - `DELETE /api/chats/:id/runs/:runId`
+
+### Provider Settings
+
+- `GET /api/settings`
+- `PATCH /api/settings`
+- `POST /api/settings/test`
+
+`GET /api/settings` returns the effective OpenAI-compatible provider
+configuration:
+
+```json
+{
+  "llm_base_url": "http://127.0.0.1:1234",
+  "llm_api_key_configured": false,
+  "lm_studio_base_url": null,
+  "default_chat_model": "qwen-chat",
+  "default_embed_model": "nomic-embed",
+  "managed_by_env": {
+    "llm_base_url": false,
+    "llm_api_key": false,
+    "lm_studio_base_url": false,
+    "default_chat_model": false,
+    "default_embed_model": false
+  }
+}
+```
+
+The stored API key is never returned. `PATCH /api/settings` accepts any subset of
+`llm_base_url`, `llm_api_key`, `lm_studio_base_url`, `default_chat_model`, and
+`default_embed_model`. Omitting `llm_api_key` preserves it; sending `null` clears
+it. The settings file is replaced atomically with mode `0600`.
+Environment-managed fields return `409` if a client tries to change them. Chat
+and embedding model IDs must be distinct.
+
+Canonical environment overrides are `LLM_BASE_URL`, `LLM_API_KEY`,
+`LLM_CHAT_MODEL`, and `LLM_EMBED_MODEL`. Historical `LITELLM_*` names remain
+supported as lower-precedence compatibility aliases. They configure the direct
+OpenAI-compatible client and do not imply an intermediary sidecar.
+
+`POST /api/settings/test` accepts the same optional draft body, tests it without
+persisting, and performs a body-free `GET /v1/models`. Success returns
+`{"ok":true,"latency_ms":42}`; connection or upstream failure returns a bounded
+`503` response without URL, credential, response body, or exception details.
+Non-loopback endpoints require HTTPS. When a remote provider is selected,
+prompts and selected source context leave the machine under that provider's data
+policy; parsing, analytical SQL, storage, and rendering remain local.
+
+Changing the embedding model does not regenerate existing vectors. Keep
+`EMBEDDING_DIM` compatible with the selected model and reingest existing sources
+after a deliberate change; the LanceDB table dimension is fixed when created.
 
 ### Sources
 
@@ -200,7 +260,23 @@ Report HTML is self-contained and served with a restrictive CSP. PDF rendering
 accepts only the structured report payload generated by Borealis and uses a
 data-only resource loader; it cannot read local files or fetch network resources.
 Chart responses reuse the PNG generated with the canonical chart spec rather
-than rendering a second time.
+than rendering a second time. Browser development uses isolated Playwright
+Chromium. The packaged app sends the same bounded document to a hidden Electron
+window; Playwright's browser download is not present in the application bundle.
+
+## Storage and backup boundary
+
+SQLite is authoritative for relational state and passage text. LanceDB stores
+only vectors keyed by stable chunk UUID, account, source, and ingestion
+generation. Retrieval applies its account/source allowlist before vector search,
+then joins results back to SQLite under the same scope and drops missing rows.
+DuckDB is reserved for bounded analytical queries over user tables.
+
+Stop Borealis before backup or restore. The SQLite file and LanceDB directory
+are one logical store and must be copied and restored together. The desktop
+paths are `borealis.sqlite` and `lancedb/` beneath
+`~/Library/Application Support/Borealis/`; browser development uses the same
+names under `.borealis/` unless configured otherwise.
 
 ## Limits and status codes
 
@@ -215,7 +291,7 @@ ingestion chunks live in `server/.env.example`. Fixed service boundaries include
   characters;
 - agent tools: 120 seconds each, at most eight calls per round and 24 per run;
 - reports: at most 20 sections, 20 charts, and eight tables, with a 128 MiB
-  internal-service request-body ceiling.
+  validated rendering-payload ceiling.
 
 Common responses are `400` malformed input, `401` missing/invalid JWT, `404`
 unknown or unowned resource, `409` conflicting chat run or table name, `413`

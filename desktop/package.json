@@ -1,0 +1,122 @@
+{
+  "name": "borealis-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Borealis macOS desktop shell",
+  "main": "dist/main.js",
+  "type": "module",
+  "packageManager": "npm@10.9.8",
+  "engines": {
+    "node": ">=22.13 <23",
+    "npm": ">=10.9 <11"
+  },
+  "scripts": {
+    "clean": "node scripts/clean.mjs",
+    "build": "npm run clean && tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && node --test dist/*.test.js",
+    "format": "prettier --write 'src/**/*.{ts,cts}' 'scripts/*.{mjs,cjs}' package.json tsconfig.json",
+    "format:check": "prettier --check 'src/**/*.{ts,cts}' 'scripts/*.{mjs,cjs}' package.json tsconfig.json",
+    "runtime:copy": "node scripts/copy-runtime.mjs",
+    "runtime:prepare": "npm --prefix ../server run build && npm --prefix ../web run build && npm run runtime:copy",
+    "dev": "npm run runtime:prepare && npm run build && electron .",
+    "package:dir": "npm run runtime:prepare && npm run build && electron-builder --mac --arm64 --dir",
+    "package:mac": "npm run runtime:prepare && npm run build && electron-builder --mac --arm64",
+    "package:unsigned": "npm run runtime:prepare && npm run build && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --config scripts/electron-builder.unsigned.cjs --mac --arm64",
+    "package:native:smoke": "BOREALIS_PACKAGED_APP_ASAR=\"$PWD/release/mac-arm64/Borealis.app/Contents/Resources/app.asar\" ELECTRON_RUN_AS_NODE=1 \"$PWD/release/mac-arm64/Borealis.app/Contents/MacOS/Borealis\" scripts/native-smoke.cjs",
+    "native:rebuild": "electron-builder install-app-deps",
+    "native:smoke": "ELECTRON_RUN_AS_NODE=1 electron scripts/native-smoke.cjs",
+    "render:smoke": "npm run build && electron scripts/render-smoke-app",
+    "verify": "npm run typecheck && npm run test && npm run format:check && npm run native:smoke && npm run render:smoke",
+    "postinstall": "npm run native:rebuild"
+  },
+  "dependencies": {
+    "@duckdb/node-api": "1.5.5-r.4",
+    "@fastify/cors": "^10.0.0",
+    "@fastify/multipart": "^9.0.0",
+    "@fastify/static": "10.1.3",
+    "@fastify/swagger": "^9.8.1",
+    "@lancedb/lancedb": "0.37.1",
+    "apache-arrow": "18.1.0",
+    "bcryptjs": "^3.0.0",
+    "better-sqlite3": "13.0.3",
+    "dotenv": "^16.4.5",
+    "exceljs": "^4.4.0",
+    "fastify": "^5.2.0",
+    "jsonwebtoken": "^9.0.2",
+    "mammoth": "^1.9.1",
+    "marked": "^18.0.11",
+    "openai": "^4.77.0",
+    "pdfjs-dist": "^4.8.69",
+    "playwright": "^1.62.1",
+    "tsx": "^4.19.2"
+  },
+  "devDependencies": {
+    "@types/node": "22.18.6",
+    "electron": "44.0.0",
+    "electron-builder": "26.15.3",
+    "prettier": "3.9.0",
+    "typescript": "5.9.2"
+  },
+  "build": {
+    "appId": "com.computerbraincompany.borealis",
+    "productName": "Borealis",
+    "asar": true,
+    "npmRebuild": true,
+    "afterPack": "scripts/after-pack.cjs",
+    "files": [
+      "dist/**/*",
+      "!dist/**/*.test.js",
+      "!dist/**/*.test.js.map",
+      "!dist/renderSmoke.js",
+      "!dist/renderSmoke.js.map",
+      "runtime/**/*",
+      "package.json",
+      "!node_modules/@huggingface/**/*",
+      "!node_modules/@img/**/*",
+      "!node_modules/onnxruntime-common/**/*",
+      "!node_modules/onnxruntime-node/**/*",
+      "!node_modules/onnxruntime-web/**/*",
+      "!node_modules/sharp/**/*"
+    ],
+    "asarUnpack": [
+      "node_modules/better-sqlite3/**/*",
+      "node_modules/@lancedb/**/*",
+      "node_modules/@duckdb/**/*"
+    ],
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "artifactName": "Borealis-${version}-macOS-${arch}.${ext}",
+    "mac": {
+      "category": "public.app-category.productivity",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "arm64"
+          ]
+        }
+      ],
+      "minimumSystemVersion": "13.0.0",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.inherit.plist",
+      "extendInfo": {
+        "NSAppTransportSecurity": {
+          "NSAllowsArbitraryLoads": false,
+          "NSAllowsArbitraryLoadsInWebContent": false,
+          "NSAllowsLocalNetworking": true
+        }
+      }
+    }
+  }
+}

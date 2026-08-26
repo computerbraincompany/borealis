@@ -1,9 +1,24 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { config, validateModelIds } from "../config.js";
-import { client, createChatModelDiscovery, discoverChatModels, normalizeChatModels } from "../llm.js";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { validateModelIds } from "../config.js";
+import { createChatModelDiscovery, discoverChatModels, getLlmClient, normalizeChatModels } from "../llm.js";
+import { resolveLlmModelId } from "../llmAliases.js";
+import { closeRuntimeSettings, initializeRuntimeSettings, runtimeSettingsStore } from "../runtimeSettings.js";
 
-afterEach(() => {
+let temporaryDirectory = "";
+
+beforeEach(async () => {
+  temporaryDirectory = await fs.mkdtemp(path.join(os.tmpdir(), "borealis-models-"));
+  await initializeRuntimeSettings({ settingsFile: path.join(temporaryDirectory, "settings.json"), env: {} });
+});
+
+afterEach(async () => {
   vi.restoreAllMocks();
+  closeRuntimeSettings();
+  if (temporaryDirectory) await fs.rm(temporaryDirectory, { recursive: true, force: true });
+  temporaryDirectory = "";
 });
 
 describe("validateModelIds", () => {
@@ -15,10 +30,10 @@ describe("validateModelIds", () => {
   });
 
   it.each([
-    [{ chatModel: "   ", embedModel: "embed-a" }, "LITELLM_CHAT_MODEL"],
-    [{ chatModel: "chat-a", embedModel: "   " }, "LITELLM_EMBED_MODEL"],
-    [{ chatModel: "x".repeat(257), embedModel: "embed-a" }, "LITELLM_CHAT_MODEL"],
-    [{ chatModel: "chat-a", embedModel: "x".repeat(257) }, "LITELLM_EMBED_MODEL"],
+    [{ chatModel: "   ", embedModel: "embed-a" }, "LLM_CHAT_MODEL"],
+    [{ chatModel: "chat-a", embedModel: "   " }, "LLM_EMBED_MODEL"],
+    [{ chatModel: "x".repeat(257), embedModel: "embed-a" }, "LLM_CHAT_MODEL"],
+    [{ chatModel: "chat-a", embedModel: "x".repeat(257) }, "LLM_EMBED_MODEL"],
   ])("rejects blank and oversized IDs without echoing values", (input, variable) => {
     expect(() => validateModelIds(input)).toThrow(variable);
     try {
@@ -31,13 +46,19 @@ describe("validateModelIds", () => {
   it("rejects equal IDs without echoing the ID", () => {
     const value = "private-model-identity";
     expect(() => validateModelIds({ chatModel: value, embedModel: ` ${value} ` })).toThrow(
-      "LITELLM_CHAT_MODEL and LITELLM_EMBED_MODEL must be distinct"
+      "LLM_CHAT_MODEL and LLM_EMBED_MODEL must be distinct"
     );
     try {
       validateModelIds({ chatModel: value, embedModel: value });
     } catch (error) {
       expect(String(error)).not.toContain(value);
     }
+  });
+
+  it("rejects logical and physical forms of the same aliased model", () => {
+    expect(() =>
+      validateModelIds({ chatModel: "nomic-embed", embedModel: "text-embedding-nomic-embed-text-v1.5" })
+    ).toThrow("LLM_CHAT_MODEL and LLM_EMBED_MODEL must be distinct");
   });
 });
 
@@ -81,6 +102,23 @@ describe("normalizeChatModels", () => {
         "embed"
       ).map((model) => model.id)
     ).toEqual(["Embed", "embed-chat", "my-embed"]);
+  });
+
+  it("publishes logical aliases and hides both forms of the embedding model", () => {
+    expect(
+      normalizeChatModels(
+        {
+          data: [
+            { id: "qwen/qwen3.6-35b-a3b", owned_by: "LM Studio" },
+            { id: "qwen-chat", owned_by: "duplicate" },
+            { id: "text-embedding-nomic-embed-text-v1.5" },
+            { id: "nomic-embed" },
+            { id: "cloud/model-a" },
+          ],
+        },
+        "nomic-embed"
+      )
+    ).toEqual([{ id: "cloud/model-a" }, { id: "qwen-chat", owned_by: "LM Studio" }]);
   });
 
   it("trims and bounds string ownership while omitting invalid ownership", () => {
@@ -163,6 +201,7 @@ describe("chat model discovery", () => {
   });
 
   it("uses a five-second timeout and disables SDK retries", async () => {
+    const client = await getLlmClient();
     const list = vi.spyOn(client.models, "list").mockResolvedValue({ data: [] } as any);
 
     await expect(discoverChatModels({ refresh: true })).resolves.toEqual({ models: [], discovery: "live" });
@@ -171,13 +210,48 @@ describe("chat model discovery", () => {
 
   it("excludes the configured embedding model in discovered results", async () => {
     const listModels = vi.fn().mockResolvedValue({
-      data: [{ id: config.embedModel }, { id: `${config.embedModel}-chat` }],
+      data: [{ id: "nomic-embed" }, { id: "nomic-embed-chat" }],
     });
     const discover = createChatModelDiscovery({ listModels, warn: vi.fn() });
 
     await expect(discover()).resolves.toEqual({
-      models: [{ id: `${config.embedModel}-chat` }],
+      models: [{ id: "nomic-embed-chat" }],
       discovery: "live",
     });
+  });
+
+  it("sends configured aliases to discovery as logical public ids", async () => {
+    const listModels = vi.fn().mockResolvedValue({
+      data: [{ id: resolveLlmModelId("qwen-chat") }, { id: resolveLlmModelId("nomic-embed") }],
+    });
+    const discover = createChatModelDiscovery({ listModels, warn: vi.fn() });
+
+    await expect(discover()).resolves.toEqual({
+      models: [{ id: "qwen-chat" }],
+      discovery: "live",
+    });
+  });
+
+  it("rebuilds the SDK client and discovery cache when persisted settings change", async () => {
+    const firstClient = await getLlmClient();
+    const firstList = vi.spyOn(firstClient.models, "list").mockResolvedValue({ data: [{ id: "first-chat" }] } as any);
+    await expect(discoverChatModels()).resolves.toEqual({ models: [{ id: "first-chat" }], discovery: "live" });
+
+    await runtimeSettingsStore().patch({
+      llmBaseUrl: "https://second-provider.example.test",
+      apiKey: "second-provider-secret",
+      chatModel: "second-chat",
+      embedModel: "second-embed",
+    });
+    const secondClient = await getLlmClient();
+    expect(secondClient).not.toBe(firstClient);
+    expect(secondClient.baseURL).toBe("https://second-provider.example.test/v1");
+    const secondList = vi
+      .spyOn(secondClient.models, "list")
+      .mockResolvedValue({ data: [{ id: "second-embed" }, { id: "second-chat" }] } as any);
+
+    await expect(discoverChatModels()).resolves.toEqual({ models: [{ id: "second-chat" }], discovery: "live" });
+    expect(firstList).toHaveBeenCalledOnce();
+    expect(secondList).toHaveBeenCalledOnce();
   });
 });

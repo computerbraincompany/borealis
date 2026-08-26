@@ -1,12 +1,30 @@
 import { useState } from "react";
-import { Activity, Check, Cpu, LogOut, Monitor, Moon, RefreshCw, Sun, UserRound } from "lucide-react";
+import {
+  Activity,
+  Check,
+  Cloud,
+  Cpu,
+  FlaskConical,
+  LoaderCircle,
+  LogOut,
+  Monitor,
+  Moon,
+  RefreshCw,
+  Save,
+  Sun,
+  UserRound,
+} from "lucide-react";
 import { useTheme, type ThemeChoice } from "@/components/ThemeProvider";
 import { SystemHealthPanel } from "@/components/SystemHealthPanel";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { useModelCatalog } from "@/hooks/useModelCatalog";
+import { useProviderSettings } from "@/hooks/useProviderSettings";
 import { useSystemHealth } from "@/hooks/useSystemHealth";
 import { clearSession, getUser } from "@/lib/api";
+import { hasDesktopBridge } from "@/lib/desktopBootstrap";
 import { cn } from "@/lib/utils";
 
 type SettingsSection = "system" | "models" | "appearance" | "account";
@@ -33,12 +51,22 @@ interface SettingsViewProps {
   onClose?: () => void;
 }
 
+function ManagedByEnvironment() {
+  return (
+    <span className="rounded border bg-secondary px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+      Managed by environment
+    </span>
+  );
+}
+
 export function SettingsView({ onClose }: SettingsViewProps) {
   const [section, setSection] = useState<SettingsSection>("system");
   const { catalog, loading, error, refresh } = useModelCatalog();
+  const provider = useProviderSettings();
   const systemHealth = useSystemHealth();
   const { theme, resolvedTheme, setTheme } = useTheme();
   const user = getUser();
+  const desktopWorkspace = hasDesktopBridge();
   const discoveryLive = catalog?.discovery === "live";
 
   const closeSettings = () => {
@@ -49,6 +77,14 @@ export function SettingsView({ onClose }: SettingsViewProps) {
   const signOut = () => {
     clearSession();
     window.location.hash = "/login";
+  };
+
+  const saveProviderSettings = async () => {
+    if (await provider.save()) void refresh(true);
+  };
+
+  const clearProviderApiKey = async () => {
+    if (await provider.clearApiKey()) void refresh(true);
   };
 
   return (
@@ -162,6 +198,243 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                     {loading ? "Refreshing…" : "Refresh"}
                   </Button>
                 </header>
+
+                <div className="border-b py-5">
+                  <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
+                    <div>
+                      <h3 id="provider-connection-heading" className="text-sm font-semibold text-foreground">
+                        Provider connection
+                      </h3>
+                      <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                        Connect Borealis to LM Studio or another OpenAI-compatible provider.
+                      </p>
+                    </div>
+                    <span className="rounded-md border bg-secondary/60 px-2 py-1 font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
+                      OpenAI-compatible
+                    </span>
+                  </div>
+
+                  {provider.loading && !provider.settings ? (
+                    <div className="space-y-3 rounded-lg border bg-card p-4" aria-label="Loading provider settings">
+                      <div className="h-9 animate-pulse rounded-md bg-secondary" />
+                      <div className="h-9 animate-pulse rounded-md bg-secondary" />
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        <div className="h-9 animate-pulse rounded-md bg-secondary" />
+                        <div className="h-9 animate-pulse rounded-md bg-secondary" />
+                      </div>
+                    </div>
+                  ) : provider.loadError && !provider.settings ? (
+                    <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-4" role="alert">
+                      <p className="text-sm text-destructive">{provider.loadError}</p>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="mt-3"
+                        onClick={() => void provider.reload()}
+                      >
+                        <RefreshCw /> Try again
+                      </Button>
+                    </div>
+                  ) : provider.settings ? (
+                    <form
+                      className="overflow-hidden rounded-lg border bg-card"
+                      aria-labelledby="provider-connection-heading"
+                      onSubmit={(event) => {
+                        event.preventDefault();
+                        void saveProviderSettings();
+                      }}
+                    >
+                      <div className="grid gap-x-4 gap-y-5 p-4 sm:grid-cols-2">
+                        <div className="sm:col-span-2">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <Label htmlFor="settings-llm-base-url">Chat endpoint URL</Label>
+                            {provider.settings.managed_by_env.llm_base_url && <ManagedByEnvironment />}
+                          </div>
+                          <Input
+                            id="settings-llm-base-url"
+                            type="url"
+                            inputMode="url"
+                            spellCheck={false}
+                            required
+                            maxLength={2048}
+                            className="mt-2 font-mono"
+                            value={provider.form.llm_base_url}
+                            onChange={(event) => provider.setField("llm_base_url", event.target.value)}
+                            disabled={provider.settings.managed_by_env.llm_base_url || provider.action !== null}
+                            aria-describedby="settings-llm-base-url-help"
+                          />
+                          <p id="settings-llm-base-url-help" className="mt-1.5 text-xs leading-5 text-muted-foreground">
+                            Borealis adds <code className="font-mono">/v1</code> when it calls this endpoint.
+                          </p>
+                        </div>
+
+                        <div className="sm:col-span-2">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <Label htmlFor="settings-llm-api-key">API key</Label>
+                            {provider.settings.managed_by_env.llm_api_key && <ManagedByEnvironment />}
+                          </div>
+                          <Input
+                            id="settings-llm-api-key"
+                            type="password"
+                            autoComplete="new-password"
+                            maxLength={8192}
+                            className="mt-2 font-mono"
+                            value={provider.form.llm_api_key}
+                            placeholder={
+                              provider.settings.llm_api_key_configured
+                                ? "Configured — leave blank to keep it"
+                                : "Optional for providers that do not require a key"
+                            }
+                            onChange={(event) => provider.setField("llm_api_key", event.target.value)}
+                            disabled={provider.settings.managed_by_env.llm_api_key || provider.action !== null}
+                            aria-describedby="settings-llm-api-key-help"
+                          />
+                          <div className="mt-1.5 flex flex-wrap items-start justify-between gap-x-4 gap-y-1">
+                            <p
+                              id="settings-llm-api-key-help"
+                              className="min-w-0 flex-1 text-xs leading-5 text-muted-foreground"
+                            >
+                              {provider.settings.llm_api_key_configured
+                                ? "A key is configured. Leave this blank to keep it unchanged."
+                                : "Leave blank when your local endpoint does not need authentication."}
+                            </p>
+                            {provider.settings.llm_api_key_configured &&
+                              !provider.settings.managed_by_env.llm_api_key && (
+                                <Button
+                                  type="button"
+                                  variant="link"
+                                  size="sm"
+                                  className="h-5 shrink-0 px-0 py-0 text-xs text-destructive hover:text-destructive"
+                                  onClick={() => void clearProviderApiKey()}
+                                  disabled={provider.action !== null}
+                                  aria-describedby="settings-llm-api-key-help"
+                                >
+                                  {provider.action === "clearing-key" && <LoaderCircle className="animate-spin" />}
+                                  {provider.action === "clearing-key" ? "Clearing…" : "Clear saved key"}
+                                </Button>
+                              )}
+                          </div>
+                        </div>
+
+                        {provider.remoteEndpoint && (
+                          <div className="sm:col-span-2">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <Label htmlFor="settings-lm-studio-base-url">LM Studio URL (optional)</Label>
+                              {provider.settings.managed_by_env.lm_studio_base_url && <ManagedByEnvironment />}
+                            </div>
+                            <Input
+                              id="settings-lm-studio-base-url"
+                              type="url"
+                              inputMode="url"
+                              spellCheck={false}
+                              maxLength={2048}
+                              className="mt-2 font-mono"
+                              value={provider.form.lm_studio_base_url}
+                              placeholder="http://127.0.0.1:1234"
+                              onChange={(event) => provider.setField("lm_studio_base_url", event.target.value)}
+                              disabled={provider.settings.managed_by_env.lm_studio_base_url || provider.action !== null}
+                              aria-describedby="settings-lm-studio-base-url-help"
+                            />
+                            <p
+                              id="settings-lm-studio-base-url-help"
+                              className="mt-1.5 text-xs leading-5 text-muted-foreground"
+                            >
+                              Used only for the separate local-runtime health check.
+                            </p>
+                          </div>
+                        )}
+
+                        <div>
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <Label htmlFor="settings-default-chat-model">Default chat model</Label>
+                            {provider.settings.managed_by_env.default_chat_model && <ManagedByEnvironment />}
+                          </div>
+                          <Input
+                            id="settings-default-chat-model"
+                            required
+                            maxLength={256}
+                            spellCheck={false}
+                            className="mt-2 font-mono"
+                            value={provider.form.default_chat_model}
+                            onChange={(event) => provider.setField("default_chat_model", event.target.value)}
+                            disabled={provider.settings.managed_by_env.default_chat_model || provider.action !== null}
+                          />
+                        </div>
+
+                        <div>
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <Label htmlFor="settings-default-embed-model">Embedding model</Label>
+                            {provider.settings.managed_by_env.default_embed_model && <ManagedByEnvironment />}
+                          </div>
+                          <Input
+                            id="settings-default-embed-model"
+                            required
+                            maxLength={256}
+                            spellCheck={false}
+                            className="mt-2 font-mono"
+                            value={provider.form.default_embed_model}
+                            onChange={(event) => provider.setField("default_embed_model", event.target.value)}
+                            disabled={provider.settings.managed_by_env.default_embed_model || provider.action !== null}
+                          />
+                        </div>
+
+                        <div
+                          className={cn(
+                            "flex gap-3 rounded-md border px-3 py-2.5 sm:col-span-2",
+                            provider.remoteEndpoint
+                              ? "border-warning/30 bg-warning/10"
+                              : "border-border bg-secondary/35",
+                          )}
+                        >
+                          <Cloud
+                            className={cn(
+                              "mt-0.5 size-4 shrink-0",
+                              provider.remoteEndpoint ? "text-warning" : "text-muted-foreground",
+                            )}
+                            aria-hidden="true"
+                          />
+                          <p className="text-xs leading-5 text-muted-foreground">
+                            Remote providers receive your prompts and any retrieved document or data context needed to
+                            answer them. Review the provider’s data policy before saving.
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="flex flex-col gap-3 border-t bg-secondary/20 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+                        <div className="min-h-5 text-xs" aria-live="polite">
+                          {provider.feedback && (
+                            <p
+                              role={provider.feedback.kind === "error" ? "alert" : "status"}
+                              className={provider.feedback.kind === "error" ? "text-destructive" : "text-success"}
+                            >
+                              {provider.feedback.message}
+                            </p>
+                          )}
+                        </div>
+                        <div className="flex shrink-0 flex-wrap gap-2">
+                          <Button
+                            type="button"
+                            variant="outline"
+                            onClick={() => void provider.testConnection()}
+                            disabled={provider.action !== null}
+                          >
+                            {provider.action === "testing" ? (
+                              <LoaderCircle className="animate-spin" />
+                            ) : (
+                              <FlaskConical />
+                            )}
+                            {provider.action === "testing" ? "Testing…" : "Test connection"}
+                          </Button>
+                          <Button type="submit" disabled={provider.action !== null || !provider.hasChanges}>
+                            {provider.action === "saving" ? <LoaderCircle className="animate-spin" /> : <Save />}
+                            {provider.action === "saving" ? "Saving…" : "Save changes"}
+                          </Button>
+                        </div>
+                      </div>
+                    </form>
+                  ) : null}
+                </div>
 
                 <dl className="grid gap-5 border-b py-5 sm:grid-cols-2">
                   <div>
@@ -314,9 +587,15 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                       </p>
                     </div>
                   </div>
-                  <Button type="button" variant="outline" onClick={signOut}>
-                    <LogOut /> Sign out
-                  </Button>
+                  {desktopWorkspace ? (
+                    <p className="max-w-64 text-right text-xs leading-5 text-muted-foreground">
+                      Local desktop workspace. Reopen Borealis to renew this session.
+                    </p>
+                  ) : (
+                    <Button type="button" variant="outline" onClick={signOut}>
+                      <LogOut /> Sign out
+                    </Button>
+                  )}
                 </div>
               </section>
             )}

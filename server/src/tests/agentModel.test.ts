@@ -1,8 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("../db.js", () => ({ q: vi.fn() }));
+const storageMocks = vi.hoisted(() => ({ listAgentHistoryForRun: vi.fn() }));
+
+vi.mock("../storageRuntime.js", () => ({
+  storageRuntime: () => ({ chats: { listAgentHistoryForRun: storageMocks.listAgentHistoryForRun } }),
+}));
 vi.mock("../llm.js", () => ({ chatOnce: vi.fn(), streamingChat: vi.fn() }));
-vi.mock("../pythonClient.js", () => ({ py: { listDatasetCatalog: vi.fn() } }));
+vi.mock("../dataService.js", () => ({ dataService: { listDatasetCatalog: vi.fn() } }));
 vi.mock("../tools.js", () => ({ TOOL_DEFS: [], executeTool: vi.fn() }));
 
 import {
@@ -12,15 +16,14 @@ import {
   selectRecentHistory,
   serializedAgentCharacterCount,
 } from "../agent.js";
-import { q } from "../db.js";
 import { chatOnce, streamingChat } from "../llm.js";
-import { py } from "../pythonClient.js";
+import { dataService } from "../dataService.js";
 import { executeTool } from "../tools.js";
 
-const qMock = vi.mocked(q);
+const historyMock = storageMocks.listAgentHistoryForRun;
 const chatOnceMock = vi.mocked(chatOnce);
 const streamingChatMock = vi.mocked(streamingChat);
-const listDatasetCatalogMock = vi.mocked(py.listDatasetCatalog);
+const listDatasetCatalogMock = vi.mocked(dataService.listDatasetCatalog);
 const executeToolMock = vi.mocked(executeTool);
 const emptyScope = Object.freeze({
   mode: "selected" as const,
@@ -31,7 +34,8 @@ const emptyScope = Object.freeze({
 
 describe("runAgent model snapshot", () => {
   beforeEach(() => {
-    qMock.mockReset();
+    historyMock.mockReset();
+    historyMock.mockResolvedValue([]);
     chatOnceMock.mockReset();
     streamingChatMock.mockReset();
     listDatasetCatalogMock.mockReset();
@@ -39,7 +43,6 @@ describe("runAgent model snapshot", () => {
   });
 
   it("uses one immutable model and records it on the assistant message", async () => {
-    qMock.mockResolvedValue([]);
     listDatasetCatalogMock.mockResolvedValue({ datasets: [], total: 0, returned: 0, omitted: 0, truncated: false });
     streamingChatMock.mockResolvedValue({
       choices: [{ message: { role: "assistant", content: "final answer", tool_calls: [] } }],
@@ -89,7 +92,6 @@ describe("runAgent model snapshot", () => {
         score: 0.91,
       },
     ];
-    qMock.mockResolvedValue([]);
     listDatasetCatalogMock.mockResolvedValue({ datasets: [], total: 0, returned: 0, omitted: 0, truncated: false });
     streamingChatMock
       .mockResolvedValueOnce({
@@ -157,7 +159,6 @@ describe("runAgent model snapshot", () => {
         truncated: false,
       },
     ];
-    qMock.mockResolvedValue([]);
     listDatasetCatalogMock.mockResolvedValue({ datasets: [], total: 0, returned: 0, omitted: 0, truncated: false });
     streamingChatMock
       .mockResolvedValueOnce({
@@ -229,7 +230,6 @@ describe("runAgent model snapshot", () => {
         score: 0.91,
       },
     ];
-    qMock.mockResolvedValue([]);
     listDatasetCatalogMock.mockResolvedValue({ datasets: [], total: 0, returned: 0, omitted: 0, truncated: false });
     for (let index = 0; index < 8; index += 1) {
       streamingChatMock.mockResolvedValueOnce({
@@ -451,7 +451,7 @@ describe("runAgent model snapshot", () => {
   });
 
   it("runs with repeated control-heavy legal history without exceeding the provider budget", async () => {
-    qMock.mockResolvedValueOnce([
+    historyMock.mockResolvedValueOnce([
       { role: "user", content: "\u0001".repeat(32_000) },
       { role: "assistant", content: "\u0001".repeat(32_000) },
     ]);
@@ -484,7 +484,7 @@ describe("runAgent model snapshot", () => {
 
   it("preserves repeated legal astral history under the same serialized budget", async () => {
     const emoji = "😀".repeat(32_000);
-    qMock.mockResolvedValueOnce([
+    historyMock.mockResolvedValueOnce([
       { role: "user", content: emoji },
       { role: "assistant", content: emoji },
       { role: "user", content: emoji },

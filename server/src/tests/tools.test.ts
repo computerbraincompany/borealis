@@ -3,10 +3,16 @@ import os from "node:os";
 import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("../db.js", () => ({ q: vi.fn(), pool: { connect: vi.fn() } }));
+const runStoreMock = vi.hoisted(() => ({
+  insertPendingChart: vi.fn(),
+  insertPendingReport: vi.fn(),
+  getPendingChart: vi.fn(),
+}));
+
+vi.mock("../storageRuntime.js", () => ({ storageRuntime: () => ({ runs: runStoreMock }) }));
 vi.mock("../retrieve.js", () => ({ retrieve: vi.fn() }));
-vi.mock("../pythonClient.js", () => ({
-  py: {
+vi.mock("../dataService.js", () => ({
+  dataService: {
     listDatasetCatalog: vi.fn(),
     query: vi.fn(),
     describe: vi.fn(),
@@ -16,9 +22,8 @@ vi.mock("../pythonClient.js", () => ({
   },
 }));
 
-import { pool, q } from "../db.js";
 import { config } from "../config.js";
-import { py } from "../pythonClient.js";
+import { dataService } from "../dataService.js";
 import { retrieve } from "../retrieve.js";
 import {
   TOOL_DEFS,
@@ -30,16 +35,13 @@ import {
 } from "../tools.js";
 import type { ResolvedSourceScope } from "../sourceScope.js";
 
-const qMock = vi.mocked(q);
-const connectMock = vi.mocked(pool.connect);
-let clientQuery: ReturnType<typeof vi.fn>;
 const retrieveMock = vi.mocked(retrieve);
-const listDatasetCatalogMock = vi.mocked(py.listDatasetCatalog);
-const queryMock = vi.mocked(py.query);
-const describeMock = vi.mocked(py.describe);
-const chartMock = vi.mocked(py.chart);
-const buildReportMock = vi.mocked(py.buildReport);
-const pdfMock = vi.mocked(py.pdf);
+const listDatasetCatalogMock = vi.mocked(dataService.listDatasetCatalog);
+const queryMock = vi.mocked(dataService.query);
+const describeMock = vi.mocked(dataService.describe);
+const chartMock = vi.mocked(dataService.chart);
+const buildReportMock = vi.mocked(dataService.buildReport);
+const pdfMock = vi.mocked(dataService.pdf);
 const SOURCE_A = "11111111-1111-4111-8111-111111111111";
 const SOURCE_B = "22222222-2222-4222-8222-222222222222";
 const CHART_A = "aaaaaaaa-1111-4111-8111-111111111111";
@@ -84,7 +86,12 @@ function context(chartIds: string[] = []): ToolRunContext {
 }
 
 beforeEach(() => {
-  qMock.mockReset();
+  runStoreMock.insertPendingChart.mockReset();
+  runStoreMock.insertPendingChart.mockResolvedValue({ id: "chart" });
+  runStoreMock.insertPendingReport.mockReset();
+  runStoreMock.insertPendingReport.mockResolvedValue({ id: "report" });
+  runStoreMock.getPendingChart.mockReset();
+  runStoreMock.getPendingChart.mockResolvedValue(undefined);
   retrieveMock.mockReset();
   listDatasetCatalogMock.mockReset();
   queryMock.mockReset();
@@ -92,15 +99,6 @@ beforeEach(() => {
   chartMock.mockReset();
   buildReportMock.mockReset();
   pdfMock.mockReset();
-  clientQuery = vi.fn(async (sql: string, params?: unknown[]) => {
-    if (sql.includes("SELECT status, cancel_requested")) {
-      return { rows: [{ status: "running", cancel_requested: false }] };
-    }
-    if (sql.includes("INSERT INTO reports")) return { rows: [{ id: params?.[0] }] };
-    return { rows: [] };
-  });
-  connectMock.mockReset();
-  connectMock.mockResolvedValue({ query: clientQuery, release: vi.fn() } as any);
 });
 
 describe("source-scoped tools", () => {
@@ -218,14 +216,14 @@ describe("persisted render artifacts", () => {
     });
     await executeTool("account", "render_chart", { spec: { type: "bar", title: "A" } }, context());
 
-    expect(clientQuery).toHaveBeenCalledWith(expect.stringContaining("png_base64"), [
-      expect.any(String),
-      "account",
-      "33333333-3333-4333-8333-333333333333",
-      JSON.stringify({ type: "bar", title: "A" }),
-      JSON.stringify({ series: [] }),
-      "png-canary",
-    ]);
+    expect(runStoreMock.insertPendingChart).toHaveBeenCalledWith({
+      id: expect.any(String),
+      accountId: "account",
+      runId: "33333333-3333-4333-8333-333333333333",
+      spec: { type: "bar", title: "A" },
+      echarts: { series: [] },
+      pngBase64: "png-canary",
+    });
   });
 
   it("does not publish a late chart result after its run signal is cancelled", async () => {
@@ -246,7 +244,7 @@ describe("persisted render artifacts", () => {
     release({ spec: { type: "bar", title: "Late" }, echarts: { series: [] }, png_base64: "late" });
 
     await expect(pending).rejects.toThrow("run cancelled");
-    expect(connectMock).not.toHaveBeenCalled();
+    expect(runStoreMock.insertPendingChart).not.toHaveBeenCalled();
     expect(runContext.chartIds).toEqual([]);
   });
 
@@ -256,19 +254,13 @@ describe("persisted render artifacts", () => {
       echarts: { series: [] },
       png_base64: "late",
     });
-    clientQuery.mockImplementation(async (sql: string) => {
-      if (sql.includes("SELECT status, cancel_requested")) {
-        return { rows: [{ status: "completed", cancel_requested: false }] };
-      }
-      return { rows: [] };
-    });
+    runStoreMock.insertPendingChart.mockRejectedValueOnce(new Error("run is no longer active"));
 
     await expect(
       executeTool("account", "render_chart", { spec: { type: "bar", title: "Too late" } }, context())
     ).rejects.toThrow("run is no longer active");
 
-    expect(clientQuery.mock.calls.some(([sql]) => String(sql).includes("INSERT INTO charts"))).toBe(false);
-    expect(clientQuery.mock.calls.some(([sql]) => sql === "ROLLBACK")).toBe(true);
+    expect(runStoreMock.insertPendingChart).toHaveBeenCalledOnce();
   });
 
   it("stores reports under exclusive account/report UUID directories", async () => {
@@ -292,12 +284,45 @@ describe("persisted render artifacts", () => {
         context()
       );
       expect(first.report_id).not.toBe(second.report_id);
-      const inserts = clientQuery.mock.calls.filter(([sql]) => String(sql).includes("INSERT INTO reports"));
+      const inserts = runStoreMock.insertPendingReport.mock.calls;
       expect(inserts).toHaveLength(2);
-      for (const [, params] of inserts) {
-        expect(params?.[6]).toBe(path.join(canonicalDirectory, SOURCE_A, String(params?.[0]), "report.html"));
-        expect(params?.[7]).toBe(path.join(canonicalDirectory, SOURCE_A, String(params?.[0]), "report.pdf"));
+      for (const [input] of inserts) {
+        expect(input.htmlPath).toBe(path.join(canonicalDirectory, SOURCE_A, String(input.id), "report.html"));
+        expect(input.pdfPath).toBe(path.join(canonicalDirectory, SOURCE_A, String(input.id), "report.pdf"));
       }
+    } finally {
+      (config as { reportDir: string }).reportDir = originalReportDir;
+      await fs.rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps unresolved chart ids out of the strict render payload", async () => {
+    const originalReportDir = config.reportDir;
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), "borealis-report-unresolved-test-"));
+    (config as { reportDir: string }).reportDir = directory;
+    buildReportMock.mockResolvedValue({ title: "Partial report", html: "<html>ok</html>" });
+    pdfMock.mockResolvedValue(Buffer.from("%PDF-test"));
+    try {
+      const result = await executeTool(
+        SOURCE_A,
+        "create_report",
+        {
+          title: "Partial report",
+          sections: [{ heading: "Summary", markdown: "body" }],
+          charts: [CHART_A],
+        },
+        context([])
+      );
+
+      expect(buildReportMock).toHaveBeenCalledWith(
+        expect.not.objectContaining({ unresolved_chart_ids: expect.anything() }),
+        undefined
+      );
+      expect(pdfMock).toHaveBeenCalledWith(
+        expect.not.objectContaining({ unresolved_chart_ids: expect.anything() }),
+        undefined
+      );
+      expect(result.unresolved_chart_ids).toEqual([CHART_A]);
     } finally {
       (config as { reportDir: string }).reportDir = originalReportDir;
       await fs.rm(directory, { recursive: true, force: true });
@@ -464,31 +489,36 @@ describe("retrieved evidence sanitizer", () => {
 });
 
 describe("makeReportPayload current-run chart resolution", () => {
-  beforeEach(() => qMock.mockReset());
-
   it("resolves a well-formed chart id created in this run", async () => {
-    qMock.mockResolvedValueOnce([{ spec: { type: "bar" } }]);
+    runStoreMock.getPendingChart.mockResolvedValueOnce({ id: CHART_A, spec: { type: "bar" } });
     const payload = await makeReportPayload("account-1", { charts: [CHART_A] }, context([CHART_A]));
     expect(payload.charts).toEqual([{ id: CHART_A, spec: { type: "bar" } }]);
     expect(payload).not.toHaveProperty("unresolved_chart_ids");
-    expect(qMock).toHaveBeenCalledWith(expect.stringContaining("id::text=$1"), [CHART_A, "account-1"]);
+    expect(runStoreMock.getPendingChart).toHaveBeenCalledWith(
+      "account-1",
+      "33333333-3333-4333-8333-333333333333",
+      CHART_A
+    );
   });
 
   it("resolves a dash-less prefix only inside the current run", async () => {
     const chartId = "abcdef01-2345-6789-abcd-ef0123456789";
     const raw = "abcdef012345";
-    qMock.mockResolvedValueOnce([{ spec: { type: "line" } }]);
+    runStoreMock.getPendingChart.mockResolvedValueOnce({ id: chartId, spec: { type: "line" } });
     const payload = await makeReportPayload("account-1", { charts: [raw] }, context([chartId]));
     expect(payload.charts).toEqual([{ id: chartId, spec: { type: "line" } }]);
-    expect(qMock).toHaveBeenCalledOnce();
-    expect(qMock.mock.calls[0][1]).toEqual([chartId, "account-1"]);
+    expect(runStoreMock.getPendingChart).toHaveBeenCalledWith(
+      "account-1",
+      "33333333-3333-4333-8333-333333333333",
+      chartId
+    );
   });
 
   it("does not query an account chart that was not created in this run", async () => {
     const payload = await makeReportPayload("account-1", { charts: [CHART_A] }, context([]));
     expect(payload.charts).toEqual([]);
     expect(payload.unresolved_chart_ids).toEqual([CHART_A]);
-    expect(qMock).not.toHaveBeenCalled();
+    expect(runStoreMock.getPendingChart).not.toHaveBeenCalled();
   });
 
   it("reports short garbage and ambiguous run prefixes as unresolved", async () => {
@@ -500,11 +530,11 @@ describe("makeReportPayload current-run chart resolution", () => {
       context([one, two])
     );
     expect(payload.unresolved_chart_ids).toEqual(["not-a-chart", "abcdef012345"]);
-    expect(qMock).not.toHaveBeenCalled();
+    expect(runStoreMock.getPendingChart).not.toHaveBeenCalled();
   });
 
   it("reports database failures as unresolved without throwing", async () => {
-    qMock.mockRejectedValueOnce(new Error("database unavailable"));
+    runStoreMock.getPendingChart.mockRejectedValueOnce(new Error("database unavailable"));
     const payload = await makeReportPayload("account-1", { charts: [CHART_A] }, context([CHART_A]));
     expect(payload.charts).toEqual([]);
     expect(payload.unresolved_chart_ids).toEqual([CHART_A]);
@@ -541,6 +571,6 @@ describe("makeReportPayload current-run chart resolution", () => {
         0
       )
     ).toBeLessThanOrEqual(1_000);
-    expect(qMock).not.toHaveBeenCalled();
+    expect(runStoreMock.getPendingChart).not.toHaveBeenCalled();
   });
 });

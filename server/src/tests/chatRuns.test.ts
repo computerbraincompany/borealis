@@ -1,7 +1,36 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("../db.js", () => ({ q: vi.fn(), pool: { connect: vi.fn() } }));
-vi.mock("../storageArtifacts.js", () => ({ removeReportArtifacts: vi.fn() }));
+const mocks = vi.hoisted(() => ({
+  readBeginStatus: vi.fn(),
+  requestCancel: vi.fn(),
+  finishRun: vi.fn(),
+  completeRunWithAssistant: vi.fn(),
+  recoverInterruptedRuns: vi.fn(),
+  listReportArtifactCleanupIntents: vi.fn(),
+  listOrphanedPendingRunGroups: vi.fn(),
+  listPendingReportCleanupPaths: vi.fn(),
+  deletePendingArtifactRows: vi.fn(),
+  completeReportArtifactCleanup: vi.fn(),
+  removeReportArtifacts: vi.fn(),
+}));
+
+vi.mock("../storageRuntime.js", () => ({
+  storageRuntime: () => ({
+    runs: {
+      readBeginStatus: mocks.readBeginStatus,
+      requestCancel: mocks.requestCancel,
+      finishRun: mocks.finishRun,
+      completeRunWithAssistant: mocks.completeRunWithAssistant,
+      recoverInterruptedRuns: mocks.recoverInterruptedRuns,
+      listReportArtifactCleanupIntents: mocks.listReportArtifactCleanupIntents,
+      listOrphanedPendingRunGroups: mocks.listOrphanedPendingRunGroups,
+      listPendingReportCleanupPaths: mocks.listPendingReportCleanupPaths,
+      deletePendingArtifactRows: mocks.deletePendingArtifactRows,
+    },
+  }),
+}));
+vi.mock("../reportCleanup.js", () => ({ completeReportArtifactCleanup: mocks.completeReportArtifactCleanup }));
+vi.mock("../storageArtifacts.js", () => ({ removeReportArtifacts: mocks.removeReportArtifacts }));
 
 import {
   beginRun,
@@ -12,183 +41,184 @@ import {
   recoverInterruptedRuns,
   sweepOrphanedPendingArtifacts,
 } from "../chatRuns.js";
-import { pool, q } from "../db.js";
-import { removeReportArtifacts } from "../storageArtifacts.js";
 
-const qMock = vi.mocked(q);
-const connectMock = vi.mocked(pool.connect);
-const removeReportArtifactsMock = vi.mocked(removeReportArtifacts);
+const completion = Object.freeze({
+  content: "durable answer",
+  meta: Object.freeze({
+    charts: [] as string[],
+    report: null,
+    model: "chat-model",
+    source_mode: "selected" as const,
+    source_ids: [] as string[],
+    evidence: [],
+    query_results: [],
+  }),
+});
+
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
 
 beforeEach(() => {
-  qMock.mockReset();
-  qMock.mockResolvedValue([]);
-  connectMock.mockReset();
-  removeReportArtifactsMock.mockReset();
-  removeReportArtifactsMock.mockResolvedValue(undefined);
+  for (const mock of Object.values(mocks)) mock.mockReset();
+  mocks.readBeginStatus.mockResolvedValue({ status: "running", cancelRequested: false, shouldAbort: false });
+  mocks.requestCancel.mockResolvedValue("cancelling");
+  mocks.finishRun.mockResolvedValue("failed");
+  mocks.recoverInterruptedRuns.mockResolvedValue(0);
+  mocks.listReportArtifactCleanupIntents.mockResolvedValue([]);
+  mocks.listOrphanedPendingRunGroups.mockResolvedValue([]);
+  mocks.listPendingReportCleanupPaths.mockResolvedValue([]);
+  mocks.deletePendingArtifactRows.mockResolvedValue({ reports: 0, charts: 0 });
+  mocks.completeReportArtifactCleanup.mockResolvedValue({ attempted: 0, completed: 0, failed: 0 });
+  mocks.removeReportArtifacts.mockResolvedValue(true);
 });
 
 describe("durable chat run lifecycle", () => {
-  it("cancels the in-memory signal only after an owned active row is updated", async () => {
-    qMock.mockResolvedValueOnce([{ status: "running", cancel_requested: false }]);
+  it("aborts only after the owned cancellation transition succeeds", async () => {
     const controller = await beginRun("account-1", "chat-1", "run-1");
-    qMock.mockResolvedValueOnce([{ id: "run-1" }]);
+    const transition = deferred<"cancelling">();
+    mocks.requestCancel.mockReturnValueOnce(transition.promise);
 
-    await expect(cancelRun("account-1", "chat-1", "run-1")).resolves.toBe("cancelling");
-    expect(controller.signal.aborted).toBe(true);
-    expect(qMock.mock.calls[1][0]).toContain("account_id=$3");
-  });
-
-  it("does not abort an unowned or inactive run", async () => {
-    qMock.mockResolvedValueOnce([{ status: "running", cancel_requested: false }]);
-    const controller = await beginRun("account-1", "chat-1", "run-2");
-    qMock.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
-    await expect(cancelRun("account-1", "chat-1", "run-2")).resolves.toBeNull();
+    const cancelling = cancelRun("account-1", "chat-1", "run-1");
     expect(controller.signal.aborted).toBe(false);
-    qMock.mockResolvedValueOnce([{ status: "failed" }]);
-    await finishRun("account-1", "chat-1", "run-2", "failed");
-  });
-
-  it("honors cancellation that was persisted before the controller was installed", async () => {
-    qMock.mockResolvedValueOnce([{ status: "cancelling", cancel_requested: true }]);
-    const controller = await beginRun("account-1", "chat-1", "run-before-cancel");
+    transition.resolve("cancelling");
+    await expect(cancelling).resolves.toBe("cancelling");
     expect(controller.signal.aborted).toBe(true);
+    expect(mocks.requestCancel).toHaveBeenCalledWith("account-1", "chat-1", "run-1");
   });
 
-  it("keeps the accepted executor cancellable when its setup read fails", async () => {
-    qMock.mockRejectedValueOnce(new Error("database unavailable"));
-    const controller = await beginRun("account-1", "chat-1", "run-setup-failure");
+  it("does not abort an unowned or already-terminal run", async () => {
+    const controller = await beginRun("account-1", "chat-1", "run-unowned");
+    mocks.requestCancel.mockResolvedValueOnce(null);
+    await expect(cancelRun("account-1", "chat-1", "run-unowned")).resolves.toBeNull();
+    expect(controller.signal.aborted).toBe(false);
+    mocks.finishRun.mockResolvedValueOnce("failed");
+    await finishRun("account-1", "chat-1", "run-unowned", "failed");
 
-    qMock.mockResolvedValueOnce([{ id: "run-setup-failure" }]);
-    await expect(cancelRun("account-1", "chat-1", "run-setup-failure")).resolves.toBe("cancelling");
-    expect(controller.signal.aborted).toBe(true);
+    const terminal = await beginRun("account-1", "chat-1", "run-terminal");
+    mocks.requestCancel.mockResolvedValueOnce("completed");
+    await expect(cancelRun("account-1", "chat-1", "run-terminal")).resolves.toBe("completed");
+    expect(terminal.signal.aborted).toBe(false);
   });
 
-  it("retries a transient terminal write in-process and lets cancellation win", async () => {
-    qMock.mockResolvedValueOnce([{ status: "running", cancel_requested: false }]);
-    const controller = await beginRun("account-1", "chat-1", "run-terminal-retry");
-    qMock.mockRejectedValueOnce(new Error("database temporarily unavailable"));
-    const terminal = finishRunDurably("account-1", "chat-1", "run-terminal-retry", "failed", "AGENT_FAILED");
-    await vi.waitFor(() => expect(qMock).toHaveBeenCalledTimes(2));
-
-    qMock.mockResolvedValueOnce([{ id: "run-terminal-retry" }]);
-    await expect(cancelRun("account-1", "chat-1", "run-terminal-retry")).resolves.toBe("cancelling");
-    expect(controller.signal.aborted).toBe(true);
-
-    qMock.mockResolvedValueOnce([{ status: "cancelled" }]);
-    await expect(terminal).resolves.toBe("cancelled");
-    expect(qMock.mock.calls[3][0]).toContain("cancel_requested");
-  });
-
-  it("does not overwrite a concurrently requested cancellation with completed", async () => {
-    qMock.mockResolvedValueOnce([{ status: "cancelled" }]);
-    await expect(finishRun("account-1", "chat-1", "run-race", "completed")).resolves.toBe("cancelled");
-    expect(qMock.mock.calls[0][0]).toContain("cancel_requested");
-  });
-
-  it.each(["completed", "failed", "cancelled"] as const)(
-    "returns terminal status %s idempotently for an owned run",
-    async (status) => {
-      qMock.mockResolvedValueOnce([]).mockResolvedValueOnce([{ status }]);
-      await expect(cancelRun("account-1", "chat-1", "run-terminal")).resolves.toBe(status);
-    }
-  );
-
-  it("marks interrupted active runs failed during startup recovery", async () => {
-    qMock.mockResolvedValueOnce([{ id: "one" }, { id: "two" }]);
-    await expect(recoverInterruptedRuns()).resolves.toBe(2);
-    expect(qMock.mock.calls[0][0]).toContain("SERVER_RESTARTED");
-  });
-
-  it("atomically refuses assistant publication when cancellation already owns the run", async () => {
-    const query = vi
-      .fn()
-      .mockResolvedValueOnce({ rows: [] })
-      .mockResolvedValueOnce({ rows: [{ status: "cancelling", cancel_requested: true }] })
-      .mockResolvedValueOnce({ rows: [] })
-      .mockResolvedValueOnce({ rows: [] });
-    connectMock.mockResolvedValueOnce({ query, release: vi.fn() } as any);
-
-    const result = await completeRunWithAssistant("account-1", "chat-1", "run-cancelled", {
-      content: "must not persist",
-      meta: {
-        charts: ["11111111-1111-4111-8111-111111111111"],
-        report: "22222222-2222-4222-8222-222222222222",
-        model: "chat-model",
-        source_mode: "selected",
-        source_ids: [],
-        evidence: [],
-        query_results: [],
-      },
+  it("refuses execution when persisted cancellation exists or the setup read fails", async () => {
+    mocks.readBeginStatus.mockResolvedValueOnce({
+      status: "cancelling",
+      cancelRequested: true,
+      shouldAbort: true,
     });
+    expect((await beginRun("account-1", "chat-1", "run-cancelled")).signal.aborted).toBe(true);
 
-    expect(result).toEqual({ status: "cancelled" });
-    expect(query.mock.calls.some(([sql]) => String(sql).includes("INSERT INTO messages"))).toBe(false);
-    expect(query.mock.calls.some(([sql]) => String(sql).includes("status='published'"))).toBe(false);
-    expect(query.mock.calls.at(-1)?.[0]).toBe("COMMIT");
+    mocks.readBeginStatus.mockRejectedValueOnce(new Error("storage unavailable"));
+    expect((await beginRun("account-1", "chat-1", "run-unproven")).signal.aborted).toBe(true);
   });
 
-  it("publishes referenced artifacts, assistant message, and completion in one locked transaction", async () => {
-    const chartId = "11111111-1111-4111-8111-111111111111";
-    const reportId = "22222222-2222-4222-8222-222222222222";
-    const query = vi.fn(async (sql: string) => {
-      if (sql.includes("SELECT status, cancel_requested")) {
-        return { rows: [{ status: "running", cancel_requested: false }] };
-      }
-      if (sql.includes("UPDATE charts SET status='published'")) return { rows: [{ id: chartId }] };
-      if (sql.includes("UPDATE reports SET status='published'")) return { rows: [{ id: reportId }] };
-      if (sql.includes("INSERT INTO messages")) return { rows: [{ id: 42 }] };
-      if (sql.includes("UPDATE chat_runs SET status='completed'")) return { rows: [{ id: "run-complete" }] };
-      return { rows: [] };
-    });
-    connectMock.mockResolvedValueOnce({ query, release: vi.fn() } as any);
-
-    const result = await completeRunWithAssistant("account-1", "chat-1", "run-complete", {
-      content: "durable answer",
-      meta: {
-        charts: [chartId],
-        report: reportId,
-        model: "chat-model",
-        source_mode: "selected",
-        source_ids: [],
-        evidence: [],
-        query_results: [],
-      },
-    });
-
-    expect(result).toMatchObject({ status: "completed", message: { id: 42, content: "durable answer" } });
-    const sql = query.mock.calls.map(([statement]) => String(statement));
-    expect(sql).toEqual(
-      expect.arrayContaining([
-        expect.stringContaining("UPDATE charts SET status='published'"),
-        expect.stringContaining("UPDATE reports SET status='published'"),
-        expect.stringContaining("INSERT INTO messages"),
-        expect.stringContaining("UPDATE chat_runs SET status='completed'"),
-      ])
+  it("retries terminalization in-process and preserves the store's cancellation decision", async () => {
+    mocks.finishRun.mockRejectedValueOnce(new Error("storage unavailable")).mockResolvedValueOnce("cancelled");
+    await expect(finishRunDurably("account-1", "chat-1", "run-retry", "failed", "AGENT_FAILED")).resolves.toBe(
+      "cancelled"
     );
-    expect(sql.findIndex((statement) => statement.includes("UPDATE charts SET status='published'"))).toBeLessThan(
-      sql.findIndex((statement) => statement.includes("INSERT INTO messages"))
-    );
-    expect(sql.findIndex((statement) => statement.includes("INSERT INTO messages"))).toBeLessThan(
-      sql.findIndex((statement) => statement.includes("UPDATE chat_runs SET status='completed'"))
-    );
-    expect(sql.at(-1)).toBe("COMMIT");
+    expect(mocks.finishRun).toHaveBeenCalledTimes(2);
   });
 
-  it("sweeps pre-existing terminal-run pending report files before deleting their rows", async () => {
-    qMock
-      .mockResolvedValueOnce([{ account_id: "account-1", run_id: "run-terminal" }])
-      .mockResolvedValueOnce([{ id: "report-1", html_path: "/safe/report.html", pdf_path: "/safe/report.pdf" }])
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([]);
-
-    await expect(sweepOrphanedPendingArtifacts()).resolves.toBe(1);
-
-    expect(removeReportArtifactsMock).toHaveBeenCalledWith({
+  it("publishes the store result and completes its durable report cleanup intents", async () => {
+    const intent = {
+      id: "report-1",
       accountId: "account-1",
-      reportId: "report-1",
+      runId: "run-complete",
+      htmlPath: "/safe/report.html",
+      pdfPath: "/safe/report.pdf",
+      attempts: 0,
+      lastError: null,
+      createdAt: "2026-08-26T00:00:00.000Z",
+      updatedAt: "2026-08-26T00:00:00.000Z",
+    };
+    mocks.completeRunWithAssistant.mockResolvedValueOnce({
+      status: "completed",
+      message: { id: 42, content: completion.content, meta: completion.meta },
+      reportCleanupIntents: [intent],
+    });
+
+    await expect(completeRunWithAssistant("account-1", "chat-1", "run-complete", completion)).resolves.toMatchObject({
+      status: "completed",
+      message: { id: 42, content: "durable answer" },
+    });
+    expect(mocks.completeReportArtifactCleanup).toHaveBeenCalledWith([intent]);
+  });
+
+  it("never publishes after cancellation and sweeps only observed pending paths", async () => {
+    const pending = {
+      id: "report-pending",
+      accountId: "account-1",
+      runId: "run-cancelled",
+      htmlPath: "/safe/report.html",
+      pdfPath: "/safe/report.pdf",
+    };
+    mocks.completeRunWithAssistant.mockResolvedValueOnce({ status: "cancelled", pendingReportCleanup: [pending] });
+    mocks.listPendingReportCleanupPaths.mockResolvedValueOnce([pending]);
+    mocks.deletePendingArtifactRows.mockResolvedValueOnce({ reports: 1, charts: 0 });
+
+    await expect(completeRunWithAssistant("account-1", "chat-1", "run-cancelled", completion)).resolves.toEqual({
+      status: "cancelled",
+    });
+    expect(mocks.completeReportArtifactCleanup).not.toHaveBeenCalled();
+    expect(mocks.removeReportArtifacts).toHaveBeenCalledWith({
+      accountId: "account-1",
+      reportId: "report-pending",
       htmlPath: "/safe/report.html",
       pdfPath: "/safe/report.pdf",
     });
-    expect(qMock.mock.calls[2][0]).toContain("DELETE FROM reports");
+    expect(mocks.deletePendingArtifactRows).toHaveBeenCalledWith("account-1", "run-cancelled", [pending]);
+  });
+
+  it("acknowledges only successful pending report removals and retains failures", async () => {
+    const success = {
+      id: "success",
+      accountId: "account-1",
+      runId: "run-terminal",
+      htmlPath: "/safe/success.html",
+      pdfPath: null,
+    };
+    const failure = { ...success, id: "failure", htmlPath: "/unsafe/failure.html" };
+    mocks.listOrphanedPendingRunGroups.mockResolvedValueOnce([
+      { accountId: "account-1", runId: "run-terminal", reportCount: 2, chartCount: 1 },
+    ]);
+    mocks.listPendingReportCleanupPaths.mockResolvedValueOnce([success, failure]);
+    mocks.removeReportArtifacts.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+    mocks.deletePendingArtifactRows.mockResolvedValueOnce({ reports: 1, charts: 1 });
+
+    await expect(sweepOrphanedPendingArtifacts()).resolves.toBe(1);
+    expect(mocks.deletePendingArtifactRows).toHaveBeenCalledWith("account-1", "run-terminal", [success]);
+  });
+
+  it("treats a legacy pending report with no paths as already removed", async () => {
+    const pending = { id: "pathless", accountId: "account-1", runId: null, htmlPath: null, pdfPath: null };
+    mocks.listOrphanedPendingRunGroups.mockResolvedValueOnce([
+      { accountId: "account-1", runId: null, reportCount: 1, chartCount: 0 },
+    ]);
+    mocks.listPendingReportCleanupPaths.mockResolvedValueOnce([pending]);
+
+    await sweepOrphanedPendingArtifacts();
+    expect(mocks.removeReportArtifacts).not.toHaveBeenCalled();
+    expect(mocks.deletePendingArtifactRows).toHaveBeenCalledWith("account-1", null, [pending]);
+  });
+
+  it("recovers runs without starting a pump and paginates the durable cleanup queue", async () => {
+    const first = Array.from({ length: 100 }, (_, index) => ({
+      id: `report-${index}`,
+      accountId: "account-1",
+    }));
+    const second = [{ id: "report-100", accountId: "account-1" }];
+    mocks.recoverInterruptedRuns.mockResolvedValueOnce(2);
+    mocks.listReportArtifactCleanupIntents.mockResolvedValueOnce(first).mockResolvedValueOnce(second);
+
+    await expect(recoverInterruptedRuns()).resolves.toBe(2);
+    expect(mocks.completeReportArtifactCleanup).toHaveBeenNthCalledWith(1, first);
+    expect(mocks.completeReportArtifactCleanup).toHaveBeenNthCalledWith(2, second);
+    expect(mocks.listOrphanedPendingRunGroups).toHaveBeenCalledOnce();
   });
 });

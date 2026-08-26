@@ -1,5 +1,6 @@
 import { ChevronUp, LogOut, Monitor, Moon, Settings2, Sun, SunMoon } from "lucide-react";
 import { clearSession, getUser } from "@/lib/api";
+import { hasDesktopBridge } from "@/lib/desktopBootstrap";
 import { useTheme, type ThemeChoice } from "@/components/ThemeProvider";
 import {
   DropdownMenu,
@@ -32,6 +33,7 @@ export function AccountMenu() {
   const initials = email.slice(0, 2).toLocaleUpperCase();
   const { theme, resolvedTheme, setTheme } = useTheme();
   const themeLabel = THEME_OPTIONS.find((option) => option.value === theme)?.label ?? "System";
+  const desktopWorkspace = hasDesktopBridge();
 
   const signOut = () => {
     clearSession();
@@ -119,15 +121,18 @@ export function AccountMenu() {
           </DropdownMenuSubContent>
         </DropdownMenuSub>
 
-        <DropdownMenuSeparator />
-
-        <DropdownMenuItem
-          onSelect={signOut}
-          className="min-h-10 px-2.5 text-destructive focus:bg-destructive/10 focus:text-destructive [&_svg]:text-destructive"
-        >
-          <LogOut />
-          <span className="flex-1">Sign out</span>
-        </DropdownMenuItem>
+        {!desktopWorkspace && (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem
+              onSelect={signOut}
+              className="min-h-10 px-2.5 text-destructive focus:bg-destructive/10 focus:text-destructive [&_svg]:text-destructive"
+            >
+              <LogOut />
+              <span className="flex-1">Sign out</span>
+            </DropdownMenuItem>
+          </>
+        )}
       </DropdownMenuContent>
     </DropdownMenu>
   );

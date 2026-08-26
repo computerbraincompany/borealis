@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { requireAuth } from "../auth.js";
-import { config } from "../config.js";
 import { discoverChatModels } from "../llm.js";
+import { getRuntimeSettings } from "../runtimeSettings.js";
 
 export async function modelRoutes(app: FastifyInstance): Promise<void> {
   app.get(
@@ -20,8 +20,12 @@ export async function modelRoutes(app: FastifyInstance): Promise<void> {
     },
     async (req, reply) => {
       const refresh = (req.query as { refresh?: unknown }).refresh === "1";
-      const result = await discoverChatModels({ refresh });
-      return reply.send({ models: result.models, default_model: config.chatModel, discovery: result.discovery });
+      const [result, runtime] = await Promise.all([discoverChatModels({ refresh }), getRuntimeSettings()]);
+      return reply.send({
+        models: result.models,
+        default_model: runtime.settings.chatModel,
+        discovery: result.discovery,
+      });
     }
   );
 }

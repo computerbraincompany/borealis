@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Shell } from "@/components/Shell";
 import { AuthPage } from "@/pages/AuthPage";
 import { ChatView } from "@/pages/ChatView";
@@ -7,6 +7,7 @@ import { ConnectorsView } from "@/pages/ConnectorsView";
 import { ReportsView } from "@/pages/ReportsView";
 import { SettingsView } from "@/pages/SettingsView";
 import { getUser } from "@/lib/api";
+import { hasDesktopBridge, initializeDesktopSession } from "@/lib/desktopBootstrap";
 
 function useHashRoute(): string {
   const [hash, setHash] = useState(() => window.location.hash);
@@ -24,8 +25,26 @@ function useHashRoute(): string {
 export default function App() {
   const route = useHashRoute();
   const lastWorkspaceRoute = useRef("/chat");
+  const desktopStartup = useRef(hasDesktopBridge());
+  const [desktopSessionReady, setDesktopSessionReady] = useState(!desktopStartup.current);
+
+  useEffect(() => {
+    if (!desktopStartup.current) return;
+    let mounted = true;
+    void initializeDesktopSession().then(() => {
+      if (mounted) setDesktopSessionReady(true);
+    });
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  // Do not mount authenticated pages (and their API effects) until the desktop
+  // preload has handed off its one-time bootstrap session.
+  if (!desktopSessionReady) return null;
+
   const user = getUser();
-  const loggedIn = useMemo(() => Boolean(user && user.id), [user]);
+  const loggedIn = Boolean(user && user.id);
 
   if (!loggedIn) {
     return <AuthPage />;

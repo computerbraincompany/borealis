@@ -1,54 +1,53 @@
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import Fastify, { type FastifyInstance } from "fastify";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("../db.js", () => ({
-  q: vi.fn(),
-  pool: { connect: vi.fn(), query: vi.fn() },
-}));
 vi.mock("../agent.js", () => ({ runAgent: vi.fn() }));
 vi.mock("../ingest.js", () => ({
-  processDatasetCacheCleanup: vi.fn(),
-  reserveDatasetCacheCleanup: vi.fn(),
   wakeConnectorPrepareWorkers: vi.fn(),
   wakeIngestionWorkers: vi.fn(),
   isTabularSource: vi.fn(() => true),
   sanitizeDatasetName: vi.fn((name: string) => name),
 }));
-vi.mock("../pythonClient.js", () => ({
-  PythonServiceError: class PythonServiceError extends Error {
+vi.mock("../dataService.js", () => ({
+  DataServiceError: class DataServiceError extends Error {
     constructor(readonly status: number) {
       super("data service error");
     }
   },
-  py: {
+  dataService: {
     prepareDatasetRefresh: vi.fn(),
     abortDatasetRefresh: vi.fn(),
     deactivateDatasetLocation: vi.fn(),
     cleanupDatasetCache: vi.fn(),
+    listDatasetSummaries: vi.fn(async () => []),
   },
 }));
 
 import { signToken } from "../auth.js";
-import { q } from "../db.js";
-import { pool } from "../db.js";
-import { processDatasetCacheCleanup, reserveDatasetCacheCleanup, wakeIngestionWorkers } from "../ingest.js";
-import { py } from "../pythonClient.js";
+import { encodeJson } from "../db/codecs.js";
+import type { CreateConnectorInput } from "../db/stores/sourceStore.js";
+import { DataServiceError, dataService } from "../dataService.js";
+import { wakeConnectorPrepareWorkers, wakeIngestionWorkers } from "../ingest.js";
 import { routes } from "../routes.js";
+import { closeStorageRuntime, initializeStorageRuntime, storageRuntime } from "../storageRuntime.js";
 
 const ACCOUNT = "11111111-1111-4111-8111-111111111111";
 const CONNECTOR = "22222222-2222-4222-8222-222222222222";
 const SOURCE = "33333333-3333-4333-8333-333333333333";
 const auth = { authorization: `Bearer ${signToken({ userId: ACCOUNT, email: "owner@example.test" })}` };
-const qMock = vi.mocked(q);
-const prepareMock = vi.mocked(py.prepareDatasetRefresh);
-const abortMock = vi.mocked(py.abortDatasetRefresh);
-const reserveCleanupMock = vi.mocked(reserveDatasetCacheCleanup);
-const processCleanupMock = vi.mocked(processDatasetCacheCleanup);
+const prepareMock = vi.mocked(dataService.prepareDatasetRefresh);
+const abortMock = vi.mocked(dataService.abortDatasetRefresh);
+const deactivateMock = vi.mocked(dataService.deactivateDatasetLocation);
+const cacheCleanupMock = vi.mocked(dataService.cleanupDatasetCache);
 const wakeMock = vi.mocked(wakeIngestionWorkers);
-const connectMock = vi.mocked(pool.connect);
+const wakePrepareMock = vi.mocked(wakeConnectorPrepareWorkers);
 const apps: FastifyInstance[] = [];
+let runtimeDirectory = "";
 
-async function buildApp() {
+async function buildApp(): Promise<FastifyInstance> {
   const app = Fastify();
   apps.push(app);
   await routes(app);
@@ -56,22 +55,7 @@ async function buildApp() {
   return app;
 }
 
-function syncReservationClient(source: any) {
-  return {
-    query: vi.fn(async (sql: string) => {
-      if (sql.includes("UPDATE connectors SET sync_status='syncing'")) {
-        return { rows: [{ id: CONNECTOR, sync_status: "syncing" }] };
-      }
-      if (sql.includes("SELECT id, file_path")) return { rows: [source] };
-      if (sql.includes("FROM chat_runs")) return { rows: [] };
-      return { rows: [] };
-    }),
-    release: vi.fn(),
-  };
-}
-
-beforeEach(() => {
-  qMock.mockReset();
+beforeEach(async () => {
   prepareMock.mockReset();
   prepareMock.mockImplementation(async (_account, _name, version, _url, _original, expectedFormat) => ({
     version,
@@ -82,16 +66,30 @@ beforeEach(() => {
   }));
   abortMock.mockReset();
   abortMock.mockResolvedValue({ status: "deleted" });
-  reserveCleanupMock.mockReset();
-  reserveCleanupMock.mockResolvedValue(undefined);
-  processCleanupMock.mockReset();
-  processCleanupMock.mockResolvedValue(0);
+  deactivateMock.mockReset();
+  deactivateMock.mockResolvedValue({ status: "unchanged" });
+  cacheCleanupMock.mockReset();
+  cacheCleanupMock.mockResolvedValue({ status: "missing" });
   wakeMock.mockReset();
-  connectMock.mockReset();
+  wakePrepareMock.mockReset();
+  runtimeDirectory = await fs.mkdtemp(path.join(os.tmpdir(), "borealis-connector-routes-"));
+  const runtime = await initializeStorageRuntime({
+    sqlitePath: path.join(runtimeDirectory, "ledger.sqlite"),
+    lanceDirectory: path.join(runtimeDirectory, "lancedb"),
+    embeddingDimension: 3,
+  });
+  await runtime.ledger.run(`INSERT INTO users (id,email,password_hash) VALUES (?,?,?)`, [
+    ACCOUNT,
+    "owner@example.test",
+    "hash",
+  ]);
 });
 
 afterEach(async () => {
   await Promise.all(apps.splice(0).map((app) => app.close()));
+  await closeStorageRuntime();
+  if (runtimeDirectory) await fs.rm(runtimeDirectory, { recursive: true, force: true });
+  runtimeDirectory = "";
 });
 
 describe("connector synchronization", () => {
@@ -103,70 +101,45 @@ describe("connector synchronization", () => {
         method: "POST",
         url: "/api/connectors",
         headers: auth,
-        payload: {
-          display_name: "Ledger",
-          target_table: targetTable,
-          type: "url_csv",
-          config: { url: "https://example.invalid/ledger.csv" },
-        },
+        payload: connectorPayload(targetTable),
       });
       expect(response.statusCode).toBe(400);
-      expect(connectMock).not.toHaveBeenCalled();
-      expect(qMock).not.toHaveBeenCalled();
+      expect(prepareMock).not.toHaveBeenCalled();
+      await expect(storageRuntime().sources.listConnectors(ACCOUNT)).resolves.toEqual([]);
     }
   );
 
-  it("returns a conflict before Python mutation when the reserved table identity already exists", async () => {
-    const client = {
-      query: vi
-        .fn()
-        .mockResolvedValueOnce({ rows: [] })
-        .mockResolvedValueOnce({ rows: [] })
-        .mockResolvedValueOnce({ rows: [{ exists: 1 }] })
-        .mockResolvedValueOnce({ rows: [] }),
-      release: vi.fn(),
-    };
-    connectMock.mockResolvedValueOnce(client as any);
+  it("returns a conflict before dataset mutation when the table identity exists", async () => {
+    await storageRuntime().sources.createSource(ACCOUNT, {
+      id: SOURCE,
+      name: "ledger",
+      kind: "tabular",
+      displayName: "Ledger.csv",
+    });
     const app = await buildApp();
+
     const response = await app.inject({
       method: "POST",
       url: "/api/connectors",
       headers: auth,
-      payload: {
-        display_name: "Ledger",
-        target_table: "ledger",
-        type: "url_csv",
-        config: { url: "https://example.invalid/ledger.csv" },
-      },
+      payload: connectorPayload("ledger"),
     });
+
     expect(response.statusCode).toBe(409);
     expect(prepareMock).not.toHaveBeenCalled();
-    expect(client.release).toHaveBeenCalledOnce();
+    await expect(storageRuntime().sources.listConnectors(ACCOUNT)).resolves.toEqual([]);
   });
 
   it.each([
     ["url_json", "events", "https://example.invalid/events.json?signature=secret", "json"],
     ["url_csv", "ledger", "https://example.invalid/ledger.csv", "csv"],
   ] as const)("stages an immutable %s refresh before durable indexing", async (type, table, url, format) => {
-    const connector = {
-      id: CONNECTOR,
-      account_id: ACCOUNT,
-      name: "Feed",
+    await storageRuntime().sources.createConnector(ACCOUNT, {
+      ...connectorStoreInput(table, "idle"),
       type,
       config: { url },
-      target_table: table,
-      sync_status: "idle",
-    };
-    const source = {
-      id: SOURCE,
-      file_path: `/safe/cache/previous.${format}`,
-      name: table,
-      kind: "tabular",
-      status: "ready",
-    };
-    const client = syncReservationClient(source);
-    connectMock.mockResolvedValueOnce(client as any);
-    qMock.mockResolvedValueOnce([connector]).mockResolvedValueOnce([{ id: CONNECTOR }]);
+      source: { ...connectorStoreInput(table, "idle").source, url },
+    });
     const app = await buildApp();
 
     const response = await app.inject({
@@ -184,33 +157,31 @@ describe("connector synchronization", () => {
       "Feed",
       format
     );
-    expect(client.query.mock.calls.some(([sql]) => String(sql).includes("status='index'"))).toBe(true);
-    expect(client.query.mock.calls.some(([sql]) => String(sql).includes("status='preparing'"))).toBe(true);
-    const preparingCall = client.query.mock.calls.findIndex(([sql]) => String(sql).includes("status='preparing'"));
-    const commitCall = client.query.mock.calls.findIndex(([sql]) => sql === "COMMIT");
-    expect(preparingCall).toBeGreaterThan(-1);
-    expect(commitCall).toBeGreaterThan(preparingCall);
-    expect(client.query.mock.invocationCallOrder[commitCall]).toBeLessThan(prepareMock.mock.invocationCallOrder[0]);
-    expect(qMock.mock.calls[1][0]).toContain("status='pending'");
+    await expect(storageRuntime().sources.getConnector(ACCOUNT, CONNECTOR)).resolves.toMatchObject({
+      syncStatus: "indexing",
+    });
+    const source = await storageRuntime().sources.getSource(ACCOUNT, SOURCE);
+    expect(source).toMatchObject({
+      status: "index",
+      meta: expect.objectContaining({
+        connector_candidate_location: expect.stringContaining(`/safe/cache/`),
+        connector_activation_previous_location: "/safe/cache/previous.csv",
+      }),
+    });
+    await expect(storageRuntime().ingestion.getJob(ACCOUNT, SOURCE)).resolves.toMatchObject({
+      generation: 1,
+      status: "pending",
+      leaseToken: null,
+    });
     expect(wakeMock).toHaveBeenCalledOnce();
   });
 
-  it("terminalizes sync without a name-only mutation when the reserved source disappeared", async () => {
-    const connector = {
-      id: CONNECTOR,
-      account_id: ACCOUNT,
-      name: "Ledger",
-      type: "url_csv",
-      config: { url: "https://example.invalid/ledger.csv" },
-      target_table: "ledger",
-      sync_status: "idle",
-    };
-    const client = syncReservationClient(undefined);
-    connectMock.mockResolvedValueOnce(client as any);
-    qMock
-      .mockResolvedValueOnce([connector])
-      .mockResolvedValueOnce([{ id: CONNECTOR }])
-      .mockResolvedValueOnce([]);
+  it("terminalizes a sync without name-only mutation when the owned source is missing", async () => {
+    await storageRuntime().ledger.run(
+      `INSERT INTO connectors (id,account_id,name,type,config,target_table,sync_status)
+       VALUES (?,?,?,?,?,?,'idle')`,
+      [CONNECTOR, ACCOUNT, "Ledger", "url_csv", encodeJson({ url: "https://example.invalid/ledger.csv" }), "ledger"]
+    );
     const app = await buildApp();
 
     const response = await app.inject({
@@ -220,141 +191,170 @@ describe("connector synchronization", () => {
     });
 
     expect(response.statusCode).toBe(422);
-    expect(qMock.mock.calls[1][0]).toContain("sync_status='error'");
     expect(prepareMock).not.toHaveBeenCalled();
+    await expect(storageRuntime().sources.getConnector(ACCOUNT, CONNECTOR)).resolves.toMatchObject({
+      syncStatus: "error",
+      syncError: "Connector sync failed.",
+    });
   });
 
   it("keeps a new connector source non-ready until ingestion commits", async () => {
-    const connector = {
-      id: CONNECTOR,
-      account_id: ACCOUNT,
-      name: "Events feed",
-      type: "url_json",
-      config: { url: "https://example.invalid/events.json", name: "Events" },
-      target_table: "events_feed",
-    };
-    const createdSource = {
-      id: SOURCE,
-      file_path: null,
-      name: "events_feed",
-      kind: "tabular",
-      status: "index",
-    };
-    const createClient = {
-      query: vi.fn(async (sql: string) => ({
-        rows: sql.includes("INSERT INTO connectors")
-          ? [connector]
-          : sql.includes("INSERT INTO sources")
-            ? [createdSource]
-            : [],
-      })),
-      release: vi.fn(),
-    };
-    connectMock.mockResolvedValueOnce(createClient as any);
-    qMock.mockResolvedValueOnce([{ id: CONNECTOR }]).mockResolvedValueOnce([{ ...connector, sync_status: "indexing" }]);
     const app = await buildApp();
-
     const response = await app.inject({
       method: "POST",
       url: "/api/connectors",
       headers: auth,
       payload: {
-        display_name: connector.name,
-        target_table: connector.target_table,
-        type: connector.type,
-        config: { url: connector.config.url },
+        display_name: "Events feed",
+        target_table: "events_feed",
+        type: "url_json",
+        config: { url: "https://example.invalid/events.json" },
       },
     });
 
     expect(response.statusCode).toBe(200);
-    const sourceInsert = createClient.query.mock.calls.find(([sql]) => String(sql).includes("INSERT INTO sources"));
-    expect(sourceInsert?.[0]).toContain("'index'");
-    expect(sourceInsert?.[0]).not.toContain("'ready'");
-    const preparingCall = createClient.query.mock.calls.findIndex(([sql]) =>
-      String(sql).includes("INSERT INTO ingestion_jobs")
-    );
-    const commitCall = createClient.query.mock.calls.findIndex(([sql]) => sql === "COMMIT");
-    const preparingInvocation = createClient.query.mock.calls[preparingCall] as unknown as [string, unknown[]?];
-    expect(preparingCall).toBeGreaterThan(-1);
-    expect(preparingInvocation[0]).toContain("'preparing'");
-    expect(preparingInvocation[1]).toEqual([
-      expect.stringMatching(/^[0-9a-f-]{36}$/),
-      ACCOUNT,
-      expect.stringMatching(/^[0-9a-f-]{36}$/),
-    ]);
-    expect(commitCall).toBeGreaterThan(preparingCall);
-    expect(createClient.query.mock.invocationCallOrder[commitCall]).toBeLessThan(
-      prepareMock.mock.invocationCallOrder[0]
-    );
-    expect(connectMock).toHaveBeenCalledOnce();
+    expect(response.json()).toMatchObject({ target_table: "events_feed", sync_status: "indexing" });
+    const connectors = await storageRuntime().sources.listConnectors(ACCOUNT);
+    const source = (await storageRuntime().sources.listSources(ACCOUNT))[0];
+    expect(connectors).toHaveLength(1);
+    expect(source).toMatchObject({ name: "events_feed", status: "index", connectorId: connectors[0].id });
+    await expect(storageRuntime().ingestion.getJob(ACCOUNT, source.id)).resolves.toMatchObject({
+      generation: 1,
+      status: "pending",
+    });
     expect(prepareMock).toHaveBeenCalledWith(
       ACCOUNT,
       "events_feed",
       expect.any(String),
-      connector.config.url,
-      connector.name,
+      "https://example.invalid/events.json",
+      "Events feed",
       "json"
     );
     expect(wakeMock).toHaveBeenCalledOnce();
   });
 
-  it("deletes account-scoped source identity before deleting its connector", async () => {
-    const connector = {
-      id: CONNECTOR,
-      account_id: ACCOUNT,
-      target_table: "ledger",
-      sync_status: "idle",
-    };
-    const client = {
-      query: vi
-        .fn()
-        .mockResolvedValueOnce({ rows: [] })
-        .mockResolvedValueOnce({ rows: [connector] })
-        .mockResolvedValueOnce({
-          rows: [
-            {
-              id: SOURCE,
-              account_id: ACCOUNT,
-              name: "ledger",
-              connector: CONNECTOR,
-              file_path: "/safe/cache/current.csv",
-              meta: {
-                connector_previous_location: "/safe/cache/previous.csv",
-                connector_candidate_location: "/safe/cache/candidate.csv",
-                connector_activation_previous_location: "/safe/cache/activation-previous.csv",
-              },
-            },
-          ],
-        })
-        .mockResolvedValueOnce({ rows: [] })
-        .mockResolvedValueOnce({ rows: [] })
-        .mockResolvedValueOnce({ rows: [] })
-        .mockResolvedValueOnce({ rows: [] }),
-      release: vi.fn(),
-    };
-    connectMock.mockResolvedValueOnce(client as any);
+  it("defers an exactly-owned preparing generation after transient service failure", async () => {
+    await storageRuntime().sources.createConnector(ACCOUNT, connectorStoreInput("transient", "idle"));
+    prepareMock.mockRejectedValueOnce(new DataServiceError(503, "/datasets/refresh/prepare"));
+    const app = await buildApp();
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/connectors/${CONNECTOR}/sync`,
+      headers: auth,
+    });
+
+    expect(response.statusCode).toBe(422);
+    await expect(storageRuntime().ingestion.getJob(ACCOUNT, SOURCE)).resolves.toMatchObject({
+      generation: 1,
+      status: "preparing",
+      leaseToken: null,
+      lastError: "PREPARE_TRANSIENT",
+    });
+    await expect(storageRuntime().sources.getConnector(ACCOUNT, CONNECTOR)).resolves.toMatchObject({
+      syncStatus: "syncing",
+    });
+    expect(wakePrepareMock).toHaveBeenCalledOnce();
+  });
+
+  it("reserves cleanup, removes all connector vectors, and clears markers after exact cache cleanup", async () => {
+    const input = connectorStoreInput("ledger", "idle", {
+      filePath: "/safe/cache/current.csv",
+      meta: {
+        connector_previous_location: "/safe/cache/previous.csv",
+        connector_candidate_location: "/safe/cache/candidate.csv",
+        connector_activation_previous_location: "/safe/cache/activation-previous.csv",
+      },
+    });
+    await storageRuntime().sources.createConnector(ACCOUNT, input);
+    await storageRuntime().vectors.upsert([
+      { chunkId: randomUUIDLike(), accountId: ACCOUNT, sourceId: SOURCE, generation: 1, vector: [1, 0, 0] },
+    ]);
+    const vectorDelete = vi.spyOn(storageRuntime().vectors, "deleteSource");
     const app = await buildApp();
 
     const response = await app.inject({ method: "DELETE", url: `/api/connectors/${CONNECTOR}`, headers: auth });
 
     expect(response.statusCode).toBe(200);
-    expect(reserveCleanupMock).toHaveBeenCalledWith(client, ACCOUNT, "ledger", [
+    expect(vectorDelete).toHaveBeenCalledWith(SOURCE);
+    expect(deactivateMock.mock.calls.map((call) => call[2])).toEqual([
       "/safe/cache/current.csv",
       "/safe/cache/previous.csv",
       "/safe/cache/candidate.csv",
       "/safe/cache/activation-previous.csv",
     ]);
-    expect(client.query.mock.calls[2]).toEqual([
-      expect.stringContaining("WHERE connector=$1 AND account_id=$2 FOR UPDATE"),
-      [CONNECTOR, ACCOUNT],
+    expect(cacheCleanupMock.mock.calls.map((call) => call[2])).toEqual(
+      deactivateMock.mock.calls.map((call) => call[2])
+    );
+    expect(vectorDelete.mock.invocationCallOrder[0]).toBeLessThan(deactivateMock.mock.invocationCallOrder[0]);
+    await expect(storageRuntime().sources.getConnector(ACCOUNT, CONNECTOR)).resolves.toBeUndefined();
+    await expect(storageRuntime().sources.getSource(ACCOUNT, SOURCE)).resolves.toBeUndefined();
+    await expect(storageRuntime().sources.listPendingSourceDeletes(ACCOUNT)).resolves.toEqual([]);
+  });
+
+  it("rejects connector deletion while its exact source snapshot is active", async () => {
+    await storageRuntime().sources.createConnector(ACCOUNT, connectorStoreInput("active_delete", "idle"));
+    const chatId = "44444444-4444-4444-8444-444444444444";
+    const runId = "55555555-5555-4555-8555-555555555555";
+    await storageRuntime().ledger.run(`INSERT INTO chats (id,account_id,title,model) VALUES (?,?,?,?)`, [
+      chatId,
+      ACCOUNT,
+      "Active",
+      "qwen-chat",
     ]);
-    expect(client.query.mock.calls[4]).toEqual([
-      expect.stringContaining("DELETE FROM sources WHERE connector=$1 AND account_id=$2"),
-      [CONNECTOR, ACCOUNT],
+    await storageRuntime().ledger.run(`INSERT INTO chat_runs (id,account_id,chat_id,status) VALUES (?,?,?,'running')`, [
+      runId,
+      ACCOUNT,
+      chatId,
     ]);
-    expect(client.query.mock.calls[5]).toEqual([
-      expect.stringContaining("DELETE FROM connectors WHERE id=$1 AND account_id=$2"),
-      [CONNECTOR, ACCOUNT],
+    await storageRuntime().ledger.run(`INSERT INTO chat_run_sources (run_id,source_id,account_id) VALUES (?,?,?)`, [
+      runId,
+      SOURCE,
+      ACCOUNT,
     ]);
+    const app = await buildApp();
+
+    const response = await app.inject({ method: "DELETE", url: `/api/connectors/${CONNECTOR}`, headers: auth });
+
+    expect(response.statusCode).toBe(409);
+    await expect(storageRuntime().sources.getConnector(ACCOUNT, CONNECTOR)).resolves.toBeDefined();
+    await expect(storageRuntime().sources.listPendingSourceDeletes(ACCOUNT)).resolves.toEqual([]);
   });
 });
+
+function connectorPayload(targetTable: string) {
+  return {
+    display_name: "Ledger",
+    target_table: targetTable,
+    type: "url_csv",
+    config: { url: "https://example.invalid/ledger.csv" },
+  };
+}
+
+function connectorStoreInput(
+  targetTable: string,
+  syncStatus: CreateConnectorInput["syncStatus"],
+  sourceOverrides: Partial<CreateConnectorInput["source"]> = {}
+): CreateConnectorInput {
+  return {
+    id: CONNECTOR,
+    name: "Feed",
+    type: "url_csv",
+    config: { url: `https://example.invalid/${targetTable}.csv` },
+    targetTable,
+    syncStatus,
+    source: {
+      id: SOURCE,
+      displayName: "Feed",
+      url: `https://example.invalid/${targetTable}.csv`,
+      mime: "text/csv",
+      status: "ready",
+      meta: {},
+      ...sourceOverrides,
+    },
+  };
+}
+
+function randomUUIDLike(): string {
+  return "66666666-6666-4666-8666-666666666666";
+}

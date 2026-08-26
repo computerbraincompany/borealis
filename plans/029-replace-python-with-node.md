@@ -18,6 +18,7 @@
 ## Status
 
 - **Priority**: P2
+- **Status**: DONE (implemented and verified 2026-08-26)
 - **Effort**: XL
 - **Risk**: HIGH (a partial port would split DuckDB/PDF/XLSX contracts)
 - **Depends on**: `plans/028-deep-audit-remediation.md`
@@ -368,31 +369,45 @@ except env/docs that mention Python/LiteLLM.
 
 ## Done criteria
 
-- [ ] Phase 0 spike recorded; DuckDB statement guard, interrupt, and
+- [x] Phase 0 spike recorded; DuckDB statement guard, interrupt, and
   `enable_external_access` sequence match Python tests.
-- [ ] Ported `test_datasets.py` / connector-path / SSRF / CAS tests pass in
+- [x] Ported `test_datasets.py` / connector-path / SSRF / CAS tests pass in
   vitest.
-- [ ] `py.*` field names and 429/5xx retry behavior are unchanged through
+- [x] `py.*` field names and 429/5xx retry behavior are unchanged through
   Phase 4.
-- [ ] Chart normalize + ECharts option tests pass; web fallback comment
+- [x] Chart normalize + ECharts option tests pass; web fallback comment
   points at `server/src/data/charts.ts`.
-- [ ] Playwright PNG is a valid PNG; PDF starts with `%PDF`; route spy
+- [x] Playwright PNG is a valid PNG; PDF starts with `%PDF`; route spy
   proves no network/file fetch; tests are not skipped.
-- [ ] LiteLLM process is gone; LM Studio aliases still work; embeddings
+- [x] LiteLLM process is gone; LM Studio aliases still work; embeddings
   still send `encoding_format: "float"`.
-- [ ] `python/` is deleted. `rg -n "uvicorn|weasyprint|openpyxl|litellm|PYTHON_SERVICE_|BOREALIS_SERVICE_TOKEN|from openpyxl|uv run|LiteLLM gateway|Python data service" --glob '!plans/**' --glob '!docs/cohere-north/**'`
+- [x] `python/` is deleted. `rg -n "uvicorn|weasyprint|openpyxl|litellm|PYTHON_SERVICE_|BOREALIS_SERVICE_TOKEN|from openpyxl|uv run|LiteLLM gateway|Python data service" --glob '!plans/**' --glob '!docs/cohere-north/**'`
   returns no runtime/docs hits outside historical plan text.
-- [ ] `GET /api/health` still returns the same service **ids**; copy no
+- [x] `GET /api/health` still returns the same service **ids**; copy no
   longer names Python or LiteLLM. Public ingest failure **codes** are
   unchanged.
-- [ ] `rg -n '"xlsx"' server/package.json server/package-lock.json` returns
+- [x] `rg -n '"xlsx"' server/package.json server/package-lock.json` returns
   no SheetJS dependency.
-- [ ] `scripts/dev.sh` starts only postgres + server + web (plus requiring
-  LM Studio externally).
-- [ ] `scripts/verify.sh` and CI have no uv/Python/pango steps; CI installs
+- [x] At the Plan 029 boundary, `scripts/dev.sh` started only Postgres + server
+  + web (plus requiring LM Studio externally); Plan 030 subsequently removed
+  Postgres from this path.
+- [x] `scripts/verify.sh` and CI have no uv/Python/pango steps; CI installs
   Chromium.
-- [ ] `scripts/verify.sh` is green locally; CI includes the pgvector suite.
-- [ ] `plans/README.md` status row updated.
+- [x] At the Plan 029 boundary, `scripts/verify.sh` was green and CI included
+  the pgvector suite; Plan 030 subsequently replaced that suite.
+- [x] `plans/README.md` status row updated.
+
+These criteria record the Plan 029 boundary. Plan 030 subsequently replaced
+Postgres/pgvector and its guarded test path with SQLite + LanceDB.
+
+### Completion record (2026-08-26)
+
+The final Node-only tree passed the complete server, web, integration, build,
+lint, format, and Playwright renderer matrix before Plan 030 began. Python,
+FastAPI, WeasyPrint, uv, LiteLLM, service-token wiring, and ports 8000/4000 were
+removed. DuckDB, bounded XLSX parsing, charts, self-contained HTML, PNG/PDF
+rendering, direct model calls, aliases, health IDs, and public error contracts
+moved in-process without changing the public agent tool or SSE surface.
 
 ## STOP conditions
 
@@ -422,8 +437,10 @@ Stop and report (do not improvise) if:
 - After Phase 5, the chart-spec contract lives in `server/src/data/charts.ts`.
   Keep `web/src/lib/chartOption.ts` as a fallback for legacy rows missing
   `echarts`.
-- The in-memory DuckDB registry is still not durable. Postgres +
-  `restoreDatasets` remains the restart path.
+- At the Plan 029 boundary, the in-memory DuckDB registry reloaded from the
+  Postgres ledger through `restoreDatasets`. Plan 030 superseded that boundary:
+  SQLite is now authoritative, LanceDB boot repair reconciles vectors, and
+  `restoreDatasets` reloads ready tabular sources from SQLite.
 - New data-access tools must call the datasets worker with the immutable
   turn `allowed_tables`, not a freshly loaded account catalog.
 - Vendored `server/src/data/assets/echarts.min.js` must stay in lockstep

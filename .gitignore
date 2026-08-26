@@ -1,6 +1,9 @@
 node_modules/
 dist/
 build/
+!desktop/build/
+!desktop/build/entitlements.mac.plist
+!desktop/build/entitlements.mac.inherit.plist
 __pycache__/
 *.pyc
 .venv/
@@ -8,6 +11,10 @@ __pycache__/
 !.env.example
 *.duckdb
 *.duckdb.wal
+.borealis/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
 uploads/*
 !uploads/.gitkeep
 reports_storage/*

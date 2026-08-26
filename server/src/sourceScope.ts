@@ -1,26 +1,16 @@
-import type { QueryResult, QueryResultRow } from "pg";
-import { pool } from "./db.js";
+import {
+  SourceScopeUnavailableError,
+  StoreNotFoundError,
+  type AttachedChatSource,
+  type ChatSourceScopeInput,
+  type ResolvedChatSourceScope,
+} from "./db/stores/chatStore.js";
+import { storageRuntime } from "./storageRuntime.js";
 
 export type SourceScopeInput = { source_mode: "all" } | { source_mode: "selected"; source_ids: string[] };
 
-export interface AttachedSource {
-  id: string;
-  name: string;
-  display_name: string;
-  kind: string;
-  status: string;
-}
-
-export interface ResolvedSourceScope {
-  readonly mode: "all" | "selected";
-  readonly attached: readonly Readonly<AttachedSource>[];
-  readonly readySourceIds: readonly string[];
-  readonly readyTableNames: readonly string[];
-}
-
-export interface ScopeQueryable {
-  query<T extends QueryResultRow = any>(text: string, values?: any[]): Promise<QueryResult<T>>;
-}
+export type AttachedSource = AttachedChatSource;
+export type ResolvedSourceScope = ResolvedChatSourceScope;
 
 export class SourceScopeError extends Error {
   constructor(
@@ -56,7 +46,7 @@ export function parseSourceScopeInput(value: unknown): SourceScopeInput {
   if (keys.length !== 2 || keys[0] !== "source_ids" || keys[1] !== "source_mode") {
     throw new SourceScopeError(400, "invalid source scope");
   }
-  if (!Array.isArray(record.source_ids) || record.source_ids.length > 100) {
+  if (!Array.isArray(record.source_ids) || record.source_ids.length > MAX_SCOPED_SOURCES) {
     throw new SourceScopeError(400, "invalid source scope");
   }
 
@@ -75,81 +65,17 @@ export function parseSourceScopeInput(value: unknown): SourceScopeInput {
   return { source_mode: "selected", source_ids: deduped };
 }
 
-function freezeResolved(mode: "all" | "selected", rows: AttachedSource[]): ResolvedSourceScope {
-  const attached = rows.map((row) => Object.freeze({ ...row }));
-  const ready = attached.filter((source) => source.status === "ready");
-  return Object.freeze({
-    mode,
-    attached: Object.freeze(attached),
-    readySourceIds: Object.freeze(ready.map((source) => source.id)),
-    readyTableNames: Object.freeze(ready.filter((source) => source.kind === "tabular").map((source) => source.name)),
-  });
-}
-
-/** Resolve a chat's source state through the caller's database snapshot. */
-export async function resolveChatSourceScope(
-  client: ScopeQueryable,
-  accountId: string,
-  chatId: string,
-  options: { lockSources?: boolean } = {}
-): Promise<ResolvedSourceScope> {
-  const chatResult = await client.query<{ source_mode: "all" | "selected" }>(
-    `SELECT source_mode FROM chats WHERE id=$1 AND account_id=$2`,
-    [chatId, accountId]
-  );
-  const mode = chatResult.rows[0]?.source_mode;
-  if (!mode) throw new SourceScopeError(404, "chat not found");
-
-  const sourceLock = options.lockSources ? " FOR SHARE OF s" : "";
-  const sourceResult =
-    mode === "all"
-      ? await client.query<AttachedSource>(
-          `SELECT id, name, display_name, kind, status
-         FROM sources s
-         WHERE s.account_id=$1
-         ORDER BY lower(s.display_name), s.display_name, s.id
-         LIMIT ${MAX_SCOPED_SOURCES + 1}${sourceLock}`,
-          [accountId]
-        )
-      : await client.query<AttachedSource>(
-          `SELECT s.id, s.name, s.display_name, s.kind, s.status
-         FROM chat_sources cs
-         JOIN sources s
-           ON s.id=cs.source_id AND s.account_id=cs.account_id
-         WHERE cs.chat_id=$1 AND cs.account_id=$2
-         ORDER BY lower(s.display_name), s.display_name, s.id
-         LIMIT ${MAX_SCOPED_SOURCES + 1}${sourceLock}`,
-          [chatId, accountId]
-        );
-
-  if (sourceResult.rows.length > MAX_SCOPED_SOURCES) {
-    throw new SourceScopeError(409, `chat source scope exceeds ${MAX_SCOPED_SOURCES} sources; select a smaller set`);
-  }
-  return freezeResolved(mode, sourceResult.rows);
-}
-
-async function assertSourcesAvailable(
-  client: ScopeQueryable,
-  accountId: string,
-  sourceIds: readonly string[]
-): Promise<void> {
-  if (!sourceIds.length) return;
-  const result = await client.query<{ id: string }>(
-    `SELECT id
-     FROM sources
-     WHERE account_id=$1 AND id = ANY($2::uuid[])
-     FOR KEY SHARE`,
-    [accountId, [...sourceIds]]
-  );
-  const available = new Set(result.rows.map((row) => row.id.toLowerCase()));
-  if (sourceIds.some((id) => !available.has(id.toLowerCase()))) {
-    throw new SourceScopeError(400, "one or more sources are unavailable");
+export async function resolveChatSourceScope(accountId: string, chatId: string): Promise<ResolvedSourceScope> {
+  try {
+    return await storageRuntime().chats.resolveSourceScope(accountId, chatId);
+  } catch (error) {
+    throw publicSourceScopeError(error, "resolve");
   }
 }
 
 export interface ReplaceSourceScopeTestHooks {
-  /** Integration-test barrier. Production callers must omit this option. */
-  afterDelete?: () => Promise<void>;
+  /** Behavior-test barrier. Production callers must omit this option. */
+  readonly afterDelete?: () => Promise<void>;
 }
 
 /** Atomically replace a chat's source scope without exposing foreign IDs. */
@@ -159,54 +85,22 @@ export async function replaceChatSourceScope(
   rawInput: unknown,
   testHooks: ReplaceSourceScopeTestHooks = {}
 ): Promise<ResolvedSourceScope> {
-  const input = parseSourceScopeInput(rawInput);
-  const client = await pool.connect();
-  let inTransaction = false;
+  const input = parseSourceScopeInput(rawInput) as ChatSourceScopeInput;
   try {
-    await client.query("BEGIN");
-    inTransaction = true;
-    const owned = await client.query(`SELECT id FROM chats WHERE id=$1 AND account_id=$2 FOR NO KEY UPDATE`, [
-      chatId,
-      accountId,
-    ]);
-    if (!owned.rows.length) throw new SourceScopeError(404, "chat not found");
-
-    if (input.source_mode === "selected") {
-      await assertSourcesAvailable(client, accountId, input.source_ids);
-    }
-
-    await client.query(`DELETE FROM chat_sources WHERE chat_id=$1 AND account_id=$2`, [chatId, accountId]);
-    await testHooks.afterDelete?.();
-
-    if (input.source_mode === "selected" && input.source_ids.length) {
-      await client.query(
-        `INSERT INTO chat_sources (chat_id, source_id, account_id)
-         SELECT $1, source_id, $2 FROM unnest($3::uuid[]) AS selected(source_id)`,
-        [chatId, accountId, input.source_ids]
-      );
-    }
-    await client.query(`UPDATE chats SET source_mode=$3 WHERE id=$1 AND account_id=$2`, [
-      chatId,
-      accountId,
-      input.source_mode,
-    ]);
-
-    const resolved = await resolveChatSourceScope(client, accountId, chatId);
-    await client.query("COMMIT");
-    inTransaction = false;
-    return resolved;
+    return await storageRuntime().chats.replaceSourceScope(accountId, chatId, input, testHooks);
   } catch (error) {
-    if (inTransaction) await client.query("ROLLBACK").catch(() => {});
-    throw error;
-  } finally {
-    client.release();
+    throw publicSourceScopeError(error, "replace");
   }
 }
 
-export async function assertSelectedSourcesAvailable(
-  client: ScopeQueryable,
-  accountId: string,
-  sourceIds: readonly string[]
-): Promise<void> {
-  await assertSourcesAvailable(client, accountId, sourceIds);
+export function publicSourceScopeError(error: unknown, operation: "resolve" | "replace" | "accept"): unknown {
+  if (error instanceof SourceScopeError) return error;
+  if (error instanceof StoreNotFoundError) return new SourceScopeError(404, "chat not found");
+  if (error instanceof SourceScopeUnavailableError) {
+    return new SourceScopeError(
+      operation === "replace" && error.reason === "missing_sources" ? 400 : 409,
+      error.message
+    );
+  }
+  return error;
 }

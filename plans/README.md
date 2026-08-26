@@ -9,15 +9,17 @@ and 019 received pre-execution safety corrections at the same time.
 Plan 028 records the complete implementation of the subsequent 29-item deep
 engineering audit. The three separate product-direction options were excluded
 at the maintainer's request.
-Plan 029 is the next architecture pass: replace the FastAPI report service and
-the LiteLLM proxy with in-process TypeScript. It is written, not executed.
+Plan 029 completed the architecture pass that moved data/report work in-process
+and connected the Node server directly to OpenAI-compatible model endpoints.
 Plan 030 packages that Node-only tree as a macOS Electron app with a SQLite
 ledger, LanceDB embeddings, and cloud-optional LLM settings. It depends on
-029 and is also written, not executed. Do not ship sqlite-vec, pgvector, or
+029 and is now implemented and verified. Do not ship sqlite-vec, pgvector, or
 Docker Postgres on the desktop/dev happy path.
-Execute in the order below unless dependencies say otherwise. Each executor:
-read the plan fully before starting, honor its STOP conditions, and update your
-row when done.
+All plans 001–030 are now DONE; there is no active implementation plan in this
+ledger. Individual plan files remain historical execution specifications, so
+older unchecked command checklists are not the current status source of truth.
+For any future plan, read it fully, honor its STOP conditions, and update its
+index row when done.
 
 ## Execution order & status
 
@@ -78,7 +80,7 @@ between these steps as long as their own ordering is preserved.
 
 | Plan | Title | Priority | Effort | Depends on | Status |
 |------|-------|----------|--------|------------|--------|
-| 021  | Discover OpenAI-compatible models and persist the selected model per chat | P1 | M | 013, 014, 015, 019, 020 | DONE (63 server tests + web build; two-model live matrix pending availability) |
+| 021  | Discover OpenAI-compatible models and persist the selected model per chat | P1 | M | 013, 014, 015, 019, 020 | DONE (unit/web gates; later desktop E2E discovered 3 chat models) |
 | 022  | Select data sources per chat and enforce the immutable turn scope across prompt, RAG, DuckDB and reports | P1 | L | 013, 014, 015, 017, 019, 020, 021 | DONE (unit/integration/Python/web gates + live scoped API probes) |
 | 023  | Persistent Light/Dark/System app theme, semantic tokens and theme-aware chat charts | P2 | M | 013, 014, 019, 021, 022 | DONE (web build + static sweeps + Light/Dark/System chart/browser matrix) |
 
@@ -126,33 +128,34 @@ offline XLSX parsing, single-pass streaming agent rounds, durable cancellation,
 report preview, CI, cached chart PNGs, formatting/linting, and structured
 cross-service request context are now implemented rather than deferred.
 
-### Pass 9 (Python → TypeScript rewrite, commit `7d5576d`)
+### Pass 9 (Node.js runtime consolidation; planned at `7d5576d`)
 
 Written 2026-08-25 and reconciled to `130481b` (Settings modal, `GET
 /api/health`, public ingest failure codes; `130481b` is selection-chrome
-only). Do not execute until assigned.
-Ship the six phases sequentially; each must leave `scripts/verify.sh` green.
-Do not delete `python/` until Phase 5.
+only). Executed sequentially with the contract-preserving server/web and
+PostgreSQL integration gates green.
 
 | Plan | Title | Priority | Effort | Depends on | Status |
 |------|-------|----------|--------|------------|--------|
-| 029  | Replace Python 100% with TypeScript / Node.js (in-process DuckDB + Playwright PDF + LM Studio, no LiteLLM) | P2 | XL | 028 | TODO |
+| 029  | Replace Python 100% with TypeScript / Node.js (in-process DuckDB + Playwright PDF + direct LM Studio) | P2 | XL | 028 | DONE |
 
-### Pass 10 (macOS Electron desktop, commit `7d5576d`)
+### Pass 10 (macOS Electron desktop; planned at `7d5576d`)
 
 Written 2026-08-26 after the desktop brainstorm; reconciled to `130481b`.
-Do not execute until 029 is DONE. Electron without deleting Python would
-still ship uv, WeasyPrint, and LiteLLM inside the `.app`. Extend the
-existing Settings modal and `/api/health` — do not invent a second
-settings surface.
+Plan 029 is complete. Extend the existing Settings modal and `/api/health` — do
+not invent a second settings surface.
 
 | Plan | Title | Priority | Effort | Depends on | Status |
 |------|-------|----------|--------|------------|--------|
-| 030  | Ship Borealis as a macOS Electron app (SQLite ledger + LanceDB embeddings, cloud-optional LLM, no Docker) | P2 | XL | 029 | TODO |
+| 030  | Ship Borealis as a macOS Electron app (SQLite ledger + LanceDB embeddings, cloud-optional LLM, no Docker) | P2 | XL | 029 | DONE |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (one-line reason) | REJECTED (one-line rationale).
 
-## Dependency notes
+## Historical dependency notes
+
+The sequencing notes below describe the trees on which the plans were executed.
+Plans 029 and 030 later removed Python, Postgres/pgvector, and Docker from the
+current tree.
 
 - 008 and 009 both touch `python/app/reports.py` (`_render_section_markdown`,
   `build_html`) and `python/tests/test_reports.py`: do NOT run them concurrently.
@@ -253,16 +256,17 @@ Status values: TODO | IN PROGRESS | DONE | BLOCKED (one-line reason) | REJECTED 
 ## Historical Pass 2 deferrals
 
 These notes preserve why work was deferred at the time. Plan 028 supplied new
-evidence and explicitly supersedes the entries marked **SUPERSEDED** below.
+evidence and explicitly superseded many entries; Plans 029/030 later removed the
+Python/Postgres runtime beneath several others. File paths and commands in this
+section are historical, not instructions for the current tree.
 
 - **SUPERSEDED — SSRF via agent/connector fetches.** Plan 028 now requires
   explicit current-turn URLs, public-only DNS answers, pinned sockets, validated
   redirects, one total deadline, and byte limits at both outbound fetch surfaces.
-- **DuckDB "connection leak" on error paths** (`datasets.py` query/register/describe
-  skip `con.close()` on exception) — CPython refcounting deallocates the
-  connection as soon as the frame unwinds, so the leak is largely theoretical.
-  If `register`/`drop` (plan 011) switch to `_bare_connection`, a `try/finally`
-  could be added there opportunistically, but it's not worth a plan of its own.
+- **SUPERSEDED — DuckDB Python connection cleanup.** The original CPython
+  refcounting concern was low risk; Plan 029 removed that implementation. The
+  current DuckDB worker lifecycle is covered by Node shutdown and interruption
+  tests.
 - **Web step-end matched by tool name** (`ChatView.tsx:117-125`) — the server
   executes tools strictly sequentially (`await` per `runToolRound`), so two
   same-name step-ends can't interleave; the current matching is correct in
@@ -270,33 +274,31 @@ evidence and explicitly supersedes the entries marked **SUPERSEDED** below.
 - **SUPERSEDED — permissive credentialed CORS.** Plan 028 replaces origin
   reflection with an exact configured HTTP(S)-origin allowlist and tests both
   allowed and rejected preflights.
-- **Auth token in localStorage** — acceptable for the current local single-origin
-  MVP (no HttpOnly cookie path without a server change); becomes a real concern
-  only if report XSS (plan 009) or multi-tenancy changes the threat model.
+- **Partly superseded — auth token in localStorage.** Browser development keeps
+  the existing web-session behavior. Electron bootstrap tokens are stored only
+  in Chromium session storage and report HTML runs in an opaque-origin sandbox.
 - **SUPERSEDED — DuckDB `/query` local-file reads.** Query parsing now accepts
   exactly one read-only statement against the immutable table allowlist, loads
   trusted source files before disabling external access, and prevents model SQL
   from re-enabling it.
-- **echarts XSS advisory / esbuild dev-server advisory (web)** — dev-toolchain /
-  low-severity for a local app; revisit at the next echarts major bump (6.x is
-  breaking). Note: the vendored `python/app/assets/echarts.min.js` duplicates the
-  web echarts version — any future bump must update both or they drift.
-- **SUPERSEDED — Node `xlsx`, Pandas/OpenPyXL dependency shape.** Plan 028 removes
-  SheetJS and unused Pandas, delegates tabular extraction to Python, and uses
-  actively required OpenPyXL behind strict offline ZIP/workbook/output limits.
-  Legacy `.xls` support is deliberately dropped.
+- **ECharts/esbuild advisory context.** The current vendored asset lives at
+  `server/src/data/assets/echarts.min.js`; keep it in lockstep with the web
+  ECharts major. Revisit the frontend dependency at the next compatible major.
+- **SUPERSEDED — Node `xlsx`, Pandas/OpenPyXL dependency shape.** Plan 028 removed
+  SheetJS and bounded the then-Python path; Plan 029 subsequently replaced that
+  path with the offline ZIP-bounded ExcelJS reader. Legacy `.xls` remains
+  deliberately unsupported.
 - **SUPERSEDED — double LLM round trip.** Each agent iteration now uses one
   streaming completion that also merges tool calls, with focused stream tests.
 - **SUPERSEDED — report preview.** Authenticated HTML is rendered through an
   `allow-scripts` opaque-origin sandbox, with request abort and stale ownership.
 - **SUPERSEDED — client-only stop.** Chat runs are durable, cancellable at the
   server, rehydratable after reload, and expose an authoritative terminal event.
-- **Direction items, deferred** (product options, not bugs): in-app "load sample
-  data" button (SourcesView empty state already tells users to run
-  `python data/generate_sample.py`); visible retrieval grounding (tool step-end
-  already carries passages); connector edit/rename (no PATCH endpoint today).
-  The previously listed CI item is **SUPERSEDED** by plan 028; the remaining
-  product options can become plans on request.
+- **Direction items, deferred** (product options, not bugs): an in-app “load
+  sample data” button (the current fixture command is
+  `npx --prefix server --no-install tsx data/generate_sample.ts`) and connector
+  edit/rename remain unplanned. Visible retrieved evidence was implemented by
+  Plan 025. The previously listed CI item was superseded by Plan 028.
 
 ## Historical Pass 5 follow-ups
 
@@ -304,14 +306,14 @@ Vetted during the 2026-08-23 deep audit. Plan 028 subsequently implemented the
 entries marked **SUPERSEDED**; the remaining notes stay available for a future
 dependency or cleanup pass.
 
-- **SUPERSEDED — Fastify route/integration coverage.** Resource plugins now
-  have mounted boundary regressions, and the canonical CI gate provisions an
-  isolated pgvector database for the guarded concurrency/isolation suite.
+- **SUPERSEDED — Fastify route/integration coverage.** Resource plugins gained
+  mounted boundary regressions under Plan 028. Plan 030 then replaced the
+  isolated pgvector suite with disposable SQLite + LanceDB integration tests.
 - **SUPERSEDED — agent-loop characterization.** Fake-provider stream merging,
   adversarial provider budgets, tool timeouts, durable cancellation, pending
   artifacts, and terminal transitions now have focused tests.
-- **SUPERSEDED — chart-spec drift.** One strictly bounded canonical spec is
-  normalized across Node, Python, ECharts, persisted PNGs, and report renderers,
+- **SUPERSEDED — chart-spec drift.** One strictly bounded canonical spec is now
+  normalized in Node across ECharts, persisted PNGs, and both report renderers,
   with parity regressions for the formerly divergent options.
 - **SUPERSEDED — client error/delete behavior.** Every authenticated web fetch
   path now handles 401 consistently. The unsafe name-only Python dataset delete
@@ -319,9 +321,8 @@ dependency or cleanup pass.
 - **SUPERSEDED — sentinel-string 401 hook.** `requireAuth` now sends an opaque
   correlated 401 response directly; the shared error boundary no longer
   classifies authentication failures by exception text.
-- **Dead code (partly superseded)**: the raw `/html-to-pdf` surface and its
-  builder are removed. `_slugify` in `charts.py` remains a harmless cleanup
-  candidate; source metadata/storage fields are now used by lifecycle budgets.
+- **SUPERSEDED — dead code.** The raw `/html-to-pdf` surface and builder were
+  removed, and Plan 029 deleted the remaining Python chart module.
 - **Dependency cleanups (partly superseded)**: Node uses `crypto.randomUUID`,
   the deprecated bcrypt stub and Node SheetJS are gone, and both packages use
   Node 22 type definitions. An automated ECharts vendored-asset lockstep check
@@ -331,17 +332,13 @@ dependency or cleanup pass.
   phase remains request-bound; only its ingestion phase is durable/asynchronous.
 - **DX (SUPERSEDED)**: plan 028 establishes Prettier/Ruff/ESLint checks and
   correlated sanitized logging across request and background-operation paths.
-- **Migrations (investigate-first)**: exit the fastapi pin by upgrading
-  litellm ≥ the release that dropped `get_flat_dependant`; openai-node v4→v5
-  while the surface is two files; vite 5 is past upstream support (fold into
-  the next frontend change).
+- **Migrations (partly superseded)**: Plan 029 removed FastAPI/LiteLLM and their
+  pin conflict. OpenAI Node v4→v5 and the eventual Vite major remain ordinary
+  future dependency work, not active plans.
 
 ### Direction findings (Pass 5 — maintainer's call, grounded in docs/cohere-north research)
 
-1. **Inline query-result tables + CSV export in chat** — every quantitative
-   answer currently collapses to "N rows"; North shows structured tables
-   inline as a signature format. `messages.meta` is already JSONB; one Node
-   CSV route. (Strongest option.)
+1. **DONE in Plan 026 — inline query-result tables + CSV export in chat.**
 2. **Store report payloads → rename/regenerate reports** — reports table keeps
    only file paths today; the assembled payload is discarded at
    `makeReportPayload`. One JSONB column + PATCH/rebuild routes make the
@@ -349,20 +346,25 @@ dependency or cleanup pass.
 3. **Scheduled connector auto-resync** — `syncConnector` is already a
    standalone function needing only an interval sweep + schedule picker; the
    honest MVP slice of North's automations story.
-4. **Chat rename / generated titles / markdown export** — no PUT/PATCH exists;
-   real North ships both rename and generate-title.
+4. **Partly DONE in Plan 027 — chat rename/generated titles.** Markdown export
+   remains unplanned.
 5. **Compare-periods tooling (spike)** — suggested prompts are finance
    comparisons but all 7 tools are generic SQL primitives; local models are
    inconsistent at window-function SQL. Prototype one tool against the sample
    data before committing.
 
-## Not audited (Pass 2)
+## Historical “not audited” scope (Pass 2)
 
-- `data/generate_sample.py` and `data/sample/` contents (sample data generator).
+This list describes the 2026-08-22 audit boundary, not the final verification
+performed for Plans 029/030.
+
+- The then-Python sample generator and fixture contents. Plan 029 replaced the
+  generator with deterministic `data/generate_sample.ts` and the current gate
+  verifies byte-for-byte fixture equivalence.
 - `web/public/`, `web/src/index.css` theme internals, individual `ui/` shadcn
   components (stock boilerplate).
 - Lockfile internals beyond the `npm audit`/import-check results summarized above.
-- WeasyPrint PDF rendering fidelity (verified once in the E2E run; PDF build
-  correctness is out of scope for these plans).
+- The then-WeasyPrint fidelity path. Plan 029 replaced it, and Plan 030's final
+  packaged E2E verified the current HTML and four-page PDF artifacts.
 - `web/vite.config.ts`, `server/tsconfig.json` per-file compiler options (beyond
   the typecheck gates).

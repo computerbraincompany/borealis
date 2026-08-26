@@ -32,7 +32,18 @@ describe("Shell", () => {
     apiMocks.clearSession.mockReset();
     apiMocks.setTheme.mockReset();
     window.localStorage.clear();
+    delete window.borealisDesktop;
     window.location.hash = "/reports";
+  });
+
+  it("does not offer an unusable sign-out action for the passwordless desktop profile", async () => {
+    window.borealisDesktop = { consumeBootstrap: vi.fn().mockResolvedValue(null) };
+    const user = userEvent.setup();
+    renderShell();
+
+    await user.click(screen.getByRole("button", { name: "Account menu for user@example.test" }));
+
+    expect(screen.queryByRole("menuitem", { name: "Sign out" })).not.toBeInTheDocument();
   });
 
   it("renders the cleaned navigation with one truthful active destination", () => {

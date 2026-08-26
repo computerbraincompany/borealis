@@ -1,28 +1,21 @@
-import "dotenv/config";
+import { randomBytes, randomUUID } from "node:crypto";
 import path from "node:path";
 import fs from "node:fs";
+import { isIP } from "node:net";
 import { fileURLToPath } from "node:url";
+import dotenv from "dotenv";
+import { sameLlmModel } from "./llmAliases.js";
+
+// Browser development keeps conventional server/.env support. The packaged
+// utility process receives an explicit, main-owned environment and must never
+// discover a stray userData/.env file through its working directory.
+if (process.env.BOREALIS_DESKTOP !== "1") dotenv.config();
 
 // repo root = two levels up from server/src
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
-const JWT_SECRET = process.env.JWT_SECRET ?? "";
-const PYTHON_SERVICE_TOKEN = process.env.PYTHON_SERVICE_TOKEN ?? "";
-const LITELLM_API_KEY = process.env.LITELLM_API_KEY ?? "";
-// Running with the default or a template secret makes every JWT forgeable.
-// Refuse to boot rather than silently shipping broken auth.
 const WEAK_JWT_SECRETS = new Set(["", "dev-secret-change-me", "please-change-me", "change-me"]);
-if (WEAK_JWT_SECRETS.has(JWT_SECRET) || JWT_SECRET.length < 32) {
-  throw new Error(
-    "JWT_SECRET must be set to a random value of at least 32 chars (generate with: openssl rand -base64 32). Refusing to start with a weak/default secret."
-  );
-}
-if (PYTHON_SERVICE_TOKEN.length < 32) {
-  throw new Error("PYTHON_SERVICE_TOKEN must be set to a random value of at least 32 chars");
-}
-if (LITELLM_API_KEY.length < 32 || /^sk-borealis-local$/i.test(LITELLM_API_KEY)) {
-  throw new Error("LITELLM_API_KEY must be set to a non-placeholder value of at least 32 chars");
-}
+const MAX_JWT_SECRET_FILE_BYTES = 4_096;
 
 function boundedPositiveInteger(
   value: string | undefined,
@@ -35,6 +28,24 @@ function boundedPositiveInteger(
     throw new Error(`${name} must be a positive integer no greater than ${maximum}`);
   }
   return parsed;
+}
+
+/** Accept zero only for an OS-assigned ephemeral listening port. */
+export function parseServerPort(value: string | undefined): number {
+  if (value !== undefined && value.trim() === "") throw new Error("PORT must be an integer between 0 and 65535");
+  const parsed = value === undefined ? 3_000 : Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 0 || parsed > 65_535) {
+    throw new Error("PORT must be an integer between 0 and 65535");
+  }
+  return parsed;
+}
+
+export function resolveSettingsFile(input: {
+  readonly settingsFile?: string;
+  readonly legacySettingsPath?: string;
+  readonly storageDir: string;
+}): string {
+  return path.resolve(input.settingsFile || input.legacySettingsPath || path.join(input.storageDir, "settings.json"));
 }
 
 function parseCorsOrigins(value: string | undefined): readonly string[] {
@@ -70,19 +81,172 @@ export function parseServiceOrigin(value: string | undefined, fallback: string, 
   ) {
     throw new Error(`${name} must be an HTTP(S) origin without credentials, path, query, or fragment`);
   }
-  const hostname = url.hostname.toLowerCase().replace(/^\[|\]$/g, "");
-  const loopback =
-    hostname === "localhost" || hostname.endsWith(".localhost") || hostname === "::1" || /^127\./.test(hostname);
+  const loopback = isLoopbackHostname(url.hostname);
   if (url.protocol === "http:" && !loopback) {
     throw new Error(`${name} must use HTTPS unless it is a loopback origin`);
   }
   return url.origin;
 }
 
+export function resolveLlmBaseUrl(input: { llmBaseUrl?: string; legacyBaseUrl?: string }): string {
+  if (input.llmBaseUrl !== undefined) {
+    return parseServiceOrigin(input.llmBaseUrl, "http://127.0.0.1:1234", "LLM_BASE_URL");
+  }
+  if (input.legacyBaseUrl !== undefined) {
+    return parseServiceOrigin(input.legacyBaseUrl, "http://127.0.0.1:1234", "LITELLM_BASE_URL");
+  }
+  return parseServiceOrigin(undefined, "http://127.0.0.1:1234", "LLM_BASE_URL");
+}
+
+function isLoopbackHostname(hostname: string): boolean {
+  const normalized = hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  const ipVersion = isIP(normalized);
+  if (ipVersion === 4) return normalized.split(".", 1)[0] === "127";
+  if (ipVersion === 6) return normalized === "::1";
+  return normalized === "localhost" || normalized.endsWith(".localhost");
+}
+
+function effectivePort(url: URL): string {
+  if (url.port) return url.port;
+  return url.protocol === "https:" ? "443" : "80";
+}
+
+/** Treat the standard loopback spellings as one endpoint without doing DNS. */
+export function serviceOriginsEquivalent(left: string, right: string): boolean {
+  const leftUrl = new URL(left);
+  const rightUrl = new URL(right);
+  if (leftUrl.origin === rightUrl.origin) return true;
+  return (
+    leftUrl.protocol === rightUrl.protocol &&
+    effectivePort(leftUrl) === effectivePort(rightUrl) &&
+    isLoopbackHostname(leftUrl.hostname) &&
+    isLoopbackHostname(rightUrl.hostname)
+  );
+}
+
 function canonicalStorageDirectory(value: string): string {
   const resolved = path.resolve(value);
   fs.mkdirSync(resolved, { recursive: true });
   return fs.realpathSync(resolved);
+}
+
+export interface ResolveJwtSecretOptions {
+  readonly envSecret?: string;
+  readonly filename: string;
+}
+
+/**
+ * Resolve a server-owned JWT signing secret without requiring a .env file.
+ * An explicitly supplied environment value always wins and is never repaired;
+ * weak values fail closed. Otherwise a 0600 secret file is read without
+ * following symlinks, or created once through an atomic same-directory link.
+ */
+export function resolveJwtSecret(options: ResolveJwtSecretOptions): string {
+  if (options.envSecret !== undefined) return validateJwtSecret(options.envSecret, "JWT_SECRET");
+
+  const filename = path.resolve(options.filename);
+  try {
+    return readJwtSecretFile(filename);
+  } catch (error) {
+    if (!isNodeError(error) || error.code !== "ENOENT") {
+      throw new Error("JWT secret file is invalid or unreadable", { cause: error });
+    }
+  }
+
+  const directory = path.dirname(filename);
+  fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+  const secret = randomBytes(48).toString("base64url");
+  const temporary = path.join(directory, `.${path.basename(filename)}.${process.pid}.${randomUUID()}.tmp`);
+  let descriptor: number | undefined;
+  try {
+    descriptor = fs.openSync(temporary, fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY, 0o600);
+    fs.writeFileSync(descriptor, `${secret}\n`, "utf8");
+    fs.fsyncSync(descriptor);
+    fs.closeSync(descriptor);
+    descriptor = undefined;
+    try {
+      fs.linkSync(temporary, filename);
+    } catch (error) {
+      if (!isNodeError(error) || error.code !== "EEXIST") throw error;
+      return readJwtSecretFile(filename);
+    }
+    syncDirectory(directory);
+    return secret;
+  } catch (error) {
+    if (isNodeError(error) && error.code === "EEXIST") return readJwtSecretFile(filename);
+    throw new Error("JWT secret file could not be created", { cause: error });
+  } finally {
+    if (descriptor !== undefined) {
+      try {
+        fs.closeSync(descriptor);
+      } catch {
+        // Best-effort cleanup after a failed write.
+      }
+    }
+    try {
+      fs.unlinkSync(temporary);
+    } catch (error) {
+      if (!isNodeError(error) || error.code !== "ENOENT") {
+        // The fully written secret is already durable; do not expose cleanup details.
+      }
+    }
+  }
+}
+
+function readJwtSecretFile(filename: string): string {
+  const descriptor = fs.openSync(filename, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+  try {
+    const stat = fs.fstatSync(descriptor);
+    if (!stat.isFile() || stat.size < 1 || stat.size > MAX_JWT_SECRET_FILE_BYTES) {
+      throw new Error("invalid JWT secret file");
+    }
+    if ((stat.mode & 0o777) !== 0o600) fs.fchmodSync(descriptor, 0o600);
+    const contents = fs.readFileSync(descriptor, "utf8");
+    const secret = contents.endsWith("\r\n")
+      ? contents.slice(0, -2)
+      : contents.endsWith("\n")
+        ? contents.slice(0, -1)
+        : contents;
+    return validateJwtSecret(secret, "JWT secret file");
+  } finally {
+    fs.closeSync(descriptor);
+  }
+}
+
+function validateJwtSecret(secret: string, source: "JWT_SECRET" | "JWT secret file"): string {
+  if (
+    secret.length < 32 ||
+    secret.length > MAX_JWT_SECRET_FILE_BYTES ||
+    WEAK_JWT_SECRETS.has(secret) ||
+    containsControlCharacter(secret)
+  ) {
+    throw new Error(`${source} must contain a strong secret of at least 32 characters`);
+  }
+  return secret;
+}
+
+function containsControlCharacter(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code <= 31 || code === 127) return true;
+  }
+  return false;
+}
+
+function syncDirectory(directory: string): void {
+  let descriptor: number | undefined;
+  try {
+    descriptor = fs.openSync(directory, fs.constants.O_RDONLY);
+    fs.fsyncSync(descriptor);
+  } catch {
+    // Directory fsync is best-effort on platforms that do not support it.
+  } finally {
+    if (descriptor !== undefined) fs.closeSync(descriptor);
+  }
+}
+
+function isNodeError(error: unknown): error is NodeJS.ErrnoException {
+  return error instanceof Error;
 }
 
 export interface ModelIds {
@@ -96,22 +260,28 @@ export function validateModelIds(input: ModelIds): ModelIds {
   const embedModel = input.embedModel.trim();
 
   if (chatModel.length < 1 || chatModel.length > 256) {
-    throw new Error("LITELLM_CHAT_MODEL must contain between 1 and 256 characters");
+    throw new Error("LLM_CHAT_MODEL must contain between 1 and 256 characters");
   }
   if (embedModel.length < 1 || embedModel.length > 256) {
-    throw new Error("LITELLM_EMBED_MODEL must contain between 1 and 256 characters");
+    throw new Error("LLM_EMBED_MODEL must contain between 1 and 256 characters");
   }
-  if (chatModel === embedModel) {
-    throw new Error("LITELLM_CHAT_MODEL and LITELLM_EMBED_MODEL must be distinct");
+  if (sameLlmModel(chatModel, embedModel)) {
+    throw new Error("LLM_CHAT_MODEL and LLM_EMBED_MODEL must be distinct");
   }
 
   return { chatModel, embedModel };
 }
 
-const modelIds = validateModelIds({
-  chatModel: process.env.LITELLM_CHAT_MODEL ?? "qwen-chat",
-  embedModel: process.env.LITELLM_EMBED_MODEL ?? "nomic-embed",
+const storageDir = canonicalStorageDirectory(process.env.BOREALIS_DATA_DIR || path.join(root, ".borealis"));
+const sqlitePath = path.resolve(process.env.SQLITE_PATH || path.join(storageDir, "borealis.sqlite"));
+fs.mkdirSync(path.dirname(sqlitePath), { recursive: true });
+const settingsFile = resolveSettingsFile({
+  settingsFile: process.env.SETTINGS_FILE,
+  legacySettingsPath: process.env.SETTINGS_PATH,
+  storageDir,
 });
+const jwtSecretFile = path.resolve(process.env.JWT_SECRET_FILE || path.join(storageDir, "jwt.secret"));
+const jwtSecret = resolveJwtSecret({ envSecret: process.env.JWT_SECRET, filename: jwtSecretFile });
 
 const maxMessageChars = boundedPositiveInteger(process.env.MAX_MESSAGE_CHARS, 32_000, "MAX_MESSAGE_CHARS", 100_000);
 const maxHistoryChars = boundedPositiveInteger(process.env.MAX_HISTORY_CHARS, 120_000, "MAX_HISTORY_CHARS", 500_000);
@@ -123,22 +293,17 @@ if (maxHistoryChars < maxMessageChars + 36_000) {
 }
 
 export const config = {
-  port: boundedPositiveInteger(process.env.PORT, 3000, "PORT", 65_535),
+  port: parseServerPort(process.env.PORT),
   host: process.env.HOST || "127.0.0.1",
-  jwtSecret: JWT_SECRET,
-  databaseUrl: process.env.DATABASE_URL || "postgres://borealis:borealis_password@localhost:5433/borealis",
+  jwtSecret,
+  jwtSecretFile,
+  storageDir,
+  settingsFile,
+  sqlitePath,
+  lanceDir: canonicalStorageDirectory(process.env.LANCEDB_DIR || path.join(storageDir, "lancedb")),
   corsOrigins: parseCorsOrigins(process.env.CORS_ORIGINS),
 
-  // LiteLLM / any OpenAI-compatible endpoint
-  llmBaseUrl: parseServiceOrigin(process.env.LITELLM_BASE_URL, "http://localhost:4000", "LITELLM_BASE_URL"),
-  llmApiKey: LITELLM_API_KEY,
-  lmStudioBaseUrl: parseServiceOrigin(process.env.LM_STUDIO_BASE_URL, "http://localhost:1234", "LM_STUDIO_BASE_URL"),
-  chatModel: modelIds.chatModel,
-  embedModel: modelIds.embedModel,
   embeddingDim: boundedPositiveInteger(process.env.EMBEDDING_DIM, 768, "EMBEDDING_DIM", 16_384),
-
-  pythonServiceUrl: parseServiceOrigin(process.env.PYTHON_SERVICE_URL, "http://localhost:8000", "PYTHON_SERVICE_URL"),
-  pythonServiceToken: PYTHON_SERVICE_TOKEN,
 
   maxUploadBytes: boundedPositiveInteger(
     process.env.MAX_UPLOAD_BYTES,
@@ -157,6 +322,6 @@ export const config = {
   ),
   maxIngestChunks: boundedPositiveInteger(process.env.MAX_INGEST_CHUNKS, 2_500, "MAX_INGEST_CHUNKS", 10_000),
 
-  uploadDir: canonicalStorageDirectory(process.env.UPLOAD_DIR || path.join(root, "uploads")),
-  reportDir: canonicalStorageDirectory(process.env.REPORT_DIR || path.join(root, "reports_storage")),
+  uploadDir: canonicalStorageDirectory(process.env.UPLOAD_DIR || path.join(storageDir, "uploads")),
+  reportDir: canonicalStorageDirectory(process.env.REPORT_DIR || path.join(storageDir, "reports")),
 };

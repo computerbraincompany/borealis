@@ -103,7 +103,7 @@ export function SystemHealthPanel({ health, checking, error, onRefresh, embedded
         <div className="p-5">
           {!health ? (
             <div className="space-y-3" aria-label="Checking service dependencies">
-              {[0, 1, 2, 3, 4].map((item) => (
+              {[0, 1, 2, 3].map((item) => (
                 <div key={item} className="flex items-center gap-3">
                   <div className="size-9 animate-pulse rounded-md bg-secondary" />
                   <div className="min-w-0 flex-1 space-y-2">

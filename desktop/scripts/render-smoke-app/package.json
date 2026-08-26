@@ -1,0 +1,6 @@
+{
+  "name": "borealis-render-smoke",
+  "private": true,
+  "type": "module",
+  "main": "../../dist/renderSmoke.js"
+}

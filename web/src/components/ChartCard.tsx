@@ -83,7 +83,7 @@ export function ChartCard({ chartId, className }: { chartId: string; className?:
           <div className="flex items-center justify-end gap-3 px-2 pb-1">
             <a
               className="rounded-sm text-[11px] text-muted-foreground hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              title="PNG export (from Python service)"
+              title="Download PNG export"
               href={`data:image/png;base64,${data.png_base64}`}
               download={`${title.replace(/\s+/g, "_")}.png`}
             >

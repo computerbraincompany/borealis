@@ -31,6 +31,9 @@ class MemoryStorage implements Storage {
 const localStorage = new MemoryStorage();
 Object.defineProperty(window, "localStorage", { configurable: true, value: localStorage });
 Object.defineProperty(globalThis, "localStorage", { configurable: true, value: localStorage });
+const sessionStorage = new MemoryStorage();
+Object.defineProperty(window, "sessionStorage", { configurable: true, value: sessionStorage });
+Object.defineProperty(globalThis, "sessionStorage", { configurable: true, value: sessionStorage });
 
 Object.defineProperty(window.HTMLElement.prototype, "scrollIntoView", {
   configurable: true,

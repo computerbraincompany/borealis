@@ -13,6 +13,7 @@ vi.mock("../config.js", () => ({
 import {
   createReportResourceDirectory,
   createUploadResourceDirectory,
+  isMissingOwnedSourceArtifact,
   removeReportArtifacts,
   removeSourceArtifact,
   resolveReportArtifact,
@@ -88,6 +89,20 @@ describe("tenant artifact path boundaries", () => {
     await expect(resolveSourceArtifact({ accountId, sourceId, name: "ledger", filePath: linked })).resolves.toBe(
       undefined
     );
+  });
+
+  it("classifies only a missing exact owned upload as unavailable", async () => {
+    const directory = await createUploadResourceDirectory(accountId, sourceId);
+    const missing = path.join(directory, "missing.csv");
+    const outside = path.join(TEST_ROOT, "outside.csv");
+    await fs.writeFile(outside, "outside");
+
+    await expect(isMissingOwnedSourceArtifact({ accountId, sourceId, filePath: missing })).resolves.toBe(true);
+    await expect(isMissingOwnedSourceArtifact({ accountId, sourceId, filePath: outside })).resolves.toBe(false);
+
+    const linked = path.join(directory, "linked.csv");
+    await fs.symlink(path.join(TEST_ROOT, "does-not-exist.csv"), linked);
+    await expect(isMissingOwnedSourceArtifact({ accountId, sourceId, filePath: linked })).resolves.toBe(false);
   });
 
   it("removes only the exact account/source UUID upload directory", async () => {
@@ -307,7 +322,7 @@ describe("tenant artifact path boundaries", () => {
     await expect(
       resolveReportArtifact({ accountId, reportId, filePath: linkedTarget, kind: "html" })
     ).resolves.toBeUndefined();
-    await removeReportArtifacts({ accountId, reportId, htmlPath: linkedTarget });
+    await expect(removeReportArtifacts({ accountId, reportId, htmlPath: linkedTarget })).resolves.toBe(false);
     await expect(fs.readFile(target, "utf8")).resolves.toBe("other-account");
   });
 
@@ -325,7 +340,7 @@ describe("tenant artifact path boundaries", () => {
     await expect(
       resolveReportArtifact({ accountId, reportId, filePath: linkedTarget, kind: "html" })
     ).resolves.toBeUndefined();
-    await removeReportArtifacts({ accountId, reportId, htmlPath: linkedTarget });
+    await expect(removeReportArtifacts({ accountId, reportId, htmlPath: linkedTarget })).resolves.toBe(false);
     await expect(fs.readFile(target, "utf8")).resolves.toBe("other-report");
   });
 
@@ -338,7 +353,7 @@ describe("tenant artifact path boundaries", () => {
     await expect(
       resolveReportArtifact({ accountId, reportId, filePath: target, kind: "html" })
     ).resolves.toBeUndefined();
-    await removeReportArtifacts({ accountId, reportId, htmlPath: target });
+    await expect(removeReportArtifacts({ accountId, reportId, htmlPath: target })).resolves.toBe(false);
     await expect(fs.readFile(target, "utf8")).resolves.toBe("legacy");
   });
 
@@ -348,7 +363,7 @@ describe("tenant artifact path boundaries", () => {
     await fs.mkdir(ownedDirectory, { recursive: true });
     await fs.writeFile(unexpected, "keep");
 
-    await removeReportArtifacts({ accountId, reportId, htmlPath: unexpected });
+    await expect(removeReportArtifacts({ accountId, reportId, htmlPath: unexpected })).resolves.toBe(false);
     await expect(fs.readFile(unexpected, "utf8")).resolves.toBe("keep");
   });
 
@@ -360,11 +375,13 @@ describe("tenant artifact path boundaries", () => {
     await fs.writeFile(path.join(ownedDirectory, "report.html"), "owned");
     await fs.writeFile(path.join(siblingDirectory, "report.html"), "keep");
 
-    await removeReportArtifacts({
-      accountId,
-      reportId,
-      htmlPath: path.join(ownedDirectory, "report.html"),
-    });
+    await expect(
+      removeReportArtifacts({
+        accountId,
+        reportId,
+        htmlPath: path.join(ownedDirectory, "report.html"),
+      })
+    ).resolves.toBe(true);
 
     await expect(fs.access(ownedDirectory)).rejects.toThrow();
     await expect(fs.readFile(path.join(siblingDirectory, "report.html"), "utf8")).resolves.toBe("keep");

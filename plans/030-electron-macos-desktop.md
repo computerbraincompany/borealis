@@ -18,6 +18,7 @@
 ## Status
 
 - **Priority**: P2
+- **Status**: DONE (implemented and verified 2026-08-26)
 - **Effort**: XL
 - **Risk**: HIGH (storage engine change + native Electron ABI)
 - **Depends on**: `plans/029-replace-python-with-node.md`
@@ -109,10 +110,13 @@ Reuse as-is after 029:
   second Settings surface.
 - Chart spec / report HTML. Swap the PDF renderer host, not the document.
 
-## Database options (brainstorm, 2026-08-26)
+## Historical database options (brainstorm, 2026-08-26)
 
 SQLite is **not** the only option. It is the best *desktop* default for this
 repo, not a recreation of North’s cloud data plane.
+
+This section records the alternatives considered before the maintainer lock at
+the end of the section. It is not a list of current fallback instructions.
 
 ### What North actually documents
 
@@ -131,14 +135,14 @@ automations, MCP, users — **not** a schema. Clean-room rule: do not claim
 North’s private tables or ranking. Design an independent store that can
 grow toward that *product* surface.
 
-Borealis already collapsed that split into one Postgres (metadata +
-pgvector) + DuckDB (user SQL) + filesystem. Electron should keep that
-collapse. Recreating OpenSearch + Redis + Postgres inside a `.app` would
-clone the wrong layer.
+At planning time Borealis had already collapsed that split into one Postgres
+(metadata + pgvector) + DuckDB (user SQL) + filesystem. Electron needed to keep
+the conceptual collapse without recreating OpenSearch + Redis + Postgres inside
+a `.app`.
 
 ### Jobs to separate
 
-| Job | North cloud | Borealis today | Desktop |
+| Job | North cloud | Borealis at planning time | Desktop target |
 |---|---|---|---|
 | Users, chats, runs, sources, jobs | Postgres | Postgres | Embedded OLTP |
 | RAG chunks + KNN | Search / Compass | pgvector HNSW | Embedded vectors |
@@ -152,18 +156,19 @@ User SQL and account metadata must stay different trust boundaries.
 
 ### Alternatives
 
-**SQLite + sqlite-vec + FTS5 (recommended)**  
+**SQLite + sqlite-vec + FTS5 (considered, not selected)**
 One file, WAL, `better-sqlite3` is the most proven Electron native addon.
 sqlite-vec covers `retrieve`. FTS5 is the cheap way to grow toward North’s
 hybrid search without a second process. Dialect rewrite is real (`UUID`,
 `JSONB`, `SKIP LOCKED` → immediate txn + mutex). Scale: a personal library
-(10^4–10^5 chunks), not a sharded search cluster.
+(10^4–10^5 chunks), not a sharded search cluster. The maintainer lock rejected
+sqlite-vec in favor of a dedicated LanceDB vector index.
 
-**PGlite (WASM Postgres)**  
+**PGlite (WASM Postgres; considered, not selected)**
 Best *port* of the current `db.ts` / integration tests. Weakest vector
-story (pgvector-wasm is not HNSW-on-Azure). Memory-capped. Use only if
-Phase A cannot load sqlite-vec under Electron, or if keeping SQL dialect
-is valued above a native file DB.
+story (pgvector-wasm is not HNSW-on-Azure) and memory-capped. It was rejected;
+failure of the locked LanceDB prefilter spike was a STOP condition, not a signal
+to fall back to PGlite.
 
 **Embedded native Postgres + pgvector**  
 Highest fidelity to Borealis and to North’s documented Postgres
@@ -463,7 +468,7 @@ URL/key fields. Fastify serves `web/dist` and `/api`. First-run JWT
 secret + local account. CORS: same-origin when serving the UI. Retarget
 `GET /api/health` `database` at SQLite; keep service ids.
 
-**Verify:** `npm run dev` still works; Settings test-connection against a
+**Verify:** `./scripts/dev.sh` still works; Settings test-connection against a
 mock `/v1/models`; health JSON still has no URLs/keys.
 
 ### Phase C — Electron main/renderer
@@ -471,7 +476,7 @@ mock `/v1/models`; health JSON still has no URLs/keys.
 `desktop/` boots utilityProcess Fastify + BrowserWindow. userData paths.
 Quit teardown. Auto-login local account.
 
-**Verify:** `npm run desktop:dev` opens chat, register-free; upload a
+**Verify:** `npm --prefix desktop run dev` opens chat, register-free; upload a
 sample CSV; query_data; render_chart; create_report; HTML/PDF open.
 
 ### Phase D — Electron PDF/PNG backend
@@ -488,30 +493,47 @@ non-Electron CI.
 LM Studio *or* paste a cloud base URL. Remove Docker from the desktop
 happy path.
 
-**Verify:** install the dmg on a clean arm64 Mac (or CI `macos-14`
+**Verify:** install the dmg on a clean arm64 Mac (or CI `macos-15`
 runner), launch, complete the sample-CSV E2E. Unsigned is acceptable if
 notarization credentials are absent — note it in the PR.
 
 ## Done criteria
 
-- [ ] Plan 029 is DONE (`python/` gone).
-- [ ] No `pg` / `DATABASE_URL` / pgvector / sqlite-vec in the desktop or
+- [x] Plan 029 is DONE (`python/` gone).
+- [x] No `pg` / `DATABASE_URL` / pgvector / sqlite-vec in the desktop or
   default dev path.
-- [ ] Phase A0 prefilter spike passed before the schema port.
-- [ ] LanceDB retrieve is prefiltered by account + allowlist and never
+- [x] Phase A0 prefilter spike passed before the schema port.
+- [x] LanceDB retrieve is prefiltered by account + allowlist and never
   returns a vector whose SQLite chunk row is missing.
-- [ ] Promote/delete crash tests and boot repair match the two-store
+- [x] Promote/delete crash tests and boot repair match the two-store
   protocol (old live data preserved; orphans purged).
-- [ ] Chat-turn accept stays one transaction; ingest leases work without
+- [x] Chat-turn accept stays one transaction; ingest leases work without
   `SKIP LOCKED`.
-- [ ] Settings can target LM Studio and a remote OpenAI-compatible URL
-  without restarting via `.env`.
-- [ ] First launch needs no `server/.env` tokens and no register form.
-- [ ] Fastify binds loopback only; UI is same-origin.
-- [ ] Desktop PDF/PNG have no network egress; CI Playwright path remains.
-- [ ] arm64 `.app`/`.dmg` builds; DuckDB + better-sqlite3 + LanceDB load
+- [x] Settings can target LM Studio and a remote OpenAI-compatible URL without
+  editing `.env` or restarting.
+- [x] First launch needs no `server/.env` tokens and no register form.
+- [x] Fastify binds loopback only; UI is same-origin.
+- [x] Desktop PDF/PNG have no network egress; CI Playwright path remains.
+- [x] arm64 `.app`/`.dmg` builds; DuckDB + better-sqlite3 + LanceDB load
   from the packaged app.
-- [ ] `scripts/verify.sh` green; `plans/README.md` row updated.
+- [x] `scripts/verify.sh` green; `plans/README.md` row updated.
+
+### Completion record (2026-08-26)
+
+- Final repository gate: 539 server unit tests, 63 embedded-storage integration
+  tests, 120 web tests, 13 desktop tests, plus typecheck, lint, format, and builds.
+- Desktop renderer smoke generated valid 28,231-byte PNG and 16,303-byte PDF
+  outputs with zero network hits and two blocked unsafe requests.
+- The arm64 packaged app loaded `better-sqlite3`, LanceDB, and DuckDB under
+  Electron 44; ZIP integrity and the DMG checksum passed.
+- Packaged E2E uploaded/restored all four finance fixtures, queried 697
+  transactions through a real LM Studio model, rendered two charts, created
+  self-contained HTML and a four-page PDF, reopened both report surfaces,
+  retested Settings, persisted the workspace across relaunch, and released its
+  loopback ports on shutdown.
+- Local-test artifacts deterministically disable signing/notarization and
+  currently use Electron's default icon. The separately documented release path
+  consumes Developer ID and notarization credentials from its environment.
 
 ## STOP conditions
 

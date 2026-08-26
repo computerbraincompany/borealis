@@ -1,113 +1,63 @@
-import type { FastifyInstance } from "fastify";
 import { randomUUID } from "node:crypto";
+import type { FastifyInstance, FastifyReply } from "fastify";
 import { getAccountId, requireAuth } from "../auth.js";
-import { pool, q } from "../db.js";
 import {
-  processDatasetCacheCleanup,
-  reserveDatasetCacheCleanup,
-  wakeConnectorPrepareWorkers,
-  wakeIngestionWorkers,
-} from "../ingest.js";
-import { py } from "../pythonClient.js";
-import { PythonServiceError } from "../pythonClient.js";
+  SourceIngestionTransitionError,
+  type ReservedConnectorPrepare,
+} from "../db/stores/sourceIngestionTransitions.js";
+import { SourceStoreError, type ConnectorRecord } from "../db/stores/sourceStore.js";
+import { DataServiceError, dataService } from "../dataService.js";
+import { wakeConnectorPrepareWorkers, wakeIngestionWorkers } from "../ingest.js";
+import { completeSourceDeleteIntents } from "../sourceCleanup.js";
 import { SourceScopeError } from "../sourceScope.js";
-import { sourceReferencedByActiveRun } from "../sourceMutationGuard.js";
+import { storageRuntime } from "../storageRuntime.js";
 import { connectorBodySchema, idParamsSchema } from "./schemas.js";
 
 export async function connectorRoutes(app: FastifyInstance): Promise<void> {
   app.get("/api/connectors", { preHandler: requireAuth }, async (req, reply) => {
-    return reply.send(
-      await q(`SELECT * FROM connectors WHERE account_id=$1 ORDER BY created_at DESC`, [getAccountId(req)])
-    );
+    const connectors = await storageRuntime().sources.listConnectors(getAccountId(req));
+    return reply.send(connectors.map(connectorToApi));
   });
 
   app.post(
     "/api/connectors",
     { preHandler: requireAuth, bodyLimit: 8 * 1024, schema: { body: connectorBodySchema } },
     async (req, reply) => {
-      const account = getAccountId(req);
+      const accountId = getAccountId(req);
       let parsed: ReturnType<typeof parseConnectorBody>;
       try {
         parsed = parseConnectorBody(req.body);
       } catch (error) {
         return sendValidationError(reply, error);
       }
-      const connectorId = randomUUID();
-      const sourceId = randomUUID();
       const refreshVersion = randomUUID();
-      const prepareLeaseToken = randomUUID();
-      let connector: any;
-      let reservedSource: any;
-      const client = await pool.connect();
+      const leaseToken = randomUUID();
+      let reservation: ReservedConnectorPrepare;
       try {
-        await client.query("BEGIN");
-        await client.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [account]);
-        const collision = await client.query(`SELECT 1 FROM sources WHERE account_id=$1 AND name=$2`, [
-          account,
-          parsed.targetTable,
-        ]);
-        if (collision.rows.length) {
-          await client.query("ROLLBACK");
-          return reply.code(409).send({ error: "target_table is already in use" });
-        }
-        const inserted = await client.query(
-          `INSERT INTO connectors
-           (id, account_id, name, type, config, target_table, sync_status, sync_error)
-         VALUES ($1,$2,$3,$4,$5,$6,'syncing',NULL) RETURNING *`,
-          [
-            connectorId,
-            account,
-            parsed.displayName,
-            parsed.type,
-            JSON.stringify({ url: parsed.url }),
-            parsed.targetTable,
-          ]
-        );
-        const insertedSource = await client.query(
-          `INSERT INTO sources
-           (id, account_id, name, kind, connector, display_name, url, mime, status, meta)
-         VALUES ($1,$2,$3,'tabular',$4,$5,$6,$7,'index',
-                 jsonb_build_object('connector_refresh_version',$8::text))
-         RETURNING *`,
-          [
-            sourceId,
-            account,
-            parsed.targetTable,
-            connectorId,
-            parsed.displayName,
-            parsed.url,
-            parsed.type === "url_json" ? "application/json" : "text/csv",
-            refreshVersion,
-          ]
-        );
-        reservedSource = insertedSource.rows[0];
-        await client.query(
-          `INSERT INTO ingestion_jobs
-             (source_id, account_id, generation, status, attempts, available_at, leased_at, lease_token, updated_at)
-           VALUES ($1,$2,1,'preparing',1,now(),now(),$3,now())`,
-          [sourceId, account, prepareLeaseToken]
-        );
-        await client.query("COMMIT");
-        connector = inserted.rows[0];
-      } catch (error: any) {
-        await client.query("ROLLBACK").catch(() => {});
-        if (error?.code === "23505") return reply.code(409).send({ error: "target_table is already in use" });
-        throw error;
-      } finally {
-        client.release();
-      }
-      try {
-        await syncConnector(account, connector, {
-          source: reservedSource,
+        reservation = await storageRuntime().sourceIngestion.createConnectorPrepare(accountId, {
+          connectorId: randomUUID(),
+          sourceId: randomUUID(),
+          displayName: parsed.displayName,
+          targetTable: parsed.targetTable,
+          type: parsed.type,
+          url: parsed.url,
           refreshVersion,
-          prepareLeaseToken,
+          leaseToken,
         });
-      } catch {
-        const [failed] = await q(`SELECT * FROM connectors WHERE id=$1 AND account_id=$2`, [connectorId, account]);
-        return reply.code(422).send({ ...(failed || connector), sync_error: "Connector sync failed." });
+      } catch (error) {
+        return sendConnectorError(reply, error);
       }
-      const [synced] = await q(`SELECT * FROM connectors WHERE id=$1 AND account_id=$2`, [connectorId, account]);
-      return reply.send(synced || { ...connector, sync_status: "indexing" });
+      try {
+        await syncConnector(accountId, reservation);
+      } catch {
+        const failed = await storageRuntime().sources.getConnector(accountId, reservation.connector.id);
+        return reply.code(422).send({
+          ...connectorToApi(failed ?? reservation.connector),
+          sync_error: "Connector sync failed.",
+        });
+      }
+      const synced = await storageRuntime().sources.getConnector(accountId, reservation.connector.id);
+      return reply.send(connectorToApi(synced ?? reservation.connector));
     }
   );
 
@@ -115,17 +65,15 @@ export async function connectorRoutes(app: FastifyInstance): Promise<void> {
     "/api/connectors/:id/sync",
     { preHandler: requireAuth, schema: { params: idParamsSchema } },
     async (req, reply) => {
-      const account = getAccountId(req);
-      const [connector] = await q(`SELECT * FROM connectors WHERE id=$1 AND account_id=$2`, [
-        (req.params as any).id,
-        account,
-      ]);
+      const accountId = getAccountId(req);
+      const connectorId = (req.params as { id: string }).id;
+      const connector = await storageRuntime().sources.getConnector(accountId, connectorId);
       if (!connector) return reply.code(404).send({ error: "connector not found" });
-      if (["syncing", "indexing"].includes(connector.sync_status)) {
+      if (connector.syncStatus === "syncing" || connector.syncStatus === "indexing") {
         return reply.code(409).send({ error: "connector sync already active" });
       }
       try {
-        return reply.send(await syncConnector(account, connector));
+        return reply.send(await syncConnector(accountId, undefined, connectorId));
       } catch (error) {
         if (error instanceof SourceScopeError) return sendValidationError(reply, error);
         return reply.code(422).send({ error: "Connector sync failed." });
@@ -137,59 +85,16 @@ export async function connectorRoutes(app: FastifyInstance): Promise<void> {
     "/api/connectors/:id",
     { preHandler: requireAuth, schema: { params: idParamsSchema } },
     async (req, reply) => {
-      const account = getAccountId(req);
-      const id = (req.params as any).id;
-      const client = await pool.connect();
-      let connector: any;
-      let paths: any[];
       try {
-        await client.query("BEGIN");
-        const selected = await client.query(`SELECT * FROM connectors WHERE id=$1 AND account_id=$2 FOR UPDATE`, [
-          id,
-          account,
-        ]);
-        connector = selected.rows[0];
-        if (!connector) {
-          await client.query("ROLLBACK");
-          return reply.code(404).send({ error: "connector not found" });
-        }
-        if (["syncing", "indexing"].includes(connector.sync_status)) {
-          await client.query("ROLLBACK");
-          return reply.code(409).send({ error: "connector sync is active" });
-        }
-        paths = (
-          await client.query(
-            `SELECT id, account_id, name, connector, file_path, meta FROM sources
-             WHERE connector=$1 AND account_id=$2 FOR UPDATE`,
-            [connector.id, account]
-          )
-        ).rows;
-        for (const source of paths) {
-          if (await sourceReferencedByActiveRun(client, account, source.id)) {
-            await client.query("ROLLBACK");
-            return reply.code(409).send({ error: "source is in use by an active run" });
-          }
-          const meta = source.meta && typeof source.meta === "object" ? source.meta : {};
-          await reserveDatasetCacheCleanup(client, account, source.name, [
-            source.file_path,
-            typeof meta.connector_previous_location === "string" ? meta.connector_previous_location : "",
-            typeof meta.connector_candidate_location === "string" ? meta.connector_candidate_location : "",
-            typeof meta.connector_activation_previous_location === "string"
-              ? meta.connector_activation_previous_location
-              : "",
-          ]);
-        }
-        await client.query(`DELETE FROM sources WHERE connector=$1 AND account_id=$2`, [connector.id, account]);
-        await client.query(`DELETE FROM connectors WHERE id=$1 AND account_id=$2`, [connector.id, account]);
-        await client.query("COMMIT");
+        const deletion = await storageRuntime().sources.deleteConnector(
+          getAccountId(req),
+          (req.params as { id: string }).id
+        );
+        await completeSourceDeleteIntents(deletion.intents);
+        return reply.send({ ok: true });
       } catch (error) {
-        await client.query("ROLLBACK").catch(() => {});
-        throw error;
-      } finally {
-        client.release();
+        return sendConnectorError(reply, error);
       }
-      await processDatasetCacheCleanup(account, connector.target_table).catch(() => {});
-      return reply.send({ ok: true });
     }
   );
 }
@@ -200,11 +105,14 @@ function parseConnectorBody(body: unknown): {
   type: "url_csv" | "url_json";
   url: string;
 } {
-  if (!body || typeof body !== "object" || Array.isArray(body))
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
     throw new SourceScopeError(400, "invalid connector body");
+  }
   const record = body as Record<string, unknown>;
   const allowed = new Set(["display_name", "target_table", "type", "config"]);
-  if (Object.keys(record).some((key) => !allowed.has(key))) throw new SourceScopeError(400, "invalid connector body");
+  if (Object.keys(record).some((key) => !allowed.has(key))) {
+    throw new SourceScopeError(400, "invalid connector body");
+  }
   const displayName = typeof record.display_name === "string" ? record.display_name.trim() : "";
   const targetTable = typeof record.target_table === "string" ? record.target_table.trim().toLowerCase() : "";
   if (Array.from(displayName).length < 1 || Array.from(displayName).length > 120) {
@@ -240,219 +148,155 @@ function parseConnectorBody(body: unknown): {
   return { displayName, targetTable, type: record.type, url: url.toString() };
 }
 
-function sendValidationError(reply: any, error: unknown) {
+function sendValidationError(reply: FastifyReply, error: unknown) {
   if (error instanceof SourceScopeError) return reply.code(error.statusCode).send({ error: error.message });
   throw error;
 }
 
+function sendConnectorError(reply: FastifyReply, error: unknown) {
+  const code =
+    error instanceof SourceStoreError || error instanceof SourceIngestionTransitionError ? error.code : undefined;
+  if (code === "SOURCE_STORE_CONNECTOR_NOT_FOUND" || code === "SOURCE_TRANSITION_CONNECTOR_NOT_FOUND") {
+    return reply.code(404).send({ error: "connector not found" });
+  }
+  if (code === "SOURCE_STORE_SOURCE_IN_USE" || code === "SOURCE_TRANSITION_SOURCE_IN_USE") {
+    return reply.code(409).send({ error: "source is in use by an active run" });
+  }
+  if (code === "SOURCE_STORE_CONNECTOR_SYNC_ACTIVE" || code === "SOURCE_TRANSITION_CONNECTOR_SYNC_ACTIVE") {
+    return reply.code(409).send({ error: "connector sync is active" });
+  }
+  if (code === "SOURCE_TRANSITION_TARGET_CONFLICT" || code === "SOURCE_STORE_CONNECTOR_TARGET_CONFLICT") {
+    return reply.code(409).send({ error: "target_table is already in use" });
+  }
+  throw error;
+}
+
 async function syncConnector(
-  account: string,
-  connector: any,
-  reservation?: { source: any; refreshVersion: string; prepareLeaseToken: string }
-): Promise<any> {
-  let effective = connector;
-  let source: any = reservation?.source;
-  let configValue: any;
+  accountId: string,
+  initialReservation?: ReservedConnectorPrepare,
+  connectorId?: string
+): Promise<{ synced: true; processing: true }> {
+  let reservation = initialReservation;
   let expectedFormat: "csv" | "json" = "csv";
-  const refreshVersion = reservation?.refreshVersion ?? randomUUID();
-  const prepareLeaseToken = reservation?.prepareLeaseToken ?? randomUUID();
-  let preparedLocation = "";
-  let prepared = false;
   let prepareStarted = false;
   try {
     if (!reservation) {
-      const mutationClient = await pool.connect();
-      let inTransaction = false;
-      try {
-        await mutationClient.query("BEGIN");
-        inTransaction = true;
-        const claimed = await mutationClient.query(
-          `UPDATE connectors SET sync_status='syncing', sync_error=NULL
-           WHERE id=$1 AND account_id=$2 AND sync_status NOT IN ('syncing','indexing')
-           RETURNING *`,
-          [connector.id, account]
-        );
-        if (!claimed.rows[0]) throw new SourceScopeError(409, "connector sync already active");
-        effective = { ...connector, ...claimed.rows[0] };
-        const selected = await mutationClient.query(
-          `SELECT id, file_path, name, kind, status
-         FROM sources WHERE account_id=$1 AND connector=$2 FOR UPDATE`,
-          [account, effective.id]
-        );
-        source = selected.rows[0];
-        if (!source) throw new Error("connector source reservation missing");
-        if (await sourceReferencedByActiveRun(mutationClient, account, source.id)) {
-          throw new SourceScopeError(409, "source is in use by an active run");
-        }
-        // Exclude this source from every newly accepted turn before Python can
-        // switch its live registry. It becomes ready again only with atomic RAG
-        // chunk promotion, preventing mixed new-SQL/old-retrieval turns.
-        await mutationClient.query(
-          `UPDATE sources
-         SET status='index',
-             meta=(meta - 'error' - 'error_code' - 'error_detail' - 'error_stage' -
-                   'connector_previous_location' - 'connector_candidate_location' -
-                   'connector_activation_previous_location') ||
-                  jsonb_build_object('connector_refresh_version',$3::text)
-         WHERE id=$1 AND account_id=$2`,
-          [source.id, account, refreshVersion]
-        );
-        await mutationClient.query(
-          `INSERT INTO ingestion_jobs
-           (source_id, account_id, generation, status, attempts, available_at, leased_at, lease_token, updated_at)
-         VALUES ($1,$2,1,'preparing',1,now(),now(),$3,now())
-         ON CONFLICT (source_id) DO UPDATE
-           SET generation=ingestion_jobs.generation+1, status='preparing', attempts=1,
-               available_at=now(), leased_at=now(), lease_token=$3, last_error=NULL, updated_at=now()`,
-          [source.id, account, prepareLeaseToken]
-        );
-        await mutationClient.query("COMMIT");
-        inTransaction = false;
-      } catch (error) {
-        if (inTransaction) await mutationClient.query("ROLLBACK").catch(() => {});
-        throw error;
-      } finally {
-        mutationClient.release();
-      }
+      reservation = await storageRuntime().sourceIngestion.beginConnectorRefresh({
+        accountId,
+        connectorId: connectorId ?? "",
+        refreshVersion: randomUUID(),
+        leaseToken: randomUUID(),
+      });
     }
-    configValue = typeof effective.config === "string" ? JSON.parse(effective.config) : effective.config;
-    expectedFormat = effective.type === "url_json" ? "json" : "csv";
+    const connector = reservation.connector;
+    const config = connectorConfig(connector.config);
+    expectedFormat = connector.type === "url_json" ? "json" : "csv";
     prepareStarted = true;
-    const dataset = await py.prepareDatasetRefresh(
-      account,
-      effective.target_table,
-      refreshVersion,
-      configValue.url,
-      effective.name,
+    const dataset = await dataService.prepareDatasetRefresh(
+      accountId,
+      connector.targetTable,
+      reservation.refreshVersion,
+      config.url,
+      connector.name,
       expectedFormat
     );
-    if (dataset?.version !== refreshVersion || typeof dataset?.location !== "string" || !dataset.location) {
+    if (dataset?.version !== reservation.refreshVersion || typeof dataset?.location !== "string" || !dataset.location) {
       throw new Error("connector returned an invalid prepared artifact");
     }
-    prepared = true;
-    preparedLocation = dataset.location;
     const activationPreviousLocation =
       typeof dataset.previous_location === "string" && dataset.previous_location ? dataset.previous_location : null;
     const cleanupPreviousLocation =
-      source.file_path && source.file_path !== preparedLocation ? source.file_path : activationPreviousLocation;
-    await q(
-      `WITH owned_job AS (
-         UPDATE ingestion_jobs
-         SET status='pending', available_at=now(), leased_at=NULL, lease_token=NULL, updated_at=now()
-         WHERE source_id=$1 AND account_id=$2 AND status='preparing' AND lease_token=$11
-         RETURNING source_id, account_id
-       ), updated_source AS (
-         UPDATE sources
-         SET url=$3, display_name=$4, mime=$5, status='index',
-             meta=(meta - 'error' - 'error_code' - 'error_detail' - 'error_stage' -
-                   'connector_previous_location' - 'connector_refresh_version' -
-                   'connector_candidate_location' - 'connector_activation_previous_location') ||
-               jsonb_build_object(
-                 'connector_refresh_version',$6::text,
-                 'connector_candidate_location',$7::text,
-                 'connector_activation_previous_location',to_jsonb($8::text)
-               ) ||
-               CASE WHEN $9::text IS NULL THEN '{}'::jsonb
-                    ELSE jsonb_build_object('connector_previous_location',$9::text) END
-         FROM owned_job j
-         WHERE sources.id=j.source_id AND sources.account_id=j.account_id
-           AND sources.meta->>'connector_refresh_version'=$6
-         RETURNING id, account_id
-       )
-       UPDATE connectors
-       SET sync_status='indexing', sync_error=NULL
-       WHERE id=$10 AND account_id=$2 AND sync_status='syncing'
-         AND EXISTS (SELECT 1 FROM updated_source)
-       RETURNING id`,
-      [
-        source.id,
-        account,
-        configValue.url,
-        effective.name,
-        effective.type === "url_json" ? "application/json" : "text/csv",
-        refreshVersion,
-        preparedLocation,
-        activationPreviousLocation,
-        cleanupPreviousLocation,
-        effective.id,
-        prepareLeaseToken,
-      ]
-    ).then((rows) => {
-      if (!rows.length) throw new Error("connector promotion reservation lost");
+      reservation.source.filePath && reservation.source.filePath !== dataset.location
+        ? reservation.source.filePath
+        : activationPreviousLocation;
+    await storageRuntime().sourceIngestion.activatePreparedConnector({
+      accountId,
+      connectorId: connector.id,
+      sourceId: reservation.source.id,
+      generation: reservation.generation,
+      leaseToken: reservation.leaseToken,
+      refreshVersion: reservation.refreshVersion,
+      url: config.url,
+      displayName: connector.name,
+      mime: connector.type === "url_json" ? "application/json" : "text/csv",
+      candidateLocation: dataset.location,
+      activationPreviousLocation,
+      cleanupPreviousLocation,
     });
     wakeIngestionWorkers();
     return { synced: true, processing: true };
   } catch (error) {
-    if (error instanceof SourceScopeError && error.statusCode === 409 && !prepared) {
+    if (!reservation) {
+      if (
+        error instanceof SourceIngestionTransitionError &&
+        (error.code === "SOURCE_TRANSITION_CONNECTOR_SYNC_ACTIVE" || error.code === "SOURCE_TRANSITION_SOURCE_IN_USE")
+      ) {
+        throw new SourceScopeError(409, error.message);
+      }
+      if (connectorId) {
+        await storageRuntime()
+          .sources.updateConnectorSyncState(accountId, connectorId, {
+            status: "error",
+            syncError: "Connector sync failed.",
+            expectedStatuses: ["idle", "error"],
+          })
+          .catch(() => {});
+      }
       throw error;
     }
     let abortConfirmed = !prepareStarted;
     if (prepareStarted) {
-      abortConfirmed = await py
-        .abortDatasetRefresh(account, effective.target_table, refreshVersion, expectedFormat)
+      abortConfirmed = await dataService
+        .abortDatasetRefresh(accountId, reservation.connector.targetTable, reservation.refreshVersion, expectedFormat)
         .then(() => true)
         .catch(() => false);
     }
-    const transientPrepareFailure =
-      !abortConfirmed || (error instanceof PythonServiceError && (error.status === 429 || error.status >= 500));
-    if (transientPrepareFailure) {
-      // The exact version intent is already durable. A lost prepare response
-      // is resumed idempotently by startup/periodic reconciliation.
-      if (source) {
-        await q(
-          `UPDATE ingestion_jobs
-           SET leased_at=NULL, lease_token=NULL, available_at=now()+interval '2 seconds',
-               last_error='PREPARE_TRANSIENT', updated_at=now()
-           WHERE source_id=$1 AND account_id=$2 AND status='preparing' AND lease_token=$3`,
-          [source.id, account, prepareLeaseToken]
-        ).catch(() => {});
-        wakeConnectorPrepareWorkers();
-      }
+    const transient =
+      !abortConfirmed || (error instanceof DataServiceError && (error.status === 429 || error.status >= 500));
+    if (transient) {
+      await storageRuntime()
+        .sourceIngestion.deferConnectorPrepare({
+          accountId,
+          sourceId: reservation.source.id,
+          generation: reservation.generation,
+          leaseToken: reservation.leaseToken,
+        })
+        .catch(() => false);
+      wakeConnectorPrepareWorkers();
       throw error;
     }
-    if (source && abortConfirmed) {
-      await q(
-        `WITH failed_job AS (
-           UPDATE ingestion_jobs
-           SET status='error', leased_at=NULL, lease_token=NULL,
-               last_error='PREPARE_FAILED', updated_at=now()
-           WHERE source_id=$1 AND account_id=$2 AND status='preparing' AND lease_token=$3
-           RETURNING source_id, account_id
-         ), restored_source AS (
-           UPDATE sources s
-           SET status=CASE WHEN s.file_path IS NOT NULL AND EXISTS (
-                        SELECT 1 FROM chunks c WHERE c.source_id=s.id
-                      ) THEN 'ready' ELSE 'error' END,
-               meta=(meta - 'connector_refresh_version' - 'connector_candidate_location' -
-                     'connector_activation_previous_location' - 'connector_previous_location' - 'error' -
-                     'error_code' - 'error_detail' - 'error_stage') ||
-                    CASE WHEN s.file_path IS NOT NULL AND EXISTS (
-                           SELECT 1 FROM chunks c WHERE c.source_id=s.id
-                         ) THEN '{}'::jsonb
-                         ELSE jsonb_build_object('error','Connector sync failed.') END
-           FROM failed_job j
-           WHERE s.id=j.source_id AND s.account_id=j.account_id
-           RETURNING s.connector, s.account_id
-         )
-         UPDATE connectors c SET sync_status='error', sync_error='Connector sync failed.'
-         FROM restored_source s
-         WHERE c.id::text=s.connector AND c.account_id=s.account_id
-         RETURNING c.id`,
-        [source.id, account, prepareLeaseToken]
-      ).catch(() => {});
-    } else if (abortConfirmed) {
-      await q(
-        `UPDATE connectors SET sync_status='error', sync_error='Connector sync failed.' WHERE id=$1 AND account_id=$2`,
-        [effective.id, account]
-      ).catch(() => {});
-    }
-    const remaining = await q(`SELECT id FROM sources WHERE account_id=$1 AND connector=$2`, [
-      account,
-      effective.id,
-    ]).catch(() => []);
-    if (!remaining.length && preparedLocation) {
-      await py.abortDatasetRefresh(account, effective.target_table, refreshVersion, expectedFormat).catch(() => {});
-    }
+    await storageRuntime()
+      .sourceIngestion.failConnectorPrepare({
+        accountId,
+        connectorId: reservation.connector.id,
+        sourceId: reservation.source.id,
+        generation: reservation.generation,
+        leaseToken: reservation.leaseToken,
+        errorCode: "PREPARE_FAILED",
+      })
+      .catch(() => false);
     throw error;
   }
+}
+
+function connectorConfig(value: unknown): { url: string } {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("connector config is invalid");
+  const url = (value as Record<string, unknown>).url;
+  if (typeof url !== "string" || !url) throw new Error("connector config is invalid");
+  return { url };
+}
+
+function connectorToApi(connector: ConnectorRecord): Record<string, unknown> {
+  return {
+    id: connector.id,
+    account_id: connector.accountId,
+    name: connector.name,
+    type: connector.type,
+    config: connector.config,
+    target_table: connector.targetTable,
+    last_sync: connector.lastSync,
+    sync_status: connector.syncStatus,
+    sync_error: connector.syncError,
+    created_at: connector.createdAt,
+  };
 }

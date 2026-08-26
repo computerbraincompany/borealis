@@ -1,9 +1,13 @@
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { normalizeRequestId, runWithRequestContext } from "./requestContext.js";
 
 const installedBoundaries = new WeakSet<FastifyInstance>();
 
-export function installHttpBoundary(app: FastifyInstance): void {
+export interface HttpBoundaryOptions {
+  readonly notFound?: (req: FastifyRequest, reply: FastifyReply) => unknown;
+}
+
+export function installHttpBoundary(app: FastifyInstance, options: HttpBoundaryOptions = {}): void {
   if (installedBoundaries.has(app)) return;
   installedBoundaries.add(app);
   app.addHook("onRequest", (req, reply, done) => {
@@ -45,6 +49,7 @@ export function installHttpBoundary(app: FastifyInstance): void {
     return reply.code(500).send({ error: "internal server error", request_id: requestId });
   });
   app.setNotFoundHandler((req, reply) => {
+    if (options.notFound) return options.notFound(req, reply);
     const requestId = String(reply.getHeader("X-Request-ID") || req.id);
     return reply.code(404).send({ error: "not found", request_id: requestId });
   });

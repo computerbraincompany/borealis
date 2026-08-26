@@ -1,7 +1,9 @@
 import Fastify, { type FastifyInstance } from "fastify";
+import { mkdtemp, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("../db.js", () => ({ q: vi.fn(), pool: { connect: vi.fn(), query: vi.fn() } }));
 vi.mock("../agent.js", () => ({ runAgent: vi.fn() }));
 vi.mock("../turnContext.js", () => ({ acceptChatTurn: vi.fn() }));
 vi.mock("../chatRuns.js", () => ({
@@ -15,15 +17,16 @@ vi.mock("../systemHealth.js", () => ({ checkSystemHealth: vi.fn() }));
 
 import { signToken } from "../auth.js";
 import { config } from "../config.js";
-import { q } from "../db.js";
-import { client } from "../llm.js";
+import { getLlmClient } from "../llm.js";
+import { resolveLlmModelId } from "../llmAliases.js";
 import { runAgent } from "../agent.js";
 import { routes } from "../routes.js";
 import { acceptChatTurn } from "../turnContext.js";
 import { beginRun, cancelRun, completeRunWithAssistant, finishRunDurably, isRunCancellation } from "../chatRuns.js";
 import { checkSystemHealth } from "../systemHealth.js";
+import { closeStorageRuntime, initializeStorageRuntime, storageRuntime } from "../storageRuntime.js";
+import { closeRuntimeSettings, getRuntimeSettings, initializeRuntimeSettings } from "../runtimeSettings.js";
 
-const qMock = vi.mocked(q);
 const runAgentMock = vi.mocked(runAgent);
 const acceptChatTurnMock = vi.mocked(acceptChatTurn);
 const beginRunMock = vi.mocked(beginRun);
@@ -39,6 +42,7 @@ const authHeader = {
   authorization: `Bearer ${signToken({ userId: accountId, email: "owner@example.test" })}`,
 };
 const apps: FastifyInstance[] = [];
+const tempDirectories: string[] = [];
 
 function completion() {
   return {
@@ -56,6 +60,24 @@ function completion() {
 }
 
 async function buildApp(): Promise<FastifyInstance> {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "borealis-model-routes-"));
+  tempDirectories.push(directory);
+  const runtime = await initializeStorageRuntime({
+    sqlitePath: path.join(directory, "ledger.sqlite"),
+    lanceDirectory: path.join(directory, "lance"),
+    embeddingDimension: config.embeddingDim,
+  });
+  await runtime.ledger.run("INSERT OR IGNORE INTO users (id,email,password_hash) VALUES (?,?,?)", [
+    accountId,
+    "owner@example.test",
+    "test-password-hash",
+  ]);
+  await runtime.ledger.run("INSERT OR IGNORE INTO users (id,email,password_hash) VALUES (?,?,?)", [
+    otherAccountId,
+    "other@example.test",
+    "test-password-hash",
+  ]);
+  await initializeRuntimeSettings({ settingsFile: path.join(directory, "settings.json"), env: {} });
   const app = Fastify();
   apps.push(app);
   await routes(app);
@@ -64,7 +86,6 @@ async function buildApp(): Promise<FastifyInstance> {
 }
 
 afterEach(async () => {
-  qMock.mockReset();
   runAgentMock.mockReset();
   acceptChatTurnMock.mockReset();
   beginRunMock.mockReset();
@@ -82,12 +103,16 @@ afterEach(async () => {
   checkSystemHealthMock.mockReset();
   vi.restoreAllMocks();
   await Promise.all(apps.splice(0).map((app) => app.close()));
+  closeRuntimeSettings();
+  await closeStorageRuntime();
+  await Promise.all(tempDirectories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
 });
 
 describe("model catalog route", () => {
   it("requires authentication without touching the upstream catalog", async () => {
-    const list = vi.spyOn(client.models, "list");
     const app = await buildApp();
+    const client = await getLlmClient();
+    const list = vi.spyOn(client.models, "list");
 
     const response = await app.inject({ method: "GET", url: "/api/models" });
 
@@ -96,11 +121,15 @@ describe("model catalog route", () => {
   });
 
   it("returns only the stable catalog fields", async () => {
-    vi.spyOn(client.models, "list").mockResolvedValue({
-      data: [{ id: "chat-b", owned_by: "local" }, { id: config.embedModel }, { id: "chat-a" }],
-    } as any);
     const app = await buildApp();
-
+    const client = await getLlmClient();
+    vi.spyOn(client.models, "list").mockResolvedValue({
+      data: [
+        { id: "chat-b", owned_by: "local" },
+        { id: resolveLlmModelId("nomic-embed") },
+        { id: "qwen/qwen3.6-35b-a3b" },
+      ],
+    } as any);
     const response = await app.inject({
       method: "GET",
       url: "/api/models?refresh=1",
@@ -110,8 +139,8 @@ describe("model catalog route", () => {
     expect(response.statusCode).toBe(200);
     expect(Object.keys(response.json()).sort()).toEqual(["default_model", "discovery", "models"]);
     expect(response.json()).toEqual({
-      models: [{ id: "chat-a" }, { id: "chat-b", owned_by: "local" }],
-      default_model: config.chatModel,
+      models: [{ id: "chat-b", owned_by: "local" }, { id: "qwen-chat" }],
+      default_model: "qwen-chat",
       discovery: "live",
     });
   });
@@ -131,6 +160,8 @@ describe("model catalog route", () => {
         "/api/register",
         "/api/login",
         "/api/me",
+        "/api/settings",
+        "/api/settings/test",
         "/api/chats",
         "/api/chats/{id}",
         "/api/chats/{id}/messages",
@@ -181,37 +212,37 @@ describe("system health route", () => {
 });
 
 describe("chat persistence routes", () => {
+  async function seedChat(owner = accountId, title = "Analysis") {
+    return storageRuntime().chats.createChat({
+      accountId: owner,
+      title,
+      titleIsManual: true,
+      model: "chat-a",
+      sourceScope: { source_mode: "selected", source_ids: [] },
+    });
+  }
+
   it("lists chats by deterministic activity order and includes updated_at", async () => {
-    qMock.mockResolvedValueOnce([
-      {
-        id: chatId,
-        title: "Recently active",
-        model: "chat-b",
-        source_mode: "all",
-        created_at: "2026-08-20T00:00:00Z",
-        updated_at: "2026-08-23T00:00:00Z",
-      },
-    ]);
     const app = await buildApp();
+    const older = await seedChat(accountId, "Older");
+    const recent = await seedChat(accountId, "Recently active");
+    await storageRuntime().ledger.run("UPDATE chats SET updated_at=? WHERE id=?", [
+      "2026-08-20T00:00:00.000Z",
+      older.id,
+    ]);
+    await storageRuntime().ledger.run("UPDATE chats SET updated_at=? WHERE id=?", [
+      "2026-08-23T00:00:00.000Z",
+      recent.id,
+    ]);
 
     const response = await app.inject({ method: "GET", url: "/api/chats", headers: authHeader });
 
     expect(response.statusCode).toBe(200);
-    expect(response.json()[0].updated_at).toBe("2026-08-23T00:00:00Z");
-    expect(qMock).toHaveBeenCalledWith(expect.stringContaining("ORDER BY updated_at DESC, id DESC"), [accountId]);
+    expect(response.json().map((chat: { title: string }) => chat.title)).toEqual(["Recently active", "Older"]);
+    expect(response.json()[0].updated_at).toBe("2026-08-23T00:00:00.000Z");
   });
 
   it("marks an explicit create title as manual while using the configured model", async () => {
-    qMock.mockResolvedValueOnce([
-      {
-        id: chatId,
-        title: "Analysis",
-        model: config.chatModel,
-        source_mode: "all",
-        created_at: "2026-08-23T00:00:00Z",
-        updated_at: "2026-08-23T00:00:00Z",
-      },
-    ]);
     const app = await buildApp();
 
     const response = await app.inject({
@@ -222,36 +253,62 @@ describe("chat persistence routes", () => {
     });
 
     expect(response.statusCode).toBe(200);
-    expect(qMock.mock.calls[0][0]).toContain(
-      "INSERT INTO chats (id, account_id, title, title_is_manual, model, source_mode)"
-    );
-    expect(qMock.mock.calls[0][1]?.slice(1)).toEqual([accountId, "Analysis", true, config.chatModel]);
-    expect(response.json().model).toBe(config.chatModel);
-    expect(response.json().updated_at).toBe("2026-08-23T00:00:00Z");
+    expect(response.json().model).toBe("qwen-chat");
+    expect(response.json()).toMatchObject({ title: "Analysis", source_mode: "all" });
+    await expect(
+      storageRuntime().ledger.get("SELECT title_is_manual FROM chats WHERE id=?", [response.json().id])
+    ).resolves.toEqual({ title_is_manual: 1n });
+  });
+
+  it("hot-applies saved model defaults to discovery, new chats, and embedding-role rejection", async () => {
+    const app = await buildApp();
+    const beforeRevision = (await getRuntimeSettings()).revision;
+
+    const saved = await app.inject({
+      method: "PATCH",
+      url: "/api/settings",
+      headers: authHeader,
+      payload: {
+        default_chat_model: "saved-default-chat",
+        default_embed_model: "saved-default-embed",
+      },
+    });
+    expect(saved.statusCode).toBe(200);
+    expect(saved.json()).toMatchObject({
+      default_chat_model: "saved-default-chat",
+      default_embed_model: "saved-default-embed",
+    });
+    expect((await getRuntimeSettings()).revision).toBeGreaterThan(beforeRevision);
+
+    const client = await getLlmClient();
+    vi.spyOn(client.models, "list").mockResolvedValue({
+      data: [{ id: "saved-default-chat" }, { id: "saved-default-embed" }],
+    } as any);
+    const catalog = await app.inject({ method: "GET", url: "/api/models?refresh=1", headers: authHeader });
+    expect(catalog.statusCode).toBe(200);
+    expect(catalog.json()).toEqual({
+      models: [{ id: "saved-default-chat" }],
+      default_model: "saved-default-chat",
+      discovery: "live",
+    });
+
+    const created = await app.inject({ method: "POST", url: "/api/chats", headers: authHeader, payload: {} });
+    expect(created.statusCode).toBe(200);
+    expect(created.json().model).toBe("saved-default-chat");
+
+    const rejected = await app.inject({
+      method: "PATCH",
+      url: `/api/chats/${created.json().id}`,
+      headers: authHeader,
+      payload: { model: "saved-default-embed" },
+    });
+    expect(rejected.statusCode).toBe(400);
+    await expect(storageRuntime().chats.getChatSnapshot(accountId, created.json().id)).resolves.toMatchObject({
+      model: "saved-default-chat",
+    });
   });
 
   it("distinguishes an omitted title from an intentional manual title of New chat", async () => {
-    qMock
-      .mockResolvedValueOnce([
-        {
-          id: chatId,
-          title: "New chat",
-          model: config.chatModel,
-          source_mode: "all",
-          created_at: "2026-08-23T00:00:00Z",
-          updated_at: "2026-08-23T00:00:00Z",
-        },
-      ])
-      .mockResolvedValueOnce([
-        {
-          id: chatId,
-          title: "New chat",
-          model: config.chatModel,
-          source_mode: "all",
-          created_at: "2026-08-23T00:00:00Z",
-          updated_at: "2026-08-23T00:00:00Z",
-        },
-      ]);
     const app = await buildApp();
 
     const automatic = await app.inject({ method: "POST", url: "/api/chats", headers: authHeader, payload: {} });
@@ -264,8 +321,10 @@ describe("chat persistence routes", () => {
 
     expect(automatic.statusCode).toBe(200);
     expect(manual.statusCode).toBe(200);
-    expect(qMock.mock.calls[0][1]?.slice(1)).toEqual([accountId, "New chat", false, config.chatModel]);
-    expect(qMock.mock.calls[1][1]?.slice(1)).toEqual([accountId, "New chat", true, config.chatModel]);
+    await expect(storageRuntime().ledger.all("SELECT title_is_manual FROM chats ORDER BY rowid")).resolves.toEqual([
+      { title_is_manual: 0n },
+      { title_is_manual: 1n },
+    ]);
   });
 
   it.each([{ title: "" }, { title: "   " }, { title: "x".repeat(81) }, { title: 42 }])(
@@ -275,82 +334,68 @@ describe("chat persistence routes", () => {
       const response = await app.inject({ method: "POST", url: "/api/chats", headers: authHeader, payload });
 
       expect(response.statusCode).toBe(400);
-      expect(qMock).not.toHaveBeenCalled();
+      await expect(storageRuntime().chats.listChats(accountId)).resolves.toEqual([]);
     }
   );
 
-  it("trims and updates a model with the account predicate", async () => {
-    qMock.mockResolvedValueOnce([
-      { id: chatId, title: "Analysis", model: "chat-b", created_at: "2026-08-23T00:00:00Z" },
-    ]);
+  it("trims and updates a model without advancing chat activity", async () => {
     const app = await buildApp();
+    const chat = await seedChat();
+    const before = await storageRuntime().chats.getChatSnapshot(accountId, chat.id);
 
     const response = await app.inject({
       method: "PATCH",
-      url: `/api/chats/${chatId}`,
+      url: `/api/chats/${chat.id}`,
       headers: authHeader,
       payload: { model: "  chat-b  " },
     });
 
     expect(response.statusCode).toBe(200);
     expect(response.json().model).toBe("chat-b");
-    expect(qMock).toHaveBeenCalledWith(expect.stringContaining("WHERE id=$1 AND account_id=$2"), [
-      chatId,
-      accountId,
-      "chat-b",
-    ]);
-    expect(qMock.mock.calls[0][0]).not.toContain("title_is_manual");
-    expect(qMock.mock.calls[0][0]).not.toContain("updated_at=now()");
+    expect(response.json().updated_at).toBe(before.updated_at);
   });
 
   it("trims and manually renames an owned chat while advancing activity", async () => {
-    qMock.mockResolvedValueOnce([
-      {
-        id: chatId,
-        title: "Quarterly budget review",
-        model: "chat-b",
-        source_mode: "selected",
-        created_at: "2026-08-20T00:00:00Z",
-        updated_at: "2026-08-23T00:00:00Z",
-      },
-    ]);
     const app = await buildApp();
+    const chat = await seedChat();
+    await storageRuntime().ledger.run("UPDATE chats SET updated_at=? WHERE id=?", [
+      "2000-01-01T00:00:00.000Z",
+      chat.id,
+    ]);
 
     const response = await app.inject({
       method: "PATCH",
-      url: `/api/chats/${chatId}`,
+      url: `/api/chats/${chat.id}`,
       headers: authHeader,
       payload: { title: "  Quarterly budget review  " },
     });
 
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toMatchObject({ title: "Quarterly budget review", updated_at: "2026-08-23T00:00:00Z" });
-    expect(qMock).toHaveBeenCalledWith(expect.stringMatching(/title_is_manual=true, updated_at=now\(\)/), [
-      chatId,
-      accountId,
-      "Quarterly budget review",
-    ]);
+    expect(response.json().title).toBe("Quarterly budget review");
+    expect(response.json().updated_at).not.toBe("2000-01-01T00:00:00.000Z");
   });
 
   it.each([{ model: "chat-b" }, { title: "Private rename" }])(
     "returns 404 for another account's chat without changing a row",
     async (payload) => {
-      qMock.mockResolvedValueOnce([]);
       const app = await buildApp();
+      const chat = await seedChat();
       const otherHeader = {
         authorization: `Bearer ${signToken({ userId: otherAccountId, email: "other@example.test" })}`,
       };
 
       const response = await app.inject({
         method: "PATCH",
-        url: `/api/chats/${chatId}`,
+        url: `/api/chats/${chat.id}`,
         headers: otherHeader,
         payload,
       });
 
       expect(response.statusCode).toBe(404);
-      expect(qMock).toHaveBeenCalledOnce();
-      expect(qMock.mock.calls[0][1]).toEqual([chatId, otherAccountId, Object.values(payload)[0]]);
+      await expect(storageRuntime().chats.getChatSnapshot(accountId, chat.id)).resolves.toMatchObject({
+        title: "Analysis",
+        model: "chat-a",
+      });
     }
   );
 
@@ -370,53 +415,67 @@ describe("chat persistence routes", () => {
     { model: "chat-b", title: "Valid" },
   ])("rejects invalid or non-exact mutation bodies", async (payload) => {
     const app = await buildApp();
+    const chat = await seedChat();
     const response = await app.inject({
       method: "PATCH",
-      url: `/api/chats/${chatId}`,
+      url: `/api/chats/${chat.id}`,
       headers: authHeader,
       ...(payload === undefined ? {} : { payload }),
     });
 
     expect(response.statusCode).toBe(400);
-    expect(qMock).not.toHaveBeenCalled();
+    await expect(storageRuntime().chats.getChatSnapshot(accountId, chat.id)).resolves.toMatchObject({
+      title: "Analysis",
+      model: "chat-a",
+    });
   });
 
   it("counts title limits by Unicode characters rather than UTF-16 code units", async () => {
     const title = "🧊".repeat(80);
-    qMock.mockResolvedValueOnce([
-      {
-        id: chatId,
-        title,
-        model: "chat-b",
-        source_mode: "all",
-        created_at: "2026-08-20T00:00:00Z",
-        updated_at: "2026-08-23T00:00:00Z",
-      },
-    ]);
     const app = await buildApp();
+    const chat = await seedChat();
 
     const response = await app.inject({
       method: "PATCH",
-      url: `/api/chats/${chatId}`,
+      url: `/api/chats/${chat.id}`,
       headers: authHeader,
       payload: { title },
     });
 
     expect(response.statusCode).toBe(200);
-    expect(qMock.mock.calls[0][1]).toEqual([chatId, accountId, title]);
+    expect(response.json().title).toBe(title);
   });
 
   it("rejects the configured embedding model", async () => {
     const app = await buildApp();
+    const chat = await seedChat();
     const response = await app.inject({
       method: "PATCH",
-      url: `/api/chats/${chatId}`,
+      url: `/api/chats/${chat.id}`,
       headers: authHeader,
-      payload: { model: config.embedModel },
+      payload: { model: "nomic-embed" },
     });
 
     expect(response.statusCode).toBe(400);
-    expect(qMock).not.toHaveBeenCalled();
+    await expect(storageRuntime().chats.getChatSnapshot(accountId, chat.id)).resolves.toMatchObject({
+      model: "chat-a",
+    });
+  });
+
+  it("rejects the physical target of the configured embedding alias", async () => {
+    const app = await buildApp();
+    const chat = await seedChat();
+    const response = await app.inject({
+      method: "PATCH",
+      url: `/api/chats/${chat.id}`,
+      headers: authHeader,
+      payload: { model: resolveLlmModelId("nomic-embed") },
+    });
+
+    expect(response.statusCode).toBe(400);
+    await expect(storageRuntime().chats.getChatSnapshot(accountId, chat.id)).resolves.toMatchObject({
+      model: "chat-a",
+    });
   });
 
   it("snapshots the saved chat model before accepting a turn", async () => {
@@ -451,7 +510,6 @@ describe("chat persistence routes", () => {
 
     expect(response.statusCode).toBe(200);
     expect(acceptChatTurnMock).toHaveBeenCalledWith(accountId, chatId, "Use my data");
-    expect(qMock).not.toHaveBeenCalled();
     expect(runAgentMock).toHaveBeenCalledWith(
       expect.objectContaining({
         accountId,

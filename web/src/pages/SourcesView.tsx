@@ -132,7 +132,7 @@ export function SourcesView() {
               <p className="text-xs text-muted-foreground/70">
                 Tip: run{" "}
                 <code className="rounded bg-secondary px-1.5 py-0.5 font-mono text-[11px]">
-                  python data/generate_sample.py
+                  npx --prefix server --no-install tsx data/generate_sample.ts
                 </code>{" "}
                 for sample personal-finance data.
               </p>

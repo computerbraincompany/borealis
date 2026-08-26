@@ -2,7 +2,8 @@ import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { config } from "./config.js";
-import { q } from "./db.js";
+import { DuplicateEmailError } from "./db/stores/chatStore.js";
+import { storageRuntime } from "./storageRuntime.js";
 
 export interface AuthPayload {
   userId: string;
@@ -52,9 +53,9 @@ export async function authRoutes(app: FastifyInstance) {
       const hash = await bcrypt.hash(password, 10);
       let user;
       try {
-        [user] = await q(`INSERT INTO users (email, password_hash) VALUES ($1,$2) RETURNING id`, [email, hash]);
+        user = await storageRuntime().chats.createUser({ email, passwordHash: hash });
       } catch (error) {
-        if ((error as { code?: unknown })?.code === "23505") {
+        if (error instanceof DuplicateEmailError) {
           return reply.code(409).send({ error: "email already registered" });
         }
         throw error;
@@ -76,7 +77,7 @@ export async function authRoutes(app: FastifyInstance) {
       if (email.length > 254 || Buffer.byteLength(password, "utf8") > 72) {
         return reply.code(401).send({ error: "invalid credentials" });
       }
-      const [user] = await q(`SELECT id, email, password_hash FROM users WHERE email=$1`, [email]);
+      const user = await storageRuntime().chats.findUserByEmail(email);
       if (!user || !(await bcrypt.compare(password, user.password_hash)))
         return reply.code(401).send({ error: "invalid credentials" });
       return reply.send({

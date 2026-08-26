@@ -1,12 +1,12 @@
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { pool, q } from "./db.js";
 import { retrieve } from "./retrieve.js";
-import { py } from "./pythonClient.js";
+import { dataService } from "./dataService.js";
 import type { ResolvedSourceScope } from "./sourceScope.js";
 import { fetchPublicText } from "./networkPolicy.js";
 import { createReportResourceDirectory, removeReportArtifacts } from "./storageArtifacts.js";
+import { storageRuntime } from "./storageRuntime.js";
 
 export interface ToolDef {
   type: "function";
@@ -450,7 +450,7 @@ export async function executeTool(accountId: string, name: string, args: any, co
     case "list_sources": {
       const allowedTables = new Set(context.readyTableNames);
       const ds = allowedTables.size
-        ? (await py.listDatasetCatalog(accountId, [...allowedTables], context.abortSignal)).datasets
+        ? (await dataService.listDatasetCatalog(accountId, [...allowedTables], context.abortSignal)).datasets
         : [];
       const selectedDatasets = ds.filter((dataset: any) => allowedTables.has(String(dataset.table)));
       const datasets = selectedDatasets.slice(0, MAX_LIST_DATASET_ITEMS).map(sanitizeDatasetSummary);
@@ -474,7 +474,7 @@ export async function executeTool(accountId: string, name: string, args: any, co
     case "query_data": {
       const sql = typeof args.sql === "string" ? args.sql.trim() : "";
       if (!sql || sql.length > 20_000) return { error: "SQL must contain between 1 and 20000 characters" };
-      const result = await py.query(accountId, sql, context.readyTableNames, context.abortSignal);
+      const result = await dataService.query(accountId, sql, context.readyTableNames, context.abortSignal);
       context.queryResults = captureQueryResult(context.queryResults, sql, result);
       return result;
     }
@@ -483,21 +483,23 @@ export async function executeTool(accountId: string, name: string, args: any, co
       if (!context.readyTableNames.includes(table)) {
         return { error: "that table is not selected and ready for this chat" };
       }
-      return await py.describe(accountId, table, context.readyTableNames, context.abortSignal);
+      return await dataService.describe(accountId, table, context.readyTableNames, context.abortSignal);
     }
     case "render_chart": {
       if (context.chartIds.length >= MAX_REPORT_CHARTS) return { error: "chart limit reached for this run" };
       const spec = args.spec || {};
-      const res = await py.chart(accountId, spec, context.abortSignal);
+      const res = await dataService.chart(accountId, spec, context.abortSignal);
       if (context.abortSignal?.aborted) throw new Error("run cancelled");
       const chartId = randomUUID();
-      await insertPendingArtifact(context.runId, accountId, context.abortSignal, async (client) => {
-        await client.query(
-          `INSERT INTO charts (id, account_id, run_id, status, spec, echarts, png_base64)
-           VALUES ($1,$2,$3,'pending',$4,$5,$6)`,
-          [chartId, accountId, context.runId, JSON.stringify(res.spec), JSON.stringify(res.echarts), res.png_base64]
-        );
+      await storageRuntime().runs.insertPendingChart({
+        id: chartId,
+        accountId,
+        runId: context.runId,
+        spec: res.spec,
+        echarts: res.echarts,
+        pngBase64: res.png_base64,
       });
+      if (context.abortSignal?.aborted) throw new Error("run cancelled");
       context.chartIds.push(chartId);
       return {
         chart_id: chartId,
@@ -514,49 +516,48 @@ export async function executeTool(accountId: string, name: string, args: any, co
           error:
             "create_report requires a title and at least one section with markdown content. Call it again with a proper title, complete markdown sections, and the chart ids from render_chart.",
         };
+      // Unresolved model-authored ids are response metadata, not part of the
+      // strict report document contract. Passing that private bookkeeping key
+      // into normalizeReport would reject an otherwise valid report.
+      const { unresolved_chart_ids: unresolvedChartIds = [], ...renderPayload } = reportPayload;
       const reportId = randomUUID();
       const reportDirectory = await createReportResourceDirectory(accountId, reportId);
       const htmlName = "report.html";
       const pdfName = "report.pdf";
       const htmlPath = path.join(reportDirectory, htmlName);
       const pdfPath = path.join(reportDirectory, pdfName);
+      let durablyReserved = false;
       try {
-        const html = await py.buildReport(reportPayload, context.abortSignal);
+        const html = await dataService.buildReport(renderPayload, context.abortSignal);
         if (context.abortSignal?.aborted) throw new Error("run cancelled");
-        const pdfBuf = await py.pdf(reportPayload, context.abortSignal);
+        const pdfBuf = await dataService.pdf(renderPayload, context.abortSignal);
         if (context.abortSignal?.aborted) throw new Error("run cancelled");
         await writeAtomicExclusive(htmlPath, html.html);
         await writeAtomicExclusive(pdfPath, pdfBuf);
-        await insertPendingArtifact(context.runId, accountId, context.abortSignal, async (client) => {
-          const inserted = await client.query(
-            `INSERT INTO reports
-               (id, account_id, chat_id, run_id, status, title, subtitle, html_path, pdf_path, created_at, updated_at)
-             VALUES ($1,$2,$3,$4,'pending',$5,$6,$7,$8, now(), now()) RETURNING id`,
-            [
-              reportId,
-              accountId,
-              context.chatId || null,
-              context.runId,
-              reportPayload.title,
-              reportPayload.subtitle || "",
-              htmlPath,
-              pdfPath,
-            ]
-          );
-          context.reportId = inserted.rows[0].id;
+        await storageRuntime().runs.insertPendingReport({
+          id: reportId,
+          accountId,
+          runId: context.runId,
+          title: renderPayload.title,
+          subtitle: renderPayload.subtitle || "",
+          htmlPath,
+          pdfPath,
         });
+        durablyReserved = true;
+        context.reportId = reportId;
+        if (context.abortSignal?.aborted) throw new Error("run cancelled");
       } catch (error) {
-        await removeReportArtifacts({ accountId, reportId, htmlPath, pdfPath }).catch(() => {});
+        if (!durablyReserved) {
+          await removeReportArtifacts({ accountId, reportId, htmlPath, pdfPath }).catch(() => false);
+        }
         throw error;
       }
       return {
         report_id: reportId,
-        title: reportPayload.title,
+        title: renderPayload.title,
         html: htmlName,
         pdf: pdfName,
-        ...(reportPayload.unresolved_chart_ids?.length
-          ? { unresolved_chart_ids: reportPayload.unresolved_chart_ids }
-          : {}),
+        ...(unresolvedChartIds.length ? { unresolved_chart_ids: unresolvedChartIds } : {}),
       };
     }
     case "fetch_url": {
@@ -574,40 +575,8 @@ export async function executeTool(accountId: string, name: string, args: any, co
   }
 }
 
-async function insertPendingArtifact(
-  runId: string,
-  accountId: string,
-  signal: AbortSignal | undefined,
-  insert: (client: { query: (text: string, params?: unknown[]) => Promise<{ rows: any[] }> }) => Promise<void>
-): Promise<void> {
-  if (signal?.aborted) throw new Error("run cancelled");
-  const client = await pool.connect();
-  let inTransaction = false;
-  try {
-    await client.query("BEGIN");
-    inTransaction = true;
-    const selected = await client.query(
-      `SELECT status, cancel_requested FROM chat_runs
-       WHERE id=$1 AND account_id=$2 FOR UPDATE`,
-      [runId, accountId]
-    );
-    const run = selected.rows[0];
-    if (!run || run.status !== "running" || run.cancel_requested || signal?.aborted) {
-      throw new Error("run is no longer active");
-    }
-    await insert(client);
-    if (signal?.aborted) throw new Error("run cancelled");
-    await client.query("COMMIT");
-    inTransaction = false;
-  } catch (error) {
-    if (inTransaction) await client.query("ROLLBACK").catch(() => {});
-    throw error;
-  } finally {
-    client.release();
-  }
-}
-
-type ReportRunContext = Pick<ToolRunContext, "chartIds"> & Partial<Pick<ToolRunContext, "reportId" | "chatId">>;
+type ReportRunContext = Pick<ToolRunContext, "chartIds"> &
+  Partial<Pick<ToolRunContext, "reportId" | "chatId" | "runId">>;
 
 export async function makeReportPayload(accountId: string, args: any, context: ReportRunContext): Promise<any> {
   const title = typeof args.title === "string" ? args.title.trim().slice(0, 200) : "";
@@ -637,7 +606,9 @@ export async function makeReportPayload(accountId: string, args: any, context: R
         unresolved.push(raw);
         continue;
       }
-      const [row] = await q(`SELECT spec FROM charts WHERE id::text=$1 AND account_id=$2`, [chartId, accountId]);
+      const row = context.runId
+        ? await storageRuntime().runs.getPendingChart(accountId, context.runId, chartId)
+        : undefined;
       if (!row) unresolved.push(raw);
       else charts.push({ id: chartId, spec: row.spec });
     } catch {

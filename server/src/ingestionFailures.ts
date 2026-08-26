@@ -33,7 +33,7 @@ const FAILURES: Record<IngestionFailureCode, Omit<PublicIngestionFailure, "code"
   },
   DATA_SERVICE_UNAVAILABLE: {
     summary: "The data service was unavailable.",
-    detail: "Borealis could not reach its local data-processing service. Restore the service, then retry.",
+    detail: "Borealis could not complete local data processing. Retry; if the problem continues, restart Borealis.",
     stage: "parsing",
   },
   EMBEDDING_UNAVAILABLE: {
@@ -54,8 +54,7 @@ const FAILURES: Record<IngestionFailureCode, Omit<PublicIngestionFailure, "code"
   },
   INGEST_FAILED: {
     summary: "Source processing failed.",
-    detail:
-      "Borealis could not finish preparing this source. Retry the operation; if it fails again, check the local services.",
+    detail: "Borealis could not finish preparing this source. Retry; if the problem continues, restart Borealis.",
     stage: "storage",
   },
 };

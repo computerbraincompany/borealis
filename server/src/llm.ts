@@ -1,13 +1,22 @@
 import OpenAI from "openai";
-import { config } from "./config.js";
 import { appLog } from "./appLogger.js";
+import { publicLlmModelId, resolveLlmModelId, sameLlmModel } from "./llmAliases.js";
+import { DEFAULT_LLM_SETTINGS, type EffectiveLlmSettings } from "./settingsStore.js";
+import { getRuntimeSettings } from "./runtimeSettings.js";
 
-export const client = new OpenAI({
-  baseURL: `${config.llmBaseUrl}/v1`,
-  apiKey: config.llmApiKey,
-  timeout: 65_000,
-  maxRetries: 0,
-});
+interface LlmRuntimeBundle {
+  readonly revision: number;
+  readonly settings: EffectiveLlmSettings;
+  readonly client: OpenAI;
+  readonly discover: ReturnType<typeof createChatModelDiscovery>;
+}
+
+let cachedRuntime: LlmRuntimeBundle | undefined;
+
+/** Resolve the revision-scoped SDK client for tests and specialized callers. */
+export async function getLlmClient(): Promise<OpenAI> {
+  return (await getLlmRuntime()).client;
+}
 
 export interface ChatModelOption {
   id: string;
@@ -30,8 +39,10 @@ export function normalizeChatModels(input: unknown, configuredEmbeddingModel: st
     if (!candidate || typeof candidate !== "object") continue;
     const rawId = (candidate as { id?: unknown }).id;
     if (typeof rawId !== "string") continue;
-    const id = rawId.trim();
-    if (!id || id.length > 256 || id === configuredEmbeddingModel || models.has(id)) continue;
+    const providerId = rawId.trim();
+    if (!providerId || providerId.length > 256 || sameLlmModel(providerId, configuredEmbeddingModel)) continue;
+    const id = publicLlmModelId(providerId);
+    if (!id || id.length > 256 || models.has(id)) continue;
 
     const model: ChatModelOption = { id };
     const rawOwner = (candidate as { owned_by?: unknown }).owned_by;
@@ -47,6 +58,7 @@ export function normalizeChatModels(input: unknown, configuredEmbeddingModel: st
 
 interface ChatModelDiscoveryDependencies {
   listModels: () => Promise<unknown>;
+  configuredEmbeddingModel?: string;
   now?: () => number;
   warn?: (message: string) => void;
 }
@@ -55,6 +67,7 @@ interface ChatModelDiscoveryDependencies {
 export function createChatModelDiscovery(deps: ChatModelDiscoveryDependencies) {
   const now = deps.now ?? Date.now;
   const warn = deps.warn ?? console.warn;
+  const configuredEmbeddingModel = deps.configuredEmbeddingModel ?? DEFAULT_LLM_SETTINGS.embedModel;
   let cached: { result: ChatModelDiscovery; storedAt: number } | undefined;
   let inFlight: Promise<ChatModelDiscovery> | undefined;
 
@@ -68,7 +81,7 @@ export function createChatModelDiscovery(deps: ChatModelDiscoveryDependencies) {
       try {
         const page = await deps.listModels();
         const result: ChatModelDiscovery = {
-          models: normalizeChatModels(page, config.embedModel),
+          models: normalizeChatModels(page, configuredEmbeddingModel),
           discovery: "live",
         };
         cached = { result, storedAt: now() };
@@ -88,25 +101,21 @@ export function createChatModelDiscovery(deps: ChatModelDiscoveryDependencies) {
   };
 }
 
-const discoverWithClient = createChatModelDiscovery({
-  listModels: () => client.models.list({ timeout: 5_000, maxRetries: 0 }),
-  warn: () => appLog.warn({ error_code: "MODEL_DISCOVERY_UNAVAILABLE" }, "model discovery unavailable"),
-});
-
-export function discoverChatModels(options: { refresh?: boolean } = {}): Promise<ChatModelDiscovery> {
-  return discoverWithClient(options);
+export async function discoverChatModels(options: { refresh?: boolean } = {}): Promise<ChatModelDiscovery> {
+  return (await getLlmRuntime()).discover(options);
 }
 
 export async function embed(texts: string[], signal?: AbortSignal): Promise<number[][]> {
+  const runtime = await getLlmRuntime();
   const out: number[][] = [];
   // batch to keep local inference snappy
   for (let i = 0; i < texts.length; i += 16) {
     const batch = texts.slice(i, i + 16);
     // encode as "float": openai-node defaults to base64 and blindly decodes the
-    // response, which corrupts embeddings when the upstream (litellm/LM Studio)
+    // response, which corrupts embeddings when an OpenAI-compatible runtime
     // returns plain floats instead of base64 (768 floats -> 192).
-    const res = await client.embeddings.create(
-      { model: config.embedModel, input: batch, encoding_format: "float" },
+    const res = await runtime.client.embeddings.create(
+      { model: resolveLlmModelId(runtime.settings.embedModel), input: batch, encoding_format: "float" },
       { timeout: 60_000, maxRetries: 0, ...(signal ? { signal } : {}) }
     );
     out.push(...res.data.map((d) => d.embedding as number[]));
@@ -189,8 +198,9 @@ export function createThinkSplitter(onDelta: (text: string) => void, onReasoning
 }
 
 export async function chatOnce(messages: ChatMessage[], opts: ChatOptions): Promise<OpenAI.Chat.ChatCompletion> {
+  const client = (await getLlmRuntime()).client;
   const body: OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming = {
-    model: opts.model,
+    model: resolveLlmModelId(opts.model),
     messages,
     max_tokens: opts.maxTokens ?? 1800,
     temperature: opts.temperature ?? 0.2,
@@ -209,8 +219,9 @@ export async function streamingChat(
   opts: StreamingChatOptions,
   onDelta: (text: string) => void
 ): Promise<OpenAI.Chat.ChatCompletion> {
+  const client = (await getLlmRuntime()).client;
   const body = {
-    model: opts.model,
+    model: resolveLlmModelId(opts.model),
     messages,
     max_tokens: opts.maxTokens ?? 2200,
     temperature: opts.temperature ?? 0.2,
@@ -305,4 +316,31 @@ export async function streamingChat(
     merged.choices[0].message.tool_calls = orderedToolCalls;
   }
   return merged;
+}
+
+async function getLlmRuntime(): Promise<LlmRuntimeBundle> {
+  const snapshot = await getRuntimeSettings();
+  if (cachedRuntime?.revision === snapshot.revision) return cachedRuntime;
+
+  const client = new OpenAI({
+    baseURL: `${snapshot.settings.llmBaseUrl}/v1`,
+    // openai-node requires an explicit string. Nulling its generated header
+    // keeps genuinely keyless local runtimes keyless on the wire.
+    apiKey: snapshot.settings.apiKey ?? "borealis-keyless-local-runtime",
+    ...(snapshot.settings.apiKey ? {} : { defaultHeaders: { Authorization: null } }),
+    timeout: 65_000,
+    maxRetries: 0,
+  });
+  const runtime: LlmRuntimeBundle = {
+    revision: snapshot.revision,
+    settings: snapshot.settings,
+    client,
+    discover: createChatModelDiscovery({
+      configuredEmbeddingModel: snapshot.settings.embedModel,
+      listModels: () => client.models.list({ timeout: 5_000, maxRetries: 0 }),
+      warn: () => appLog.warn({ error_code: "MODEL_DISCOVERY_UNAVAILABLE" }, "model discovery unavailable"),
+    }),
+  };
+  cachedRuntime = runtime;
+  return runtime;
 }

@@ -8,6 +8,7 @@ import { chatRoutes } from "./routes/chats.js";
 import { connectorRoutes } from "./routes/connectors.js";
 import { modelRoutes } from "./routes/models.js";
 import { reportRoutes } from "./routes/reports.js";
+import { settingsRoutes } from "./routes/settings.js";
 import { sourceRoutes } from "./routes/sources.js";
 import { systemRoutes } from "./routes/system.js";
 
@@ -34,6 +35,7 @@ export async function routes(app: FastifyInstance): Promise<void> {
   });
 
   await app.register(modelRoutes);
+  await app.register(settingsRoutes);
   await app.register(systemRoutes);
   await app.register(chatRoutes);
   await app.register(sourceRoutes);

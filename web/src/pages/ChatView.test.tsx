@@ -238,7 +238,7 @@ describe("ChatView orchestration", () => {
     render(<ChatView />);
 
     expect(await screen.findByRole("link", { name: "Model catalog unavailable" })).toBeInTheDocument();
-    expect(screen.queryByText(/LiteLLM|LM Studio|OpenAI-compatible/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/model endpoint|LM Studio|OpenAI-compatible/i)).not.toBeInTheDocument();
   });
 
   it("keeps stop-before-runId connected, then cancels the owned run before aborting", async () => {

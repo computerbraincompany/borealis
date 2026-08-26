@@ -7,6 +7,7 @@ import {
   openProtected,
   parseConnectorListPayload,
   parseSourceListPayload,
+  settingsApi,
   streamAgentChat,
   type SourceScopeInput,
 } from "@/lib/api";
@@ -45,6 +46,52 @@ describe("typed API contracts", () => {
       target_table: "ledger",
       type: "url_csv",
       config: { url: "https://example.test/data.csv" },
+    });
+  });
+
+  it("uses the redacted provider-settings contract and serializes draft probes without adding a key", async () => {
+    const settings = {
+      llm_base_url: "http://127.0.0.1:1234",
+      llm_api_key_configured: true,
+      lm_studio_base_url: null,
+      default_chat_model: "qwen-chat",
+      default_embed_model: "nomic-embed",
+      managed_by_env: {
+        llm_base_url: false,
+        llm_api_key: false,
+        lm_studio_base_url: false,
+        default_chat_model: false,
+        default_embed_model: false,
+      },
+    };
+    const json = (body: unknown) =>
+      new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(json(settings))
+      .mockResolvedValueOnce(json({ ...settings, default_chat_model: "analysis-large" }))
+      .mockResolvedValueOnce(json({ ok: true, latency_ms: 12 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await settingsApi.get();
+    await settingsApi.update({ default_chat_model: "analysis-large" });
+    await settingsApi.testConnection({
+      llm_base_url: "https://models.example.test",
+      default_chat_model: "analysis-large",
+      default_embed_model: "nomic-embed",
+    });
+
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/settings");
+    expect(fetchMock.mock.calls[1][0]).toBe("/api/settings");
+    expect(fetchMock.mock.calls[1][1]).toMatchObject({
+      method: "PATCH",
+      body: JSON.stringify({ default_chat_model: "analysis-large" }),
+    });
+    expect(fetchMock.mock.calls[2][0]).toBe("/api/settings/test");
+    expect(JSON.parse(String(fetchMock.mock.calls[2][1].body))).toEqual({
+      llm_base_url: "https://models.example.test",
+      default_chat_model: "analysis-large",
+      default_embed_model: "nomic-embed",
     });
   });
 
@@ -178,7 +225,7 @@ describe("typed API contracts", () => {
 
     await openProtected("html", "/api/reports/report-1/html", "Report.html");
 
-    expect(open).toHaveBeenCalledWith("", "_blank");
+    expect(open).toHaveBeenCalledWith("about:blank", "_blank");
     expect(popup.opener).toBeNull();
     expect(popupDocument.body.children).toHaveLength(1);
     expect(popupDocument.querySelector("script")).toBeNull();

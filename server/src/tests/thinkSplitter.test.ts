@@ -1,8 +1,22 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { client, createThinkSplitter, streamingChat } from "../llm.js";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createThinkSplitter, getLlmClient, streamingChat } from "../llm.js";
+import { closeRuntimeSettings, initializeRuntimeSettings } from "../runtimeSettings.js";
 
-afterEach(() => {
+let temporaryDirectory = "";
+
+beforeEach(async () => {
+  temporaryDirectory = await fs.mkdtemp(path.join(os.tmpdir(), "borealis-think-splitter-"));
+  await initializeRuntimeSettings({ settingsFile: path.join(temporaryDirectory, "settings.json"), env: {} });
+});
+
+afterEach(async () => {
   vi.restoreAllMocks();
+  closeRuntimeSettings();
+  if (temporaryDirectory) await fs.rm(temporaryDirectory, { recursive: true, force: true });
+  temporaryDirectory = "";
 });
 
 function split(chunks: string[], includeReasoning = true) {
@@ -47,6 +61,7 @@ describe("createThinkSplitter", () => {
 
 describe("streamingChat tool-call merge", () => {
   it("compacts sparse indices and avoids repeated full function names", async () => {
+    const client = await getLlmClient();
     async function* chunks() {
       yield {
         choices: [

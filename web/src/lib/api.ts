@@ -8,26 +8,43 @@ export interface AuthUser {
   email: string;
 }
 
+function desktopToken(): string | null {
+  return window.sessionStorage.getItem(TOKEN_KEY);
+}
+
 export function getToken(): string | null {
-  return window.localStorage.getItem(TOKEN_KEY);
+  return desktopToken() ?? window.localStorage.getItem(TOKEN_KEY);
 }
 
 export function getUser(): AuthUser | null {
   try {
-    return JSON.parse(window.localStorage.getItem(USER_KEY) || "null");
+    const storage = desktopToken() ? window.sessionStorage : window.localStorage;
+    return JSON.parse(storage.getItem(USER_KEY) || "null");
   } catch {
     return null;
   }
 }
 
 export function setSession(token: string, user: AuthUser) {
+  window.sessionStorage.removeItem(TOKEN_KEY);
+  window.sessionStorage.removeItem(USER_KEY);
   window.localStorage.setItem(TOKEN_KEY, token);
   window.localStorage.setItem(USER_KEY, JSON.stringify(user));
+}
+
+/** Keep Electron's one-launch bootstrap out of persistent Chromium storage. */
+export function setDesktopSession(token: string, user: AuthUser) {
+  window.localStorage.removeItem(TOKEN_KEY);
+  window.localStorage.removeItem(USER_KEY);
+  window.sessionStorage.setItem(TOKEN_KEY, token);
+  window.sessionStorage.setItem(USER_KEY, JSON.stringify(user));
 }
 
 export function clearSession() {
   window.localStorage.removeItem(TOKEN_KEY);
   window.localStorage.removeItem(USER_KEY);
+  window.sessionStorage.removeItem(TOKEN_KEY);
+  window.sessionStorage.removeItem(USER_KEY);
 }
 
 export class ApiError extends Error {
@@ -126,7 +143,10 @@ export async function openProtected(kind: "html" | "pdf", path: string, filename
   // The shell is trusted app code; report HTML is mounted only in an opaque
   // sandbox so its inline chart script can never inherit the app origin or
   // read the JWT stored in localStorage.
-  const previewWindow = window.open("", "_blank");
+  // Spell out the only URL Electron's main-process popup policy permits.
+  // Chromium treats an empty URL as a blank page, but Electron reports that
+  // request differently to setWindowOpenHandler and correctly denies it.
+  const previewWindow = window.open("about:blank", "_blank");
   if (!previewWindow) throw new Error("report preview window was blocked");
   previewWindow.opener = null;
   previewWindow.document.title = filename;
@@ -360,6 +380,37 @@ export interface ModelsResponse {
   discovery: "live" | "unavailable";
 }
 
+export type ProviderSettingName =
+  | "llm_base_url"
+  | "llm_api_key"
+  | "lm_studio_base_url"
+  | "default_chat_model"
+  | "default_embed_model";
+
+export interface ProviderSettingsResponse {
+  llm_base_url: string;
+  /** The stored secret is deliberately never returned to the browser. */
+  llm_api_key_configured: boolean;
+  lm_studio_base_url: string | null;
+  default_chat_model: string;
+  default_embed_model: string;
+  managed_by_env: Record<ProviderSettingName, boolean>;
+}
+
+export interface ProviderSettingsPatch {
+  llm_base_url?: string;
+  /** Omit to preserve the stored key; null explicitly clears it. */
+  llm_api_key?: string | null;
+  lm_studio_base_url?: string | null;
+  default_chat_model?: string;
+  default_embed_model?: string;
+}
+
+export interface ProviderConnectionTestResponse {
+  ok: true;
+  latency_ms: number;
+}
+
 export type ServiceHealthId = "api" | "database" | "data_service" | "model_gateway" | "model_runtime";
 
 export interface ServiceHealth {
@@ -508,7 +559,7 @@ export type ConnectorSyncStatus = "syncing" | "indexing" | "idle" | "error";
 
 const CONNECTOR_SYNC_STATUSES = new Set<ConnectorSyncStatus>(["syncing", "indexing", "idle", "error"]);
 
-/** Normalize Postgres JSONB and reject connector rows outside the UI status contract. */
+/** Normalize persisted JSON and reject connector rows outside the UI status contract. */
 export function parseConnectorListPayload(payload: unknown): Connector[] {
   if (!Array.isArray(payload)) return [];
   return payload.flatMap((candidate) => {
@@ -617,6 +668,15 @@ export const chatsApi = {
 // ------------------------------------------------------------------ models
 export const modelsApi = {
   list: (refresh = false) => api<ModelsResponse>(`/api/models${refresh ? "?refresh=1" : ""}`),
+};
+
+// ------------------------------------------------------------------ settings
+export const settingsApi = {
+  get: (signal?: AbortSignal) => api<ProviderSettingsResponse>("/api/settings", { signal }),
+  update: (body: ProviderSettingsPatch) =>
+    api<ProviderSettingsResponse>("/api/settings", { method: "PATCH", body: JSON.stringify(body) }),
+  testConnection: (body: ProviderSettingsPatch) =>
+    api<ProviderConnectionTestResponse>("/api/settings/test", { method: "POST", body: JSON.stringify(body) }),
 };
 
 // ------------------------------------------------------------------ system

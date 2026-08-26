@@ -12,7 +12,7 @@ const seriesSpec = (type: string) => ({
 });
 
 describe("canonical chart fallback", () => {
-  it("matches Python's donut and pie geometry", () => {
+  it("matches the canonical donut and pie geometry", () => {
     const donut = optionFromCanonicalSpec({
       ...seriesSpec("donut"),
       series: [],
@@ -28,7 +28,7 @@ describe("canonical chart fallback", () => {
     expect(pie.series[0].radius).toBe("72%");
   });
 
-  it("matches Python's area and scatter series constants", () => {
+  it("matches the canonical area and scatter series constants", () => {
     const area = optionFromCanonicalSpec(seriesSpec("area"));
     const scatter = optionFromCanonicalSpec(seriesSpec("scatter"));
 

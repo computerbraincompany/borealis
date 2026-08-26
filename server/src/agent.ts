@@ -1,10 +1,10 @@
 import { ChatMessage, streamingChat } from "./llm.js";
 import { TOOL_DEFS, executeTool, type ToolRunContext } from "./tools.js";
-import { q } from "./db.js";
-import { py } from "./pythonClient.js";
+import { dataService } from "./dataService.js";
 import type { ResolvedSourceScope } from "./sourceScope.js";
 import { config } from "./config.js";
 import { explicitHttpUrls } from "./networkPolicy.js";
+import { storageRuntime } from "./storageRuntime.js";
 
 export type AgentEvent =
   | { type: "step-start"; name: string; summary: string }
@@ -76,8 +76,8 @@ export async function buildSystemPrompt(
       : "No ready tabular data sources are attached to this chat.";
   if (allowedTables.size) {
     try {
-      const ds = (await py.listDatasetCatalog(accountId, [...allowedTables], signal)).datasets.filter((dataset: any) =>
-        allowedTables.has(String(dataset.table))
+      const ds = (await dataService.listDatasetCatalog(accountId, [...allowedTables], signal)).datasets.filter(
+        (dataset: any) => allowedTables.has(String(dataset.table))
       );
       if (ds.length) {
         catalog = formatPromptCatalog(ds, allowedTables.size);
@@ -183,23 +183,14 @@ export async function runAgent(opts: {
   signal?: AbortSignal;
   emit: (event: AgentEvent) => Promise<void> | void;
 }): Promise<AgentCompletion> {
-  const { accountId, chatId, content, model, sourceScope, userMessage, runId, emit, signal } = opts;
-  // load conversation
-  const prior = userMessage
-    ? await q(
-        `SELECT role, content FROM (
-           SELECT role, left(content,$4) AS content, id FROM messages
-           WHERE chat_id=$1 AND id < $2 ORDER BY id DESC LIMIT $3
-         ) recent ORDER BY id`,
-        [chatId, userMessage.id, config.maxHistoryMessages, config.maxMessageChars]
-      )
-    : await q(
-        `SELECT role, content FROM (
-           SELECT role, left(content,$3) AS content, id FROM messages
-           WHERE chat_id=$1 ORDER BY id DESC LIMIT $2
-         ) recent ORDER BY id`,
-        [chatId, config.maxHistoryMessages, config.maxMessageChars]
-      );
+  const { accountId, chatId, content, model, sourceScope, runId, emit, signal } = opts;
+  // The durable run owns the accepted user-message boundary. Loading through
+  // that exact account/chat/run tuple prevents mutable chat state or a caller-
+  // supplied cursor from widening the prompt history.
+  const prior = await storageRuntime().chats.listAgentHistoryForRun(accountId, chatId, runId, {
+    limit: config.maxHistoryMessages,
+    maxMessageChars: config.maxMessageChars,
+  });
   const historyCandidates: ChatMessage[] = prior.flatMap((message) =>
     (message.role === "user" || message.role === "assistant") && typeof message.content === "string" && message.content
       ? [{ role: message.role, content: message.content }]

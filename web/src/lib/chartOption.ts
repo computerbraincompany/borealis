@@ -2,7 +2,7 @@ import { CANONICAL_CHART_PALETTE } from "@/lib/chartTheme";
 
 type ChartSpecRecord = Record<string, any>;
 
-/** Mirror python/app/charts.py::echarts_option for legacy chart rows without a stored option. */
+/** Mirror server/src/data/charts.ts::echartsOption for legacy chart rows without a stored option. */
 export function optionFromCanonicalSpec(spec: ChartSpecRecord): ChartSpecRecord {
   const type = spec.type;
   const title = {

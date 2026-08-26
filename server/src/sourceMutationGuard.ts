@@ -1,28 +1,23 @@
-import type { QueryResult, QueryResultRow } from "pg";
-
-export interface GuardQueryable {
-  query<T extends QueryResultRow = any>(text: string, values?: any[]): Promise<QueryResult<T>>;
-}
+import { storageRuntime } from "./storageRuntime.js";
 
 /**
- * Active runs carry the exact accepted source ids on their user-message
- * snapshot. Resource mutation must check that immutable ledger, not mutable
- * chat_sources/current `all` membership.
+ * Active runs carry normalized immutable source snapshots. New mutation code
+ * should use a store transition that performs this guard in the same
+ * `BEGIN IMMEDIATE` transaction as its write.
  */
+export async function sourceReferencedByActiveRun(accountId: string, sourceId: string): Promise<boolean>;
+/** @deprecated Compatibility for the old integration harness; the first value is ignored. */
 export async function sourceReferencedByActiveRun(
-  client: GuardQueryable,
+  transactionOwner: unknown,
   accountId: string,
   sourceId: string
+): Promise<boolean>;
+export async function sourceReferencedByActiveRun(
+  accountOrOwner: string | unknown,
+  sourceOrAccount: string,
+  optionalSource?: string
 ): Promise<boolean> {
-  const result = await client.query(
-    `SELECT 1
-     FROM chat_runs r
-     JOIN messages m ON m.id=r.user_message_id
-     WHERE r.account_id=$1
-       AND r.status IN ('running','cancelling')
-       AND COALESCE(m.meta->'source_ids','[]'::jsonb) ? $2::text
-     LIMIT 1`,
-    [accountId, sourceId]
-  );
-  return result.rows.length > 0;
+  const accountId = optionalSource === undefined ? String(accountOrOwner) : sourceOrAccount;
+  const sourceId = optionalSource ?? sourceOrAccount;
+  return storageRuntime().chats.sourceReferencedByActiveRun(accountId, sourceId);
 }

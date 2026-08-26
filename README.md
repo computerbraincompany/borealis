@@ -1,207 +1,217 @@
 # Borealis ⚡
 
-*Borealis — after the Aurora Borealis, the northern lights. A free and open-source
-agentic workspace: chat with your uploaded documents and connected data
-sources, then turn the answers into polished HTML and PDF reports.*
+_Borealis — after the Aurora Borealis, the northern lights. A free and
+open-source agentic workspace for chatting with documents and tabular data, then
+turning answers into polished HTML and PDF reports._
 
-**Borealis** is an agentic "ask your data" platform. Point it at tabular files
-(CSV, XLSX, parquet…), documents (PDF, DOCX, TXT) or URL connectors, then chat:
-the agent writes SQL, makes charts, and can assemble a full report (HTML + PDF) —
-e.g. ingest personal-finance CSVs and ask for a financial analysis with charts.
-
-The default stack runs locally through LiteLLM and LM Studio. Borealis can also
-target a remote OpenAI-compatible provider; in that configuration, prompts and
-the selected context are sent to that provider according to its data policy.
+Borealis accepts CSV, XLSX, Parquet, JSON, JSONL, PDF, DOCX, TXT, Markdown, and
+bounded public URL connectors. Its agent can retrieve evidence, query tabular
+sources with SQL, render charts, and assemble reports. Model calls go directly
+to LM Studio or another OpenAI-compatible endpoint.
 
 ## Architecture
 
-```
-web/        React + Vite + Tailwind + shadcn UI · port 5173
-            auth, chat (SSE streaming), sources, URL connectors, reports
-server/     Node.js (TypeScript, ESM) Fastify API · port 3000
-            agent loop, uploads, RAG chunks (pgvector), chat SSE, reports
-python/     FastAPI report service (uv) · port 8000
-            DuckDB query layer, charts (matplotlib PNG + ECharts), HTML/PDF reports
-docker-compose.yml
-            PostgreSQL + pgvector; LiteLLM (port 4000) runs from python/
-            and proxies LM Studio (port 1234) or any OpenAI-compatible API
+```text
+desktop/    Electron shell for Apple Silicon macOS 13+
+web/        React + Vite UI: chat, sources, reports, and Settings
+server/     Fastify API, agent loop, ingestion, retrieval, and rendering
+data/       deterministic personal-finance fixtures
 ```
 
+The durable store is deliberately split by job:
+
+- SQLite stores users, chats, runs, sources, jobs, and chunk text.
+- LanceDB stores scoped embedding vectors for retrieval.
+- DuckDB runs bounded analytical SQL against uploaded tabular data.
+- The filesystem stores uploads, reports, settings, and the generated JWT
+  signing secret.
+
+The browser development stack uses an isolated Playwright Chromium instance for
+chart PNG and report PDF output. The packaged app does not include that browser;
+it renders through a hidden, network-denied Electron window instead.
+
+## Desktop app
+
+The desktop build supports Apple Silicon Macs running macOS 13 or later. It
+starts the Fastify backend in an Electron utility process on an OS-assigned
+`127.0.0.1` port and serves the built React UI from that same origin. First
+launch creates a local account and hands a fresh session to the trusted preload,
+so the normal desktop path does not show a registration form. The bootstrap JWT
+is kept only in Chromium session storage; quitting and reopening the app mints a
+fresh session for the same local account.
+
+Durable files live under:
+
+```text
+~/Library/Application Support/Borealis/
+  borealis.sqlite
+  lancedb/
+  uploads/
+  reports/
+  settings.json
+  jwt.secret
 ```
-                 ┌────────────┐   SSE    ┌────────────────────┐   HTTP   ┌──────────────────────┐
-  Browser ──────▶│  server/   │─────────▶│   agent.ts agent   │────────▶│ python/ (DuckDB +    │
-  (chat, charts) │  Fastify   │  upload  │ (tool loop, ≤8 it) │  tools  │  matplotlib + reports)│
-                 └────────────┘          └────────────────────┘         └──────────────────────┘
-                       │ LLM calls (OpenAI-compatible /v1)                     │
-                       ▼                                                        │
-                 ┌────────────┐                                       HTML + PDF artifacts
-                 │ Litellm    │◀── LM Studio / any OpenAI API         (reports_storage/)
-                 │ proxy :4000│
-                 └────────────┘
-```
 
-## Getting started
+The JWT secret is generated once with mode `0600`, and provider settings are
+also written with mode `0600`. No `.env` file is required.
 
-Prerequisites: Node 22.13 or newer 22.x, Python 3.12, [uv 0.11.26](https://docs.astral.sh/uv/), Docker, and a running
-OpenAI-compatible endpoint for the LLM (LM Studio on `http://localhost:1234/v1`
-works out of the box — see `python/litellm.yaml`).
-
-Two models must be loaded in LM Studio with ids matching `python/litellm.yaml`:
-a CHAT model (default alias `qwen-chat` → `openai/qwen/qwen3.6-35b-a3b`) and an
-EMBEDDING model (default alias `nomic-embed` → `text-embedding-nomic-embed-text-v1.5`,
-768 dims). Using different models? Edit the aliases in `litellm.yaml` and set
-`LITELLM_*` env vars accordingly — if you change the embedding model you MUST
-also change `EMBEDDING_DIM` BEFORE first ingest (the vector column size is fixed
-at schema creation).
-
-Borealis discovers model choices through the configured OpenAI-compatible
-endpoint's standard [`GET /v1/models`](https://developers.openai.com/api/reference/typescript/resources/models/methods/list)
-catalog. The model selected in the composer is durable per chat and is
-snapshotted when each turn begins, so changing it never changes an in-flight or
-historical answer. The configured embedding model is intentionally excluded
-from this picker: `LITELLM_CHAT_MODEL` and `LITELLM_EMBED_MODEL` must be distinct,
-and each ID must contain 1–256 characters.
-
-The standard model catalog advertises identities, not chat or tool-use
-capabilities. A listed model can therefore still be unsuitable for the agent
-loop. Borealis returns a correlated, non-sensitive generation failure in that
-case and keeps the saved selection; it never silently retries the turn with the
-process default.
-
-Each chat also has a durable stored-source scope. `All sources` dynamically
-includes every current and future source in the account; an explicit selection
-includes only those sources; `No sources` is a deliberate empty selection and
-never falls back to all. New chats created in the web app start with no sources,
-while existing chats and API callers that omit scope retain the legacy all-source
-behavior. Processing or failed sources stay visibly attached but cannot enter a
-turn until they are ready.
-
-At message acceptance, Borealis snapshots the chat model, source mode, and
-concrete ready source IDs in one repeatable-read transaction. That immutable
-snapshot filters the model prompt, pgvector retrieval, source listing, DuckDB
-query/describe catalogs, and report chart provenance for the entire turn.
-Changing a model or source selection affects the next answer only; earlier chat
-text and artifacts are not retroactively erased. The `fetch_url` tool is a
-separate web capability and is intentionally independent of stored-source scope.
-
-> Recommended: configure `server/.env`, then run `./scripts/dev.sh`. It verifies
-> runtime versions and secrets, synchronizes locked dependencies, starts services
-> on loopback, waits for Python readiness, and supervises the stack. The manual
-> sequence below explains each piece.
+Install dependencies and launch a development build:
 
 ```bash
-# 1. database
-docker compose up -d postgres
-
-# 2. Configure the Node server. Generate separate random values for JWT_SECRET,
-# PYTHON_SERVICE_TOKEN, and LITELLM_API_KEY; do not reuse them elsewhere.
-cd server
-npm ci
-cp .env.example .env
-openssl rand -base64 32  # paste into JWT_SECRET
-openssl rand -base64 32  # paste into PYTHON_SERVICE_TOKEN
-openssl rand -base64 32  # paste into LITELLM_API_KEY
-# CORS_ORIGINS defaults to the two loopback Vite origins. Add an exact HTTP(S)
-# origin only when serving the web app somewhere else.
-
-# 3. Python report service + loopback-only LiteLLM proxy (share the uv env)
-cd ../python
-uv sync --locked
-
-# Export the same service credential configured in server/.env without logging it.
-export BOREALIS_SERVICE_TOKEN="$(sed -n 's/^PYTHON_SERVICE_TOKEN=//p' ../server/.env)"
-export LITELLM_MASTER_KEY="$(sed -n 's/^LITELLM_API_KEY=//p' ../server/.env)"
-export LM_STUDIO_API_KEY="$(openssl rand -hex 32)"  # LM Studio accepts an ephemeral local key
-export BOREALIS_STORAGE_DIR="$(cd .. && pwd)/uploads"
-# If UPLOAD_DIR is customized, use the same absolute path for both variables.
-uv run litellm --config litellm.yaml --host 127.0.0.1 --port 4000 &
-
-# macOS: preserve any existing fallback and derive the active Homebrew prefix.
-# Install the libraries first with: brew install pango glib
-env DYLD_FALLBACK_LIBRARY_PATH="$(brew --prefix)/lib${DYLD_FALLBACK_LIBRARY_PATH:+:$DYLD_FALLBACK_LIBRARY_PATH}" \
-  .venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000 &
-
-# 4. Node server
-cd ../server
-npm run dev                                            # http://localhost:3000
-
-# 5. Frontend
-cd ../web
-npm ci
-npm run dev                                            # http://localhost:5173
+npm ci --prefix server
+npm ci --prefix web
+npm ci --prefix desktop
+npm --prefix desktop run dev
 ```
 
-On Linux install the system libraries instead (e.g. Debian/Ubuntu:
-`sudo apt install libpango-1.0-0 libpangoft2-1.0-0 libglib2.0-0`); no
-DYLD variable is needed. See WeasyPrint's dependency docs.
+Build unsigned arm64 installers for local testing:
 
-> The LiteLLM **proxy must run from the uv environment**, not Docker (the compose
-> entry is commented out by design). If you don't need a proxy, point
-> `LITELLM_BASE_URL` at any OpenAI-compatible API directly.
->
-> The Python service authenticates every non-health request with the shared
-> service credential. Node durably reconciles queued ingestion and ready tabular
-> sources after restarts; failed reconciliation is reported rather than silently
-> declaring a source restored.
+```bash
+npm --prefix desktop run package:unsigned
+```
+
+Artifacts are written to `desktop/release/` as
+`Borealis-<version>-macOS-arm64.dmg` and `.zip`. The unsigned target is for local
+testing, deterministically disables signing/notarization, and currently uses
+Electron's default application icon. Distribution builds use
+`npm --prefix desktop run package:mac` and need a Developer ID Application
+certificate plus notarization credentials supplied only in the release
+environment; certificates and credentials must never be committed. See
+`desktop/README.md` for the exact variables and package verification commands.
+
+Signed distribution builds use Apple's hardened runtime. The unsigned local-test
+artifacts are neither signed nor notarized. Version 1 deliberately does not
+enable the Mac App Store application sandbox because its native SQLite, LanceDB,
+and DuckDB modules and direct application-data storage need a separate sandbox
+design.
+
+## Model setup and privacy boundary
+
+Borealis does not bundle model weights. Start LM Studio with a chat model and an
+embedding model, or configure a remote OpenAI-compatible provider in the
+existing Settings modal. Local defaults are:
+
+- endpoint: `http://127.0.0.1:1234`
+- chat model: `qwen-chat`
+- embedding model: `nomic-embed`
+
+Settings can save the endpoint, API key, model IDs, and an optional distinct LM
+Studio health endpoint. API keys are redacted in responses and are never sent in
+health payloads, logs, or chat events. Environment overrides remain available
+for operators and CI and make their corresponding Settings fields read-only.
+Canonical overrides are `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_CHAT_MODEL`, and
+`LLM_EMBED_MODEL`. Retained `LITELLM_*` names are lower-precedence compatibility
+aliases only; Borealis no longer starts or requires a LiteLLM process.
+
+Saving a different embedding model does not rewrite existing vectors. Keep
+`EMBEDDING_DIM` compatible with the model and reingest existing sources after a
+change; the LanceDB table dimension is fixed when it is first created.
+
+When a remote provider is configured, prompts and the selected source context
+leave this Mac and are governed by that provider's data policy. Source parsing,
+analytical SQL, the durable stores, and report rendering remain local. Remote
+provider URLs must use HTTPS; plain HTTP is accepted only for validated loopback
+origins.
+
+## Browser development
+
+Prerequisites are Node.js 22.13 or newer 22.x and npm 10.9.x. Start the model
+endpoint separately, then run:
+
+```bash
+./scripts/dev.sh
+```
+
+The script synchronizes the server and web lockfiles and supervises the API at
+`http://127.0.0.1:3000` and Vite UI at `http://127.0.0.1:5173`. Embedded data is
+stored in `.borealis/`. Install Chromium once before using browser-development
+chart or PDF rendering:
+
+```bash
+(cd server && npx playwright install chromium)
+```
+
+To start the two processes manually:
+
+```bash
+npm ci --prefix server
+npm ci --prefix web
+(cd server && npm run dev)
+(cd web && npm run dev)
+```
+
+No container, external database, manually generated credential, or copied
+`.env` file is part of the development happy path. `server/.env.example`
+documents optional operator overrides and resource budgets.
 
 ## Verify end to end
 
+Generate the deterministic fixtures:
+
 ```bash
-python data/generate_sample.py            # creates data/sample/*.csv
-curl http://localhost:3000/health         # expect {"status":"ok",...}
+npx --prefix server --no-install tsx data/generate_sample.ts
+curl http://127.0.0.1:3000/health
 ```
 
-Then in the UI (or via the [authenticated API](docs/API.md)): upload
-`data/sample/*.csv`, ask something like
-*"Analyze my spending and produce a financial report with charts"*, open the chat,
-then fetch the generated report:
+Upload `data/sample/*.csv` in Sources, attach the ready sources to a chat, and
+ask: _“Analyze my spending and produce a financial report with charts.”_ Open the
+report from chat or Reports. The same artifacts are available from:
 
-- HTML: `GET /api/reports/:id/html` · PDF: `GET /api/reports/:id/pdf`
+- `GET /api/reports/:id/html`
+- `GET /api/reports/:id/pdf`
 
-Stored-data tools are account- and source-scoped, and Borealis preserves their
-query/evidence artifacts with the answer. Model prose remains generative: inspect
-the attached evidence and query tables before relying on important figures.
+Run the complete repository gate with:
 
-## Features
+```bash
+./scripts/verify.sh
+```
 
-- **Agentic chat**: tool loop (retrieve / list_sources / query_data / describe_data /
-  render_chart / create_report / fetch_url), SSE streaming, cancellable per-chat
-  runs, safe execution summaries, and per-account data. Web fetches are restricted
-  to explicit user-supplied public HTTP(S) URLs.
-- **Per-chat models**: discover IDs from the configured endpoint, persist the
-  selected model per conversation, and retain model attribution on each answer.
-- **Per-chat sources**: choose all, a stable subset, or deliberately none; one
-  immutable turn snapshot is enforced in prompts, RAG, SQL, describe, and reports.
-- **Tabular SQL**: DuckDB-backed; upload CSV/XLSX/parquet/JSON/JSONL or connect a
-  `url_csv` / `url_json` connector with one-click resync.
-- **RAG over documents**: PDF, DOCX, TXT, plus natural text extracted from
-  spreadsheets, chunked + embedded (pgvector, HNSW) for retrieval.
-- **Charts**: one canonical spec renders interactively (ECharts) in chat/HTML and
-  statically (matplotlib) in the PDF.
-- **Reports**: agent-written markdown sections + live data tables + charts → a
-  self-contained interactive HTML and a print-ready PDF.
-- **Auth**: JWT + bcrypt, per-account data isolation, pgvector embeddings per user.
+It checks fixture equivalence, server and web typecheck/lint/format/tests/builds,
+embedded-storage integration tests, and desktop TypeScript, tests, build, and
+native Electron ABI smoke coverage. CI additionally packages the unsigned arm64
+DMG and ZIP on an Apple Silicon runner.
 
-## Project layout & conventions
+On macOS, also run the renderer and packaged-native checks when changing the
+desktop shell or packaging inputs:
 
-See [AGENTS.md](AGENTS.md) for the full agent-facing guide and [docs/API.md](docs/API.md)
-for the REST/SSE contract. Highlights:
+```bash
+npm --prefix desktop run verify
+npm --prefix desktop run package:unsigned
+npm --prefix desktop run package:native:smoke
+```
 
-- `server/` uses **ESM** — import local modules with `.js` extension.
-- The **chart spec** in `python/app/charts.py` is the contract between LLM, Node,
-  ECharts and matplotlib — read it before changing.
-- Datasets live in an **in-memory DuckDB registry** reconciled from the durable
-  Postgres source ledger on startup and after Python service recovery. Query and
-  describe use bounded account-and-allowlist catalogs; already registered files
-  reload when their signatures change. XLSX is parsed offline through a bounded
-  streaming reader; legacy `.xls` and `.doc` files are intentionally rejected.
-- `server/src/config.ts`, `python/app/main.py` and `python/app/datasets.py` derive
-  storage paths **relative to the repo** (`uploads/`, `reports_storage/`). If you
-  override `UPLOAD_DIR`, set Python's `BOREALIS_STORAGE_DIR` to the same resolved
-  absolute path; `scripts/dev.sh` does this automatically.
+## Backups
+
+Quit Borealis before copying its data directory. The SQLite ledger and LanceDB
+vector directory are one logical store and must be backed up and restored
+together; restoring only one side can produce missing or orphaned retrieval
+entries. Copying the entire `Borealis/` application-data directory also preserves
+uploads, reports, provider settings, and the JWT secret.
+
+For browser development, apply the same rule to `.borealis/borealis.sqlite` and
+`.borealis/lancedb/` (or to the configured `BOREALIS_DATA_DIR`).
+
+## Features and invariants
+
+- One bounded streaming tool loop with cancellation, durable run ownership, and
+  sanitized activity summaries.
+- Dynamic all-source scope, a stable selected allowlist, or deliberately no
+  stored sources. Each accepted turn keeps one immutable ready-source snapshot.
+- Account- and source-prefiltered LanceDB retrieval joined fail-closed to SQLite
+  chunk text.
+- Bounded DuckDB SQL for CSV, TSV, XLSX, Parquet, JSON, and JSONL plus staged URL
+  connector refreshes.
+- One canonical ECharts contract shared by the UI, report HTML, chart PNG, and
+  report PDF renderers.
+- Self-contained report HTML with restrictive CSP and renderer policies that
+  deny network and local-file requests.
+- JWT/bcrypt authentication, exact-origin browser CORS, same-origin desktop UI,
+  per-account storage, and path-ownership checks before file access or deletion.
+
+See [AGENTS.md](AGENTS.md) for implementation guidance and
+[docs/API.md](docs/API.md) for the REST/SSE contract.
 
 ## License
 
-Licensed under the [MIT License](LICENSE) — free to use, modify and self-host.
-Built with open-source parts:
-Fastify, React, DuckDB, matplotlib, WeasyPrint, ECharts, pgvector, LiteLLM.
+Licensed under the [MIT License](LICENSE). Built with Fastify, React, Electron,
+SQLite, LanceDB, DuckDB, ExcelJS, Playwright, and ECharts.
