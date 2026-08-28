@@ -7,6 +7,13 @@ chrome.*
 **Status:** DONE (implemented in commits `41d0a1c`, `6210c96`; see
 milestones/README.md for the recorded verification)
 
+**Verification record (2026-08-29):** server 551 tests, web 128 tests, lint,
+format, builds, and desktop native smoke green via `pnpm verify`. A live
+browser-development session (registered account, no model runtime running)
+showed the sidebar strip with locality "On this Mac", "Endpoint unreachable",
+and the configured chat model `qwen-chat` with the embed identity on hover —
+without opening Settings.
+
 ## Problem
 
 Borealis knows where inference runs and whether the model endpoint is
