@@ -18,12 +18,14 @@ pnpm install
 pnpm dev:desktop
 ```
 
-The desktop install copies native addons out of the pnpm store, then runs
-`native:rebuild` for Electron's ABI so that rebuild cannot overwrite the server
-Node bindings. `dev` builds the server and web UI, copies them into
-`desktop/runtime/`, builds the shell, and launches Electron. It does not start
-Vite or watch for changes; quit and rerun it after editing. No Playwright
-browser download is needed for desktop rendering.
+The desktop install copies native addons out of the pnpm store, nests each
+copy's production dependencies (so Electron's utility process can resolve
+modules such as LanceDB's `reflect-metadata`), then runs `native:rebuild` for
+Electron's ABI so that rebuild cannot overwrite the server Node bindings.
+`dev` builds the server and web UI, copies them into `desktop/runtime/`,
+builds the shell, and launches Electron. It does not start Vite or watch for
+changes; quit and rerun it after editing. No Playwright browser download is
+needed for desktop rendering.
 
 Development and installed builds use the same default data directory. To keep
 development data separate, pass an absolute Electron `--user-data-dir` path:
@@ -44,10 +46,13 @@ pnpm --filter borealis-desktop verify
 
 `verify` runs typecheck, a clean shell build and policy/contract/runtime tests,
 formatting, Electron native-addon smoke, and the hidden-renderer PNG/PDF smoke.
-The native smoke opens SQLite, performs a LanceDB vector search, and queries
-DuckDB using Electron's runtime. The renderer smoke checks PNG/PDF signatures,
-zero HTTP requests reaching its test server, and rejection of observed unsafe
-resource requests. The renderer smoke requires a graphical macOS session.
+The native smoke first checks that isolated addon copies can resolve their
+production dependencies under Node, then opens SQLite, performs a LanceDB
+vector search, and queries DuckDB using Electron's runtime, then loads the
+same addons from an Electron utility process. The renderer smoke checks
+PNG/PDF signatures, zero HTTP requests reaching its test server, and
+rejection of observed unsafe resource requests. The renderer smoke requires a
+graphical macOS session.
 
 Focused commands are available as `typecheck`, `test`, `format:check`,
 `native:smoke`, and `render:smoke`. Turborepo runs `build` before `test` and

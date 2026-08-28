@@ -22,7 +22,7 @@
     "package:unsigned": "CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --config scripts/electron-builder.unsigned.cjs --mac --arm64",
     "package:native:smoke": "BOREALIS_PACKAGED_APP_ASAR=\"$PWD/release/mac-arm64/Borealis.app/Contents/Resources/app.asar\" ELECTRON_RUN_AS_NODE=1 \"$PWD/release/mac-arm64/Borealis.app/Contents/MacOS/Borealis\" scripts/native-smoke.cjs",
     "native:rebuild": "node scripts/isolate-native-addons.mjs && electron-builder install-app-deps",
-    "native:smoke": "ELECTRON_RUN_AS_NODE=1 electron scripts/native-smoke.cjs",
+    "native:smoke": "node scripts/assert-isolated-native-requires.mjs && ELECTRON_RUN_AS_NODE=1 electron scripts/native-smoke.cjs && electron scripts/utility-native-smoke.cjs",
     "render:smoke": "electron scripts/render-smoke-app",
     "verify": "pnpm run typecheck && pnpm run build && pnpm test && pnpm run format:check && pnpm run native:smoke && pnpm run render:smoke",
     "postinstall": "node scripts/isolate-native-addons.mjs && electron-builder install-app-deps"

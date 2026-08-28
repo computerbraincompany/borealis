@@ -275,9 +275,11 @@ distinct.
   renderer. Browser development and headless server CI use Playwright.
 - Rebuild `better-sqlite3`, `@lancedb/lancedb`, and `@duckdb/node-api` for
   Electron's ABI. Desktop `postinstall` copies those packages out of the pnpm
-  store before `electron-builder install-app-deps`, so the Electron rebuild
-  cannot overwrite the server Node bindings. Keep native assets unpacked from
-  the application archive.
+  store and nests their production dependencies before
+  `electron-builder install-app-deps`, so the Electron rebuild cannot overwrite
+  the server Node bindings and the utility process can resolve modules without
+  the pnpm virtual store. Keep native assets unpacked from the application
+  archive.
 - Packaging targets arm64 DMG and ZIP with minimum macOS 13. Signed distribution
   builds use Apple's hardened runtime; version 1 intentionally does not enable
   the Mac App Store sandbox. `package:unsigned` explicitly disables identity and
