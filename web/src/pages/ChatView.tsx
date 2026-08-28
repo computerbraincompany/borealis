@@ -27,6 +27,7 @@ import { createStreamState, EMPTY_STREAM_STATE, streamsByChatReducer, type Strea
 import { useSourceCatalog } from "@/hooks/useSourceCatalog";
 import { useChatSessionController } from "@/hooks/useChatSessionController";
 import { useModelCatalog } from "@/hooks/useModelCatalog";
+import { useEgressConsentGate } from "@/hooks/useEgressConsentGate";
 import { cancelRunThenAbort } from "@/lib/chatRun";
 import { prependOlderMessages } from "@/lib/chatHistoryPage";
 import { reconcileAttachedSources, sameAttachedSources } from "@/lib/sourceScope";
@@ -85,6 +86,7 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
     isMounted,
     createChat,
   } = useChatSessionController();
+  const { handleConsentError, dialog: consentDialog } = useEgressConsentGate();
 
   const releaseFirstSubmit = useCallback(() => {
     firstSubmitInFlightRef.current = false;
@@ -712,8 +714,10 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
       } catch (error: unknown) {
         if (!(error instanceof Error && error.name === "AbortError") && isActiveRun()) {
           requestRejected = error instanceof ApiError;
-          runError = formatApiError(error, "The generation stream failed");
-          dispatchStream({ type: "patch", chatId: runChatId, patch: { error: runError } });
+          if (!handleConsentError(error, () => sendToChat(runDetail, content))) {
+            runError = formatApiError(error, "The generation stream failed");
+            dispatchStream({ type: "patch", chatId: runChatId, patch: { error: runError } });
+          }
         }
       } finally {
         cancelPendingFlush();
@@ -941,6 +945,7 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
 
   return (
     <div className="flex h-full">
+      {consentDialog}
       {/* conversations column */}
       <div className="flex w-[260px] shrink-0 flex-col border-r bg-sidebar/70">
         <div className="px-3 pb-2 pt-4">

@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import { formatApiError, sourcesApi } from "@/lib/api";
 import { useSourceCatalog } from "@/hooks/useSourceCatalog";
+import { useEgressConsentGate } from "@/hooks/useEgressConsentGate";
 import { cn, formatDate } from "@/lib/utils";
 import { SOURCE_FILE_ACCEPT } from "@/lib/sourceFiles";
 import { Button } from "@/components/ui/button";
@@ -25,6 +26,7 @@ export function SourcesView() {
   const [operationError, setOperationError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const { sources, loading, error: catalogError, refresh, addPending } = useSourceCatalog();
+  const { handleConsentError, dialog: consentDialog } = useEgressConsentGate();
 
   useEffect(() => {
     void refresh(true);
@@ -40,6 +42,7 @@ export function SourcesView() {
         try {
           addPending(await sourcesApi.upload(f));
         } catch (error: unknown) {
+          if (handleConsentError(error, () => void onFiles(files))) continue;
           setOperationError(formatApiError(error, `Upload failed for ${f.name}`));
         }
       }
@@ -67,7 +70,9 @@ export function SourcesView() {
       addPending(await sourcesApi.reingest(id));
       await refresh();
     } catch (error: unknown) {
-      setOperationError(formatApiError(error, "Could not retry source processing"));
+      if (!handleConsentError(error, () => void retry(id))) {
+        setOperationError(formatApiError(error, "Could not retry source processing"));
+      }
     } finally {
       setRetrying(null);
     }
@@ -77,6 +82,7 @@ export function SourcesView() {
 
   return (
     <div className="h-full overflow-y-auto">
+      {consentDialog}
       <div className="mx-auto max-w-5xl px-4 py-6 sm:px-6 sm:py-10">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
           <div>

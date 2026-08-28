@@ -3,6 +3,7 @@ import { Plus, Trash2, Globe, Database, RefreshCw, Loader2, Plug, Link as LinkIc
 import { ApiError, connectorsApi, formatApiError, type Connector } from "@/lib/api";
 import { validateConnectorDraft } from "@/lib/connectorDraft";
 import { isConnectorTransitioning, useConnectorCatalog } from "@/hooks/useConnectorCatalog";
+import { useEgressConsentGate } from "@/hooks/useEgressConsentGate";
 import { cn, formatDate } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -30,6 +31,7 @@ export function ConnectorsView() {
   const [error, setError] = useState<string | null>(null);
   const [operationErrors, setOperationErrors] = useState<Record<string, string>>({});
   const { connectors, loading, error: catalogError, refresh } = useConnectorCatalog();
+  const { handleConsentError, dialog: consentDialog } = useEgressConsentGate();
 
   useEffect(() => {
     void refresh(true);
@@ -55,6 +57,7 @@ export function ConnectorsView() {
         setOperationErrors((current) => ({ ...current, [created.id]: safeConnectorError(syncError) }));
       }
     } catch (failure: unknown) {
+      if (handleConsentError(failure, () => void create())) return;
       if (failure instanceof ApiError && failure.status === 422 && failure.data && typeof failure.data === "object") {
         const failed = failure.data as Partial<Connector>;
         if (typeof failed.id === "string") {
@@ -95,10 +98,12 @@ export function ConnectorsView() {
         setOperationErrors((current) => ({ ...current, [c.id]: safeConnectorError(syncError) }));
       }
     } catch (failure: unknown) {
-      setOperationErrors((current) => ({
-        ...current,
-        [c.id]: formatApiError(failure, "Could not start connector sync"),
-      }));
+      if (!handleConsentError(failure, () => void sync(c))) {
+        setOperationErrors((current) => ({
+          ...current,
+          [c.id]: formatApiError(failure, "Could not start connector sync"),
+        }));
+      }
       await refresh();
     } finally {
       setSyncing(null);
@@ -129,6 +134,7 @@ export function ConnectorsView() {
 
   return (
     <div className="mx-auto max-w-5xl px-6 py-10">
+      {consentDialog}
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Connectors</h1>

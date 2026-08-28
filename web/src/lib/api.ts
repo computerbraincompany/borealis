@@ -635,6 +635,23 @@ export interface ChartArtifactSummary {
   created_at: string;
 }
 
+export interface RemoteEgressState {
+  required: boolean;
+  acknowledged_at: string | null;
+  endpoint_host: string | null;
+}
+
+export const REMOTE_EGRESS_CONSENT_CODE = "REMOTE_EGRESS_CONSENT_REQUIRED";
+
+/** True when the failure is the fail-closed remote-egress consent gate (403). */
+export function isRemoteEgressConsentError(error: unknown): boolean {
+  return (
+    error instanceof ApiError &&
+    error.status === 403 &&
+    (error.data as { code?: unknown } | undefined)?.code === REMOTE_EGRESS_CONSENT_CODE
+  );
+}
+
 export interface ChartPayload {
   id: string;
   spec?: any;
@@ -706,6 +723,12 @@ export const settingsApi = {
 export const systemApi = {
   health: (signal?: AbortSignal) => api<SystemHealthResponse>("/api/health", { signal }),
   workspaceStatus: (signal?: AbortSignal) => api<WorkspaceStatusResponse>("/api/status", { signal }),
+};
+
+// ------------------------------------------------------------------ consent
+export const consentApi = {
+  get: (signal?: AbortSignal) => api<RemoteEgressState>("/api/consent/remote-egress", { signal }),
+  acknowledge: () => api<RemoteEgressState>("/api/consent/remote-egress", { method: "POST" }),
 };
 
 // ------------------------------------------------------------------ sources
