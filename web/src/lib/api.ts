@@ -622,6 +622,17 @@ export interface Report {
   updated_at: string;
   chat_title: string | null;
   chat_id: string | null;
+  version: number;
+  supersedes: string | null;
+}
+
+export interface ChartArtifactSummary {
+  id: string;
+  run_id: string | null;
+  chat_id: string | null;
+  title: string;
+  kind: string;
+  created_at: string;
 }
 
 export interface ChartPayload {
@@ -735,12 +746,18 @@ export const reportsApi = {
       updated_at: string;
       has_html: boolean;
       has_pdf: boolean;
+      version: number;
+      supersedes: string | null;
+      payload?: unknown;
     }>(`/api/reports/${id}`),
+  rename: (id: string, title: string) =>
+    api<Report>(`/api/reports/${id}`, { method: "PATCH", body: JSON.stringify({ title }) }),
   remove: (id: string) => api<{ ok: true }>(`/api/reports/${id}`, { method: "DELETE" }),
 };
 
 // ------------------------------------------------------------------ charts
 export const chartsApi = {
+  list: () => api<ChartArtifactSummary[]>("/api/charts"),
   get: (id: string) => api<ChartPayload>(`/api/charts/${id}`),
 };
 

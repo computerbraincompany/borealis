@@ -1,14 +1,19 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 
 const apiMocks = vi.hoisted(() => ({
   list: vi.fn(),
   remove: vi.fn(),
+  rename: vi.fn(),
+  chartsList: vi.fn(),
+  chartsGet: vi.fn(),
   apiText: vi.fn(),
   openProtected: vi.fn(),
 }));
 
 vi.mock("@/lib/api", () => ({
-  reportsApi: { list: apiMocks.list, remove: apiMocks.remove },
+  reportsApi: { list: apiMocks.list, remove: apiMocks.remove, rename: apiMocks.rename },
+  chartsApi: { list: apiMocks.chartsList, get: apiMocks.chartsGet },
   apiText: apiMocks.apiText,
   formatApiError: (_error: unknown, fallback: string) => fallback,
   openProtected: apiMocks.openProtected,
@@ -41,6 +46,8 @@ const reports = [
     updated_at: "2026-01-01T00:00:00Z",
     chat_title: null,
     chat_id: null,
+    version: 1,
+    supersedes: null,
   },
   {
     id: "r2",
@@ -50,14 +57,32 @@ const reports = [
     updated_at: "2026-01-02T00:00:00Z",
     chat_title: null,
     chat_id: null,
+    version: 2,
+    supersedes: "r1",
+  },
+];
+
+const charts = [
+  {
+    id: "c1",
+    run_id: "run1",
+    chat_id: "chat1",
+    title: "Monthly spend",
+    kind: "bar",
+    created_at: "2026-01-02T00:00:00Z",
   },
 ];
 
 describe("ReportsView preview", () => {
+  beforeEach(() => {
+    apiMocks.list.mockResolvedValue(reports);
+    apiMocks.chartsList.mockResolvedValue(charts);
+    apiMocks.chartsGet.mockResolvedValue({ id: "c1", png_base64: "cG5nLWJ5dGVz" });
+  });
+
   it("aborts and ignores a stale request while using a script-only opaque sandbox", async () => {
     const first = deferred<string>();
     const second = deferred<string>();
-    apiMocks.list.mockResolvedValue(reports);
     apiMocks.apiText.mockImplementation((path: string) => (path.includes("r1") ? first.promise : second.promise));
 
     const { unmount } = render(<ReportsView />);
@@ -85,5 +110,60 @@ describe("ReportsView preview", () => {
     const secondSignal = apiMocks.apiText.mock.calls[1][1] as AbortSignal;
     unmount();
     expect(secondSignal.aborted).toBe(true);
+  });
+
+  it("shows version badges with a working supersedes link", async () => {
+    apiMocks.apiText.mockResolvedValue("<h1>First report</h1>");
+    render(<ReportsView />);
+
+    await screen.findByText("First");
+    expect(screen.getByText("v1")).toBeInTheDocument();
+    expect(screen.getByText("v2")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "supersedes v1" }));
+    await waitFor(() => expect(apiMocks.apiText).toHaveBeenCalledWith("/api/reports/r1/html", expect.anything()));
+    expect(await screen.findByTitle("Report preview")).toBeInTheDocument();
+  });
+
+  it("renames a report through the dialog and applies the saved title", async () => {
+    const user = userEvent.setup();
+    apiMocks.rename.mockResolvedValue({ ...reports[1], title: "Quarterly review" });
+    render(<ReportsView />);
+
+    await screen.findByText("Second");
+    fireEvent.click(screen.getAllByTitle("Rename report")[1]);
+    const input = screen.getByLabelText("Report title");
+    expect(input).toHaveValue("Second");
+    await user.clear(input);
+    await user.type(input, "Quarterly review");
+    fireEvent.submit(input.closest("form")!);
+
+    await waitFor(() => expect(apiMocks.rename).toHaveBeenCalledWith("r2", "Quarterly review"));
+    expect(await screen.findByText("Quarterly review")).toBeInTheDocument();
+    expect(screen.queryByText("Second")).not.toBeInTheDocument();
+  });
+
+  it("renders the chart gallery from the registry with embedded thumbnails", async () => {
+    render(<ReportsView />);
+
+    expect(await screen.findByRole("heading", { name: "Charts" })).toBeInTheDocument();
+    expect(screen.getByText("Monthly spend")).toBeInTheDocument();
+    expect(screen.getByText("bar")).toBeInTheDocument();
+    const chatLink = screen.getByRole("link", { name: /source chat/i });
+    expect(chatLink).toHaveAttribute("href", "#/chat/chat1");
+    await waitFor(() =>
+      expect(screen.getByAltText("Chart Monthly spend")).toHaveAttribute("src", "data:image/png;base64,cG5nLWJ5dGVz"),
+    );
+  });
+
+  it("keeps reports usable when only the chart registry fails", async () => {
+    apiMocks.chartsList.mockRejectedValue(new Error("registry unavailable"));
+    const warn = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    render(<ReportsView />);
+
+    expect(await screen.findByText("First")).toBeInTheDocument();
+    expect(screen.getByText("Could not load the chart gallery")).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Charts" })).not.toBeInTheDocument();
+    warn.mockRestore();
   });
 });
