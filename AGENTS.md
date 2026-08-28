@@ -146,7 +146,12 @@ the matching vector index.
    Missing SQLite text drops the vector hit.
 5. The agent assembles markdown sections, tables, and chart IDs. The server
    builds self-contained ECharts HTML and a static PDF, then stores both below
-   the report directory.
+   the report directory. Reports carry per-chat lineage: creation assigns
+   `version` = newest *published* report for that chat plus 1 and records
+   `supersedes`; pending artifacts from failed runs never join the chain, and
+   superseded reports are never auto-deleted. The normalized report payload is
+   stored with the row (dropped oversize, never fatal) and is exposed only on
+   the detail endpoint. Rename updates the title only.
 
 ## Two-store consistency
 

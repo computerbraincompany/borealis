@@ -5,7 +5,9 @@ receipts into a real artifact model with versions and lineage… Artifacts —
 documents, tables, charts, and reports with versions and provenance. Chat
 creates them; it does not trap them.*
 
-**Status:** IN PROGRESS
+**Status:** DONE (implemented in slices `fb10673` — versions/payloads,
+rename + chart registry, and the web lineage/gallery slice; verification
+recorded in milestones/README.md)
 
 ## Problem
 

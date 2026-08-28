@@ -465,13 +465,24 @@ while it is `index`.
 
 | Endpoint                    | Response                                                                                                    |
 | --------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| `GET /api/reports`          | Array of `{id,title,subtitle,chat_id,chat_title,created_at,updated_at}`, newest first; no filesystem paths. |
-| `GET /api/reports/:id`      | `{id,title,subtitle,created_at,updated_at,has_html,has_pdf}`.                                               |
+| `GET /api/reports`          | Array of `{id,title,subtitle,chat_id,chat_title,created_at,updated_at,version,supersedes}`, newest first; no filesystem paths or payloads. |
+| `GET /api/reports/:id`      | `{id,title,subtitle,created_at,updated_at,has_html,has_pdf,version,supersedes}` plus the stored normalized `payload` when one was captured. |
+| `PATCH /api/reports/:id`    | Body `{title}` (1–200 chars); returns the renamed report DTO.                                               |
 | `GET /api/reports/:id/html` | Self-contained `text/html`.                                                                                 |
 | `GET /api/reports/:id/pdf`  | `application/pdf` attachment with a `%PDF-` signature.                                                      |
 | `DELETE /api/reports/:id`   | `{"ok":true}`, or `503 {"error":"report cleanup deferred"}` if physical cleanup must retry.                 |
+| `GET /api/charts`           | Array of `{id,run_id,chat_id,title,kind,created_at}` for published charts, newest first, bounded to 200; no spec echo or PNG bytes. |
 | `GET /api/charts/:id`       | `{id,spec,echarts,png_base64}`.                                                                             |
 | `POST /api/charts/:id/png`  | No body; JSON `{png_base64}`, not raw PNG bytes.                                                            |
+
+Reports carry per-chat lineage: the first published report for a chat is
+`version 1`; each later report the agent creates in the same chat takes the
+next version and names the report it `supersedes`. Versions count published
+reports only — pending artifacts from failed or discarded runs never join the
+chain — and superseded reports are never deleted automatically. The stored
+payload is the normalized report document (sections, resolved chart specs,
+tables); it is omitted when it exceeded the capture bound and is never included
+in list responses.
 
 The agent's `render_chart` and `create_report` tools create artifacts; there are
 no public creation endpoints. Charts/reports remain private to their pending

@@ -18,7 +18,7 @@ horizon, scoped so it can be verified without the next one.
 | Milestone | Horizon | Title | Status |
 |---|---|---|---|
 | [M01](M01-ambient-locality.md) | 1 | Ambient locality — health, model presence, and egress state in the chrome | DONE |
-| [M02](M02-artifacts.md) | 2 | Artifacts — reports, charts, and query receipts with versions and lineage | IN PROGRESS |
+| [M02](M02-artifacts.md) | 2 | Artifacts — reports, charts, and query receipts with versions and lineage | DONE |
 | [M03](M03-composer-instrument.md) | 1 | Composer as one instrument — library, model, and scope plus consent cards | PLANNED |
 | [M04](M04-libraries.md) | 2 | Libraries — governed collections above a pile of uploads | PLANNED |
 | [M05](M05-named-agents.md) | 2 | Named agents — versioned instructions, tools, and source bindings | PLANNED |
