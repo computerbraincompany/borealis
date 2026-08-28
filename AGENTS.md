@@ -36,41 +36,41 @@ or install a workspace package in isolation.
 
 ## Commands
 
-Use Node.js 22.13 or newer 22.x and npm 10.9.x; `.nvmrc` pins 22.22.3.
-`scripts/verify.sh` also requires ripgrep. Run the commands below from the
-repository root, then follow the shown `cd` changes.
+Use Node.js 22.13 or newer 22.x and pnpm 10.x; `.nvmrc` pins 22.22.3.
+Enable Corepack once with `corepack enable`. Run the commands below from the
+repository root.
 
 ```bash
+# Install once (all workspace packages)
+pnpm install
+pnpm --filter borealis-server exec playwright install chromium
+
 # Browser development; embedded engines need no external service.
-./scripts/dev.sh
+pnpm dev
 
 # Server
-cd server
-npm ci
-npx playwright install chromium
-npm run typecheck
-npm run lint
-npm run format:check
-npm run test
-npm run test:integration
-npm run build
+pnpm --filter borealis-server typecheck
+pnpm --filter borealis-server lint
+pnpm --filter borealis-server format:check
+pnpm --filter borealis-server test
+pnpm --filter borealis-server test:integration
+pnpm --filter borealis-server build
 
 # Web
-cd ../web
-npm ci
-npm run verify
+pnpm --filter borealis-web typecheck
+pnpm --filter borealis-web test
+pnpm --filter borealis-web lint
+pnpm --filter borealis-web format:check
+pnpm --filter borealis-web build
 
 # Desktop (Apple Silicon macOS 13+)
-cd ../desktop
-npm ci
-npm run verify
-npm run dev
-npm run package:unsigned
-npm run package:native:smoke
+pnpm --filter borealis-desktop verify
+pnpm dev:desktop
+pnpm package:unsigned
+pnpm --filter borealis-desktop package:native:smoke
 
 # Complete repository gate
-cd ..
-./scripts/verify.sh
+pnpm verify
 ```
 
 No `.env` file or manually created credential is required. The model endpoint
@@ -78,8 +78,8 @@ defaults to loopback LM Studio and can be changed in Settings. Browser
 development renders PNG/PDF with Playwright; the packaged app uses Electron and
 does not include Playwright's Chromium download.
 
-The complete gate requires dependencies in all three packages and Playwright
-Chromium; Linux CI installs it with `npx playwright install --with-deps chromium`.
+The complete gate requires workspace dependencies and Playwright Chromium;
+Linux CI installs it with `pnpm --filter borealis-server exec playwright install --with-deps chromium`.
 It checks native Electron modules but does not launch the GUI renderer or run
 live-model analysis. `desktop`'s `verify` adds the GUI PNG/PDF smoke; packaging,
 signed release checks, and the manual end-to-end flow remain separate.
@@ -274,7 +274,10 @@ distinct.
 - `RENDER_BACKEND=electron` sends bounded self-contained documents to the hidden
   renderer. Browser development and headless server CI use Playwright.
 - Rebuild `better-sqlite3`, `@lancedb/lancedb`, and `@duckdb/node-api` for
-  Electron's ABI. Keep their native assets unpacked from the application archive.
+  Electron's ABI. Desktop `postinstall` copies those packages out of the pnpm
+  store before `electron-builder install-app-deps`, so the Electron rebuild
+  cannot overwrite the server Node bindings. Keep native assets unpacked from
+  the application archive.
 - Packaging targets arm64 DMG and ZIP with minimum macOS 13. Signed distribution
   builds use Apple's hardened runtime; version 1 intentionally does not enable
   the Mac App Store sandbox. `package:unsigned` explicitly disables identity and
@@ -323,18 +326,18 @@ offline Electron rendering, and clean utility-process shutdown.
 
 Keep [README.md](README.md), [docs/API.md](docs/API.md),
 [docs/VISION.md](docs/VISION.md), [desktop/README.md](desktop/README.md), and
-[server/.env.example](server/.env.example) aligned with implementation changes. Check package scripts, route schemas and
-runtime validation, environment precedence, resource limits, and verification
-coverage rather than copying claims from old plans. Document provider-bound
-ingestion text as well as chat context when describing privacy.
+[server/.env.example](server/.env.example) aligned with implementation changes.
+Check package scripts, route schemas and runtime validation, environment
+precedence, resource limits, and verification coverage rather than copying
+claims from old plans. Document provider-bound ingestion text as well as chat
+context when describing privacy.
 
-[plans/](plans/README.md) contains completed historical specifications, not an
-active backlog. [docs/cohere-north/](docs/cohere-north/README.md) is dated product
-research and proposed designs, not the current Borealis architecture. Preserve
-that boundary and do not present historical checklists as current instructions.
+[docs/VISION.md](docs/VISION.md) is the product destination. Update it when the
+intended product changes; do not treat it as current architecture or a work
+queue. [plans/](plans/README.md) contains completed historical specifications,
+not an active backlog. [docs/cohere-north/](docs/cohere-north/README.md) is dated
+product research and proposed designs, not the current Borealis architecture.
+Preserve that boundary and do not present historical checklists as current
+instructions.
 Use `git ls-files` when auditing all tracked docs: ordinary `rg --files` omits
 the intentionally ignored, but still tracked, research archive.
-ked, research archive.
-tracked docs: ordinary `rg --files` omits
-the intentionally ignored, but still tracked, research archive.
-ked, research archive.

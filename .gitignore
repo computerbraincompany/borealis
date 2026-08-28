@@ -1,6 +1,7 @@
 node_modules/
 dist/
 build/
+.turbo/
 !desktop/build/
 !desktop/build/entitlements.mac.plist
 !desktop/build/entitlements.mac.inherit.plist

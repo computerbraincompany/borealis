@@ -7,7 +7,7 @@ interface UtilityParentPort extends ElectronParentPort {
   close?(): void;
 }
 
-interface UtilityProcess extends NodeJS.Process {
+interface UtilityProcess extends Omit<NodeJS.Process, "parentPort"> {
   readonly parentPort?: UtilityParentPort;
 }
 

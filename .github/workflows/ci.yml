@@ -15,27 +15,24 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          version: 10.34.5
+
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22.22.3
-          cache: npm
-          cache-dependency-path: |
-            server/package-lock.json
-            web/package-lock.json
-            desktop/package-lock.json
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
 
       - name: Install locked dependencies
-        run: |
-          npm ci --prefix server
-          npm ci --prefix web
-          npm ci --prefix desktop
+        run: pnpm install --frozen-lockfile
 
       - name: Install Playwright Chromium
-        working-directory: server
-        run: npx playwright install --with-deps chromium
+        run: pnpm --filter borealis-server exec playwright install --with-deps chromium
 
       - name: Verify repository
-        run: ./scripts/verify.sh
+        run: pnpm verify
 
   package-macos-arm64:
     runs-on: macos-15
@@ -43,29 +40,27 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          version: 10.34.5
+
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22.22.3
-          cache: npm
-          cache-dependency-path: |
-            server/package-lock.json
-            web/package-lock.json
-            desktop/package-lock.json
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
 
       - name: Install locked dependencies
-        run: |
-          npm ci --prefix server
-          npm ci --prefix web
-          npm ci --prefix desktop
+        run: pnpm install --frozen-lockfile
 
       - name: Verify desktop shell, renderer, and native ABI
-        run: npm --prefix desktop run verify
+        run: pnpm --filter borealis-desktop verify
 
       - name: Package unsigned arm64 app
-        run: npm --prefix desktop run package:unsigned
+        run: pnpm package:unsigned
 
       - name: Load native addons from the packaged app
-        run: npm --prefix desktop run package:native:smoke
+        run: pnpm --filter borealis-desktop package:native:smoke
 
       - name: Upload unsigned macOS artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

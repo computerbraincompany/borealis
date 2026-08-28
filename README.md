@@ -34,6 +34,10 @@ server/     Fastify API, agent loop, ingestion, retrieval, and rendering
 data/       deterministic personal-finance fixtures
 ```
 
+Install once from the repository root with pnpm. Turborepo runs package `dev`,
+`build`, and `verify` graphs; do not install `server`, `web`, or `desktop` as
+separate npm trees.
+
 The durable store is deliberately split by job:
 
 - SQLite stores users, chats, runs, sources, jobs, and chunk text.
@@ -47,9 +51,9 @@ chart PNG and report PDF output. The packaged app does not include that browser;
 it renders through a hidden, network-denied Electron window instead.
 
 All source-build commands below run from the repository root unless a working
-directory is shown. Use Node.js 22.13 or newer **22.x** and npm **10.9.x**;
-[.nvmrc](.nvmrc) pins Node.js 22.22.3. The repository verification script also
-requires `rg` (ripgrep).
+directory is shown. Use Node.js 22.13 or newer **22.x** and pnpm **10.x**;
+[.nvmrc](.nvmrc) pins Node.js 22.22.3. Enable Corepack once with
+`corepack enable` so the repository `packageManager` pin is used.
 
 ## Desktop app
 
@@ -79,10 +83,8 @@ also written with mode `0600`. No `.env` file is required.
 Install dependencies and launch a development build:
 
 ```bash
-npm ci --prefix server
-npm ci --prefix web
-npm ci --prefix desktop
-npm --prefix desktop run dev
+pnpm install
+pnpm dev:desktop
 ```
 
 Development builds use the same application-data directory as the installed
@@ -92,14 +94,14 @@ isolated test profile, follow the [desktop guide](desktop/README.md).
 Build unsigned arm64 installers for local testing:
 
 ```bash
-npm --prefix desktop run package:unsigned
+pnpm package:unsigned
 ```
 
 Artifacts are written to `desktop/release/` as
 `Borealis-<version>-macOS-arm64.dmg` and `.zip`. The unsigned target is for local
 testing, deterministically disables signing/notarization, and currently uses
 Electron's default application icon. Distribution builds use
-`npm --prefix desktop run package:mac` and need a Developer ID Application
+`pnpm --filter borealis-desktop package:mac` and need a Developer ID Application
 certificate plus notarization credentials supplied only in the release
 environment; certificates and credentials must never be committed. See
 [desktop/README.md](desktop/README.md) for the exact variables and package
@@ -183,39 +185,30 @@ validated loopback origins.
 Start the model endpoint separately, then run:
 
 ```bash
-./scripts/dev.sh
+pnpm install
+pnpm dev
 ```
 
-The script installs server/web dependencies with `npm ci` when their manifest
-or lockfile hash changes; it does not rewrite lockfiles. It supervises the API
-at `http://127.0.0.1:3000` and Vite normally on port 5173. Open Vite's printed local URL
-(normally `http://localhost:5173`). Logs are written to
-`${TMPDIR:-/tmp}/borealis-dev/`; Ctrl-C or either service exiting stops both.
-Embedded data is stored in `.borealis/`.
+Turborepo starts the API at `http://127.0.0.1:3000` and Vite normally on port
+5173. Open Vite's printed local URL (normally `http://localhost:5173`). Ctrl-C
+stops both processes. Embedded data is stored in `.borealis/`.
 
-Install Chromium after installing server dependencies, before using browser
+Install Chromium after installing dependencies, before using browser
 chart/PDF rendering or running server tests:
 
 ```bash
-(cd server && npx playwright install chromium)
+pnpm --filter borealis-server exec playwright install chromium
 ```
 
-On Linux, CI uses `npx playwright install --with-deps chromium` from `server/`
+On Linux, CI uses `pnpm --filter borealis-server exec playwright install --with-deps chromium`
 to install the required system libraries too. Repeat the browser installation
 when the locked Playwright version changes. Desktop rendering does not need it.
 
-To start manually, install dependencies:
+To start the two processes without Turborepo:
 
 ```bash
-npm ci --prefix server
-npm ci --prefix web
-```
-
-Then run each command in a separate terminal:
-
-```bash
-(cd server && npm run dev)
-(cd web && npm run dev)
+pnpm --filter borealis-server dev
+pnpm --filter borealis-web dev
 ```
 
 No container, external database, manually generated credential, or copied
@@ -228,8 +221,8 @@ and start the server from `server/`. The desktop backend does not read `.env`.
 To serve a built browser UI from the API's exact origin without Vite:
 
 ```bash
-npm --prefix server run build
-npm --prefix web run build
+pnpm --filter borealis-server build
+pnpm --filter borealis-web build
 (cd server && STATIC_WEB_DIR=../web/dist node dist/index.js)
 ```
 
@@ -277,7 +270,7 @@ With server dependencies installed, regenerate the four deterministic fixtures
 (already tracked in `data/sample/`):
 
 ```bash
-npx --prefix server --no-install tsx data/generate_sample.ts
+pnpm --filter borealis-server exec tsx ../data/generate_sample.ts
 curl http://127.0.0.1:3000/health
 ```
 
@@ -299,11 +292,11 @@ The report artifacts are also available through authenticated requests to:
 - `GET /api/reports/:id/html`
 - `GET /api/reports/:id/pdf`
 
-After installing dependencies in **server, web, and desktop** and installing
-Playwright Chromium, run the complete repository gate:
+After installing dependencies and Playwright Chromium, run the complete
+repository gate:
 
 ```bash
-./scripts/verify.sh
+pnpm verify
 ```
 
 It checks fixture equivalence, server and web typecheck/lint/format/tests/builds,
@@ -319,9 +312,9 @@ On macOS, also run the renderer and packaged-native checks when changing the
 desktop shell or packaging inputs:
 
 ```bash
-npm --prefix desktop run verify
-npm --prefix desktop run package:unsigned
-npm --prefix desktop run package:native:smoke
+pnpm --filter borealis-desktop verify
+pnpm package:unsigned
+pnpm --filter borealis-desktop package:native:smoke
 ```
 
 ## Backups

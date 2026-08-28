@@ -1,3 +1,4 @@
+import { createRequire } from "node:module";
 import { cp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -21,6 +22,26 @@ async function requireDirectory(directory, label) {
     );
 }
 
+async function installedVersion(packageDirectory, name) {
+  const require = createRequire(path.join(packageDirectory, "package.json"));
+  let packageJsonPath;
+  try {
+    packageJsonPath = require.resolve(`${name}/package.json`);
+  } catch {
+    packageJsonPath = path.join(
+      packageDirectory,
+      "node_modules",
+      ...name.split("/"),
+      "package.json",
+    );
+  }
+  const installed = JSON.parse(await readFile(packageJsonPath, "utf8"));
+  if (typeof installed.version !== "string" || installed.version.length === 0) {
+    throw new Error(`Could not resolve installed version for ${name}`);
+  }
+  return installed.version;
+}
+
 await Promise.all([
   requireDirectory(serverDist, "server/dist"),
   requireDirectory(webDist, "web/dist"),
@@ -41,27 +62,17 @@ if (missingRuntimeDependencies.length > 0) {
 }
 const runtimeVersionMismatches = [];
 for (const name of Object.keys(serverPackage.dependencies ?? {})) {
-  const serverInstalled = JSON.parse(
-    await readFile(
-      path.join(serverDirectory, "node_modules", name, "package.json"),
-      "utf8",
-    ),
-  );
-  const desktopInstalled = JSON.parse(
-    await readFile(
-      path.join(desktopDirectory, "node_modules", name, "package.json"),
-      "utf8",
-    ),
-  );
-  if (serverInstalled.version !== desktopInstalled.version) {
+  const serverVersion = await installedVersion(serverDirectory, name);
+  const desktopVersion = await installedVersion(desktopDirectory, name);
+  if (serverVersion !== desktopVersion) {
     runtimeVersionMismatches.push(
-      `${name} (server ${serverInstalled.version}, desktop ${desktopInstalled.version})`,
+      `${name} (server ${serverVersion}, desktop ${desktopVersion})`,
     );
   }
 }
 if (runtimeVersionMismatches.length > 0) {
   throw new Error(
-    `desktop runtime dependency versions do not match server/package-lock.json: ${runtimeVersionMismatches.join(", ")}`,
+    `desktop runtime dependency versions do not match pnpm-lock.yaml overrides: ${runtimeVersionMismatches.join(", ")}`,
   );
 }
 await rm(runtimeDirectory, { recursive: true, force: true });

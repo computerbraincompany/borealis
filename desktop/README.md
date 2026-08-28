@@ -8,27 +8,28 @@ LanceDB index, uploads, reports, model settings, and generated JWT secret under
 ## Develop
 
 Run the commands below from the repository root on an Apple Silicon Mac. Use
-Node.js 22.13 or newer 22.x (`.nvmrc` pins 22.22.3) and npm 10.9.x. Native-addon
-compilation also needs Python 3 and Xcode Command Line Tools. The packaged app
-includes its own Electron runtime; users do not need a separate Node install.
+Node.js 22.13 or newer 22.x (`.nvmrc` pins 22.22.3) and pnpm 10.x. Enable
+Corepack once with `corepack enable`. Native-addon compilation also needs
+Python 3 and Xcode Command Line Tools. The packaged app includes its own
+Electron runtime; users do not need a separate Node install.
 
 ```bash
-npm ci --prefix server
-npm ci --prefix web
-npm ci --prefix desktop
-npm --prefix desktop run dev
+pnpm install
+pnpm dev:desktop
 ```
 
-The desktop install runs `native:rebuild` for Electron's ABI. `dev` builds the
-server and web UI, copies them into `desktop/runtime/`, builds the shell, and
-launches Electron. It does not start Vite or watch for changes; quit and rerun it
-after editing. No Playwright browser download is needed for desktop rendering.
+The desktop install copies native addons out of the pnpm store, then runs
+`native:rebuild` for Electron's ABI so that rebuild cannot overwrite the server
+Node bindings. `dev` builds the server and web UI, copies them into
+`desktop/runtime/`, builds the shell, and launches Electron. It does not start
+Vite or watch for changes; quit and rerun it after editing. No Playwright
+browser download is needed for desktop rendering.
 
 Development and installed builds use the same default data directory. To keep
 development data separate, pass an absolute Electron `--user-data-dir` path:
 
 ```bash
-npm --prefix desktop run dev -- --user-data-dir="$HOME/Library/Application Support/Borealis Dev"
+pnpm dev:desktop -- --user-data-dir="$HOME/Library/Application Support/Borealis Dev"
 ```
 
 Quit the existing Borealis instance before switching profiles. The shell takes
@@ -38,7 +39,7 @@ the same profile.
 ## Verify
 
 ```bash
-npm --prefix desktop run verify
+pnpm --filter borealis-desktop verify
 ```
 
 `verify` runs typecheck, a clean shell build and policy/contract/runtime tests,
@@ -49,10 +50,10 @@ zero HTTP requests reaching its test server, and rejection of observed unsafe
 resource requests. The renderer smoke requires a graphical macOS session.
 
 Focused commands are available as `typecheck`, `test`, `format:check`,
-`native:smoke`, and `render:smoke`. `test` and `render:smoke` each rebuild the
-shell; `build` cleans and compiles only the shell. `runtime:prepare` builds the
-server and web UI and copies their outputs, while `runtime:copy` requires those
-outputs to exist already.
+`native:smoke`, and `render:smoke`. Turborepo runs `build` before `test` and
+`render:smoke`. `build` cleans and compiles only the shell. `runtime:copy`
+requires server and web `dist/` outputs; `pnpm dev:desktop` and
+`pnpm package:unsigned` build those first via Turborepo.
 
 These checks do not perform a complete first-launch or model-backed chat flow.
 Use [the repository verification instructions](../README.md#verify-end-to-end)
@@ -67,8 +68,8 @@ checks to the focused desktop/macOS gate.
 Build unsigned arm64 DMG and ZIP artifacts for local testing:
 
 ```bash
-npm --prefix desktop run package:unsigned
-npm --prefix desktop run package:native:smoke
+pnpm package:unsigned
+pnpm --filter borealis-desktop package:native:smoke
 ```
 
 `package:unsigned` uses a dedicated builder configuration with signing identity
@@ -91,8 +92,9 @@ are available; use `package:unsigned` when signing must be disabled.
 generated and intentionally ignored. The entitlement plists under
 `desktop/build/` are source inputs and must remain tracked. Runtime copying
 checks that every server runtime dependency exists in the desktop package and
-that installed dependency versions match the server installation. Update and
-install both lockfiles together when changing shared dependencies.
+that installed dependency versions match the server installation. Shared
+runtime versions are pinned in the root `pnpm.overrides`; do not bypass the
+version check.
 
 ### Signed distribution
 
@@ -103,7 +105,7 @@ Developer ID Application certificate and private key available in the keychain
 `CSC_KEY_PASSWORD`. Supply one complete notarization credential set and run:
 
 ```bash
-npm --prefix desktop run package:mac
+pnpm --filter borealis-desktop package:mac
 ```
 
 The pinned builder accepts:
@@ -192,9 +194,9 @@ directory does not record those operator overrides.
 
 | Symptom                                             | Check                                                                                                                                                                                                    |
 | --------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Native-module ABI or architecture error             | Use an arm64 terminal and the supported Node/npm versions. Run `npm --prefix desktop run native:rebuild`, then `npm --prefix desktop run native:smoke`. Keep server and desktop `node_modules` separate. |
-| Runtime-copy dependency mismatch                    | Install the matching server and desktop lockfiles with `npm ci --prefix server` and `npm ci --prefix desktop`, then retry. Do not bypass the version check.                                              |
-| Missing runtime or stale UI                         | Quit and rerun `npm --prefix desktop run dev`; `build` alone does not copy the backend or web UI.                                                                                                        |
+| Native-module ABI or architecture error             | Use an arm64 terminal and the supported Node/pnpm versions. Run `pnpm --filter borealis-desktop native:rebuild`, then `pnpm --filter borealis-desktop native:smoke`. Desktop injects copies of the native addons so Electron's ABI rebuild cannot overwrite the server Node bindings; do not hoist the workspace. |
+| Runtime-copy dependency mismatch                    | Run `pnpm install` from the repository root so `pnpm-lock.yaml` and root `pnpm.overrides` apply to both server and desktop, then retry. Do not bypass the version check.                                                                                                                                        |
+| Missing runtime or stale UI                         | Quit and rerun `pnpm dev:desktop`; `build` alone does not copy the backend or web UI.                                                                                                                                                                                                                          |
 | Settings field is disabled or an edit has no effect | Check inherited provider environment overrides. Editing `server/.env` does not configure the desktop host.                                                                                               |
 | Login page after session expiry or clearing storage | Quit and reopen the app to renew the local account session.                                                                                                                                              |
 | Packaged-native smoke cannot find the app           | Run `package:unsigned` first; the smoke expects the generated `release/mac-arm64/Borealis.app`.                                                                                                          |

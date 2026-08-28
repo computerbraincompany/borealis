@@ -1,0 +1,11 @@
+packages:
+  - server
+  - web
+  - desktop
+
+onlyBuiltDependencies:
+  - "@duckdb/node-api"
+  - "@lancedb/lancedb"
+  - better-sqlite3
+  - electron
+  - esbuild

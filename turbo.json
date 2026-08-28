@@ -1,0 +1,64 @@
+{
+  "$schema": "https://turbo.build/schema.json",
+  "ui": "stream",
+  "tasks": {
+    "build": {
+      "dependsOn": ["^build"],
+      "outputs": ["dist/**"]
+    },
+    "runtime:copy": {
+      "dependsOn": ["borealis-server#build", "borealis-web#build"],
+      "outputs": ["runtime/**"]
+    },
+    "dev": {
+      "cache": false,
+      "persistent": true
+    },
+    "borealis-desktop#dev": {
+      "dependsOn": ["runtime:copy", "build"],
+      "cache": false,
+      "persistent": true
+    },
+    "borealis-desktop#package:dir": {
+      "dependsOn": ["runtime:copy", "build"],
+      "cache": false
+    },
+    "borealis-desktop#package:mac": {
+      "dependsOn": ["runtime:copy", "build"],
+      "cache": false
+    },
+    "borealis-desktop#package:unsigned": {
+      "dependsOn": ["runtime:copy", "build"],
+      "cache": false
+    },
+    "typecheck": {
+      "outputs": []
+    },
+    "lint": {
+      "outputs": []
+    },
+    "format:check": {
+      "outputs": []
+    },
+    "test": {
+      "outputs": []
+    },
+    "borealis-desktop#test": {
+      "dependsOn": ["build"],
+      "outputs": []
+    },
+    "test:integration": {
+      "outputs": []
+    },
+    "native:smoke": {
+      "cache": false
+    },
+    "render:smoke": {
+      "dependsOn": ["build"],
+      "cache": false
+    },
+    "policy": {
+      "cache": false
+    }
+  }
+}

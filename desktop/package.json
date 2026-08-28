@@ -5,30 +5,27 @@
   "description": "Borealis macOS desktop shell",
   "main": "dist/main.js",
   "type": "module",
-  "packageManager": "npm@10.9.8",
   "engines": {
-    "node": ">=22.13 <23",
-    "npm": ">=10.9 <11"
+    "node": ">=22.13 <23"
   },
   "scripts": {
     "clean": "node scripts/clean.mjs",
-    "build": "npm run clean && tsc -p tsconfig.json",
+    "build": "node scripts/clean.mjs && tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "npm run build && node --test dist/*.test.js",
+    "test": "node --test dist/*.test.js",
     "format": "prettier --write 'src/**/*.{ts,cts}' 'scripts/*.{mjs,cjs}' package.json tsconfig.json",
     "format:check": "prettier --check 'src/**/*.{ts,cts}' 'scripts/*.{mjs,cjs}' package.json tsconfig.json",
     "runtime:copy": "node scripts/copy-runtime.mjs",
-    "runtime:prepare": "npm --prefix ../server run build && npm --prefix ../web run build && npm run runtime:copy",
-    "dev": "npm run runtime:prepare && npm run build && electron .",
-    "package:dir": "npm run runtime:prepare && npm run build && electron-builder --mac --arm64 --dir",
-    "package:mac": "npm run runtime:prepare && npm run build && electron-builder --mac --arm64",
-    "package:unsigned": "npm run runtime:prepare && npm run build && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --config scripts/electron-builder.unsigned.cjs --mac --arm64",
+    "dev": "electron .",
+    "package:dir": "electron-builder --mac --arm64 --dir",
+    "package:mac": "electron-builder --mac --arm64",
+    "package:unsigned": "CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --config scripts/electron-builder.unsigned.cjs --mac --arm64",
     "package:native:smoke": "BOREALIS_PACKAGED_APP_ASAR=\"$PWD/release/mac-arm64/Borealis.app/Contents/Resources/app.asar\" ELECTRON_RUN_AS_NODE=1 \"$PWD/release/mac-arm64/Borealis.app/Contents/MacOS/Borealis\" scripts/native-smoke.cjs",
-    "native:rebuild": "electron-builder install-app-deps",
+    "native:rebuild": "node scripts/isolate-native-addons.mjs && electron-builder install-app-deps",
     "native:smoke": "ELECTRON_RUN_AS_NODE=1 electron scripts/native-smoke.cjs",
-    "render:smoke": "npm run build && electron scripts/render-smoke-app",
-    "verify": "npm run typecheck && npm run test && npm run format:check && npm run native:smoke && npm run render:smoke",
-    "postinstall": "npm run native:rebuild"
+    "render:smoke": "electron scripts/render-smoke-app",
+    "verify": "pnpm run typecheck && pnpm run build && pnpm test && pnpm run format:check && pnpm run native:smoke && pnpm run render:smoke",
+    "postinstall": "node scripts/isolate-native-addons.mjs && electron-builder install-app-deps"
   },
   "dependencies": {
     "@duckdb/node-api": "1.5.5-r.4",
@@ -50,6 +47,17 @@
     "pdfjs-dist": "^4.8.69",
     "playwright": "^1.62.1",
     "tsx": "^4.19.2"
+  },
+  "dependenciesMeta": {
+    "@duckdb/node-api": {
+      "injected": true
+    },
+    "@lancedb/lancedb": {
+      "injected": true
+    },
+    "better-sqlite3": {
+      "injected": true
+    }
   },
   "devDependencies": {
     "@types/node": "22.18.6",
@@ -77,12 +85,19 @@
       "!node_modules/onnxruntime-common/**/*",
       "!node_modules/onnxruntime-node/**/*",
       "!node_modules/onnxruntime-web/**/*",
-      "!node_modules/sharp/**/*"
+      "!node_modules/sharp/**/*",
+      "!node_modules/.pnpm/@huggingface+*/**",
+      "!node_modules/.pnpm/@img+*/**",
+      "!node_modules/.pnpm/onnxruntime-*/**",
+      "!node_modules/.pnpm/sharp@*/**"
     ],
     "asarUnpack": [
       "node_modules/better-sqlite3/**/*",
       "node_modules/@lancedb/**/*",
-      "node_modules/@duckdb/**/*"
+      "node_modules/@duckdb/**/*",
+      "node_modules/.pnpm/better-sqlite3@*/**",
+      "node_modules/.pnpm/@lancedb+*/**",
+      "node_modules/.pnpm/@duckdb+*/**"
     ],
     "directories": {
       "output": "release",
