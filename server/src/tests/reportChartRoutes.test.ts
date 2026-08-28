@@ -79,9 +79,12 @@ describe("published report and chart routes", () => {
 
     const ownerReports = await app.inject({ method: "GET", url: "/api/reports", headers: ownerAuth });
     expect(ownerReports.statusCode).toBe(200);
-    expect(ownerReports.json()).toEqual([expect.objectContaining({ id: OWNER_REPORT, title: "Owner report" })]);
+    expect(ownerReports.json()).toEqual([
+      expect.objectContaining({ id: OWNER_REPORT, title: "Owner report", version: 1, supersedes: null }),
+    ]);
     expect(ownerReports.body).not.toContain("html_path");
     expect(ownerReports.body).not.toContain("pdf_path");
+    expect(ownerReports.body).not.toContain("payload");
     await expectStatus(app, `/api/reports/${FOREIGN_REPORT}`, ownerAuth, 404);
     await expectStatus(app, `/api/reports/${PENDING_REPORT}`, ownerAuth, 404);
 
@@ -89,7 +92,7 @@ describe("published report and chart routes", () => {
     expect(ownerChart.statusCode).toBe(200);
     expect(ownerChart.json()).toEqual({
       id: OWNER_CHART,
-      spec: { title: "owner" },
+      spec: { title: "owner", type: "bar" },
       echarts: { series: [] },
       png_base64: "owner-png",
     });
@@ -148,6 +151,95 @@ describe("published report and chart routes", () => {
     expect(png.statusCode).toBe(404);
     expect(png.json()).toEqual({ error: "chart export not available" });
   });
+
+  it("renames a published report for its owner only", async () => {
+    await insertReport(OWNER_REPORT, OWNER, "published", "Model title");
+    await insertReport(FOREIGN_REPORT, FOREIGN, "published", "Foreign title");
+    await insertReport(PENDING_REPORT, OWNER, "pending", "Pending title");
+    const app = await buildApp();
+
+    const renamed = await app.inject({
+      method: "PATCH",
+      url: `/api/reports/${OWNER_REPORT}`,
+      headers: ownerAuth,
+      body: { title: "Board-ready Q3 review" },
+    });
+    expect(renamed.statusCode).toBe(200);
+    expect(renamed.json()).toMatchObject({
+      id: OWNER_REPORT,
+      title: "Board-ready Q3 review",
+      version: 1,
+      supersedes: null,
+    });
+    expect(renamed.body).not.toContain("html_path");
+
+    const detail = await app.inject({ method: "GET", url: `/api/reports/${OWNER_REPORT}`, headers: ownerAuth });
+    expect(detail.json()).toMatchObject({ title: "Board-ready Q3 review" });
+
+    await expectStatus(app, `/api/reports/${FOREIGN_REPORT}`, ownerAuth, 404);
+    await expectStatus(app, `/api/reports/${PENDING_REPORT}`, ownerAuth, 404);
+
+    const foreignRename = await app.inject({
+      method: "PATCH",
+      url: `/api/reports/${OWNER_REPORT}`,
+      headers: foreignAuth,
+      body: { title: "Hijacked title" },
+    });
+    expect(foreignRename.statusCode).toBe(404);
+
+    const blank = await app.inject({
+      method: "PATCH",
+      url: `/api/reports/${OWNER_REPORT}`,
+      headers: ownerAuth,
+      body: { title: "" },
+    });
+    expect(blank.statusCode).toBe(400);
+
+    const oversize = await app.inject({
+      method: "PATCH",
+      url: `/api/reports/${OWNER_REPORT}`,
+      headers: ownerAuth,
+      body: { title: "x".repeat(201) },
+    });
+    expect(oversize.statusCode).toBe(400);
+
+    // Fastify's shared AJV default strips unknown properties instead of rejecting them.
+    const extra = await app.inject({
+      method: "PATCH",
+      url: `/api/reports/${OWNER_REPORT}`,
+      headers: ownerAuth,
+      body: { title: "Valid", subtitle: "stripped" },
+    });
+    expect(extra.statusCode).toBe(200);
+    expect(extra.json()).toMatchObject({ title: "Valid" });
+    expect(extra.body).not.toContain("stripped");
+
+    const unauthenticated = await app.inject({
+      method: "PATCH",
+      url: `/api/reports/${OWNER_REPORT}`,
+      body: { title: "Valid" },
+    });
+    expect(unauthenticated.statusCode).toBe(401);
+  });
+
+  it("lists the account's published chart registry without spec or bytes", async () => {
+    await insertChart(OWNER_CHART, OWNER, "published", "owner", "owner-png", "bar");
+    await insertChart(PENDING_CHART, OWNER, "pending", "pending", "pending-png");
+    await insertChart(FOREIGN_CHART, FOREIGN, "published", "foreign", "foreign-png");
+    const app = await buildApp();
+
+    const registry = await app.inject({ method: "GET", url: "/api/charts", headers: ownerAuth });
+    expect(registry.statusCode).toBe(200);
+    expect(registry.json()).toEqual([
+      { id: OWNER_CHART, run_id: null, chat_id: null, title: "owner", kind: "bar", created_at: expect.any(String) },
+    ]);
+    expect(registry.body).not.toContain("spec");
+    expect(registry.body).not.toContain("png_base64");
+    expect(registry.body).not.toContain("owner-png");
+
+    const foreignRegistry = await app.inject({ method: "GET", url: "/api/charts", headers: foreignAuth });
+    expect(foreignRegistry.json()).toEqual([expect.objectContaining({ id: FOREIGN_CHART, kind: "bar" })]);
+  });
 });
 
 async function buildApp(): Promise<FastifyInstance> {
@@ -178,11 +270,12 @@ async function insertChart(
   accountId: string,
   status: "pending" | "published",
   title: string,
-  pngBase64: string | null
+  pngBase64: string | null,
+  type = "bar"
 ): Promise<void> {
   await storageRuntime().ledger.run(
     `INSERT INTO charts (id,account_id,status,spec,echarts,png_base64) VALUES (?,?,?,?,?,?)`,
-    [id, accountId, status, encodeJson({ title }), encodeJson({ series: [] }), pngBase64]
+    [id, accountId, status, encodeJson({ title, type }), encodeJson({ series: [] }), pngBase64]
   );
 }
 

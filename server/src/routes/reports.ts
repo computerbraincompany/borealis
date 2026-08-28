@@ -3,16 +3,38 @@ import path from "node:path";
 import type { FastifyInstance } from "fastify";
 import { getAccountId, requireAuth } from "../auth.js";
 import { REPORT_CSP } from "../data/reports.js";
-import { ArtifactNotFoundError } from "../db/stores/runStore.js";
+import { ArtifactNotFoundError, type PublishedReport } from "../db/stores/runStore.js";
 import { completeReportArtifactCleanup } from "../reportCleanup.js";
 import { resolveReportArtifact } from "../storageArtifacts.js";
 import { storageRuntime } from "../storageRuntime.js";
 import { idParamsSchema } from "./schemas.js";
 
+const reportRenameSchema = {
+  type: "object",
+  required: ["title"],
+  additionalProperties: false,
+  properties: { title: { type: "string", minLength: 1, maxLength: 200 } },
+} as const;
+
+/** The list/rename DTO: report metadata and lineage, never filesystem paths. */
+function publicReport(row: PublishedReport) {
+  return {
+    id: row.id,
+    title: row.title,
+    subtitle: row.subtitle,
+    chat_id: row.chat_id,
+    chat_title: row.chat_title,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+    version: row.version,
+    supersedes: row.supersedes,
+  };
+}
+
 export async function reportRoutes(app: FastifyInstance): Promise<void> {
   app.get("/api/reports", { preHandler: requireAuth }, async (req, reply) => {
     const rows = await storageRuntime().runs.listPublishedReports(getAccountId(req));
-    return reply.send(rows.map(({ html_path: _htmlPath, pdf_path: _pdfPath, ...report }) => report));
+    return reply.send(rows.map(publicReport));
   });
 
   app.get("/api/reports/:id", { preHandler: requireAuth, schema: { params: idParamsSchema } }, async (req, reply) => {
@@ -30,8 +52,25 @@ export async function reportRoutes(app: FastifyInstance): Promise<void> {
       updated_at: row.updated_at,
       has_html: Boolean(htmlArtifact),
       has_pdf: Boolean(pdfArtifact),
+      version: row.version,
+      supersedes: row.supersedes,
+      ...(row.payload === undefined ? {} : { payload: row.payload }),
     });
   });
+
+  app.patch(
+    "/api/reports/:id",
+    { preHandler: requireAuth, schema: { params: idParamsSchema, body: reportRenameSchema } },
+    async (req, reply) => {
+      const row = await storageRuntime().runs.renamePublishedReport(
+        getAccountId(req),
+        (req.params as any).id,
+        (req.body as any).title
+      );
+      if (!row) return reply.code(404).send({ error: "report not found" });
+      return reply.send(publicReport(row));
+    }
+  );
 
   app.get(
     "/api/reports/:id/html",

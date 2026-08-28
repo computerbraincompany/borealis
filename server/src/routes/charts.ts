@@ -4,6 +4,10 @@ import { storageRuntime } from "../storageRuntime.js";
 import { idParamsSchema } from "./schemas.js";
 
 export async function chartRoutes(app: FastifyInstance): Promise<void> {
+  app.get("/api/charts", { preHandler: requireAuth }, async (req, reply) => {
+    return reply.send(await storageRuntime().runs.listPublishedCharts(getAccountId(req)));
+  });
+
   app.get("/api/charts/:id", { preHandler: requireAuth, schema: { params: idParamsSchema } }, async (req, reply) => {
     const row = await storageRuntime().runs.getPublishedChart(getAccountId(req), (req.params as any).id);
     if (!row) return reply.code(404).send({ error: "chart not found" });

@@ -155,6 +155,15 @@ export interface PublishedChart {
   readonly png_base64: string | null;
 }
 
+export interface PublishedChartSummary {
+  readonly id: string;
+  readonly run_id: string | null;
+  readonly chat_id: string | null;
+  readonly title: string;
+  readonly kind: string;
+  readonly created_at: string;
+}
+
 export interface PendingChart {
   readonly id: string;
   readonly spec: unknown;
@@ -249,6 +258,14 @@ interface ChartRow {
   spec?: unknown;
   echarts?: unknown;
   png_base64?: unknown;
+}
+
+interface ChartSummaryRow {
+  id?: unknown;
+  run_id?: unknown;
+  chat_id?: unknown;
+  spec?: unknown;
+  created_at?: unknown;
 }
 
 interface ReportRow {
@@ -869,6 +886,68 @@ export class RunStore {
     return row.payload === null || row.payload === undefined
       ? report
       : Object.freeze({ ...report, payload: decodeJson(row.payload, "report payload") });
+  }
+
+  async renamePublishedReport(
+    accountIdValue: string,
+    reportIdValue: string,
+    titleValue: string
+  ): Promise<PublishedReport | undefined> {
+    const accountId = identity(accountIdValue, "account id");
+    const reportId = identity(reportIdValue, "report id");
+    const title = inputString(titleValue, "report title", 200);
+    return this.ledger.withImmediateTransaction((transaction) => {
+      const updated = transaction.run(
+        `UPDATE reports SET title=?,updated_at=? WHERE id=? AND account_id=? AND status='published'`,
+        [title, this.timestamp(), reportId, accountId]
+      );
+      if (updated.changes !== 1) return undefined;
+      const row = transaction.get<ReportRow>(
+        `SELECT r.id,r.title,r.subtitle,r.chat_id,c.title AS chat_title,
+                r.created_at,r.updated_at,r.html_path,r.pdf_path,r.version,r.supersedes
+         FROM reports r
+         LEFT JOIN chats c ON c.id=r.chat_id AND c.account_id=r.account_id
+         WHERE r.id=? AND r.account_id=?`,
+        [reportId, accountId]
+      );
+      return row ? decodePublishedReport(row) : undefined;
+    });
+  }
+
+  async listPublishedCharts(accountIdValue: string, limitValue = 200): Promise<PublishedChartSummary[]> {
+    const accountId = identity(accountIdValue, "account id");
+    const limit = decodeSafeInteger(limitValue, "chart list limit");
+    if (limit < 1 || limit > 200) throw new RangeError("chart list limit violates the run store contract");
+    const rows = await this.ledger.all<ChartSummaryRow>(
+      `SELECT ch.id,ch.run_id,ch.created_at,ch.spec,r.chat_id AS chat_id
+       FROM charts ch
+       LEFT JOIN chat_runs r ON r.id=ch.run_id AND r.account_id=ch.account_id
+       WHERE ch.account_id=? AND ch.status='published'
+       ORDER BY ch.created_at DESC,ch.id DESC
+       LIMIT ?`,
+      [accountId, limit]
+    );
+    return rows.map((row) => {
+      let title = "";
+      let kind = "chart";
+      if (typeof row.spec === "string") {
+        try {
+          const spec = JSON.parse(row.spec) as { title?: unknown; type?: unknown };
+          if (typeof spec?.title === "string") title = spec.title;
+          if (typeof spec?.type === "string") kind = spec.type;
+        } catch {
+          // A garbled stored spec degrades to empty labels; it never fails the registry.
+        }
+      }
+      return Object.freeze({
+        id: requiredString(row.id, "chart id"),
+        run_id: optionalString(row.run_id, "chart run id"),
+        chat_id: optionalString(row.chat_id, "chart chat id"),
+        title,
+        kind,
+        created_at: decodeIsoTimestamp(row.created_at, "chart created_at"),
+      });
+    });
   }
 
   /**
