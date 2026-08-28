@@ -5,6 +5,8 @@ generation. Model calls go directly to LM Studio or another OpenAI-compatible
 API.
 
 Repo: `computerbraincompany/borealis` on GitHub (formerly _north-clone_).
+Product direction lives in [docs/VISION.md](docs/VISION.md); it is the intended
+destination, not a list of current features or an implementation backlog.
 
 ## Architecture
 
@@ -27,6 +29,10 @@ Repo: `computerbraincompany/borealis` on GitHub (formerly _north-clone_).
   from the backend's exact loopback origin.
 - `data/` — deterministic TypeScript generator and personal-finance CSV fixtures
   used by end-to-end verification.
+
+The repository is a pnpm workspace (`server`, `web`, `desktop`) with a root
+Turborepo graph. Install once from the repository root. Do not add npm lockfiles
+or install a workspace package in isolation.
 
 ## Commands
 
@@ -316,8 +322,8 @@ offline Electron rendering, and clean utility-process shutdown.
 ## Documentation maintenance
 
 Keep [README.md](README.md), [docs/API.md](docs/API.md),
-[desktop/README.md](desktop/README.md), and [server/.env.example](server/.env.example)
-aligned with implementation changes. Check package scripts, route schemas and
+[docs/VISION.md](docs/VISION.md), [desktop/README.md](desktop/README.md), and
+[server/.env.example](server/.env.example) aligned with implementation changes. Check package scripts, route schemas and
 runtime validation, environment precedence, resource limits, and verification
 coverage rather than copying claims from old plans. Document provider-bound
 ingestion text as well as chat context when describing privacy.
@@ -328,3 +334,7 @@ research and proposed designs, not the current Borealis architecture. Preserve
 that boundary and do not present historical checklists as current instructions.
 Use `git ls-files` when auditing all tracked docs: ordinary `rg --files` omits
 the intentionally ignored, but still tracked, research archive.
+ked, research archive.
+tracked docs: ordinary `rg --files` omits
+the intentionally ignored, but still tracked, research archive.
+ked, research archive.

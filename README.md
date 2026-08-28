@@ -14,6 +14,7 @@ to LM Studio or another OpenAI-compatible endpoint.
 | Guide                                        | Contents                                                                   |
 | -------------------------------------------- | -------------------------------------------------------------------------- |
 | [This README](#desktop-app)                  | Setup, model configuration, daily use, verification, and backups           |
+| [Product vision](docs/VISION.md)             | What Borealis is becoming: local data intelligence as a desktop platform   |
 | [API reference](docs/API.md)                 | REST endpoints, SSE events, lifecycle, errors, and resource limits         |
 | [Desktop guide](desktop/README.md)           | Development profiles, native modules, packaging, signing, and smoke checks |
 | [Contributor instructions](AGENTS.md)        | Architecture, commands, and security invariants                            |
