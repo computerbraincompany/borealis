@@ -1,6 +1,6 @@
 import { SqliteMigrationError } from "./types.js";
 
-export const LATEST_SQLITE_SCHEMA_VERSION = 2;
+export const LATEST_SQLITE_SCHEMA_VERSION = 3;
 
 interface MigrationDatabase {
   exec(sql: string): unknown;
@@ -330,9 +330,19 @@ BEGIN
 END;
 `;
 
+const SCHEMA_V3 = `
+ALTER TABLE reports ADD COLUMN version INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE reports ADD COLUMN supersedes TEXT REFERENCES reports(id);
+ALTER TABLE reports ADD COLUMN payload TEXT CHECK (payload IS NULL OR json_valid(payload));
+CREATE INDEX reports_chat_published_idx
+  ON reports (account_id, chat_id, version DESC)
+  WHERE status='published' AND chat_id IS NOT NULL;
+`;
+
 const migrations = [
   { version: 1, sql: SCHEMA_V1 },
   { version: 2, sql: SCHEMA_V2 },
+  { version: 3, sql: SCHEMA_V3 },
 ] as const;
 
 function schemaVersion(database: MigrationDatabase): number {

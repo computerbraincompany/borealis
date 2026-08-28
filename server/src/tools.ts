@@ -542,6 +542,7 @@ export async function executeTool(accountId: string, name: string, args: any, co
           subtitle: renderPayload.subtitle || "",
           htmlPath,
           pdfPath,
+          payload: renderPayload,
         });
         durablyReserved = true;
         context.reportId = reportId;

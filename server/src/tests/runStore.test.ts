@@ -8,11 +8,13 @@ import {
   ActiveRunArtifactCleanupError,
   ArtifactNotFoundError,
   ArtifactPathsMissingError,
+  MAX_REPORT_PAYLOAD_CHARS,
   RunNotActiveError,
   RunNotCompletableError,
   RunNotFoundError,
   RunStore,
   type ChatRunStatus,
+  type RunStoreOptions,
 } from "../db/stores/runStore.js";
 import type { SqliteLedger } from "../db/types.js";
 import { createTempSqliteLedger, type TempSqliteLedger } from "./sqliteTestHarness.js";
@@ -25,10 +27,12 @@ afterEach(async () => {
   await Promise.all(resources.splice(0).map((resource) => resource.cleanup()));
 });
 
-async function setup(): Promise<{ ledger: SqliteLedger; store: RunStore; filename: string }> {
+async function setup(
+  options: RunStoreOptions = {}
+): Promise<{ ledger: SqliteLedger; store: RunStore; filename: string }> {
   const resource = await createTempSqliteLedger();
   resources.push(resource);
-  return { ledger: resource.ledger, store: new RunStore(resource.ledger), filename: resource.filename };
+  return { ledger: resource.ledger, store: new RunStore(resource.ledger, options), filename: resource.filename };
 }
 
 async function secondStore(filename: string): Promise<{ ledger: SqliteLedger; store: RunStore }> {
@@ -98,7 +102,13 @@ async function insertPendingChart(store: RunStore, accountId: string, runId: str
   return id;
 }
 
-async function insertPendingReport(store: RunStore, accountId: string, runId: string, label: string): Promise<string> {
+async function insertPendingReport(
+  store: RunStore,
+  accountId: string,
+  runId: string,
+  label: string,
+  options: { payload?: unknown } = {}
+): Promise<string> {
   const id = randomUUID();
   await store.insertPendingReport({
     id,
@@ -108,6 +118,7 @@ async function insertPendingReport(store: RunStore, accountId: string, runId: st
     subtitle: `${label} subtitle`,
     htmlPath: `/safe/${accountId}/${id}/report.html`,
     pdfPath: `/safe/${accountId}/${id}/report.pdf`,
+    payload: options.payload,
   });
   return id;
 }
@@ -347,6 +358,90 @@ describe("RunStore", () => {
     });
     await expect(store.getPublishedReport(account, selectedReport)).resolves.toBeUndefined();
     await expect(store.deletePublishedChartRow(account, selectedChart)).resolves.toBe(true);
+  });
+
+  it("chains per-chat report versions over published reports and stores bounded payloads", async () => {
+    let tick = Date.parse("2026-08-29T10:00:00.000Z");
+    const { ledger, store } = await setup({ now: () => new Date((tick += 1_000)) });
+    const account = await insertUser(ledger, "version-owner");
+    const foreign = await insertUser(ledger, "version-foreign");
+    const chat = await insertChat(ledger, account, "Versioned chat");
+    const otherChat = await insertChat(ledger, account, "Other versioned chat");
+    const foreignChat = await insertChat(ledger, foreign, "Foreign versioned chat");
+
+    const completionMeta = (reportId: string | null) =>
+      ({
+        charts: [],
+        report: reportId,
+        model: "chat-model",
+        source_mode: "selected",
+        source_ids: [],
+        evidence: [],
+        query_results: [],
+      }) as const;
+
+    const publish = async (chatId: string, runId: string, label: string, payload?: unknown) => {
+      const reportId = await insertPendingReport(store, account, runId, label, { payload });
+      await store.completeRunWithAssistant(account, chatId, runId, {
+        content: `${label} answer`,
+        meta: completionMeta(reportId),
+      });
+      return reportId;
+    };
+
+    const firstRun = await insertRun(ledger, account, chat);
+    const first = await publish(chat, firstRun, "first", { sections: [{ heading: "H", markdown: "M" }] });
+    await expect(store.getPublishedReport(account, first)).resolves.toMatchObject({
+      version: 1,
+      supersedes: null,
+      payload: { sections: [{ heading: "H", markdown: "M" }] },
+    });
+
+    const secondRun = await insertRun(ledger, account, chat);
+    const second = await publish(chat, secondRun, "second");
+    await expect(store.getPublishedReport(account, second)).resolves.toMatchObject({
+      version: 2,
+      supersedes: first,
+    });
+
+    // A run that publishes no report must not advance the version chain.
+    const emptyRun = await insertRun(ledger, account, chat);
+    await insertPendingReport(store, account, emptyRun, "discarded-mid-chain");
+    await store.completeRunWithAssistant(account, chat, emptyRun, { content: "none", meta: completionMeta(null) });
+
+    const thirdRun = await insertRun(ledger, account, chat);
+    const third = await publish(chat, thirdRun, "third");
+    await expect(store.getPublishedReport(account, third)).resolves.toMatchObject({
+      version: 3,
+      supersedes: second,
+    });
+
+    const otherRun = await insertRun(ledger, account, otherChat);
+    const other = await publish(otherChat, otherRun, "other");
+    await expect(store.getPublishedReport(account, other)).resolves.toMatchObject({ version: 1, supersedes: null });
+
+    const foreignRun = await insertRun(ledger, foreign, foreignChat);
+    const foreignReport = await insertPendingReport(store, foreign, foreignRun, "foreign");
+    await store.completeRunWithAssistant(foreign, foreignChat, foreignRun, {
+      content: "foreign answer",
+      meta: completionMeta(foreignReport),
+    });
+    await expect(store.getPublishedReport(foreign, foreignReport)).resolves.toMatchObject({
+      version: 1,
+      supersedes: null,
+    });
+
+    const oversizeRun = await insertRun(ledger, account, chat);
+    const oversize = await publish(chat, oversizeRun, "oversize", { blob: "x".repeat(MAX_REPORT_PAYLOAD_CHARS) });
+    const stored = await store.getPublishedReport(account, oversize);
+    expect(stored).toMatchObject({ version: 4 });
+    expect(stored?.payload).toBeUndefined();
+
+    const listed = await store.listPublishedReports(account);
+    const versionedChatReports = listed.filter((report) => report.chat_id === chat);
+    expect(versionedChatReports.map((report) => report.version)).toEqual([4, 3, 2, 1]);
+    expect(listed.find((report) => report.chat_id === otherChat)).toMatchObject({ version: 1 });
+    expect(listed.every((report) => report.payload === undefined)).toBe(true);
   });
 
   it("persists discarded and published-delete cleanup intents across crashes and retries", async () => {

@@ -139,6 +139,8 @@ export interface PendingReportInput {
   /** Deterministic paths are reserved before either artifact is written. */
   readonly htmlPath: string;
   readonly pdfPath: string;
+  /** Normalized report payload persisted for lineage and later reuse. */
+  readonly payload?: unknown;
 }
 
 export interface InsertPendingArtifactTestHooks {
@@ -168,6 +170,9 @@ export interface PublishedReport {
   readonly updated_at: string;
   readonly html_path: string | null;
   readonly pdf_path: string | null;
+  readonly version: number;
+  readonly supersedes: string | null;
+  readonly payload?: unknown;
 }
 
 export interface PendingReportCleanupPath {
@@ -258,6 +263,9 @@ interface ReportRow {
   updated_at?: unknown;
   html_path?: unknown;
   pdf_path?: unknown;
+  version?: unknown;
+  supersedes?: unknown;
+  payload?: unknown;
 }
 
 interface OrphanRow {
@@ -283,6 +291,8 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
 const MAX_ID_CHARS = 1_024;
 const MAX_COMPLETION_CHARTS = 20;
 const MAX_REPORT_CLEANUP_INTENTS = 500;
+/** Stored report payloads beyond this bound are dropped, never fatal. */
+export const MAX_REPORT_PAYLOAD_CHARS = 400_000;
 
 function requiredString(value: unknown, field: string): string {
   if (typeof value !== "string") throw new TypeError(`${field} is not stored as text`);
@@ -363,6 +373,8 @@ function decodePublishedReport(row: ReportRow): PublishedReport {
     updated_at: decodeIsoTimestamp(row.updated_at, "report updated_at"),
     html_path: optionalString(row.html_path, "report html_path"),
     pdf_path: optionalString(row.pdf_path, "report pdf_path"),
+    version: decodeSafeInteger(row.version, "report version"),
+    supersedes: optionalString(row.supersedes, "report supersedes"),
   });
 }
 
@@ -758,23 +770,45 @@ export class RunStore {
         : inputString(input.subtitle, "report subtitle", 500, true);
     const htmlPath = inputString(input.htmlPath, "report html path", 32_000);
     const pdfPath = inputString(input.pdfPath, "report pdf path", 32_000);
+    const payloadJson =
+      input.payload === undefined || input.payload === null
+        ? null
+        : (() => {
+            const encoded = encodeJson(input.payload, "report payload");
+            return encoded.length <= MAX_REPORT_PAYLOAD_CHARS ? encoded : null;
+          })();
     return this.ledger.withImmediateTransaction(async (transaction) => {
       const run = this.requireActiveRun(transaction, accountId, runId);
       await hooks.afterActiveCheck?.();
+      const chatId = requiredString(run.chat_id, "run chat id");
+      // Versions are per chat, monotonic over published reports only. Pending
+      // reports from failed runs never join the chain, and one active run per
+      // chat serializes this lookup against concurrent publication.
+      const previous = transaction.get<{ id?: unknown; version?: unknown }>(
+        `SELECT id,version FROM reports
+         WHERE account_id=? AND chat_id=? AND status='published'
+         ORDER BY version DESC, created_at DESC, id DESC LIMIT 1`,
+        [accountId, chatId]
+      );
+      const version = previous ? decodeSafeInteger(previous.version, "report version") + 1 : 1;
+      const supersedes = previous ? requiredString(previous.id, "report supersedes id") : null;
       const timestamp = this.timestamp();
       transaction.run(
         `INSERT INTO reports
-           (id,account_id,chat_id,run_id,status,title,subtitle,html_path,pdf_path,created_at,updated_at)
-         VALUES (?,?,?,?,'pending',?,?,?,?,?,?)`,
+           (id,account_id,chat_id,run_id,status,title,subtitle,html_path,pdf_path,version,supersedes,payload,created_at,updated_at)
+         VALUES (?,?,?,?,'pending',?,?,?,?,?,?,?,?,?)`,
         [
           id,
           accountId,
-          requiredString(run.chat_id, "run chat id"),
+          chatId,
           runId,
           title,
           subtitle,
           htmlPath,
           pdfPath,
+          version,
+          supersedes,
+          payloadJson,
           timestamp,
           timestamp,
         ]
@@ -811,7 +845,7 @@ export class RunStore {
     const accountId = identity(accountIdValue, "account id");
     const rows = await this.ledger.all<ReportRow>(
       `SELECT r.id,r.title,r.subtitle,r.chat_id,c.title AS chat_title,
-              r.created_at,r.updated_at,r.html_path,r.pdf_path
+              r.created_at,r.updated_at,r.html_path,r.pdf_path,r.version,r.supersedes
        FROM reports r
        LEFT JOIN chats c ON c.id=r.chat_id AND c.account_id=r.account_id
        WHERE r.account_id=? AND r.status='published'
@@ -824,13 +858,17 @@ export class RunStore {
   async getPublishedReport(accountIdValue: string, reportIdValue: string): Promise<PublishedReport | undefined> {
     const row = await this.ledger.get<ReportRow>(
       `SELECT r.id,r.title,r.subtitle,r.chat_id,c.title AS chat_title,
-              r.created_at,r.updated_at,r.html_path,r.pdf_path
+              r.created_at,r.updated_at,r.html_path,r.pdf_path,r.version,r.supersedes,r.payload
        FROM reports r
        LEFT JOIN chats c ON c.id=r.chat_id AND c.account_id=r.account_id
        WHERE r.id=? AND r.account_id=? AND r.status='published'`,
       [identity(reportIdValue, "report id"), identity(accountIdValue, "account id")]
     );
-    return row ? decodePublishedReport(row) : undefined;
+    if (!row) return undefined;
+    const report = decodePublishedReport(row);
+    return row.payload === null || row.payload === undefined
+      ? report
+      : Object.freeze({ ...report, payload: decodeJson(row.payload, "report payload") });
   }
 
   /**
