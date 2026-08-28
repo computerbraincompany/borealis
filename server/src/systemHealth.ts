@@ -1,6 +1,7 @@
 import { dataService } from "./dataService.js";
 import { getRuntimeSettings } from "./runtimeSettings.js";
 import { storageRuntime } from "./storageRuntime.js";
+import { probeEndpointOk } from "./endpointProbe.js";
 
 export type ServiceHealthStatus = "operational" | "unavailable";
 
@@ -37,23 +38,6 @@ export interface SystemHealthDependencies {
 }
 
 const HEALTH_TIMEOUT_MS = 2_000;
-
-async function fetchOk(url: string, apiKey?: string): Promise<boolean> {
-  try {
-    const headers: Record<string, string> = { Accept: "application/json", "Cache-Control": "no-store" };
-    if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
-    const response = await fetch(url, {
-      method: "GET",
-      headers,
-      redirect: "error",
-      signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS),
-    });
-    await response.body?.cancel().catch(() => undefined);
-    return response.ok;
-  } catch {
-    return false;
-  }
-}
 
 async function databaseHealthy(): Promise<boolean> {
   let timeout: NodeJS.Timeout | undefined;
@@ -159,9 +143,10 @@ export async function checkSystemHealth(): Promise<SystemHealth> {
   return createSystemHealthCheck({
     database: databaseHealthy,
     dataService: () => dataService.health(),
-    modelGateway: () => fetchOk(`${runtime.settings.llmBaseUrl}/v1/models`, runtime.settings.apiKey),
+    modelGateway: () =>
+      probeEndpointOk(`${runtime.settings.llmBaseUrl}/v1/models`, { apiKey: runtime.settings.apiKey }),
     ...(runtime.settings.lmStudioBaseUrl
-      ? { modelRuntime: () => fetchOk(`${runtime.settings.lmStudioBaseUrl}/v1/models`) }
+      ? { modelRuntime: () => probeEndpointOk(`${runtime.settings.lmStudioBaseUrl}/v1/models`) }
       : {}),
   })();
 }
