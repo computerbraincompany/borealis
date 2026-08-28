@@ -1,5 +1,11 @@
 # Fully open-source reference architecture
 
+> **Historical design proposal — 2026-08-22.** These requirements describe
+> a possible North-equivalent rebuild, not an accepted Borealis roadmap or its
+> implemented architecture. See the [archive overview](README.md),
+> [current Borealis docs](../../README.md), and
+> [completed implementation plans](../../plans/README.md).
+
 **Status:** independent design proposal, not a claim about Cohere's private implementation<br>
 **Target:** feature-complete North-equivalent with clean-room code and swappable components
 

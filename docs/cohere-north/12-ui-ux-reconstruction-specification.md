@@ -1,5 +1,11 @@
 # UI/UX reconstruction specification
 
+> **Historical design proposal — 2026-08-22.** These requirements describe
+> a possible North-equivalent rebuild, not an accepted Borealis roadmap or its
+> implemented architecture. See the [archive overview](README.md),
+> [current Borealis docs](../../README.md), and
+> [completed implementation plans](../../plans/README.md).
+
 **Status:** independent interface design requirements informed by documented behavior and public screenshots<br>
 **Rule:** reproduce workflows, not Cohere branding or pixel-level presentation
 

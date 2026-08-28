@@ -1,14 +1,23 @@
 # Borealis API
 
-The Fastify API listens on `http://127.0.0.1:3000` by default. Registration and
-login are public; every other `/api/*` endpoint requires a JWT in
+The Fastify API listens on `http://127.0.0.1:3000` by default in browser/server
+mode. Electron instead chooses an available port on `127.0.0.1`. Registration
+and login are public; every other `/api/*` endpoint requires a JWT in
 `Authorization: Bearer <token>`. Dataset processing and report rendering are
-in-process implementation details and are not separate public services.
+in-process implementation details and are not separate public services. In
+particular, the internal `/query`, `/datasets/*`, and `/reports/build` operation
+labels are not HTTP routes.
 
-Responses include `X-Request-ID`. Clients may send a request ID containing only
-letters, digits, `.`, `_`, or `-` (maximum 128 characters); invalid values are
-replaced. Errors use a bounded public envelope such as `{"error":"..."}` and do
-not include provider responses, SQL, local paths, or exception text.
+Clients may send `X-Request-ID` containing only letters, digits, `.`, `_`, or `-`
+(maximum 128 characters); invalid values are replaced. Use the response header
+when present to correlate a request with server logs. Normal error envelopes are
+`{"error":"..."}`, sometimes with `request_id`, and exclude provider responses,
+SQL, local paths, and exception text. The Settings connection test and connector
+creation have the specific failure shapes documented below.
+
+Successful requests return `200` unless stated otherwise. Bodies are JSON except
+for SSE, report HTML, and report PDF. Resource IDs are UUIDs; message IDs and
+history cursors are positive integers. Send only the documented request fields.
 
 Browser origins are not reflected. Configure an exact comma-separated
 `CORS_ORIGINS` allowlist when the frontend is not served from the default
@@ -16,13 +25,15 @@ loopback Vite origins. The packaged UI is served by Fastify from the same exact
 loopback origin and does not use cross-origin headers.
 
 An authenticated OpenAPI snapshot is available at `GET /api/openapi.json`.
+It describes registered routes and schemas; the lifecycle and response details
+below also cover contracts enforced by runtime validation.
 
 The public `GET /health` endpoint is a fast process-liveness probe. Authenticated
 clients can use `GET /api/health` for dependency readiness. It reports bounded
 status and latency for the Borealis API, embedded SQLite ledger, in-process
 DuckDB service, configured model endpoint, and an optional distinct LM Studio
-runtime without returning service URLs, credentials, model IDs, or raw upstream errors. A
-degraded dependency does not change the liveness endpoint, which avoids
+runtime without returning service URLs, credentials, model IDs, or raw upstream
+errors. A degraded dependency does not change the liveness endpoint, which avoids
 restarting a healthy API process because an upstream service is temporarily
 unavailable.
 
@@ -73,9 +84,18 @@ curl --fail-with-body --silent --show-error -N \
   "$BOREALIS_API/api/chats/<chat-uuid>/messages"
 ```
 
-Register with `POST /api/register` or log in with `POST /api/login`; both accept
-`{"email":"...","password":"..."}` and return `{token,user}`. A JWT expires
-after seven days. `GET /api/me` validates the current token.
+## Authentication
+
+`POST /api/register` and `POST /api/login` accept
+`{"email":"...","password":"..."}` and return
+`{"token":"...","user":{"id":"<user-uuid>","email":"..."}}`. Email is trimmed
+and lowercased, with a 254-character maximum. Passwords require at least six
+characters and at most 72 UTF-8 bytes; the JSON body limit is 2 KiB. Registration
+returns `409` for an existing email; incorrect login credentials return `401`.
+
+JWTs expire after seven days. `GET /api/me` validates the token and returns its
+claims (`userId`, `email`, `iat`, and `exp`), not the registration response's
+`user` object. There is no token-refresh or server logout endpoint.
 
 ## Source scope and turn snapshots
 
@@ -87,10 +107,23 @@ A chat has exactly one of these states:
 - `{"source_mode":"selected","source_ids":[]}` deliberately grants no stored
   source access and never widens to `all`.
 
-Only ready sources are included in a turn. The accepted model, source mode, and
-concrete ready source IDs are committed with the user message and run in one
-SQLite transaction. Later model or source changes affect the next turn, not an
-already accepted run.
+Source-scope requests are an exact union: do not send `source_ids` with `all`.
+`selected` requires an array of at most 100 owned UUIDs; duplicates are
+normalized and removed. Attaching an indexing or errored source is allowed,
+but its content is unavailable to stored-data tools until ready. Unknown or
+unowned attachment IDs return `400` without identifying which ID failed.
+
+Scope resolution is capped at 100 sources, including unavailable attachments.
+If an `all` chat grows beyond that limit, reading it or accepting another turn
+returns `409`; use `PUT /api/chats/:id/sources` to choose a smaller selection.
+
+Only ready sources grant stored-data access in a turn. The accepted model, source
+mode, and concrete ready source IDs are committed with the user message and run
+in one SQLite transaction. Later model or source changes affect the next turn, not an
+already accepted run. This is a stored-data tool boundary: prior conversation
+messages can still contain information from earlier turns. `fetch_url` is a
+separate capability and accepts only a public HTTP(S) URL explicitly written in
+the current user message, even when the stored-source selection is empty.
 
 ## Chat history and runs
 
@@ -102,7 +135,7 @@ adds:
   "active_run": { "id": "<run-uuid>", "status": "running" },
   "messages_page": {
     "has_more": true,
-    "next_before_message_id": "123"
+    "next_before_message_id": 123
   }
 }
 ```
@@ -110,25 +143,50 @@ adds:
 Pass that cursor as `before_message_id` to load older messages. `limit` is 1–100.
 `active_run` is `null` when no run is active and lets clients rehydrate a
 `running` or `cancelling` run after navigation or reload. Omitting `limit` returns
-the configured bounded first-page size (80 messages by default); history is never
-returned as an unbounded response.
+the configured bounded first-page size (80 messages by default, capped at 100).
+The response also includes the chat summary, `sources`, and `messages` with
+`id`, `role`, `content`, `meta`, and `created_at`. When no older page remains,
+`next_before_message_id` is `null`.
+
+History also has an aggregate serialized-character budget, so a page can contain
+fewer messages than requested. Oversized message content is marked with
+`meta.content_truncated`; oversized metadata is replaced with
+`{"metadata_truncated":true}`. History is never returned as an unbounded response.
 
 `POST /api/chats/:id/messages` accepts `{"content":"..."}` and returns
-`text/event-stream`. Every frame is JSON in an SSE `data:` field. Event types are:
+`text/event-stream`. Content is trimmed and must be nonempty, with a default
+maximum of 32,000 Unicode characters. Every frame is JSON in an SSE `data:` field
+(there are no SSE `event:` or `id:` fields). Event types are:
 
-| Type          | Stable fields               | Meaning                                                              |
-| ------------- | --------------------------- | -------------------------------------------------------------------- |
-| `run-started` | `run_id`                    | Durable run identity; retain it for cancellation.                    |
-| `user-saved`  | `message_id`                | The user message and immutable turn snapshot committed.              |
-| `step-start`  | `name`, `summary`           | A sanitized operation summary; never raw arguments.                  |
-| `step-end`    | `name`, `summary`, `status` | Sanitized completion state (`ok` or `error`).                        |
-| `delta`       | `text`                      | Final answer text. Provider reasoning is never emitted.              |
-| `message`     | `content`, `meta`           | Persisted assistant message and bounded display artifacts.           |
-| `error`       | `message`                   | Public cancellation or failure message.                              |
-| `done`        | —                           | Legacy success marker, emitted only after the durable run completes. |
-| `run-ended`   | `run_id`, `status`          | Authoritative terminal state: `completed`, `cancelled`, or `failed`. |
+| Type          | Stable fields                            | Meaning                                                                               |
+| ------------- | ---------------------------------------- | ------------------------------------------------------------------------------------- |
+| `run-started` | `run_id`                                 | Durable run identity; retain it for cancellation.                                     |
+| `user-saved`  | `message_id`                             | The user message and immutable turn snapshot committed.                               |
+| `step-start`  | `name`, `summary`                        | A sanitized operation summary; never raw arguments.                                   |
+| `step-end`    | `name`, `summary`, `status`              | Sanitized completion state (`ok` or `error`).                                         |
+| `delta`       | `text`                                   | Complete final answer, emitted after persistence, not token by token.                 |
+| `message`     | `message_id`, `content`, `meta`, `roles` | Persisted assistant message and bounded display artifacts; `roles` is currently `[]`. |
+| `error`       | `message`                                | Bounded failure message; cancellation is not an error event.                          |
+| `done`        | —                                        | Legacy success marker, emitted only after the durable run completes.                  |
+| `run-ended`   | `run_id`, `status`                       | Authoritative terminal state: `completed`, `cancelled`, or `failed`.                  |
 
-Only one run may be active per chat. After receiving `run-started`, cancel with:
+On success, the final sequence is `delta`, `message`, `done`, `run-ended`.
+Provider reasoning, raw tool arguments/results, and provider exceptions are
+never sent as event payloads. Tool progress uses server-defined summaries;
+individual tool errors can be followed by further tool calls or a final answer.
+
+Assistant `meta` contains `charts` (chart UUIDs), `report` (a report UUID or
+`null`), `model`, `source_mode`, `source_ids`, `evidence`, and `query_results`.
+Evidence contains bounded `{source_id,chunk_id,source,excerpt,score}` records.
+Query display snapshots contain `{id,sql,columns,rows,row_count,truncated}`;
+they are bounded display artifacts, not complete query exports. User message
+metadata records only the accepted model and source snapshot.
+
+Only one run may be `running` or `cancelling` per chat; another message returns
+`409`. Disconnecting from SSE does not cancel the accepted run. There is no SSE
+replay or separate run-read endpoint: reload `GET /api/chats/:id` to obtain the
+latest messages and `active_run`, and poll it while a detached run is active.
+After receiving `run-started`, cancel with:
 
 ```bash
 curl --fail-with-body --silent --show-error \
@@ -137,25 +195,75 @@ curl --fail-with-body --silent --show-error \
   "$BOREALIS_API/api/chats/<chat-uuid>/runs/<run-uuid>"
 ```
 
-Cancellation is idempotent for an owned run. The response reports `cancelling`
-or the already-terminal `completed`, `cancelled`, or `failed` state; `404` means
-the run does not exist in that owned chat. A server restart marks interrupted
-runs failed; it never presents them as completed.
+Cancellation is idempotent for an owned run. The response is
+`{"ok":true,"run_id":"<run-uuid>","status":"cancelling"}` or reports the
+already-terminal `completed`, `cancelled`, or `failed` state; `404` means the run
+does not exist in that owned chat. A run that reaches `cancelled` emits
+`run-ended` without a success `done` or an assistant message. After a crash,
+startup marks unfinished
+running work `failed` and preserves requested cancellations as `cancelled`.
+Orderly shutdown cancels active work. Neither path presents unfinished work as
+completed.
 
 ## Resources
 
-### Health, models, and chats
+### Health and models
 
-- `GET /api/health`
-- `GET /api/models[?refresh=1]`
-- `GET /api/chats`
-- `POST /api/chats`
-- `GET /api/chats/:id[?limit=N&before_message_id=ID]`
-- `PATCH /api/chats/:id` with exactly one of `model` or `title`
-- `PUT /api/chats/:id/sources`
-- `DELETE /api/chats/:id`
-- `POST /api/chats/:id/messages` (SSE)
-- `DELETE /api/chats/:id/runs/:runId`
+`GET /health` returns `{"status":"ok"}`. `GET /api/health` returns
+`{status,checked_at,services}`, where overall `status` is `operational` or
+`degraded`, and `checked_at` is an ISO timestamp. Each service has `id`, `name`,
+`description`, `status` (`operational` or `unavailable`), and `latency_ms`.
+Reported latency is bounded to 0–2,000 ms.
+The stable IDs are `api`, `database`, `data_service`, `model_gateway`, and the
+optional `model_runtime`. `model_gateway` is the direct configured provider,
+not a proxy process. Both healthy and degraded readiness responses use `200`.
+The model probe checks catalog reachability, not whether a chat or embedding
+request will succeed; readiness does not run inference or render a report.
+
+`GET /api/models` returns, for example:
+
+```json
+{
+  "models": [{ "id": "qwen-chat" }],
+  "default_model": "qwen-chat",
+  "discovery": "live"
+}
+```
+
+Entries contain only `id` and optional `owned_by`, are deduplicated and sorted,
+and exclude the configured embedding identity. Known physical model IDs map
+back to the stable aliases in [llmAliases.ts](../server/src/llmAliases.ts);
+unknown IDs are preserved. Successful discovery is cached for 15 seconds;
+`?refresh=1` bypasses that cache (`refresh=0` is also accepted). Discovery failure
+returns `200` with `models: []` and `discovery: "unavailable"`, keeping the
+configured `default_model`. Settings changes invalidate the runtime's catalog
+cache. Discovery is informational; saving a per-chat model does not require it
+to appear in the current catalog.
+
+### Chats
+
+| Endpoint                            | Request and response                                                                                    |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| `GET /api/chats`                    | Array of `{id,title,model,source_mode,created_at,updated_at}`, ordered by latest activity, then ID.     |
+| `POST /api/chats`                   | Optional `title` and source-scope union; returns the chat summary. Uses the current default chat model. |
+| `GET /api/chats/:id`                | Summary, sources, bounded history page, and active run; accepts `limit` and `before_message_id`.        |
+| `PATCH /api/chats/:id`              | Exactly one of `{"title":"..."}` or `{"model":"..."}`; returns the updated summary.                     |
+| `PUT /api/chats/:id/sources`        | Source-scope union; returns `{source_mode,sources}`.                                                    |
+| `DELETE /api/chats/:id`             | Returns `{"ok":true}`; `409` while the chat has an active run.                                          |
+| `POST /api/chats/:id/messages`      | `{"content":"..."}`; SSE contract above.                                                                |
+| `DELETE /api/chats/:id/runs/:runId` | Cancellation contract above.                                                                            |
+
+Titles are trimmed and must contain 1–80 Unicode characters. An omitted title
+starts as `New chat` and becomes the first message's first 80 characters;
+explicit titles are retained. Models are trimmed to a required 1–256 characters
+and cannot equal the configured embedding model in either alias or physical
+form. Renaming advances chat activity; changing its model or source scope does
+not.
+
+Omitting source scope on API chat creation preserves the legacy `all` default.
+The web UI explicitly creates `selected` chats with `source_ids: []`. To avoid
+unexpected stored-source access, API clients should also send their intended
+scope explicitly.
 
 ### Provider Settings
 
@@ -183,43 +291,110 @@ configuration:
 }
 ```
 
-The stored API key is never returned. `PATCH /api/settings` accepts any subset of
+Settings are shared by the running Borealis instance, not scoped to the signed-in
+account. Any authenticated account can read or update them. The stored API key
+is never returned. `PATCH /api/settings` accepts any subset of
 `llm_base_url`, `llm_api_key`, `lm_studio_base_url`, `default_chat_model`, and
 `default_embed_model`. Omitting `llm_api_key` preserves it; sending `null` clears
-it. The settings file is replaced atomically with mode `0600`.
-Environment-managed fields return `409` if a client tries to change them. Chat
-and embedding model IDs must be distinct.
+it. `lm_studio_base_url: null` clears the optional health endpoint. The response
+has the same redacted shape as `GET`. The settings file stores the API key as
+plaintext and is replaced atomically with mode `0600`.
+
+Both endpoint fields accept bare HTTP(S) origins only: no credentials, path
+(including `/v1`), query, or fragment. Borealis appends `/v1` itself. HTTP is
+allowed only for loopback origins; other endpoints require HTTPS. An LM Studio
+health origin equivalent to the primary origin is omitted from the effective
+configuration to avoid a duplicate probe.
+
+Environment-managed fields return `409` if included in a patch or test draft,
+even with the same value. Model IDs are trimmed, contain 1–256 characters, and
+must identify distinct chat and embedding models, including through aliases.
 
 Canonical environment overrides are `LLM_BASE_URL`, `LLM_API_KEY`,
-`LLM_CHAT_MODEL`, and `LLM_EMBED_MODEL`. Historical `LITELLM_*` names remain
-supported as lower-precedence compatibility aliases. They configure the direct
+`LLM_CHAT_MODEL`, and `LLM_EMBED_MODEL`, plus `LM_STUDIO_BASE_URL` for the optional
+health endpoint. Historical `LITELLM_*` names remain supported as lower-precedence
+compatibility aliases. They configure the direct
 OpenAI-compatible client and do not imply an intermediary sidecar.
 
 `POST /api/settings/test` accepts the same optional draft body, tests it without
 persisting, and performs a body-free `GET /v1/models`. Success returns
-`{"ok":true,"latency_ms":42}`; connection or upstream failure returns a bounded
-`503` response without URL, credential, response body, or exception details.
-Non-loopback endpoints require HTTPS. When a remote provider is selected,
-prompts and selected source context leave the machine under that provider's data
-policy; parsing, analytical SQL, storage, and rendering remain local.
+`{"ok":true,"latency_ms":42}`; connection or upstream failure returns
+`503 {"ok":false}` without URL, credential, response body, or exception details.
+The probe has a five-second timeout and does not follow redirects or validate
+model availability through inference. An omitted test body uses saved effective
+settings. When a remote provider is selected, chat prompts/history, retrieval
+queries, and selected source/tool context leave the machine under that provider's
+data policy. Source text also goes to the provider for embeddings during
+ingestion, before any chat attachment is required. Parsing, analytical SQL,
+storage, and rendering remain local.
 
-Changing the embedding model does not regenerate existing vectors. Keep
-`EMBEDDING_DIM` compatible with the selected model and reingest existing sources
-after a deliberate change; the LanceDB table dimension is fixed when created.
+Saving through `PATCH` updates later model operations without restarting the
+process. It does not rewrite models already saved on existing chats; a changed
+chat default applies to new chats. Direct edits to `settings.json` require a
+restart for the running model client to reload them.
+
+Changing the embedding model does not regenerate existing vectors. Reingest all
+sources after a deliberate model change with the same vector dimension. The
+LanceDB table dimension is fixed when created; changing `EMBEDDING_DIM` does not
+resize it, and an existing table with a different dimension is rejected on open.
+Use a new complete application-data directory and fresh ingestion, or an explicit
+coordinated migration of SQLite and LanceDB. Do not replace only the vector index
+while retaining an unmatched ledger.
 
 ### Sources
 
-- `GET /api/sources` returns compact source metadata plus a bounded tabular
-  summary when available. It never returns a full dataset preview.
-- `POST /api/sources/upload` accepts exactly one multipart field named `file`.
-- `POST /api/sources/:id/reingest` queues a new durable ingestion generation.
-- `DELETE /api/sources/:id` deletes that owned source and its scoped artifacts.
+| Endpoint                         | Request and response                                                                                                      |
+| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `GET /api/sources`               | Array of compact metadata with an optional `tabular` summary; no full dataset preview.                                    |
+| `POST /api/sources/upload`       | One multipart file, conventionally named `file`, without text fields; returns the reserved source and `processing: true`. |
+| `POST /api/sources/:id/reingest` | No body; returns the source and `processing: true` after reserving a new ingestion generation.                            |
+| `DELETE /api/sources/:id`        | Removes the owned source from the ledger and queues scoped artifact cleanup; returns `{"ok":true}`.                       |
 
-Uploads are streamed to disk under an account/source UUID directory. The server
-enforces its byte limit even when the multipart stream is truncated. Ingestion is
-asynchronous: poll only sources whose status is `index`; stop on `ready` or
-`error` and surface the bounded `meta.error` message. Legacy `.doc` and `.xls`
-files are rejected explicitly; use `.docx` and `.xlsx` instead.
+List entries contain `id`, `name`, `kind` (`document` or `tabular`),
+`display_name`, `mime`, `size_bytes`, `status`, `created_at`, and `meta`.
+`name` is the normalized dataset/source name, while `display_name` is the
+upload's sanitized filename or the connector's display name. Optional `tabular` contains
+`{table,original_name,rows}`. Source listing remains available if the data worker
+cannot supply summaries. Upload/reingest responses also contain fields
+such as `account_id`, `connector`, `file_path`, `url`, and `ready_generation`;
+clients should use the UUID rather than treating local paths as API URLs.
+
+Supported upload extensions are `.txt`, `.md`, `.markdown`, `.text`, `.log`,
+`.pdf`, `.docx`, `.csv`, `.tsv`, `.xlsx`, `.parquet`, `.jsonl`, and `.json`.
+The stored extension selects the parser; MIME metadata does not override it.
+Legacy `.doc` and `.xls` files, including renamed OLE binary Office files, are
+rejected with `422`; use `.docx` and `.xlsx` instead. XLSX ingestion is offline,
+reads only the first worksheet, and checks archive expansion before parsing.
+PDF ingestion extracts existing text; it does not perform OCR.
+
+Uploads stream to disk under an account/source UUID directory, with the byte
+limit enforced even if the multipart stream is truncated. The initial response
+means ingestion is queued, not complete. Poll `GET /api/sources` while a source
+is `index`; stop on `ready` or `error`. Transient processing failures are retried
+automatically. Reingestion uses the saved file or connector cache; use connector
+sync to download a fresh URL version.
+
+On `error`, `meta` contains safe `error`, `error_code`, `error_detail`, and
+`error_stage` fields. The list entry also includes
+`ingestion: {attempts,updated_at}` (attempts are bounded to 0–100; the timestamp
+can be `null`). Other source states return `meta: {}` in the list response.
+Public failure codes are:
+
+| Code                         | Stage       | Meaning                                                              |
+| ---------------------------- | ----------- | -------------------------------------------------------------------- |
+| `NO_READABLE_TEXT`           | `reading`   | No extractable text or table rows.                                   |
+| `UNSUPPORTED_FORMAT`         | `reading`   | The stored format cannot be processed.                               |
+| `DATASET_PARSE_FAILED`       | `parsing`   | Invalid tabular data.                                                |
+| `DATA_SERVICE_UNAVAILABLE`   | `parsing`   | Local data processing could not complete.                            |
+| `EMBEDDING_UNAVAILABLE`      | `embedding` | The configured embedding service was unavailable.                    |
+| `EMBEDDING_INVALID_RESPONSE` | `embedding` | Invalid embedding output or incompatible vector dimension.           |
+| `SOURCE_UNAVAILABLE`         | `storage`   | The stored input file could not be accessed.                         |
+| `INGEST_FAILED`              | `storage`   | Other processing failure, including unrecognized stored error codes. |
+
+Reingestion or deletion returns `409` when that exact source is in an active
+run, or its connector is syncing/indexing. Unfinished cleanup is retained
+durably for repair; `ok: true` confirms logical deletion, not secure erasure of
+every backing file.
 
 ### URL connectors
 
@@ -239,22 +414,55 @@ Creation accepts exactly:
 }
 ```
 
-`type` is `url_csv` or `url_json`; `target_table` must match
-`^[a-z][a-z0-9_]{0,62}$` and be unique within the account. Connector states are
-`syncing`, `indexing`, `idle`, or `error`. Downloads are bounded and atomically
-promoted only after DuckDB accepts the staged file, so a bad refresh preserves
-the last known-good data. Private, loopback, link-local, and otherwise unsafe
-destinations are rejected on the initial URL and every redirect.
+`display_name` is trimmed to 1–120 Unicode characters. `type` is `url_csv` or
+`url_json`; `target_table` accepts `^[A-Za-z][A-Za-z0-9_]{0,62}$`, is normalized
+to lowercase, and must be unique within the account. `config.url` is an HTTP(S)
+URL of at most 2,000 characters, without embedded credentials; fragments are
+discarded. A collision with an existing source/table returns `409`.
+
+List and creation responses contain `id`, `account_id`, `name`, `type`,
+`config`, `target_table`, `last_sync`, `sync_status`, `sync_error`, and
+`created_at`. Note that the input field is `display_name`, but the response field
+is `name`. Sync success returns `{"synced":true,"processing":true}`. Poll the
+connector and its source: `syncing` means download/preparation, `indexing` means
+ingestion is still pending, `idle` means the generation was promoted, and
+`error` reports a bounded failure. `last_sync` advances only after promotion.
+
+Connector creation durably reserves the connector before attempting its first
+download. A `422` creation response still contains that connector's ID and
+`sync_error`; do not assume the creation rolled back. A transient preparation
+failure may continue retrying in the background, so inspect `sync_status` before
+retrying. Explicit sync failures return `422 {"error":"Connector sync failed."}`.
+Sync or deletion returns `409` while a sync is active or its source is in an
+active chat run. Deleting a connector removes its linked sources; deleting the
+connector's last source also removes the connector.
+
+Downloads use DNS pinning, bounded redirects/time/bytes, and immutable cache
+versions. Private, loopback, link-local, and otherwise unsafe destinations are
+rejected on the initial URL and every redirect. A refresh stages and extracts the
+candidate before activation; failed refreshes preserve the previous good
+generation when one exists. The source is excluded from new turn snapshots
+while it is `index`.
 
 ### Reports and charts
 
-- `GET /api/reports`
-- `GET /api/reports/:id`
-- `GET /api/reports/:id/html`
-- `GET /api/reports/:id/pdf`
-- `DELETE /api/reports/:id`
-- `GET /api/charts/:id`
-- `POST /api/charts/:id/png`
+| Endpoint                    | Response                                                                                                    |
+| --------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `GET /api/reports`          | Array of `{id,title,subtitle,chat_id,chat_title,created_at,updated_at}`, newest first; no filesystem paths. |
+| `GET /api/reports/:id`      | `{id,title,subtitle,created_at,updated_at,has_html,has_pdf}`.                                               |
+| `GET /api/reports/:id/html` | Self-contained `text/html`.                                                                                 |
+| `GET /api/reports/:id/pdf`  | `application/pdf` attachment with a `%PDF-` signature.                                                      |
+| `DELETE /api/reports/:id`   | `{"ok":true}`, or `503 {"error":"report cleanup deferred"}` if physical cleanup must retry.                 |
+| `GET /api/charts/:id`       | `{id,spec,echarts,png_base64}`.                                                                             |
+| `POST /api/charts/:id/png`  | No body; JSON `{png_base64}`, not raw PNG bytes.                                                            |
+
+The agent's `render_chart` and `create_report` tools create artifacts; there are
+no public creation endpoints. Charts/reports remain private to their pending
+run until the assistant message and successful run completion commit together.
+Unowned, missing, or pending artifacts return `404`. Missing HTML/PDF exports
+and PNG export requests without a stored PNG also return `404`; the chart JSON
+itself can contain `png_base64: null`. Report deletion hides it before
+filesystem cleanup; a deferred cleanup response does not make it visible again.
 
 Report HTML is self-contained and served with a restrictive CSP. PDF rendering
 accepts only the structured report payload generated by Borealis and uses a
@@ -263,6 +471,36 @@ Chart responses reuse the PNG generated with the canonical chart spec rather
 than rendering a second time. Browser development uses isolated Playwright
 Chromium. The packaged app sends the same bounded document to a hidden Electron
 window; Playwright's browser download is not present in the application bundle.
+
+The canonical chart spec has `type`, `title`, `subtitle`, `categories`, `series`,
+`items`, `x_label`, and `y_label`. Supported types are `line`, `bar`, `area`,
+`scatter`, `pie`, and `donut`. Cartesian charts use string categories and series
+`{name,data,color}` with matching lengths. Pie/donut charts use
+`{name,value,color}` items with nonnegative values and a positive total. Colors
+are canonical six-digit hex values; numeric values are finite and bounded.
+[charts.ts](../server/src/data/charts.ts) is the shared contract for stored
+charts, the UI, report HTML, and both static renderers.
+
+## Agent tools
+
+These operations run inside an accepted chat turn, not as independently callable
+HTTP endpoints:
+
+| Tool            | Boundary                                                                                                       |
+| --------------- | -------------------------------------------------------------------------------------------------------------- |
+| `retrieve`      | Searches only the run's ready source UUIDs; query up to 4,000 characters and 1–12 passages (default 6).        |
+| `list_sources`  | Lists the accepted attachments and ready tables, with bounded descriptive metadata.                            |
+| `query_data`    | One read-only `SELECT`, `WITH`, or `VALUES` statement against the immutable table allowlist.                   |
+| `describe_data` | Bounded statistics for a selected, ready table.                                                                |
+| `render_chart`  | Validates the canonical spec and stages a chart for this run.                                                  |
+| `create_report` | Stages at most one report per run, using only charts owned by the same run.                                    |
+| `fetch_url`     | Fetches a public URL explicitly present in the current user message, independently of stored-source selection. |
+
+Tabular sources retain the full registered dataset for SQL, while ingestion
+embeds a bounded preview of up to 40 rows. Retrieval is not an exhaustive search
+of every dataset cell. Document extraction is also bounded; large documents can
+be only partially indexed. External source content is treated as untrusted data,
+not instructions or authorization to expand tool scope.
 
 ## Storage and backup boundary
 
@@ -273,28 +511,80 @@ then joins results back to SQLite under the same scope and drops missing rows.
 DuckDB is reserved for bounded analytical queries over user tables.
 
 Stop Borealis before backup or restore. The SQLite file and LanceDB directory
-are one logical store and must be copied and restored together. The desktop
-paths are `borealis.sqlite` and `lancedb/` beneath
+are one logical store and must be copied and restored together. Prefer copying
+the complete application-data directory, including SQLite WAL files, uploads,
+reports, `settings.json`, and `jwt.secret`. The desktop paths are
+`borealis.sqlite` and `lancedb/` beneath
 `~/Library/Application Support/Borealis/`; browser development uses the same
-names under `.borealis/` unless configured otherwise.
+names under `.borealis/` unless configured otherwise. Protect backups as private
+data because they can contain source content, provider credentials, and the JWT
+signing secret.
+
+Securely preserve and reapply operator environment overrides separately,
+especially `JWT_SECRET`, `EMBEDDING_DIM`, and provider/model settings. They are
+not necessarily stored in the application-data directory, and restored data
+must use compatible signing and embedding configuration.
 
 ## Limits and status codes
 
-Configurable Node defaults for uploads, messages, history, extracted text, and
-ingestion chunks live in `server/.env.example`. Fixed service boundaries include:
+Configurable defaults are shown in [server/.env.example](../server/.env.example):
 
-- connector downloads: 50 MiB, 60 seconds, and three redirects;
-- agent web fetches: 1,000,000 response bytes, 15 seconds, and three redirects;
-- DuckDB queries: 30 seconds, 500 rows, 100 columns, 50,000 cells, and 1,000,000
-  returned characters;
-- dataset extracts: 2,000 rows, 500 columns, 50,000 cells, and 1,000,000 returned
-  characters;
-- agent tools: 120 seconds each, at most eight calls per round and 24 per run;
-- reports: at most 20 sections, 20 charts, and eight tables, with a 128 MiB
-  validated rendering-payload ceiling.
+| Setting                | Default                       | Maximum                                               |
+| ---------------------- | ----------------------------- | ----------------------------------------------------- |
+| `MAX_UPLOAD_BYTES`     | 25 MiB                        | 250 MiB                                               |
+| `MAX_MESSAGE_CHARS`    | 32,000 Unicode characters     | 100,000                                               |
+| `MAX_HISTORY_MESSAGES` | 80                            | 500 for model history; HTTP pages are capped at 100   |
+| `MAX_HISTORY_CHARS`    | 120,000 serialized characters | 500,000; must be at least `MAX_MESSAGE_CHARS + 36000` |
+| `MAX_EXTRACTED_CHARS`  | 2,000,000 characters          | 10,000,000                                            |
+| `MAX_INGEST_CHUNKS`    | 2,500 chunks per generation   | 10,000                                                |
 
-Common responses are `400` malformed input, `401` missing/invalid JWT, `404`
-unknown or unowned resource, `409` conflicting chat run or table name, `413`
-configured size limit exceeded, `422` accepted input that could not be parsed or
-processed, and `500` an unexpected server failure. Treat public messages as
+All configured budgets must be positive integers. HTTP bodies have additional
+route limits: 2 KiB for auth, 4 KiB for chat patches, 8 KiB for connector
+creation, and 16 KiB for chat creation/source scope and Settings requests.
+Message transport permits JSON escaping within the decoded character limit;
+uploads allow a 64 KiB multipart envelope above the file limit. History metadata
+is capped at 32,000 characters per message.
+
+The following fixed boundaries apply to internal operations. A tool result can
+be truncated even though the source itself is ready; consumers should honor
+`truncated`, `columns_truncated`, and returned-row counts rather than assuming a
+complete result.
+
+| Boundary                   | Limit                                                                                                                                                                                                                                                                               |
+| -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Connector download         | 50 MiB, 60 seconds, three redirects; oversized downloads fail.                                                                                                                                                                                                                      |
+| Agent web fetch            | 1,000,000 response bytes, 15 seconds, three redirects; tool text is capped at 12,000 characters.                                                                                                                                                                                    |
+| DuckDB query               | 30-second SQL execution deadline; 500 rows, 100 columns, 50,000 cells, 1,000,000 returned characters, and 10,000 characters per cell. Agent SQL is capped at 20,000 characters (worker ceiling: 100,000).                                                                           |
+| Dataset extraction         | Worker ceiling of 2,000 rows, 500 columns, 50,000 cells, 1,000,000 characters, and 10,000 characters per cell; the facade requests at most 100 rows and ingestion uses 40.                                                                                                          |
+| Dataset description        | Up to 100,000 profiled rows, 100 columns, and 128,000 returned characters; top values are computed for at most 20 columns.                                                                                                                                                          |
+| Registered dataset/catalog | 500 columns per table; 100 allowed tables per scope; eight cached scopes per account; 256,000 characters per catalog response.                                                                                                                                                      |
+| Agent execution            | Eight model iterations, eight tool calls per round, 24 calls per run, and 120 seconds per tool. Tool arguments are capped at 20,000 characters per call and 80,000 per model round; serialized tool responses added to the model conversation are capped at 12,000 characters each. |
+| Evidence display           | Eight passages, 800 characters per excerpt, and 6,000 aggregate characters.                                                                                                                                                                                                         |
+| Query display snapshots    | Three queries per assistant message; 32 columns and 100 rows per query, 500 cells and 30,000 serialized characters across snapshots.                                                                                                                                                |
+| Chart spec                 | 500 categories, 20 series, 100 pie items, 500 characters per label; finite numbers with magnitude at most `1e15`.                                                                                                                                                                   |
+| Report                     | One per run; 20 sections (50,000 characters each), 20 charts, eight tables (32 columns and 60 rows each). The agent additionally caps section text at 200,000 characters and tables at 1,000 cells/100,000 characters in aggregate.                                                 |
+| Static rendering           | PNG data URLs up to 8 MiB; Electron additionally validates a 16 MiB HTML IPC payload ceiling and a 90-second render-request deadline.                                                                                                                                               |
+
+File-processing ceilings also include the first 500 PDF pages; DOCX archives
+with at most 2,048 members, 100 MiB total expansion, 50 MiB per member, and a
+200:1 compression ratio; and XLSX archives with at most 10,000 members, 100 MiB
+total expansion, and 50 MiB per member. The XLSX first-sheet parser permits up to
+200,000 logical rows, 10,000 columns, and 2,000,000 cells, but the registered
+dataset still has the stricter 500-column limit.
+
+| HTTP status | Typical meaning                                                                                                        |
+| ----------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `400`       | Malformed input, invalid settings/scope, or unavailable attachment IDs.                                                |
+| `401`       | Missing/invalid JWT or incorrect login credentials.                                                                    |
+| `404`       | Unknown/unowned resource, pending artifact, or unavailable export.                                                     |
+| `409`       | Active chat run/sync, source mutation conflict, scope overflow, duplicate email/table, or environment-managed setting. |
+| `413`       | Request body or upload exceeds its size boundary.                                                                      |
+| `415`       | Unsupported HTTP content type.                                                                                         |
+| `422`       | Unsupported upload type or connector preparation/sync failure.                                                         |
+| `500`       | Unexpected server failure with a bounded public error.                                                                 |
+| `503`       | Failed Settings connection probe or deferred report cleanup.                                                           |
+
+Asynchronous ingestion failures appear in source status/metadata after the
+initial successful upload. Once SSE starts, agent failures use its `error` and
+`run-ended` events instead of changing the HTTP status. Treat public messages as
 stable categories, not as a substitute for the correlated server logs.

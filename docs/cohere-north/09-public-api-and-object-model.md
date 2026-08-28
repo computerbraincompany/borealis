@@ -1,5 +1,11 @@
 # Cohere North public API and object model
 
+> **Historical North research — captured 2026-08-22.** Vendor behavior,
+> release labels, API inventories, and references below describe that capture,
+> not the latest North release or the implemented Borealis product. See the
+> [archive overview](README.md), [Borealis README](../../README.md), and
+> [Borealis API reference](../API.md) for the distinction and current contracts.
+
 **Evidence date:** 2026-08-22<br>
 **Raw specification:** `https://private.docs.cohere.com/openapi/north.yaml`<br>
 **SHA-256:** `c10abe6f3a7841501e6a1da3ce776a2f0954f5ded6598532c92b4c189364c1ea`<br>

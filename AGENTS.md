@@ -30,6 +30,10 @@ Repo: `computerbraincompany/borealis` on GitHub (formerly _north-clone_).
 
 ## Commands
 
+Use Node.js 22.13 or newer 22.x and npm 10.9.x; `.nvmrc` pins 22.22.3.
+`scripts/verify.sh` also requires ripgrep. Run the commands below from the
+repository root, then follow the shown `cd` changes.
+
 ```bash
 # Browser development; embedded engines need no external service.
 ./scripts/dev.sh
@@ -39,6 +43,8 @@ cd server
 npm ci
 npx playwright install chromium
 npm run typecheck
+npm run lint
+npm run format:check
 npm run test
 npm run test:integration
 npm run build
@@ -65,6 +71,18 @@ No `.env` file or manually created credential is required. The model endpoint
 defaults to loopback LM Studio and can be changed in Settings. Browser
 development renders PNG/PDF with Playwright; the packaged app uses Electron and
 does not include Playwright's Chromium download.
+
+The complete gate requires dependencies in all three packages and Playwright
+Chromium; Linux CI installs it with `npx playwright install --with-deps chromium`.
+It checks native Electron modules but does not launch the GUI renderer or run
+live-model analysis. `desktop`'s `verify` adds the GUI PNG/PDF smoke; packaging,
+signed release checks, and the manual end-to-end flow remain separate.
+
+Desktop development rebuilds before launch and uses the installed app's default
+data directory. Use an absolute `--user-data-dir` argument for an isolated
+profile; see [desktop/README.md](desktop/README.md). Browser development loads
+`server/.env` when started from `server/`; desktop skips dotenv and owns its
+bind, storage, static-UI, and renderer environment values.
 
 ## Durable storage
 
@@ -98,7 +116,8 @@ the matching vector index.
    concrete ready source IDs, and durable run in one SQLite transaction. It then
    streams sanitized SSE events from `server/src/agent.ts` for at most eight
    iterations. One active run is allowed per chat; deletion of the run requests
-   cancellation.
+   cancellation. Activity events arrive during execution, but the answer's
+   `delta` is sent as a complete string after persistence, not token by token.
 3. Agent tools in `server/src/tools.ts` are `retrieve`, `list_sources`,
    `query_data`, `describe_data`, `render_chart`, `create_report`, and
    `fetch_url`. Every stored-data tool consumes the immutable source snapshot.
@@ -130,14 +149,16 @@ the matching vector index.
 
 - Server code is ESM. Local imports always include the `.js` extension and use
   `import`, not `require`.
-- Authentication is JWT over bcrypt. Registration and login are the public API
-  exceptions; resource and Settings routes use `requireAuth`. Electron creates
+- Authentication uses seven-day HS256 JWTs and bcrypt password hashes.
+  Registration, login, and `/health` are public; resource, Settings,
+  `/api/health`, and `/api/openapi.json` routes use `requireAuth`. Electron creates
   one local user and sends a fresh bootstrap session exactly once through the
   context-isolated preload. The desktop happy path is register-free.
 - The desktop backend binds exactly `127.0.0.1` on an OS-assigned port. Fastify
   serves the production UI from that origin, so it needs no cross-origin
   headers. Vite development keeps the exact `CORS_ORIGINS` allowlist. Never
-  reflect arbitrary origins.
+  reflect arbitrary origins. Browser builds can use `STATIC_WEB_DIR` for the
+  same static-hosting path without enabling desktop bootstrap or Electron rendering.
 - Requests propagate a sanitized `X-Request-ID`. Never log credentials, prompts,
   uploaded content, SQL results, signed URLs, raw tool arguments/results, or
   provider exception bodies.
@@ -175,7 +196,9 @@ the matching vector index.
 - Chat source state has three meanings: `all` dynamically includes current and
   future sources; `selected` with rows is a stable allowlist; `selected` with no
   rows means none. New web chats start selected-empty. Only ready attachments
-  enter a turn snapshot.
+  enter a turn snapshot. API clients omitting scope at chat creation retain
+  legacy `all` behavior. Scope resolution is capped at 100 attached sources,
+  including unready sources; it must fail rather than silently truncate a scope.
 - The OpenAI Node client defaults embeddings to base64 and decodes responses.
   Compatible local runtimes return float arrays, so `server/src/llm.ts` must
   continue sending `encoding_format: "float"` explicitly.
@@ -185,33 +208,43 @@ the matching vector index.
 - `makeReportPayload` keeps its 12-character chart-ID prefix fallback because
   models can garble long UUIDs. Report normalization strips inline
   `chart:`/`:::` tokens.
-- Changing `EMBEDDING_DIM` or the embedding model after ingestion makes stored
-  vectors incompatible. The LanceDB table dimension is fixed at creation time;
-  keep the configured model compatible and reingest existing sources after a
-  deliberate change.
+- Changing the embedding model after ingestion requires reingesting all sources
+  even when its dimension is unchanged. The LanceDB table dimension is fixed at
+  creation; a different `EMBEDDING_DIM` makes reopening it fail. A dimension
+  change needs a fresh complete data directory or an explicit migration, not
+  reingestion alone or deletion of just the vector index.
 
 ## Model endpoint and Settings
 
-Settings persist the OpenAI-compatible endpoint, redacted API key, optional
-distinct LM Studio health endpoint, and default chat/embed model IDs. The local
-endpoint default is `http://127.0.0.1:1234`; non-loopback endpoints require
-HTTPS. Values are read dynamically, so saving Settings updates later model
-operations without restarting the process.
+Settings persist the OpenAI-compatible endpoint, optional API key, optional
+distinct LM Studio health endpoint, and default chat/embed model IDs. They are
+process-wide, shared by all authenticated accounts. The key is stored as text in
+the mode-`0600` settings file; public responses expose only a configured boolean.
+The local endpoint default is `http://127.0.0.1:1234`; non-loopback endpoints
+require HTTPS. Endpoints must be bare origins: Borealis appends `/v1`, so paths,
+queries, fragments, and URL credentials are rejected. The optional LM Studio
+endpoint is a health probe only; chat and embeddings use the provider endpoint.
+Saving through Settings updates later model operations without a restart;
+environment changes or direct file edits need a restart to reliably update the
+cached runtime configuration.
 
 Environment values win over `settings.json` and disable the corresponding field.
 `PATCH /api/settings` never returns the key; an omitted key preserves it and
 `null` clears it. `POST /api/settings/test` performs a body-free `GET /v1/models`
-against the draft effective configuration without persisting it.
+against the draft effective configuration without persisting it. It checks HTTP
+success, not model availability, tool support, or embedding compatibility.
 
 Canonical operator overrides are `LLM_BASE_URL`, `LLM_API_KEY`,
 `LLM_CHAT_MODEL`, and `LLM_EMBED_MODEL`. The corresponding `LITELLM_*` names
 remain lower-precedence compatibility aliases only. Do not infer or reintroduce
 an intermediary model-proxy process from those legacy environment names.
 
-When a remote provider is configured, prompts and selected source context leave
-the machine under that provider's data policy. Parsing, DuckDB analytics,
-embedded stores, and report rendering remain local. Keep that boundary visible
-in Settings and user documentation.
+When a remote provider is configured, ingestion text sent for embeddings,
+retrieval queries, prompts, chat history, and selected source/tool context leave
+the machine under that provider's data policy. A source need not be attached to
+a chat for its ingestion text to be sent. Parsing, DuckDB analytics, embedded
+stores, and report rendering remain local. Keep that boundary visible in
+Settings and user documentation.
 
 Stable logical aliases live in `server/src/llmAliases.ts`. Outbound chat and
 embedding calls resolve known aliases to physical model IDs. Discovery maps
@@ -240,7 +273,8 @@ distinct.
   builds use Apple's hardened runtime; version 1 intentionally does not enable
   the Mac App Store sandbox. `package:unsigned` explicitly disables identity and
   notarization, while `package:mac` consumes signing/notarization credentials
-  only from the release environment.
+  only from the release environment. The latter can succeed without signing or
+  notarization when credentials are absent; verify artifacts before distribution.
 - `desktop/build/entitlements.mac*.plist` are tracked packaging inputs. Keep the
   root `.gitignore` exceptions for that directory; a clean checkout must be able
   to package without locally generated entitlement files.
@@ -278,3 +312,19 @@ and creates a report. Report routes must return self-contained HTML and a PDF
 beginning with `%PDF`; chart PNGs must have the PNG signature. In the desktop
 build, also verify first-launch bootstrap, exact loopback/same-origin hosting,
 offline Electron rendering, and clean utility-process shutdown.
+
+## Documentation maintenance
+
+Keep [README.md](README.md), [docs/API.md](docs/API.md),
+[desktop/README.md](desktop/README.md), and [server/.env.example](server/.env.example)
+aligned with implementation changes. Check package scripts, route schemas and
+runtime validation, environment precedence, resource limits, and verification
+coverage rather than copying claims from old plans. Document provider-bound
+ingestion text as well as chat context when describing privacy.
+
+[plans/](plans/README.md) contains completed historical specifications, not an
+active backlog. [docs/cohere-north/](docs/cohere-north/README.md) is dated product
+research and proposed designs, not the current Borealis architecture. Preserve
+that boundary and do not present historical checklists as current instructions.
+Use `git ls-files` when auditing all tracked docs: ordinary `rg --files` omits
+the intentionally ignored, but still tracked, research archive.

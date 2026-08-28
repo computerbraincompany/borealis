@@ -1,5 +1,11 @@
 # Plan 027: Make chat history searchable, renamable, and ordered by activity
 
+> **Completed historical plan.** The [ledger](README.md) records this plan as
+> DONE. The original instructions, code excerpts, paths, and checklists below
+> describe its implementation-era tree; do not execute them against the current
+> checkout. For supported behavior and commands, use the [project README](../README.md),
+> [API reference](../docs/API.md), and [desktop guide](../desktop/README.md).
+
 > **Executor instructions**: Follow this plan step by step. Run every
 > verification command and confirm the expected result. Honor STOP conditions.
 > Update `plans/README.md` when done unless the reviewer maintains the index.

@@ -1,8 +1,14 @@
 # Plan 028 — Deep-audit remediation (P1/P2/P3)
 
-Status: **DONE** (implemented and verified across all repository gates)
+> **Completed historical plan.** The [ledger](README.md) records this plan as
+> DONE. The original instructions, code excerpts, paths, and checklists below
+> describe its implementation-era tree; do not execute them against the current
+> checkout. For supported behavior and commands, use the [project README](../README.md),
+> [API reference](../docs/API.md), and [desktop guide](../desktop/README.md).
 
-This pass implements the complete engineering finding ledger requested after the
+Status: **DONE** (implementation recorded at `b7a4fe8`, 2026-08-23)
+
+This pass implemented the complete engineering finding ledger requested after the
 deep audit: P1-01 through P1-11, P1-I1, P2-01 through P2-12 including the two
 conditional exposure flags, and P3-01 through P3-03. Product-direction options
 D1–D3 are intentionally outside this implementation pass.
@@ -44,7 +50,12 @@ the original finding to a new title.
 | P3-02 | One resolved upload root across Node, Python, scripts, and documentation | DONE |
 | P3-03 | Remove Node SheetJS/Pandas; keep bounded offline XLSX via actively used OpenPyXL | DONE |
 
-## Load-bearing implementation contracts
+## Implementation contracts at completion
+
+These contracts describe the Plan 028 boundary. Plans 029 and 030 later moved
+the data service into Node and replaced the relational/vector engines with
+SQLite and LanceDB. They retained the security and lifecycle requirements;
+the Python/Postgres mechanisms below are historical.
 
 - Postgres owns durable source jobs and chat-run state. Ingestion claims use
   `FOR UPDATE SKIP LOCKED`, generation checks, bounded retry/backoff, staging,
@@ -79,10 +90,15 @@ therefore removes unused Pandas and vulnerable Node `xlsx`, then makes OpenPyXL
 an intentionally used, pinned runtime dependency behind ZIP expansion/member,
 worksheet row/column/cell, and converted-output limits. Legacy `.xls` is dropped.
 
-## Verification contract
+## Verification contract at completion
 
-The canonical gate is `scripts/verify.sh`: server typecheck/lint/format/unit
+At this boundary, `scripts/verify.sh` ran server typecheck/lint/format/unit
 tests/build, web typecheck/tests/lint/format/build, Python Ruff/format/pytest,
-and the guarded real-pgvector integration suite when `TEST_DATABASE_URL` names
-an explicitly disposable database ending in `_test`. CI provisions that database
-and always runs the complete matrix with ephemeral credentials.
+and the guarded real-pgvector integration suite when `TEST_DATABASE_URL` named
+an explicitly disposable database ending in `_test`. CI provisioned that
+database and ran the complete matrix with ephemeral credentials.
+
+The current [verification guide](../README.md) and
+[`scripts/verify.sh`](../scripts/verify.sh) supersede those commands. Current
+integration tests use disposable SQLite and LanceDB stores without an external
+database URL.

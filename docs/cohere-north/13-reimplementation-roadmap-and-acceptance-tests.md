@@ -1,6 +1,12 @@
 # Reimplementation roadmap, parity gates, and acceptance strategy
 
-**Status:** actionable build sequence for a fully open-source North-equivalent<br>
+> **Historical design proposal — 2026-08-22.** These requirements describe
+> a possible North-equivalent rebuild, not an accepted Borealis roadmap or its
+> implemented architecture. See the [archive overview](README.md),
+> [current Borealis docs](../../README.md), and
+> [completed implementation plans](../../plans/README.md).
+
+**Status:** historical proposed build sequence for a fully open-source North-equivalent; not an accepted Borealis roadmap<br>
 **Principle:** each phase ends in exercised, security-tested product behavior—not UI stubs
 
 ## 1. Parity definition

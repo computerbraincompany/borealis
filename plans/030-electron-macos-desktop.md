@@ -1,5 +1,11 @@
 # Plan 030: Ship Borealis as a macOS Electron app
 
+> **Completed historical plan.** The [ledger](README.md) records this plan as
+> DONE. The original instructions, code excerpts, paths, and checklists below
+> describe its implementation-era tree; do not execute them against the current
+> checkout. For supported behavior and commands, use the [project README](../README.md),
+> [API reference](../docs/API.md), and [desktop guide](../desktop/README.md).
+
 > **Executor instructions**: Follow this plan step by step. Run every
 > verification command and confirm the expected result before moving to the
 > next step. If anything in the "STOP conditions" section occurs, stop and
@@ -561,9 +567,15 @@ Stop and report (do not improvise) if:
 - One *pair* of engines. Do not keep “LanceDB in Electron, pgvector in
   `npm run dev`” after Phase A.
 - Embedding dim is a create-time LanceDB table decision (`EMBEDDING_DIM`).
-  Changing it still requires a new `lancedb/` directory.
-- Back up `borealis.sqlite` and `lancedb/` together; either alone is
-  incomplete.
+  Keep the model and dimension compatible with the stored vectors. A model
+  change at the same dimension requires reingesting all sources. A new dimension
+  requires a fresh complete data directory or an explicit migration; changing
+  the setting prevents the existing table from reopening. Do not delete or
+  replace only the vector directory while keeping an unmatched ledger.
+- Back up and restore SQLite and LanceDB together with Borealis stopped. Prefer
+  the complete application-data directory so SQLite WAL state, uploads,
+  reports, settings, and the signing secret remain with the matching index.
+  See the current [desktop guide](../desktop/README.md).
 - Cloud Settings send prompts and retrieved context to that provider;
   document that next to the key field.
 - Historical plans that mention Docker Postgres remain accurate for the

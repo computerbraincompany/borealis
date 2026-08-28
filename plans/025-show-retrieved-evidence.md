@@ -1,5 +1,11 @@
 # Plan 025: Persist and show the source passages retrieved for each answer
 
+> **Completed historical plan.** The [ledger](README.md) records this plan as
+> DONE. The original instructions, code excerpts, paths, and checklists below
+> describe its implementation-era tree; do not execute them against the current
+> checkout. For supported behavior and commands, use the [project README](../README.md),
+> [API reference](../docs/API.md), and [desktop guide](../desktop/README.md).
+
 > **Executor instructions**: Follow this plan step by step. Run every
 > verification command and confirm the expected result before moving to the
 > next step. Honor STOP conditions. Update `plans/README.md` when done unless

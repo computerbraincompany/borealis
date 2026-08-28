@@ -1,8 +1,14 @@
-# Current documentation delta and v1.14 release signals
+# Documentation delta and v1.14 release signals (2026-08-22)
+
+> **Historical North research — captured 2026-08-22.** Vendor behavior,
+> release labels, API inventories, and references below describe that capture,
+> not the latest North release or the implemented Borealis product. See the
+> [archive overview](README.md), [Borealis README](../../README.md), and
+> [Borealis API reference](../API.md) for the distinction and current contracts.
 
 **Comparison window:** 2026-07-21 → 2026-08-22<br>
-**Current published platform release in the guide:** v1.14.0 (2026-08-21)<br>
-**Next scheduled release shown by the guide:** v1.15.0 (2026-09-18, explicitly subject to change)[12]
+**Published platform release at capture:** v1.14.0 (2026-08-21)<br>
+**Next scheduled release shown at capture:** v1.15.0 (2026-09-18, explicitly subject to change)[12]
 
 ## 1. Measured documentation delta
 

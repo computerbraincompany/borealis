@@ -1,5 +1,11 @@
 # External product evidence, demos, customer signals, and positioning
 
+> **Historical North research — captured 2026-08-22.** Vendor behavior,
+> release labels, API inventories, and references below describe that capture,
+> not the latest North release or the implemented Borealis product. See the
+> [archive overview](README.md), [Borealis README](../../README.md), and
+> [Borealis API reference](../API.md) for the distinction and current contracts.
+
 **Scope:** public sources outside the private documentation site<br>
 **Evidence date:** 2026-08-22<br>
 **Rule:** Cohere/customer claims are attributed; they are not treated as independently audited facts

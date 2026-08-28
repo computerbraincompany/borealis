@@ -1,5 +1,11 @@
 # Proposed data model, service contracts, and event model
 
+> **Historical design proposal — 2026-08-22.** These requirements describe
+> a possible North-equivalent rebuild, not an accepted Borealis roadmap or its
+> implemented architecture. See the [archive overview](README.md),
+> [current Borealis docs](../../README.md), and
+> [completed implementation plans](../../plans/README.md).
+
 **Status:** independent clean-room architecture proposal<br>
 **Source of public object semantics:** published North OpenAPI and user/admin documentation<br>
 **Not a claim about Cohere's private database or service design**

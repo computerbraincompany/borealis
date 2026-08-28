@@ -1,4 +1,9 @@
-# Cohere North current source catalog
+# Cohere North source catalog (2026-08-22 snapshot)
+
+> **Historical evidence — 2026-08-22 capture.** This catalog documents the
+> archived North research, not current Borealis UI, deployment, or API behavior.
+> See the [archive overview](../README.md) and
+> [current Borealis documentation](../../../README.md).
 
 **Crawl generated:** 2026-08-22T20:55:16.010934+00:00<br>
 **Discovered:** 435 · **Read:** 421 · **Failed soft 404:** 14 · **Auth-gated:** 0

@@ -1,5 +1,11 @@
 # Gaps, unknowns, non-goals, and clean-room boundary
 
+> **Historical North research — captured 2026-08-22.** Vendor behavior,
+> release labels, API inventories, and references below describe that capture,
+> not the latest North release or the implemented Borealis product. See the
+> [archive overview](README.md), [Borealis README](../../README.md), and
+> [Borealis API reference](../API.md) for the distinction and current contracts.
+
 **Evidence date:** 2026-08-22<br>
 **Purpose:** prevent public documentation from being mistaken for a complete description of Cohere's private implementation
 
