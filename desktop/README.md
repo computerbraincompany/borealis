@@ -18,14 +18,15 @@ pnpm install
 pnpm dev:desktop
 ```
 
-The desktop install copies native addons out of the pnpm store, nests each
-copy's production dependencies (so Electron's utility process can resolve
-modules such as LanceDB's `reflect-metadata`), then runs `native:rebuild` for
-Electron's ABI so that rebuild cannot overwrite the server Node bindings.
-`dev` builds the server and web UI, copies them into `desktop/runtime/`,
-builds the shell, and launches Electron. It does not start Vite or watch for
-changes; quit and rerun it after editing. No Playwright browser download is
-needed for desktop rendering.
+The desktop install runs `desktop/scripts/isolate-native-addons.mjs`: it copies
+native addons out of the pnpm store and nests each copy's production
+dependencies (so Electron's utility process can resolve modules such as
+LanceDB's `reflect-metadata`), then rebuilds those copies for Electron's ABI so
+the rebuild cannot overwrite the server Node bindings. Do not workspace-link
+`borealis-server` into this package. `dev` builds the server and web UI, copies
+them into `desktop/runtime/`, builds the shell, and launches Electron. It does
+not start Vite or watch for changes; quit and rerun it after editing. No
+Playwright browser download is needed for desktop rendering.
 
 Development and installed builds use the same default data directory. To keep
 development data separate, pass an absolute Electron `--user-data-dir` path:
@@ -48,11 +49,12 @@ pnpm --filter borealis-desktop verify
 formatting, Electron native-addon smoke, and the hidden-renderer PNG/PDF smoke.
 The native smoke first checks that isolated addon copies can resolve their
 production dependencies under Node, then opens SQLite, performs a LanceDB
-vector search, and queries DuckDB using Electron's runtime, then loads the
-same addons from an Electron utility process. The renderer smoke checks
-PNG/PDF signatures, zero HTTP requests reaching its test server, and
-rejection of observed unsafe resource requests. The renderer smoke requires a
-graphical macOS session.
+vector search, and queries DuckDB using `ELECTRON_RUN_AS_NODE`, then loads the
+same addons from an Electron utility process (the path `dev` and the packaged
+app actually use). `ELECTRON_RUN_AS_NODE` alone can still see the pnpm virtual
+store and is not sufficient. The renderer smoke checks PNG/PDF signatures,
+zero HTTP requests reaching its test server, and rejection of observed unsafe
+resource requests. The renderer smoke requires a graphical macOS session.
 
 Focused commands are available as `typecheck`, `test`, `format:check`,
 `native:smoke`, and `render:smoke`. Turborepo runs `build` before `test` and
@@ -87,7 +89,7 @@ The artifacts are written under `desktop/release/` as
 app's executable and loads `better-sqlite3`, `@lancedb/lancedb`, and
 `@duckdb/node-api` through its `app.asar`; their native assets remain in
 `app.asar.unpacked`. It requires a completed package build and does not launch
-the UI or check signing.
+the UI, run the utility-process smoke, or check signing.
 
 `package:dir` builds the application directory without DMG/ZIP installers. It
 uses the normal builder configuration and may sign or notarize when credentials
@@ -199,7 +201,8 @@ directory does not record those operator overrides.
 
 | Symptom                                             | Check                                                                                                                                                                                                    |
 | --------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Native-module ABI or architecture error             | Use an arm64 terminal and the supported Node/pnpm versions. Run `pnpm --filter borealis-desktop native:rebuild`, then `pnpm --filter borealis-desktop native:smoke`. Desktop injects copies of the native addons so Electron's ABI rebuild cannot overwrite the server Node bindings; do not hoist the workspace. |
+| Native-module ABI or architecture error             | Use an arm64 terminal and the supported Node/pnpm versions. Run `pnpm --filter borealis-desktop native:rebuild`, then `pnpm --filter borealis-desktop native:smoke`. Desktop copies native addons out of the pnpm store so Electron's ABI rebuild cannot overwrite the server Node bindings; do not hoist the workspace. |
+| `Cannot find module` from `@lancedb/lancedb` (for example `reflect-metadata`) in the utility process | Isolation copied the addon without its production dependencies. Re-run `pnpm --filter borealis-desktop native:rebuild` so `isolate-native-addons.mjs` nests those deps, then `pnpm --filter borealis-desktop native:smoke`. |
 | Runtime-copy dependency mismatch                    | Run `pnpm install` from the repository root so `pnpm-lock.yaml` and root `pnpm.overrides` apply to both server and desktop, then retry. Do not bypass the version check.                                                                                                                                        |
 | Missing runtime or stale UI                         | Quit and rerun `pnpm dev:desktop`; `build` alone does not copy the backend or web UI.                                                                                                                                                                                                                          |
 | Settings field is disabled or an edit has no effect | Check inherited provider environment overrides. Editing `server/.env` does not configure the desktop host.                                                                                               |

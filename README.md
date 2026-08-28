@@ -19,8 +19,10 @@ to LM Studio or another OpenAI-compatible endpoint.
 | [Desktop guide](desktop/README.md)           | Development profiles, native modules, packaging, signing, and smoke checks |
 | [Contributor instructions](AGENTS.md)        | Architecture, commands, and security invariants                            |
 | [Configuration example](server/.env.example) | Optional environment overrides, defaults, and valid ranges                 |
+| [Milestones](milestones/README.md)           | Active implementation ledger toward the product vision                     |
 
-[Completed implementation plans](plans/README.md) and the dated
+[Milestones](milestones/README.md) are the active implementation ledger toward
+the vision. [Completed implementation plans](plans/README.md) and the dated
 [product research archive](docs/cohere-north/README.md) preserve historical
 decisions and proposals; they are not current setup instructions or a list of
 unimplemented requirements.
@@ -34,9 +36,10 @@ server/     Fastify API, agent loop, ingestion, retrieval, and rendering
 data/       deterministic personal-finance fixtures
 ```
 
-Install once from the repository root with pnpm. Turborepo runs package `dev`,
-`build`, and `verify` graphs; do not install `server`, `web`, or `desktop` as
-separate npm trees.
+Install once from the repository root with pnpm. The root `preinstall` script
+rejects npm. Turborepo runs package `dev` and `build` graphs; the complete
+repository gate is the root `pnpm verify` script. Do not install `server`,
+`web`, or `desktop` as separate npm trees.
 
 The durable store is deliberately split by job:
 
@@ -299,10 +302,13 @@ repository gate:
 pnpm verify
 ```
 
-It checks fixture equivalence, server and web typecheck/lint/format/tests/builds,
-embedded-storage integration tests, and desktop TypeScript, tests, build, and
-native Electron ABI smoke coverage. CI additionally packages the unsigned arm64
-DMG and ZIP on an Apple Silicon runner.
+It runs the policy/fixture gate, then server, web, and desktop typecheck, lint,
+format, tests, and builds, plus embedded-storage integration tests. Desktop
+`native:smoke` resolves isolated addon production dependencies under Node, opens
+SQLite/LanceDB/DuckDB through Electron's ABI, and loads the same addons from an
+Electron utility process. Root `pnpm verify` does not run the GUI renderer
+smoke. CI additionally packages the unsigned arm64 DMG and ZIP on an Apple
+Silicon runner.
 
 The gate uses fixtures and provider mocks; it does not run live-model analysis,
 desktop first-launch interaction, or a signed release check. Perform the manual

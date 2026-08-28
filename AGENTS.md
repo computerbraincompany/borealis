@@ -31,8 +31,12 @@ destination, not a list of current features or an implementation backlog.
   used by end-to-end verification.
 
 The repository is a pnpm workspace (`server`, `web`, `desktop`) with a root
-Turborepo graph. Install once from the repository root. Do not add npm lockfiles
-or install a workspace package in isolation.
+Turborepo graph and a single `pnpm-lock.yaml`. Install once from the repository
+root after `corepack enable`. The root `preinstall` script rejects npm. Do not
+add npm lockfiles, hoist the workspace, or install a workspace package in
+isolation. Desktop duplicates server runtime dependencies and must not
+workspace-link `borealis-server`; shared versions are pinned in root
+`pnpm.overrides`. `desktop/scripts/render-smoke-app` is not a workspace package.
 
 ## Commands
 
@@ -69,6 +73,9 @@ pnpm dev:desktop
 pnpm package:unsigned
 pnpm --filter borealis-desktop package:native:smoke
 
+# Policy / fixture gate only
+pnpm policy
+
 # Complete repository gate
 pnpm verify
 ```
@@ -78,11 +85,16 @@ defaults to loopback LM Studio and can be changed in Settings. Browser
 development renders PNG/PDF with Playwright; the packaged app uses Electron and
 does not include Playwright's Chromium download.
 
-The complete gate requires workspace dependencies and Playwright Chromium;
+The complete gate is `scripts/policy-check.mjs` plus Turborepo
+`typecheck`, `lint`, `format:check`, `test`, `test:integration`, `build`, and
+`native:smoke`. It requires workspace dependencies and Playwright Chromium;
 Linux CI installs it with `pnpm --filter borealis-server exec playwright install --with-deps chromium`.
-It checks native Electron modules but does not launch the GUI renderer or run
-live-model analysis. `desktop`'s `verify` adds the GUI PNG/PDF smoke; packaging,
-signed release checks, and the manual end-to-end flow remain separate.
+`native:smoke` resolves isolated addon production dependencies under Node, opens
+SQLite/LanceDB/DuckDB through Electron's ABI, and loads the same addons from an
+Electron utility process. `ELECTRON_RUN_AS_NODE` alone is not enough: that path
+can still see the pnpm virtual store after isolation. Root `pnpm verify` does
+not run `render:smoke`, packaging, signed-release checks, or live-model
+analysis. `desktop`'s `verify` adds the GUI PNG/PDF smoke.
 
 Desktop development rebuilds before launch and uses the installed app's default
 data directory. Use an absolute `--user-data-dir` argument for an isolated
@@ -274,12 +286,13 @@ distinct.
 - `RENDER_BACKEND=electron` sends bounded self-contained documents to the hidden
   renderer. Browser development and headless server CI use Playwright.
 - Rebuild `better-sqlite3`, `@lancedb/lancedb`, and `@duckdb/node-api` for
-  Electron's ABI. Desktop `postinstall` copies those packages out of the pnpm
-  store and nests their production dependencies before
+  Electron's ABI. `desktop/scripts/isolate-native-addons.mjs` copies those
+  packages out of the pnpm store and nests each copy's production dependencies
+  (for example LanceDB's `reflect-metadata`) before
   `electron-builder install-app-deps`, so the Electron rebuild cannot overwrite
   the server Node bindings and the utility process can resolve modules without
   the pnpm virtual store. Keep native assets unpacked from the application
-  archive.
+  archive. Do not workspace-link `borealis-server` into Electron.
 - Packaging targets arm64 DMG and ZIP with minimum macOS 13. Signed distribution
   builds use Apple's hardened runtime; version 1 intentionally does not enable
   the Mac App Store sandbox. `package:unsigned` explicitly disables identity and
@@ -314,32 +327,41 @@ cancellation, and safe-error tests whenever changing them.
   `desktop/src/electronRenderer.ts` before changing static rendering.
 - Read `server/src/serverApp.ts`, `server/src/desktopHost.ts`, and
   `desktop/src/main.ts` before changing startup or shutdown.
+- Read `desktop/scripts/isolate-native-addons.mjs` and
+  `desktop/scripts/copy-runtime.mjs` before changing desktop native isolation
+  or the copied runtime.
 
 ## End-to-end use case
 
-Run `data/generate_sample.ts`, upload the four CSV fixtures, and ask for a
-personal-finance analysis. Verify that the agent queries DuckDB, renders charts,
-and creates a report. Report routes must return self-contained HTML and a PDF
-beginning with `%PDF`; chart PNGs must have the PNG signature. In the desktop
-build, also verify first-launch bootstrap, exact loopback/same-origin hosting,
-offline Electron rendering, and clean utility-process shutdown.
+Run `pnpm --filter borealis-server exec tsx ../data/generate_sample.ts`, upload
+the four CSV fixtures, and ask for a personal-finance analysis. Verify that the
+agent queries DuckDB, renders charts, and creates a report. Report routes must
+return self-contained HTML and a PDF beginning with `%PDF`; chart PNGs must
+have the PNG signature. In the desktop build, also verify first-launch
+bootstrap, exact loopback/same-origin hosting, offline Electron rendering, and
+clean utility-process shutdown.
 
 ## Documentation maintenance
 
 Keep [README.md](README.md), [docs/API.md](docs/API.md),
-[docs/VISION.md](docs/VISION.md), [desktop/README.md](desktop/README.md), and
-[server/.env.example](server/.env.example) aligned with implementation changes.
-Check package scripts, route schemas and runtime validation, environment
-precedence, resource limits, and verification coverage rather than copying
-claims from old plans. Document provider-bound ingestion text as well as chat
-context when describing privacy.
+[docs/VISION.md](docs/VISION.md), [desktop/README.md](desktop/README.md),
+[server/.env.example](server/.env.example), and
+[milestones/](milestones/README.md) aligned with implementation changes. Check
+package scripts, route schemas and runtime validation, environment precedence,
+resource limits, and verification coverage rather than copying claims from old
+plans. Document provider-bound ingestion text as well as chat context when
+describing privacy. Root `scripts/policy-check.mjs` is the current
+remnant/fixture gate; do not reintroduce `scripts/verify.sh` or per-package npm
+lockfiles.
 
 [docs/VISION.md](docs/VISION.md) is the product destination. Update it when the
 intended product changes; do not treat it as current architecture or a work
-queue. [plans/](plans/README.md) contains completed historical specifications,
-not an active backlog. [docs/cohere-north/](docs/cohere-north/README.md) is dated
+queue. [milestones/](milestones/README.md) is the active implementation ledger.
+[plans/](plans/README.md) contains completed historical specifications, not an
+active backlog. [docs/cohere-north/](docs/cohere-north/README.md) is dated
 product research and proposed designs, not the current Borealis architecture.
 Preserve that boundary and do not present historical checklists as current
 instructions.
+
 Use `git ls-files` when auditing all tracked docs: ordinary `rg --files` omits
 the intentionally ignored, but still tracked, research archive.

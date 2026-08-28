@@ -206,6 +206,7 @@ const documentationFiles = gitFiles.filter((filePath) => {
     relative === "AGENTS.md" ||
     relative === "server/.env.example" ||
     relative === "desktop/README.md" ||
+    relative.startsWith("milestones/") ||
     (relative.startsWith("docs/") && !relative.startsWith("docs/cohere-north/"))
   );
 });
