@@ -252,6 +252,15 @@ Environment values win over `settings.json` and disable the corresponding field.
 against the draft effective configuration without persisting it. It checks HTTP
 success, not model availability, tool support, or embedding compatibility.
 
+The ambient chrome strip is fed by `GET /api/status`
+(`server/src/workspaceStatus.ts`). Keep its probe body-free, bounded, and
+redirect-refusing via `server/src/endpointProbe.ts`; the response carries
+locality (`local`/`private`/`remote`), reachability, and configured chat/embed
+model IDs, and must never include the endpoint URL, credentials, provider
+errors, or model lists. The strip is informational chrome, not an
+authorization surface, and its egress wording must stay consistent with the
+Settings privacy text.
+
 Canonical operator overrides are `LLM_BASE_URL`, `LLM_API_KEY`,
 `LLM_CHAT_MODEL`, and `LLM_EMBED_MODEL`. The corresponding `LITELLM_*` names
 remain lower-precedence compatibility aliases only. Do not infer or reintroduce

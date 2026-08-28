@@ -4,7 +4,8 @@
 UI, not only a Settings form. Health, model presence, and egress state in the
 chrome.*
 
-**Status:** IN PROGRESS
+**Status:** DONE (implemented in commits `41d0a1c`, `6210c96`; see
+milestones/README.md for the recorded verification)
 
 ## Problem
 

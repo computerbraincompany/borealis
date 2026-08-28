@@ -152,6 +152,15 @@ draft, reading the response body, or running chat/embedding inference. Use
 **Save changes** to apply changes to subsequent model operations without a
 restart.
 
+The workspace sidebar always shows where inference runs — **On this Mac**,
+**Private network**, or **Remote provider** — together with endpoint
+reachability and the configured chat model. When a remote provider is
+configured, the sidebar keeps a standing disclosure that ingestion text,
+prompts, retrieval queries, and selected tool context leave the machine under
+that provider's policy, linking to Settings. The snapshot comes from the
+authenticated `GET /api/status` endpoint and never contains the endpoint URL,
+key, provider errors, or model lists.
+
 Provider settings are shared by all accounts using the same server. A saved API
 key is stored in `settings.json` with mode `0600`, not encrypted or held in the
 macOS Keychain. Responses expose only whether a key is configured; they never

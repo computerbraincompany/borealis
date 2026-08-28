@@ -37,6 +37,16 @@ errors. A degraded dependency does not change the liveness endpoint, which avoid
 restarting a healthy API process because an upstream service is temporarily
 unavailable.
 
+Authenticated clients can also use `GET /api/status` for the ambient workspace
+snapshot the application chrome displays. It classifies the configured model
+endpoint as `local` (loopback, this machine), `private` (private-network
+cluster), or `remote` (public provider), reports model endpoint and optional
+LM Studio reachability with bounded latency, and names the configured chat and
+embed model IDs. Its 20-second single-flight cache reuses the same body-free
+catalog probe as `/api/health`. The response never contains the endpoint URL,
+credentials, provider errors, or model lists; reachability loss is a status
+field, not an HTTP error.
+
 The macOS app creates its single local account and passes a fresh session from
 Electron main through the trusted preload exactly once. That bootstrap is not an
 HTTP endpoint and does not change the public registration/login contract. The
@@ -219,6 +229,13 @@ optional `model_runtime`. `model_gateway` is the direct configured provider,
 not a proxy process. Both healthy and degraded readiness responses use `200`.
 The model probe checks catalog reachability, not whether a chat or embedding
 request will succeed; readiness does not run inference or render a report.
+
+`GET /api/status` returns
+`{locality,endpoint_reachable,lm_studio_reachable,chat_model,embed_model,checked_at,latency_ms}`.
+`locality` is `local`, `private`, or `remote`; `lm_studio_reachable` is `null`
+when no separate LM Studio health endpoint is configured. Latency is bounded to
+0–2,000 ms and served from a 20-second single-flight cache. The snapshot is
+informational chrome state, not an authorization surface.
 
 `GET /api/models` returns, for example:
 
