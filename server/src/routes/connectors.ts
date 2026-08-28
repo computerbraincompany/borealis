@@ -10,6 +10,7 @@ import { DataServiceError, dataService } from "../dataService.js";
 import { wakeConnectorPrepareWorkers, wakeIngestionWorkers } from "../ingest.js";
 import { completeSourceDeleteIntents } from "../sourceCleanup.js";
 import { SourceScopeError } from "../sourceScope.js";
+import { enforceRemoteEgressConsent } from "../egressPolicy.js";
 import { storageRuntime } from "../storageRuntime.js";
 import { connectorBodySchema, idParamsSchema } from "./schemas.js";
 
@@ -24,6 +25,7 @@ export async function connectorRoutes(app: FastifyInstance): Promise<void> {
     { preHandler: requireAuth, bodyLimit: 8 * 1024, schema: { body: connectorBodySchema } },
     async (req, reply) => {
       const accountId = getAccountId(req);
+      if (!(await enforceRemoteEgressConsent(reply, accountId))) return;
       let parsed: ReturnType<typeof parseConnectorBody>;
       try {
         parsed = parseConnectorBody(req.body);
@@ -66,6 +68,7 @@ export async function connectorRoutes(app: FastifyInstance): Promise<void> {
     { preHandler: requireAuth, schema: { params: idParamsSchema } },
     async (req, reply) => {
       const accountId = getAccountId(req);
+      if (!(await enforceRemoteEgressConsent(reply, accountId))) return;
       const connectorId = (req.params as { id: string }).id;
       const connector = await storageRuntime().sources.getConnector(accountId, connectorId);
       if (!connector) return reply.code(404).send({ error: "connector not found" });

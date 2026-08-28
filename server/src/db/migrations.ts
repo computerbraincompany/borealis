@@ -1,6 +1,6 @@
 import { SqliteMigrationError } from "./types.js";
 
-export const LATEST_SQLITE_SCHEMA_VERSION = 3;
+export const LATEST_SQLITE_SCHEMA_VERSION = 4;
 
 interface MigrationDatabase {
   exec(sql: string): unknown;
@@ -339,10 +339,15 @@ CREATE INDEX reports_chat_published_idx
   WHERE status='published' AND chat_id IS NOT NULL;
 `;
 
+const SCHEMA_V4 = `
+ALTER TABLE users ADD COLUMN remote_egress_ack_at TEXT;
+`;
+
 const migrations = [
   { version: 1, sql: SCHEMA_V1 },
   { version: 2, sql: SCHEMA_V2 },
   { version: 3, sql: SCHEMA_V3 },
+  { version: 4, sql: SCHEMA_V4 },
 ] as const;
 
 function schemaVersion(database: MigrationDatabase): number {

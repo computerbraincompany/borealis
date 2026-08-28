@@ -25,7 +25,12 @@ import { acceptChatTurn } from "../turnContext.js";
 import { beginRun, cancelRun, completeRunWithAssistant, finishRunDurably, isRunCancellation } from "../chatRuns.js";
 import { checkSystemHealth } from "../systemHealth.js";
 import { closeStorageRuntime, initializeStorageRuntime, storageRuntime } from "../storageRuntime.js";
-import { closeRuntimeSettings, getRuntimeSettings, initializeRuntimeSettings } from "../runtimeSettings.js";
+import {
+  closeRuntimeSettings,
+  getRuntimeSettings,
+  initializeRuntimeSettings,
+  runtimeSettingsStore,
+} from "../runtimeSettings.js";
 
 const runAgentMock = vi.mocked(runAgent);
 const acceptChatTurnMock = vi.mocked(acceptChatTurn);
@@ -780,5 +785,115 @@ describe("chat persistence routes", () => {
     expect(response.body).toContain("The selected model could not complete this turn");
     expect(response.body).not.toContain("provider.invalid");
     expect(response.body).not.toContain("sk-sensitive");
+  });
+});
+
+describe("remote egress consent gate", () => {
+  it("fails chat sends closed until remote egress is acknowledged, then resumes", async () => {
+    const sourceScope = Object.freeze({
+      mode: "selected" as const,
+      attached: Object.freeze([]),
+      readySourceIds: Object.freeze([]),
+      readyTableNames: Object.freeze([]),
+    });
+    acceptChatTurnMock.mockResolvedValue({
+      runId: "55555555-5555-4555-8555-555555555555",
+      chatId,
+      model: "saved-chat-model",
+      sourceScope,
+      userMessage: {
+        id: 12,
+        role: "user",
+        content: "Use my data",
+        meta: { model: "saved-chat-model", source_mode: "selected", source_ids: [] },
+        created_at: "2026-08-29T00:00:00Z",
+      },
+    });
+    runAgentMock.mockResolvedValue(completion());
+    const app = await buildApp();
+    await runtimeSettingsStore().patch({ llmBaseUrl: "https://api.provider.example" });
+
+    const blocked = await app.inject({
+      method: "POST",
+      url: `/api/chats/${chatId}/messages`,
+      headers: authHeader,
+      payload: { content: "Use my data" },
+    });
+    expect(blocked.statusCode).toBe(403);
+    expect(blocked.json()).toMatchObject({ code: "REMOTE_EGRESS_CONSENT_REQUIRED" });
+    expect(acceptChatTurnMock).not.toHaveBeenCalled();
+    expect(beginRunMock).not.toHaveBeenCalled();
+
+    const consentState = await app.inject({
+      method: "GET",
+      url: "/api/consent/remote-egress",
+      headers: authHeader,
+    });
+    expect(consentState.json()).toEqual({
+      required: true,
+      acknowledged_at: null,
+      endpoint_host: "api.provider.example",
+    });
+
+    const acknowledged = await app.inject({
+      method: "POST",
+      url: "/api/consent/remote-egress",
+      headers: authHeader,
+    });
+    expect(acknowledged.statusCode).toBe(200);
+    expect(acknowledged.json()).toMatchObject({
+      required: true,
+      endpoint_host: "api.provider.example",
+      acknowledged_at: expect.any(String),
+    });
+
+    const resumed = await app.inject({
+      method: "POST",
+      url: `/api/chats/${chatId}/messages`,
+      headers: authHeader,
+      payload: { content: "Use my data" },
+    });
+    expect(resumed.statusCode).toBe(200);
+    expect(resumed.body).toContain('"type":"run-started"');
+    expect(acceptChatTurnMock).toHaveBeenCalledOnce();
+  });
+
+  it("never gates loopback providers", async () => {
+    acceptChatTurnMock.mockResolvedValue({
+      runId: "55555555-5555-4555-8555-555555555555",
+      chatId,
+      model: "saved-chat-model",
+      sourceScope: Object.freeze({
+        mode: "selected" as const,
+        attached: Object.freeze([]),
+        readySourceIds: Object.freeze([]),
+        readyTableNames: Object.freeze([]),
+      }),
+      userMessage: {
+        id: 13,
+        role: "user",
+        content: "Local turn",
+        meta: { model: "saved-chat-model", source_mode: "selected", source_ids: [] },
+        created_at: "2026-08-29T00:00:00Z",
+      },
+    });
+    runAgentMock.mockResolvedValue(completion());
+    const app = await buildApp();
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/chats/${chatId}/messages`,
+      headers: authHeader,
+      payload: { content: "Local turn" },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toContain('"type":"run-started"');
+
+    const consentState = await app.inject({
+      method: "GET",
+      url: "/api/consent/remote-egress",
+      headers: authHeader,
+    });
+    expect(consentState.json()).toEqual({ required: false, acknowledged_at: null, endpoint_host: null });
   });
 });

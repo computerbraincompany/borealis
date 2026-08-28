@@ -460,6 +460,25 @@ export class ChatStore {
     return row ? decodeUser(row) : undefined;
   }
 
+  async getRemoteEgressAckAt(accountIdValue: string): Promise<string | null> {
+    const row = await this.ledger.get<{ remote_egress_ack_at?: unknown }>(
+      "SELECT remote_egress_ack_at FROM users WHERE id=?",
+      [identity(accountIdValue, "account id")]
+    );
+    if (!row) throw new StoreNotFoundError("user");
+    const raw = row.remote_egress_ack_at;
+    return raw === null || raw === undefined ? null : requiredString(raw, "remote egress acknowledgment");
+  }
+
+  async acknowledgeRemoteEgress(accountIdValue: string, acknowledgedAtValue: string): Promise<void> {
+    const acknowledgedAt = inputString(acknowledgedAtValue, "remote egress acknowledgment", 64);
+    const updated = await this.ledger.run("UPDATE users SET remote_egress_ack_at=? WHERE id=?", [
+      acknowledgedAt,
+      identity(accountIdValue, "account id"),
+    ]);
+    if (updated.changes !== 1) throw new StoreNotFoundError("user");
+  }
+
   async listChats(accountId: string): Promise<ChatSummary[]> {
     const rows = await this.ledger.all<ChatRow>(
       `SELECT id,title,model,source_mode,created_at,updated_at

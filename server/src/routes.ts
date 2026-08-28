@@ -5,6 +5,7 @@ import { config } from "./config.js";
 import { installHttpBoundary } from "./httpErrors.js";
 import { chartRoutes } from "./routes/charts.js";
 import { chatRoutes } from "./routes/chats.js";
+import { consentRoutes } from "./routes/consent.js";
 import { connectorRoutes } from "./routes/connectors.js";
 import { modelRoutes } from "./routes/models.js";
 import { reportRoutes } from "./routes/reports.js";
@@ -37,6 +38,7 @@ export async function routes(app: FastifyInstance): Promise<void> {
   await app.register(modelRoutes);
   await app.register(settingsRoutes);
   await app.register(systemRoutes);
+  await app.register(consentRoutes);
   await app.register(chatRoutes);
   await app.register(sourceRoutes);
   await app.register(connectorRoutes);

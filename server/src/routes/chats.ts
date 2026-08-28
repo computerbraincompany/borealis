@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { runAgent } from "../agent.js";
 import { getAccountId, requireAuth } from "../auth.js";
+import { enforceRemoteEgressConsent } from "../egressPolicy.js";
 import { beginRun, cancelRun, completeRunWithAssistant, finishRunDurably, isRunCancellation } from "../chatRuns.js";
 import { config } from "../config.js";
 import { ActiveChatRunError, SourceScopeUnavailableError, StoreNotFoundError } from "../db/stores/chatStore.js";
@@ -214,6 +215,12 @@ export async function chatRoutes(app: FastifyInstance): Promise<void> {
             required: ["error"],
             properties: { error: { type: "string" } },
           },
+          403: {
+            description: "Remote model-provider egress is not acknowledged",
+            type: "object",
+            required: ["error", "code"],
+            properties: { error: { type: "string" }, code: { type: "string" } },
+          },
           413: {
             description: "Message exceeds the configured boundary",
             type: "object",
@@ -232,6 +239,7 @@ export async function chatRoutes(app: FastifyInstance): Promise<void> {
       if (Array.from(content).length > config.maxMessageChars) {
         return reply.code(413).send({ error: `message exceeds ${config.maxMessageChars} characters` });
       }
+      if (!(await enforceRemoteEgressConsent(reply, accountId))) return;
       let turn;
       try {
         turn = await acceptChatTurn(accountId, chatId, content);

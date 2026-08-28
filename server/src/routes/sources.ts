@@ -12,6 +12,7 @@ import { dataService } from "../dataService.js";
 import { isTabularSource, sanitizeDatasetName, wakeIngestionWorkers } from "../ingest.js";
 import { publicIngestionFailure } from "../ingestionFailures.js";
 import { completeSourceDeleteIntents } from "../sourceCleanup.js";
+import { enforceRemoteEgressConsent } from "../egressPolicy.js";
 import { storageRuntime } from "../storageRuntime.js";
 import { cleanupCreatedUploadResource, createUploadResourceDirectory } from "../storageArtifacts.js";
 import { idParamsSchema } from "./schemas.js";
@@ -98,6 +99,7 @@ export async function sourceRoutes(app: FastifyInstance): Promise<void> {
     { preHandler: requireAuth, bodyLimit: config.maxUploadBytes + 64 * 1024 },
     async (req, reply) => {
       const accountId = getAccountId(req);
+      if (!(await enforceRemoteEgressConsent(reply, accountId))) return;
       const file = await req.file();
       if (!file) return reply.code(400).send({ error: "no file" });
       const safeOriginal =
@@ -157,6 +159,7 @@ export async function sourceRoutes(app: FastifyInstance): Promise<void> {
     "/api/sources/:id/reingest",
     { preHandler: requireAuth, schema: { params: idParamsSchema } },
     async (req, reply) => {
+      if (!(await enforceRemoteEgressConsent(reply, getAccountId(req)))) return;
       try {
         const reservation = await storageRuntime().sourceIngestion.reserveSourceReingest(
           getAccountId(req),
