@@ -427,6 +427,18 @@ export interface SystemHealthResponse {
   services: ServiceHealth[];
 }
 
+export type ProviderLocality = "local" | "private" | "remote";
+
+export interface WorkspaceStatusResponse {
+  locality: ProviderLocality;
+  endpoint_reachable: boolean;
+  lm_studio_reachable: boolean | null;
+  chat_model: string;
+  embed_model: string;
+  checked_at: string;
+  latency_ms: number;
+}
+
 export interface Source {
   id: string;
   name: string;
@@ -682,6 +694,7 @@ export const settingsApi = {
 // ------------------------------------------------------------------ system
 export const systemApi = {
   health: (signal?: AbortSignal) => api<SystemHealthResponse>("/api/health", { signal }),
+  workspaceStatus: (signal?: AbortSignal) => api<WorkspaceStatusResponse>("/api/status", { signal }),
 };
 
 // ------------------------------------------------------------------ sources

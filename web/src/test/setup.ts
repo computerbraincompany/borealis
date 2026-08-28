@@ -1,4 +1,10 @@
-import "@testing-library/jest-dom/vitest";
+// Register jest-dom matchers on this workspace's own vitest instance. The
+// "@/vitest" entry resolves "vitest" from the hoisted pnpm store, which may be
+// a different major than the one running these tests.
+import * as jestDomMatchers from "@testing-library/jest-dom/matchers";
+import { expect } from "vitest";
+
+expect.extend(jestDomMatchers);
 
 class MemoryStorage implements Storage {
   private readonly values = new Map<string, string>();

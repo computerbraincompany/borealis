@@ -17,6 +17,10 @@ vi.mock("@/components/ThemeProvider", () => ({
   useTheme: () => ({ theme: "system", resolvedTheme: "light", setTheme: apiMocks.setTheme }),
 }));
 
+vi.mock("@/components/WorkspaceStatus", () => ({
+  WorkspaceStatus: () => <div data-testid="workspace-status" />,
+}));
+
 import { Shell } from "@/components/Shell";
 
 function renderShell() {
@@ -50,6 +54,7 @@ describe("Shell", () => {
     const { container } = renderShell();
 
     expect(screen.getByText("AI data workspace")).toBeInTheDocument();
+    expect(screen.getByTestId("workspace-status")).toBeInTheDocument();
     expect(screen.queryByText("ask your data · open source")).not.toBeInTheDocument();
     expect(screen.queryByText("Local instance")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /New chat/i })).not.toBeInTheDocument();

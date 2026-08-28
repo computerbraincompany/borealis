@@ -1,6 +1,7 @@
 import { MessageSquare, Database, Plug, FileText, Settings2, Sparkles } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { AccountMenu } from "@/components/AccountMenu";
+import { WorkspaceStatus } from "@/components/WorkspaceStatus";
 
 const NAV_ITEMS = [
   { href: "/chat", label: "Chat", icon: MessageSquare },
@@ -56,6 +57,11 @@ export function Shell({ children }: { children: React.ReactNode }) {
             );
           })}
         </nav>
+
+        {/* locality */}
+        <div className="border-t">
+          <WorkspaceStatus />
+        </div>
 
         {/* user */}
         <div className="border-t px-2 py-2">
