@@ -293,7 +293,12 @@ surface lists the account's chart artifacts. **Libraries** group sources into
 named, account-scoped collections you can curate and attach to a new chat as
 an explicit selected scope. **Agents** are named, versioned instruction sets
 you bind to a chat at creation; they shape how the grounded loop works but
-never widen what the runner can see or do. Chat history supports title
+never widen what the runner can see or do. For small teams on one Borealis
+instance, reports can be shared with sibling accounts as read-only snapshots,
+Settings keeps a content-free egress audit of what was sent to remote
+providers, and **Automations** run scheduled connector refreshes and chat
+digest turns through the same gates as manual work — five consecutive failures
+pause them. Chat history supports title
 search, rename, and deletion; **Settings** also contains system readiness,
 Light/Dark/System appearance, and account controls.
 

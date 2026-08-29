@@ -58,6 +58,36 @@ acknowledgment and unblocks the gated routes immediately. `endpoint_host` is
 present only while a remote provider is configured, is a response field only,
 and never appears in logs. Loopback and private-network providers never gate.
 
+### Workspace: audit, shares, and automations
+
+Small-team surfaces on one Borealis instance. All routes require
+authentication and stay account-scoped.
+
+| Endpoint                              | Response                                                                                          |
+| ------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| `GET /api/audit/egress?limit<=200`    | Content-free egress events: `{id,kind,endpoint_host,created_at}`, newest first.                    |
+| `GET /api/accounts`                   | `[{id,email}]` — the workspace accounts available for snapshot sharing.                            |
+| `POST /api/reports/:id/shares`        | Body `{recipient_account_id}`; `201` with `{recipient_account_id,shared_at}`.                      |
+| `GET /api/reports/:id/shares`         | Shares of one owned report, recipient emails included.                                             |
+| `DELETE /api/reports/:id/shares/:recipient` | `{"ok":true}` — owner-only revocation.                                                       |
+| `GET /api/reports/shared`             | Reports shared with the caller: read-only snapshots with `owner_email`.                            |
+| `GET /api/automations`                | Account automations with schedule, state, and failure counters.                                    |
+| `POST /api/automations`               | `{name,kind,target_id,schedule_minutes,prompt?}` (15–10,080 minutes; prompt required for `agent_turn`). |
+| `PATCH /api/automations/:id`          | `{name?,state?,schedule_minutes?}`.                                                                |
+| `DELETE /api/automations/:id`         | `{"ok":true}`; run history cascades.                                                               |
+| `GET /api/automations/:id/runs`       | Bounded run history `{outcome,detail,started_at,finished_at}`.                                     |
+
+Sharing contract: shares exist only between accounts of this instance, are
+created for published reports, and grant exactly read-only detail/HTML/PDF
+access — rename, delete, payload, and further sharing stay with the owner.
+Revocation is immediate. Automation runs are content-free; details use generic
+phrases, and five consecutive failures pause the automation. Agent-turn
+automations go through the same acceptance path as a human turn — the consent
+gate, one-run-per-chat, and durable run records all apply — and a busy chat or
+missing consent records a `skipped` run. Audit events never contain prompts,
+source text, SQL, or model output, and are best-effort: a failed audit write
+never fails the request that produced it.
+
 ### Contained models
 
 Contained mode lets Borealis own a local model engine end to end: verified

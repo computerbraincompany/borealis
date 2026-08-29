@@ -228,6 +228,14 @@ the matching vector index.
   chat-creation contract; never add a server-side dynamic chat↔library
   resolution path without speccing it against the scope semantics above.
   Library deletion cascades membership only — never sources or their data.
+- Small-team surfaces (schema v7–v9) stay inside the local trust boundary:
+  report shares link sibling accounts of one instance and grant exactly
+  read-only detail/HTML/PDF access with owner-only revoke; egress audit events
+  (`server/src/egressAudit.ts`) are content-free, best-effort, and never
+  logged; automations (`server/src/automationStore.ts`, `automationRunner.ts`)
+  reuse the consent gate and one-run-per-chat constraints, record bounded
+  generic run details, pause after five consecutive failures, and their
+  scheduler is unref'd and stopped during orderly shutdown.
 - Agents (`server/src/db/stores/agentStore.ts`, schema v6) are named,
   versioned instruction sets. The chat binding is write-once at creation
   (`chats.agent_id`, `SET NULL` on agent deletion) and cannot change

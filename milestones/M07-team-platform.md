@@ -4,7 +4,15 @@
 and audit plane that fits a desktop-and-cluster deployment. Automations with
 human review for work that already has artifacts and evidence.*
 
-**Status:** IN PROGRESS
+**Status:** DONE (implemented in commits `4cb696a` — egress audit plane,
+`bc37dbb` — report snapshot shares, `57e011c` — durable automations, and
+`f499808` — the workspace surfaces; verification recorded in
+milestones/README.md)
+
+**Verification record (2026-08-29):** server 598 tests, web 151 tests,
+desktop 13 tests, lint, format, builds, and native smokes green via
+`pnpm verify` (recorded before the documentation slice; the final gate run
+follows this commit).
 
 ## Problem
 
