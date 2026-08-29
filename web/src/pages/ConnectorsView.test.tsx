@@ -1,6 +1,15 @@
-import { fireEvent, render, screen } from "@testing-library/react";
-import { connectorsApi, type Connector } from "@/lib/api";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { ApiError, connectorsApi, type Connector } from "@/lib/api";
 import { ConnectorsView } from "@/pages/ConnectorsView";
+
+vi.mock("@/components/ui/dialog", () => ({
+  Dialog: ({ open, children }: { open: boolean; children: React.ReactNode }) => (open ? <div>{children}</div> : null),
+  DialogContent: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+  DialogDescription: ({ children }: { children: React.ReactNode }) => <p>{children}</p>,
+  DialogFooter: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+  DialogHeader: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+  DialogTitle: ({ children }: { children: React.ReactNode }) => <h2>{children}</h2>,
+}));
 
 const connector = (sync_status: Connector["sync_status"]): Connector => ({
   id: "connector-1",
@@ -12,6 +21,16 @@ const connector = (sync_status: Connector["sync_status"]): Connector => ({
   sync_error: sync_status === "error" ? "Connector indexing failed." : null,
   last_sync: null,
   created_at: "2026-01-01T00:00:00Z",
+  schedule: null,
+});
+
+const schedule = (overrides: Partial<NonNullable<Connector["schedule"]>> = {}): NonNullable<Connector["schedule"]> => ({
+  automation_id: "auto-1",
+  schedule_minutes: 60,
+  state: "active",
+  next_run_at: "2026-01-02T00:00:00Z",
+  last_run_at: null,
+  ...overrides,
 });
 
 describe("ConnectorsView status controls", () => {
@@ -40,5 +59,113 @@ describe("ConnectorsView status controls", () => {
     expect(await screen.findByText("Connector indexing failed.")).toBeInTheDocument();
     expect(screen.getByText("error")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Sync now" })).toBeEnabled();
+  });
+});
+
+describe("ConnectorsView schedule control", () => {
+  it("renders the current schedule value and next run", async () => {
+    vi.spyOn(connectorsApi, "list").mockResolvedValue([{ ...connector("idle"), schedule: schedule() }]);
+    render(<ConnectorsView />);
+
+    const select = await screen.findByLabelText("Refresh schedule for Ledger");
+    expect(select).toHaveValue("60");
+    expect(screen.getByRole("option", { name: "Hourly" })).toBeInTheDocument();
+    expect(screen.getByText(/^next /)).toBeInTheDocument();
+  });
+
+  it("flags a paused schedule", async () => {
+    vi.spyOn(connectorsApi, "list").mockResolvedValue([
+      { ...connector("idle"), schedule: schedule({ state: "paused", next_run_at: null }) },
+    ]);
+    render(<ConnectorsView />);
+
+    expect(await screen.findByText("paused")).toBeInTheDocument();
+  });
+
+  it("sends the chosen interval and updates state from the response", async () => {
+    const scheduled = { ...connector("idle"), schedule: schedule() };
+    const updated = { ...connector("idle"), schedule: schedule({ schedule_minutes: 15 }) };
+    vi.spyOn(connectorsApi, "list").mockResolvedValueOnce([scheduled]).mockResolvedValue([updated]);
+    const update = vi.spyOn(connectorsApi, "updateConnectorSchedule").mockResolvedValue(updated);
+
+    render(<ConnectorsView />);
+    const select = await screen.findByLabelText("Refresh schedule for Ledger");
+    fireEvent.change(select, { target: { value: "15" } });
+
+    await waitFor(() => expect(update).toHaveBeenCalledWith("connector-1", 15));
+    await waitFor(() => expect(select).toHaveValue("15"));
+  });
+
+  it("removes the schedule when Off is selected", async () => {
+    const scheduled = { ...connector("idle"), schedule: schedule({ schedule_minutes: 15 }) };
+    const cleared = { ...connector("idle"), schedule: null };
+    vi.spyOn(connectorsApi, "list").mockResolvedValueOnce([scheduled]).mockResolvedValue([cleared]);
+    const update = vi.spyOn(connectorsApi, "updateConnectorSchedule").mockResolvedValue(cleared);
+
+    render(<ConnectorsView />);
+    const select = await screen.findByLabelText("Refresh schedule for Ledger");
+    fireEvent.change(select, { target: { value: "off" } });
+
+    await waitFor(() => expect(update).toHaveBeenCalledWith("connector-1", null));
+    await waitFor(() => expect(select).toHaveValue("off"));
+  });
+
+  it("surfaces a schedule conflict inline and keeps the previous value", async () => {
+    vi.spyOn(connectorsApi, "list").mockResolvedValue([{ ...connector("idle"), schedule: schedule() }]);
+    vi.spyOn(connectorsApi, "updateConnectorSchedule").mockRejectedValue(
+      new ApiError(409, "Multiple connector refresh automations target this connector. Clean them up in Automations."),
+    );
+
+    render(<ConnectorsView />);
+    fireEvent.change(await screen.findByLabelText("Refresh schedule for Ledger"), { target: { value: "15" } });
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Multiple connector refresh automations target this connector. Clean them up in Automations.",
+    );
+    expect(screen.getByLabelText("Refresh schedule for Ledger")).toHaveValue("60");
+  });
+});
+
+describe("ConnectorsView sync history", () => {
+  it("opens the dialog and renders recorded syncs newest first", async () => {
+    vi.spyOn(connectorsApi, "list").mockResolvedValue([connector("idle")]);
+    vi.spyOn(connectorsApi, "listConnectorSyncs").mockResolvedValue([
+      {
+        id: 2,
+        trigger: "manual",
+        outcome: "failed",
+        detail: "the connector could not be refreshed",
+        started_at: "2026-01-02T00:00:00Z",
+        finished_at: "2026-01-02T00:00:05Z",
+      },
+      {
+        id: 1,
+        trigger: "create",
+        outcome: "succeeded",
+        detail: null,
+        started_at: "2026-01-01T00:00:00Z",
+        finished_at: "2026-01-01T00:00:05Z",
+      },
+    ]);
+
+    render(<ConnectorsView />);
+    fireEvent.click(await screen.findByRole("button", { name: "Sync history" }));
+
+    expect(await screen.findByText("manual")).toBeInTheDocument();
+    expect(screen.getByText("failed")).toBeInTheDocument();
+    expect(screen.getByText("create")).toBeInTheDocument();
+    expect(screen.getByText("succeeded")).toBeInTheDocument();
+    expect(screen.getByText("the connector could not be refreshed")).toBeInTheDocument();
+    expect(screen.getByLabelText("Connector syncs")).toBeInTheDocument();
+  });
+
+  it("shows the empty state when no syncs are recorded", async () => {
+    vi.spyOn(connectorsApi, "list").mockResolvedValue([connector("idle")]);
+    vi.spyOn(connectorsApi, "listConnectorSyncs").mockResolvedValue([]);
+
+    render(<ConnectorsView />);
+    fireEvent.click(await screen.findByRole("button", { name: "Sync history" }));
+
+    expect(await screen.findByText("No syncs yet.")).toBeInTheDocument();
   });
 });

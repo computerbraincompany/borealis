@@ -12,6 +12,7 @@ const connector = (sync_status: Connector["sync_status"]): Connector => ({
   sync_error: sync_status === "error" ? "Connector sync failed." : null,
   last_sync: null,
   created_at: "2026-01-01T00:00:00Z",
+  schedule: null,
 });
 
 describe("useConnectorCatalog", () => {

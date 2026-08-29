@@ -625,51 +625,160 @@ export interface Connector {
   sync_error?: string | null;
   last_sync: string | null;
   created_at: string;
+  /** Derived convenience surface over the connector's `connector_sync` automation; null when unscheduled. */
+  schedule: ConnectorSchedule | null;
 }
 
 export type ConnectorSyncStatus = "syncing" | "indexing" | "idle" | "error";
 
+export type ConnectorScheduleState = "active" | "paused";
+
+export interface ConnectorSchedule {
+  automation_id: string;
+  schedule_minutes: number;
+  state: ConnectorScheduleState;
+  next_run_at: string | null;
+  last_run_at: string | null;
+}
+
 const CONNECTOR_SYNC_STATUSES = new Set<ConnectorSyncStatus>(["syncing", "indexing", "idle", "error"]);
+const CONNECTOR_SCHEDULE_STATES = new Set<ConnectorScheduleState>(["active", "paused"]);
+
+/**
+ * Treat the derived schedule surface as untrusted JSON. A malformed or
+ * outdated payload must degrade to "unscheduled" instead of breaking the
+ * connector card.
+ */
+export function parseConnectorSchedule(value: unknown): ConnectorSchedule | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const entry = value as Record<string, unknown>;
+  if (
+    typeof entry.automation_id !== "string" ||
+    entry.automation_id.length === 0 ||
+    entry.automation_id.length > 200 ||
+    typeof entry.schedule_minutes !== "number" ||
+    !Number.isSafeInteger(entry.schedule_minutes) ||
+    entry.schedule_minutes <= 0 ||
+    !CONNECTOR_SCHEDULE_STATES.has(entry.state as ConnectorScheduleState)
+  ) {
+    return null;
+  }
+  return {
+    automation_id: entry.automation_id,
+    schedule_minutes: entry.schedule_minutes,
+    state: entry.state as ConnectorScheduleState,
+    next_run_at: typeof entry.next_run_at === "string" ? entry.next_run_at : null,
+    last_run_at: typeof entry.last_run_at === "string" ? entry.last_run_at : null,
+  };
+}
+
+/** Normalize one persisted connector row; returns null outside the UI contract. */
+function parseConnectorRow(candidate: unknown): Connector | null {
+  if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return null;
+  const value = candidate as Record<string, unknown>;
+  if (
+    typeof value.id !== "string" ||
+    typeof value.name !== "string" ||
+    (value.type !== "url_csv" && value.type !== "url_json") ||
+    typeof value.target_table !== "string" ||
+    !CONNECTOR_SYNC_STATUSES.has(value.sync_status as ConnectorSyncStatus) ||
+    typeof value.created_at !== "string"
+  ) {
+    return null;
+  }
+
+  let config: unknown = value.config;
+  if (typeof config === "string") {
+    try {
+      config = JSON.parse(config);
+    } catch {
+      config = {};
+    }
+  }
+  if (!config || typeof config !== "object" || Array.isArray(config)) config = {};
+
+  return {
+    id: value.id,
+    name: value.name,
+    type: value.type,
+    config: config as Record<string, unknown>,
+    target_table: value.target_table,
+    sync_status: value.sync_status as ConnectorSyncStatus,
+    sync_error: typeof value.sync_error === "string" ? value.sync_error : null,
+    last_sync: typeof value.last_sync === "string" ? value.last_sync : null,
+    created_at: value.created_at,
+    schedule: parseConnectorSchedule(value.schedule),
+  } satisfies Connector;
+}
+
+/** Treat mutation responses with the same untrusted-JSON rules as the list. */
+export function parseConnectorPayload(payload: unknown): Connector | null {
+  return parseConnectorRow(payload);
+}
 
 /** Normalize persisted JSON and reject connector rows outside the UI status contract. */
 export function parseConnectorListPayload(payload: unknown): Connector[] {
   if (!Array.isArray(payload)) return [];
   return payload.flatMap((candidate) => {
+    const parsed = parseConnectorRow(candidate);
+    return parsed ? [parsed] : [];
+  });
+}
+
+export type ConnectorSyncTrigger = "create" | "manual" | "scheduled";
+
+export type ConnectorSyncOutcome = "succeeded" | "failed" | "skipped";
+
+export interface ConnectorSyncRecord {
+  id: number;
+  trigger: ConnectorSyncTrigger;
+  outcome: ConnectorSyncOutcome;
+  detail: string | null;
+  started_at: string;
+  finished_at: string | null;
+}
+
+const CONNECTOR_SYNC_TRIGGERS = new Set<ConnectorSyncTrigger>(["create", "manual", "scheduled"]);
+const CONNECTOR_SYNC_OUTCOMES = new Set<ConnectorSyncOutcome>(["succeeded", "failed", "skipped"]);
+const MAX_CONNECTOR_SYNC_DETAIL_LENGTH = 200;
+
+type ConnectorSyncListPayload = ConnectorSyncRecord[] | { syncs?: unknown };
+
+/**
+ * Sync history rows are content-free and bounded. Treat the payload as
+ * untrusted JSON and drop rows outside the recorded trigger/outcome contract
+ * instead of letting one malformed entry break the dialog.
+ */
+export function parseConnectorSyncListPayload(payload: unknown): ConnectorSyncRecord[] {
+  const container = payload as ConnectorSyncListPayload;
+  const candidates = Array.isArray(container)
+    ? container
+    : container && typeof container === "object"
+      ? Array.isArray(container.syncs)
+        ? container.syncs
+        : []
+      : [];
+  return candidates.flatMap((candidate) => {
     if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return [];
     const value = candidate as Record<string, unknown>;
     if (
-      typeof value.id !== "string" ||
-      typeof value.name !== "string" ||
-      (value.type !== "url_csv" && value.type !== "url_json") ||
-      typeof value.target_table !== "string" ||
-      !CONNECTOR_SYNC_STATUSES.has(value.sync_status as ConnectorSyncStatus) ||
-      typeof value.created_at !== "string"
+      typeof value.id !== "number" ||
+      !Number.isSafeInteger(value.id) ||
+      !CONNECTOR_SYNC_TRIGGERS.has(value.trigger as ConnectorSyncTrigger) ||
+      !CONNECTOR_SYNC_OUTCOMES.has(value.outcome as ConnectorSyncOutcome) ||
+      typeof value.started_at !== "string"
     ) {
       return [];
     }
-
-    let config: unknown = value.config;
-    if (typeof config === "string") {
-      try {
-        config = JSON.parse(config);
-      } catch {
-        config = {};
-      }
-    }
-    if (!config || typeof config !== "object" || Array.isArray(config)) config = {};
-
     return [
       {
         id: value.id,
-        name: value.name,
-        type: value.type,
-        config: config as Record<string, unknown>,
-        target_table: value.target_table,
-        sync_status: value.sync_status as ConnectorSyncStatus,
-        sync_error: typeof value.sync_error === "string" ? value.sync_error : null,
-        last_sync: typeof value.last_sync === "string" ? value.last_sync : null,
-        created_at: value.created_at,
-      } satisfies Connector,
+        trigger: value.trigger as ConnectorSyncTrigger,
+        outcome: value.outcome as ConnectorSyncOutcome,
+        detail: typeof value.detail === "string" ? value.detail.slice(0, MAX_CONNECTOR_SYNC_DETAIL_LENGTH) : null,
+        started_at: value.started_at,
+        finished_at: typeof value.finished_at === "string" ? value.finished_at : null,
+      } satisfies ConnectorSyncRecord,
     ];
   });
 }
@@ -937,6 +1046,8 @@ export const sourcesApi = {
 };
 
 // ------------------------------------------------------------------ connectors
+const MAX_CONNECTOR_SYNC_HISTORY_LIMIT = 50;
+
 export const connectorsApi = {
   list: async () => parseConnectorListPayload(await api<unknown>("/api/connectors")),
   create: (body: {
@@ -948,6 +1059,18 @@ export const connectorsApi = {
   sync: (id: string) =>
     api<Connector | { synced: true; processing: true }>(`/api/connectors/${id}/sync`, { method: "POST" }),
   remove: (id: string) => api<{ ok: true }>(`/api/connectors/${id}`, { method: "DELETE" }),
+  /** `null` removes the schedule (deletes the linked connector_sync automation). */
+  updateConnectorSchedule: async (id: string, scheduleMinutes: number | null) =>
+    parseConnectorPayload(
+      await api<unknown>(`/api/connectors/${id}/schedule`, {
+        method: "PUT",
+        body: JSON.stringify({ schedule_minutes: scheduleMinutes }),
+      }),
+    ),
+  listConnectorSyncs: async (id: string, limit = MAX_CONNECTOR_SYNC_HISTORY_LIMIT) => {
+    const bounded = Math.max(1, Math.min(MAX_CONNECTOR_SYNC_HISTORY_LIMIT, Math.trunc(limit) || 1));
+    return parseConnectorSyncListPayload(await api<unknown>(`/api/connectors/${id}/syncs?limit=${bounded}`));
+  },
 };
 
 // ------------------------------------------------------------------ reports

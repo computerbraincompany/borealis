@@ -6,6 +6,7 @@ import {
   formatApiError,
   openProtected,
   parseConnectorListPayload,
+  parseConnectorSyncListPayload,
   parseSourceListPayload,
   settingsApi,
   streamAgentChat,
@@ -260,5 +261,112 @@ describe("typed API contracts", () => {
         sync_status: "idle",
       }),
     ]);
+  });
+
+  it("parses the derived schedule surface and degrades malformed schedules to unscheduled", () => {
+    const base = {
+      id: "connector-1",
+      name: "Ledger",
+      type: "url_csv",
+      config: { url: "https://example.test/data.csv" },
+      target_table: "ledger",
+      sync_status: "idle",
+      last_sync: null,
+      created_at: "2026-01-01T00:00:00Z",
+    };
+    const rows = parseConnectorListPayload([
+      {
+        ...base,
+        schedule: {
+          automation_id: "auto-1",
+          schedule_minutes: 60,
+          state: "active",
+          next_run_at: "2026-01-02T00:00:00Z",
+          last_run_at: "2026-01-01T12:00:00Z",
+        },
+      },
+      { ...base, id: "broken", schedule: { automation_id: "auto-2", schedule_minutes: -5, state: "active" } },
+      { ...base, id: "unscheduled", schedule: null },
+    ]);
+    expect(rows).toHaveLength(3);
+    expect(rows[0].schedule).toEqual({
+      automation_id: "auto-1",
+      schedule_minutes: 60,
+      state: "active",
+      next_run_at: "2026-01-02T00:00:00Z",
+      last_run_at: "2026-01-01T12:00:00Z",
+    });
+    expect(rows[1].schedule).toBeNull();
+    expect(rows[2].schedule).toBeNull();
+  });
+
+  it("schedules a connector through the contract route and removes it with null", async () => {
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo, _init?: RequestInit) =>
+        new Response(
+          JSON.stringify({
+            id: "connector-1",
+            name: "Ledger",
+            type: "url_csv",
+            config: { url: "https://example.test/data.csv" },
+            target_table: "ledger",
+            sync_status: "idle",
+            last_sync: null,
+            created_at: "2026-01-01T00:00:00Z",
+            schedule: null,
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const updated = await connectorsApi.updateConnectorSchedule("connector-1", 360);
+    expect(updated?.schedule).toBeNull();
+
+    const [path, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(path).toBe("/api/connectors/connector-1/schedule");
+    expect(init.method).toBe("PUT");
+    expect(JSON.parse(String(init.body))).toEqual({ schedule_minutes: 360 });
+
+    await connectorsApi.updateConnectorSchedule("connector-1", null);
+    const [, removeInit] = fetchMock.mock.calls[1] as [string, RequestInit];
+    expect(JSON.parse(String(removeInit.body))).toEqual({ schedule_minutes: null });
+  });
+
+  it("loads bounded sync history and drops rows outside the recorded trigger/outcome contract", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          syncs: [
+            {
+              id: 2,
+              trigger: "scheduled",
+              outcome: "skipped",
+              detail: "the connector is already transitioning",
+              started_at: "2026-01-02T00:00:00Z",
+              finished_at: "2026-01-02T00:00:01Z",
+            },
+            { id: 3, trigger: "cron", outcome: "succeeded", detail: null, started_at: "2026-01-03T00:00:00Z" },
+            { id: "bad", trigger: "manual", outcome: "failed", detail: null, started_at: "2026-01-04T00:00:00Z" },
+          ],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const syncs = await connectorsApi.listConnectorSyncs("connector-1");
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/connectors/connector-1/syncs?limit=50");
+    expect(syncs).toEqual([
+      {
+        id: 2,
+        trigger: "scheduled",
+        outcome: "skipped",
+        detail: "the connector is already transitioning",
+        started_at: "2026-01-02T00:00:00Z",
+        finished_at: "2026-01-02T00:00:01Z",
+      },
+    ]);
+    expect(parseConnectorSyncListPayload({ syncs: [] })).toEqual([]);
   });
 });

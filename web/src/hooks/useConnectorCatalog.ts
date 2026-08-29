@@ -73,5 +73,17 @@ export function useConnectorCatalog() {
     return () => window.clearTimeout(timer);
   }, [hasTransitioningConnector, pollCycle, refresh]);
 
-  return { connectors, loading, error, refresh };
+  /** Apply one mutation response (e.g. schedule update) to the catalog before the reconciling refetch. */
+  const applyOne = useCallback((updated: Connector) => {
+    if (!mountedRef.current) return;
+    setConnectors((current) => {
+      const index = current.findIndex((entry) => entry.id === updated.id);
+      if (index === -1) return current;
+      const next = current.slice();
+      next[index] = updated;
+      return next;
+    });
+  }, []);
+
+  return { connectors, loading, error, refresh, applyOne };
 }
