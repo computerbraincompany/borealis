@@ -58,6 +58,30 @@ acknowledgment and unblocks the gated routes immediately. `endpoint_host` is
 present only while a remote provider is configured, is a response field only,
 and never appears in logs. Loopback and private-network providers never gate.
 
+### Agents
+
+| Endpoint               | Response                                                                                                        |
+| ---------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `GET /api/agents`      | Array of `{id,name,current_version,instructions,instructions_chars,created_at,updated_at}`, newest first.       |
+| `POST /api/agents`     | Body `{name,instructions}` (name 1–80 chars unique per account; instructions 1–8,000 chars); returns `201`.     |
+| `GET /api/agents/:id`  | `{...summary,revisions}` with every immutable revision, newest first.                                            |
+| `PATCH /api/agents/:id`| Body `{name?}`, `{instructions?}`, or both; new instructions become the next immutable revision.                 |
+| `DELETE /api/agents/:id`| `{"ok":true}`; bound chats keep running and become unbound (`agent_id` is `SET NULL`).                         |
+
+A chat may bind one agent when it is created: `POST /api/chats` accepts an
+optional `agent_id` (must reference an owned agent; unknown or foreign ids
+return `400`). The binding is write-once — it cannot be changed or removed
+while the chat exists, and chat DTOs carry `agent: {id,name} | null`. At turn
+acceptance the server resolves the agent's *current* revision inside the
+accept transaction and stores its instructions on the durable run
+(`chat_runs.agent_instructions`); later agent edits or deletion never change a
+running or completed turn. During the run, the instructions are appended to
+the system prompt in a bounded `Workspace agent instructions` section that
+states the platform's operating rules stay fixed workspace policy. Agents
+never change the tool set, retrieval scope, or any authorization: everything
+the runner may do is server policy exactly as for unbound chats. Instructions
+are never logged.
+
 ### Libraries
 
 | Endpoint                        | Response                                                                                                     |

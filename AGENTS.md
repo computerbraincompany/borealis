@@ -228,6 +228,16 @@ the matching vector index.
   chat-creation contract; never add a server-side dynamic chat↔library
   resolution path without speccing it against the scope semantics above.
   Library deletion cascades membership only — never sources or their data.
+- Agents (`server/src/db/stores/agentStore.ts`, schema v6) are named,
+  versioned instruction sets. The chat binding is write-once at creation
+  (`chats.agent_id`, `SET NULL` on agent deletion) and cannot change
+  afterwards. `acceptChatTurn` snapshots the agent's current revision onto
+  `chat_runs.agent_instructions` inside the accept transaction, so later
+  edits or deletion never change a running turn. Instructions are bounded at
+  8,000 characters and appended to the system prompt only through
+  `agentSection` in `server/src/agent.ts`, which must keep the
+  fixed-workspace-policy sentence. Agents never alter the tool set, retrieval
+  scope, or authorization; instruction text is never logged.
 - The OpenAI Node client defaults embeddings to base64 and decodes responses.
   Compatible local runtimes return float arrays, so `server/src/llm.ts` must
   continue sending `encoding_format: "float"` explicitly.

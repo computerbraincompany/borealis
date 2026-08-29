@@ -5,7 +5,19 @@ instructions, tools, and source bindings for a job: "finance analyst,"
 "diligence," "ops brief." They do not grant data the runner cannot already
 see.*
 
-**Status:** IN PROGRESS
+**Status:** DONE (implemented in commits `aeccbd7` — schema v6, agent store,
+and routes — `d8703ef` — chat binding, run snapshot, and prompt integration —
+and `c62301c` — the Agents surface and composer picker; verification recorded
+in milestones/README.md)
+
+**Verification record (2026-08-29):** server 578 tests, web 143 tests, lint,
+format, builds, and desktop native smoke green via `pnpm verify`. Live
+browser-development check with a stub OpenAI-compatible provider (embeddings +
+streaming chat): created agent "Diligence analyst", bound it in the new-chat
+composer, sent a turn that completed, and confirmed in SQLite that
+`chat_runs.agent_instructions` carries the agent's instructions and the user
+message meta carries `{id,name,version}`. The composer chip for the bound chat
+renders read-only.
 
 ## Problem
 
