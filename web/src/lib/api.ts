@@ -219,6 +219,7 @@ export interface Message {
     source_mode?: SourceMode;
     source_ids?: string[];
     evidence?: RetrievedEvidence[];
+    citations?: CitationRef[];
     query_results?: QueryResultArtifact[];
   } | null;
   created_at: string;
@@ -230,6 +231,14 @@ export interface RetrievedEvidence {
   source: string;
   excerpt: string;
   score: number;
+}
+
+/** Marker n → the evidence passage it resolves to; n is a 1-based evidence index. */
+export interface CitationRef {
+  n: number;
+  source_id: string;
+  chunk_id: string;
+  source: string;
 }
 
 export type QueryResultCell = string | number | boolean | null;
@@ -333,6 +342,46 @@ export function parseQueryResultArtifacts(value: unknown): QueryResultArtifact[]
   }
 
   return artifacts;
+}
+
+const MAX_CITATIONS = 8;
+
+/**
+ * Treat message metadata as untrusted JSON. Older or manually-edited rows may
+ * predate the citation contract, so malformed citation entries are omitted
+ * instead of being allowed to break the chat UI.
+ */
+export function parseCitationRefs(value: unknown): CitationRef[] {
+  if (!Array.isArray(value)) return [];
+
+  const citations: CitationRef[] = [];
+  for (const candidate of value) {
+    if (citations.length >= MAX_CITATIONS) break;
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) continue;
+
+    const entry = candidate as Record<string, unknown>;
+    if (
+      typeof entry.n !== "number" ||
+      !Number.isSafeInteger(entry.n) ||
+      entry.n < 1 ||
+      entry.n > 99 ||
+      typeof entry.source_id !== "string" ||
+      entry.source_id.length === 0 ||
+      entry.source_id.length > 200 ||
+      typeof entry.chunk_id !== "string" ||
+      entry.chunk_id.length === 0 ||
+      entry.chunk_id.length > 200 ||
+      typeof entry.source !== "string" ||
+      entry.source.length === 0 ||
+      entry.source.length > 300
+    ) {
+      continue;
+    }
+
+    citations.push({ n: entry.n, source_id: entry.source_id, chunk_id: entry.chunk_id, source: entry.source });
+  }
+
+  return citations;
 }
 
 export interface ChatDetail extends Chat {

@@ -4,6 +4,7 @@ import {
   ApiError,
   chatsApi,
   formatApiError,
+  parseCitationRefs,
   parseQueryResultArtifacts,
   sourcesApi,
   streamAgentChat,
@@ -1052,6 +1053,7 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
                   report={m.meta?.report || undefined}
                   model={m.meta?.model}
                   evidence={m.meta?.evidence}
+                  citations={parseCitationRefs(m.meta?.citations)}
                   queryResults={parseQueryResultArtifacts(m.meta?.query_results)}
                 />
               ),
@@ -1068,6 +1070,7 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
                     report={stream.finalReport}
                     model={stream.model || detail?.model}
                     evidence={stream.finalEvidence}
+                    citations={stream.finalCitations}
                     queryResults={stream.finalQueryResults}
                   />
                 ) : stream.running && stream.steps.length === 0 ? (

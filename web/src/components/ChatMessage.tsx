@@ -1,5 +1,5 @@
-import { memo, useEffect, useState } from "react";
-import ReactMarkdown from "react-markdown";
+import { memo, useEffect, useMemo, useState, type ReactNode } from "react";
+import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
 import { Bot, User, FileText, ExternalLink } from "lucide-react";
@@ -8,9 +8,11 @@ import {
   openProtected,
   formatApiError,
   reportsApi,
+  type CitationRef,
   type QueryResultArtifact,
   type RetrievedEvidence as RetrievedEvidenceItem,
 } from "@/lib/api";
+import { citeLinkify, parseCiteHref } from "@/lib/citations";
 import { ChartCard } from "@/components/ChartCard";
 import { DataResultCard } from "@/components/DataResultCard";
 import { RetrievedEvidence } from "@/components/RetrievedEvidence";
@@ -84,6 +86,7 @@ export const ChatMessage = memo(function ChatMessage({
   report,
   model,
   evidence,
+  citations,
   queryResults,
   streaming,
   className,
@@ -94,11 +97,65 @@ export const ChatMessage = memo(function ChatMessage({
   report?: string | null;
   model?: string;
   evidence?: RetrievedEvidenceItem[];
+  citations?: CitationRef[];
   queryResults?: QueryResultArtifact[];
   streaming?: boolean;
   className?: string;
 }) {
   const isUser = role === "user";
+  // Citation chips open the evidence panel, so that state lives here.
+  const [evidenceOpen, setEvidenceOpen] = useState(false);
+  const [highlightCitation, setHighlightCitation] = useState<number | null>(null);
+
+  // meta.citations is authoritative when present; rows that predate it fall
+  // back to numbering the evidence array itself. Every candidate stays
+  // fail-closed against the evidence passage it must be able to open.
+  const validCitations = useMemo(() => {
+    const numbers = new Set<number>();
+    if (!evidence || evidence.length === 0) return numbers;
+    if (citations && citations.length > 0) {
+      for (const citation of citations) {
+        if (Number.isSafeInteger(citation.n) && citation.n >= 1 && citation.n <= evidence.length) {
+          numbers.add(citation.n);
+        }
+      }
+    } else {
+      for (let n = 1; n <= evidence.length; n += 1) numbers.add(n);
+    }
+    return numbers;
+  }, [citations, evidence]);
+
+  const displayContent = validCitations.size > 0 ? citeLinkify(content, validCitations) : content;
+
+  const citationSource = (n: number): string => {
+    const citation = citations?.find((entry) => entry.n === n);
+    return citation?.source || evidence?.[n - 1]?.source || "source";
+  };
+
+  const openCitation = (n: number) => {
+    setHighlightCitation(n);
+    setEvidenceOpen(true);
+  };
+
+  // cite:// hrefs come from citeLinkify, but the model can also emit raw
+  // `[n](cite://n)` markdown. Only resolvable citations become chips; every
+  // other cite:// href stays inert text instead of a dead link.
+  const renderAnchor = ({ href, children }: { href?: string; children?: ReactNode }) => {
+    const n = typeof href === "string" ? parseCiteHref(href) : null;
+    if (n === null) return <a href={href}>{children}</a>;
+    if (!validCitations.has(n)) return <span>{children}</span>;
+    return (
+      <button
+        type="button"
+        onClick={() => openCitation(n)}
+        aria-label={`Citation ${n}: ${citationSource(n)}`}
+        className="mx-0.5 inline-flex h-4 min-w-4 cursor-pointer items-center justify-center rounded-full bg-primary/10 px-1 align-super text-[10px] font-semibold leading-none text-primary transition-colors hover:bg-primary/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        {n}
+      </button>
+    );
+  };
+
   return (
     <div className={cn("group flex w-full gap-3", isUser ? "justify-end" : "justify-start", className)}>
       {!isUser && (
@@ -114,11 +171,28 @@ export const ChatMessage = memo(function ChatMessage({
         ) : (
           <div className="rounded-lg rounded-tl-sm text-[15px] leading-relaxed text-foreground/90">
             <div className="markdown-body">
-              <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>
-                {content || (streaming ? "" : "_no response_")}
+              <ReactMarkdown
+                remarkPlugins={[remarkGfm]}
+                rehypePlugins={[rehypeHighlight]}
+                // The default URL sanitizer strips the cite:// scheme; allow
+                // only well-formed citation hrefs through and keep default
+                // sanitization for every other URL.
+                urlTransform={(url) =>
+                  typeof url === "string" && parseCiteHref(url) !== null ? url : defaultUrlTransform(url)
+                }
+                components={{ a: renderAnchor }}
+              >
+                {displayContent || (streaming ? "" : "_no response_")}
               </ReactMarkdown>
             </div>
-            {evidence && evidence.length > 0 && <RetrievedEvidence evidence={evidence} />}
+            {evidence && evidence.length > 0 && (
+              <RetrievedEvidence
+                evidence={evidence}
+                open={evidenceOpen}
+                onOpenChange={setEvidenceOpen}
+                highlightN={highlightCitation}
+              />
+            )}
             {queryResults && queryResults.length > 0 && (
               <div className="mt-3 space-y-3">
                 {queryResults.map((artifact, index) => (

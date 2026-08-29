@@ -1,6 +1,8 @@
 import {
+  parseCitationRefs,
   parseQueryResultArtifacts,
   type ChatRunTerminalStatus,
+  type CitationRef,
   type QueryResultArtifact,
   type RetrievedEvidence,
 } from "@/lib/api";
@@ -25,6 +27,7 @@ export interface StreamState {
   finalCharts: string[];
   finalReport: string | null;
   finalEvidence: RetrievedEvidence[];
+  finalCitations: CitationRef[];
   finalQueryResults: QueryResultArtifact[];
 }
 
@@ -59,6 +62,7 @@ export function createStreamState(model: string | null = null): StreamState {
     finalCharts: [],
     finalReport: null,
     finalEvidence: [],
+    finalCitations: [],
     finalQueryResults: [],
   };
 }
@@ -196,6 +200,7 @@ export function applyAgentEvent(state: StreamState, event: unknown, stepKey: num
       finalCharts: safeIdentifiers(meta.charts),
       finalReport: safeIdentifier(meta.report),
       finalEvidence: Array.isArray(meta.evidence) ? meta.evidence : [],
+      finalCitations: parseCitationRefs(meta.citations),
       finalQueryResults: parseQueryResultArtifacts(meta.query_results),
     };
   }
