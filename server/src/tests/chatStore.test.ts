@@ -248,6 +248,27 @@ describe("ChatStore", () => {
     expect(first.lastInsertRowid).toBeLessThan(second.lastInsertRowid);
   });
 
+  it("carries citation metadata through the bounded history snapshot", async () => {
+    const { ledger, store } = await setup();
+    const owner = await createUser(store, "citations-history");
+    const chatId = await createChat(store, owner);
+    await ledger.run("INSERT INTO messages (chat_id,role,content,meta) VALUES (?,'assistant',?,?)", [
+      chatId,
+      "Revenue grew [1].",
+      encodeJson({
+        citations: [{ n: 1, source_id: "source-1", chunk_id: "chunk-41", source: "Annual Report.pdf" }],
+      }),
+    ]);
+
+    const page = await store.getChatSnapshot(owner, chatId, { limit: 10 });
+
+    expect(page.messages).toHaveLength(1);
+    expect(page.messages[0]?.content).toBe("Revenue grew [1].");
+    expect(page.messages[0]?.meta).toEqual({
+      citations: [{ n: 1, source_id: "source-1", chunk_id: "chunk-41", source: "Annual Report.pdf" }],
+    });
+  });
+
   it("does not advertise an older page when only one oversized message was content-truncated", async () => {
     const { ledger, store } = await setup();
     const owner = await createUser(store, "single-history");

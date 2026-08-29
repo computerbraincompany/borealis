@@ -30,6 +30,7 @@ import {
   captureQueryResult,
   executeTool,
   makeReportPayload,
+  numberRetrievedPassages,
   sanitizeRetrievedEvidence,
   type ToolRunContext,
 } from "../tools.js";
@@ -110,6 +111,11 @@ describe("source-scoped tools", () => {
     expect(itemValue).toMatchObject({ minimum: 0, maximum: 1_000_000_000_000_000 });
   });
 
+  it("directs the model to cite retrieved passages by bracketed number", () => {
+    const definition = TOOL_DEFS.find((candidate) => candidate.function.name === "retrieve") as any;
+    expect(definition.function.description).toContain("bracketed citation numbers, like [1]");
+  });
+
   it("passes the snapshotted ready source ids to retrieval", async () => {
     const runContext = context();
     retrieveMock.mockResolvedValueOnce([
@@ -123,7 +129,9 @@ describe("source-scoped tools", () => {
     ]);
     const result = await executeTool("account", "retrieve", { query: "canary", top_k: 3 }, runContext);
     expect(retrieveMock).toHaveBeenCalledWith("account", "canary", [SOURCE_A], 3, undefined);
-    expect(result.passages).toEqual([{ source: "Allowed.csv", score: 0.875, content: "A grounded passage" }]);
+    expect(result.passages).toEqual([{ n: 1, source: "Allowed.csv", score: 0.875, content: "A grounded passage" }]);
+    expect(result.trust).toBe("untrusted_source_content");
+    expect(result.instruction).toContain("citation number in brackets, like [2]");
     expect(runContext.evidence).toEqual([
       {
         source_id: SOURCE_A,
@@ -485,6 +493,79 @@ describe("retrieved evidence sanitizer", () => {
     await executeTool("account", "retrieve", { query: "second" }, runContext);
 
     expect(runContext.evidence.map((entry) => entry.chunk_id)).toEqual(["0", "1", "2", "3", "4", "5", "6", "7"]);
+  });
+});
+
+describe("retrieve citation numbering", () => {
+  it("numbers every retained passage with its 1-based evidence position", () => {
+    const returned = [
+      { chunk_id: "41", source_id: SOURCE_A, source: "Allowed.csv", content: "first", score: 0.9 },
+      { chunk_id: "42", source_id: SOURCE_B, source: "Other.csv", content: "second", score: 0.8 },
+    ];
+    expect(numberRetrievedPassages(returned, sanitizeRetrievedEvidence(returned))).toEqual([
+      { n: 1, source: "Allowed.csv", score: 0.9, content: "first" },
+      { n: 2, source: "Other.csv", score: 0.8, content: "second" },
+    ]);
+  });
+
+  it("leaves passages dropped by the evidence cap unnumbered", () => {
+    const prior = Array.from({ length: 6 }, (_, index) => ({
+      chunk_id: String(index),
+      source_id: SOURCE_A,
+      source: "Allowed",
+      content: `prior ${index}`,
+      score: 0.9,
+    }));
+    const returned = Array.from({ length: 6 }, (_, index) => ({
+      chunk_id: String(index + 6),
+      source_id: SOURCE_A,
+      source: "Allowed",
+      content: `new ${index}`,
+      score: 0.8,
+    }));
+    const evidence = sanitizeRetrievedEvidence([...prior, ...returned]);
+
+    const numbered = numberRetrievedPassages(returned, evidence);
+
+    expect(numbered.map((passage) => passage.n)).toEqual([7, 8, undefined, undefined, undefined, undefined]);
+    expect(numbered[2]).toEqual({ source: "Allowed", score: 0.8, content: "new 2" });
+    expect(numbered[5]).toEqual({ source: "Allowed", score: 0.8, content: "new 5" });
+  });
+
+  it("does not number a duplicate chunk dropped by the sanitizer", () => {
+    const first = { chunk_id: "41", source_id: SOURCE_A, source: "Allowed", content: "first", score: 0.9 };
+    const duplicate = { ...first, content: "duplicate content", score: 0.5 };
+    const fresh = { chunk_id: "42", source_id: SOURCE_B, source: "Other", content: "fresh", score: 0.7 };
+
+    const numbered = numberRetrievedPassages(
+      [first, duplicate, fresh],
+      sanitizeRetrievedEvidence([first, duplicate, fresh])
+    );
+
+    expect(numbered).toEqual([
+      { n: 1, source: "Allowed", score: 0.9, content: "first" },
+      { source: "Allowed", score: 0.5, content: "duplicate content" },
+      { n: 2, source: "Other", score: 0.7, content: "fresh" },
+    ]);
+  });
+
+  it("numbers retrieved passages by their position in the merged run evidence", async () => {
+    const runContext = context();
+    retrieveMock.mockResolvedValueOnce([
+      { chunk_id: "41", source_id: SOURCE_A, source: "Allowed.csv", content: "first", score: 0.9 },
+    ]);
+    const first = await executeTool("account", "retrieve", { query: "one" }, runContext);
+    expect(first.passages).toEqual([{ n: 1, source: "Allowed.csv", score: 0.9, content: "first" }]);
+
+    retrieveMock.mockResolvedValueOnce([
+      { chunk_id: "42", source_id: SOURCE_B, source: "Pending.csv", content: "second", score: 0.8 },
+      { chunk_id: "41", source_id: SOURCE_A, source: "Allowed.csv", content: "first again", score: 0.7 },
+    ]);
+    const second = await executeTool("account", "retrieve", { query: "two" }, runContext);
+    expect(second.passages).toEqual([
+      { n: 2, source: "Pending.csv", score: 0.8, content: "second" },
+      { n: 1, source: "Allowed.csv", score: 0.7, content: "first again" },
+    ]);
   });
 });
 

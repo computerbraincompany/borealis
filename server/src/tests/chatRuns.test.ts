@@ -32,6 +32,7 @@ vi.mock("../storageRuntime.js", () => ({
 vi.mock("../reportCleanup.js", () => ({ completeReportArtifactCleanup: mocks.completeReportArtifactCleanup }));
 vi.mock("../storageArtifacts.js", () => ({ removeReportArtifacts: mocks.removeReportArtifacts }));
 
+import type { CitationRef } from "../citations.js";
 import {
   beginRun,
   cancelRun,
@@ -50,6 +51,7 @@ const completion = Object.freeze({
     model: "chat-model",
     source_mode: "selected" as const,
     source_ids: [] as string[],
+    citations: [] as CitationRef[],
     evidence: [],
     query_results: [],
   }),

@@ -58,6 +58,7 @@ function completion() {
       model: "saved-chat-model",
       source_mode: "selected" as const,
       source_ids: [],
+      citations: [],
       evidence: [],
       query_results: [],
     },

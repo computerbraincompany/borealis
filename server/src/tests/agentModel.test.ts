@@ -75,6 +75,7 @@ describe("runAgent model snapshot", () => {
         model: "selected-chat-model",
         source_mode: "selected",
         source_ids: [],
+        citations: [],
         evidence: [],
         query_results: [],
       },
@@ -137,6 +138,73 @@ describe("runAgent model snapshot", () => {
     expect(completion.meta.evidence).toEqual(evidence);
     expect(completion.meta.query_results).toEqual([]);
     expect(emitted.every((event) => event.type !== "message" && event.type !== "delta")).toBe(true);
+  });
+
+  it("resolves cited markers into citation metadata derived from the run's own evidence", async () => {
+    const evidence = [
+      {
+        source_id: "11111111-1111-4111-8111-111111111111",
+        chunk_id: "41",
+        source: "Allowed.pdf",
+        excerpt: "A grounded passage",
+        score: 0.91,
+      },
+      {
+        source_id: "22222222-2222-4222-8222-222222222222",
+        chunk_id: "42",
+        source: "Other.pdf",
+        excerpt: "Another passage",
+        score: 0.81,
+      },
+    ];
+    listDatasetCatalogMock.mockResolvedValue({ datasets: [], total: 0, returned: 0, omitted: 0, truncated: false });
+    streamingChatMock
+      .mockResolvedValueOnce({
+        choices: [
+          {
+            message: {
+              role: "assistant",
+              content: "",
+              tool_calls: [
+                {
+                  id: "retrieve-1",
+                  type: "function",
+                  function: { name: "retrieve", arguments: '{"query":"grounding"}' },
+                },
+              ],
+            },
+          },
+        ],
+      } as any)
+      .mockResolvedValueOnce({
+        choices: [
+          {
+            message: {
+              role: "assistant",
+              content: "Grounded claim [2] with unresolved [5], invalid [0], and repeated [2].",
+              tool_calls: [],
+            },
+          },
+        ],
+      } as any);
+    executeToolMock.mockImplementationOnce(async (_accountId, _name, _args, context) => {
+      context.evidence = evidence;
+      return { passages: [] };
+    });
+
+    const completion = await runAgent({
+      accountId: "account-1",
+      chatId: "chat-1",
+      runId: "11111111-1111-4111-8111-111111111111",
+      content: "question",
+      model: "selected-chat-model",
+      sourceScope: emptyScope,
+      emit: () => {},
+    });
+
+    expect(completion.meta.citations).toEqual([
+      { n: 2, source_id: "22222222-2222-4222-8222-222222222222", chunk_id: "42", source: "Other.pdf" },
+    ]);
   });
 
   it("persists and emits query artifacts without dropping prior evidence metadata", async () => {
@@ -213,6 +281,7 @@ describe("runAgent model snapshot", () => {
       model: "selected-chat-model",
       source_mode: "selected",
       source_ids: [],
+      citations: [],
       evidence,
       query_results: queryResults,
     });
@@ -270,6 +339,7 @@ describe("runAgent model snapshot", () => {
       model: "selected-chat-model",
       source_mode: "selected",
       source_ids: [],
+      citations: [],
       evidence,
       query_results: [],
     });
