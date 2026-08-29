@@ -731,6 +731,35 @@ export const consentApi = {
   acknowledge: () => api<RemoteEgressState>("/api/consent/remote-egress", { method: "POST" }),
 };
 
+// ------------------------------------------------------------------ libraries
+export interface LibrarySummary {
+  id: string;
+  name: string;
+  member_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface LibraryDetail extends LibrarySummary {
+  members: Source[];
+}
+
+export const MAX_LIBRARY_MEMBERS = 100;
+
+export const librariesApi = {
+  list: () => api<LibrarySummary[]>("/api/libraries"),
+  create: (name: string) => api<LibrarySummary>("/api/libraries", { method: "POST", body: JSON.stringify({ name }) }),
+  get: (id: string) => api<LibraryDetail>(`/api/libraries/${id}`),
+  rename: (id: string, name: string) =>
+    api<LibrarySummary>(`/api/libraries/${id}`, { method: "PATCH", body: JSON.stringify({ name }) }),
+  setMembers: (id: string, sourceIds: string[]) =>
+    api<{ ok: true }>(`/api/libraries/${id}/sources`, {
+      method: "PUT",
+      body: JSON.stringify({ source_ids: sourceIds }),
+    }),
+  remove: (id: string) => api<{ ok: true }>(`/api/libraries/${id}`, { method: "DELETE" }),
+};
+
 // ------------------------------------------------------------------ sources
 export const sourcesApi = {
   list: async () => parseSourceListPayload(await api<unknown>("/api/sources")),
