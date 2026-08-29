@@ -24,6 +24,16 @@ export const connectorBodySchema = {
   },
 } as const;
 
+export const connectorScheduleBodySchema = {
+  type: "object",
+  required: ["schedule_minutes"],
+  additionalProperties: false,
+  properties: {
+    // null removes the derived schedule; otherwise the automation interval.
+    schedule_minutes: { type: ["integer", "null"], minimum: 15, maximum: 10_080 },
+  },
+} as const;
+
 export const sourceScopeBodySchema = {
   type: "object",
   description:

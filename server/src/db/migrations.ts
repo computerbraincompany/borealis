@@ -1,6 +1,6 @@
 import { SqliteMigrationError } from "./types.js";
 
-export const LATEST_SQLITE_SCHEMA_VERSION = 9;
+export const LATEST_SQLITE_SCHEMA_VERSION = 10;
 
 interface MigrationDatabase {
   exec(sql: string): unknown;
@@ -447,6 +447,21 @@ CREATE TABLE automation_runs (
 CREATE INDEX automation_runs_automation_idx ON automation_runs (automation_id, started_at DESC);
 `;
 
+const SCHEMA_V10 = `
+CREATE TABLE connector_syncs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  connector_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  trigger TEXT NOT NULL CHECK (trigger IN ('create','manual','scheduled')),
+  outcome TEXT NOT NULL CHECK (outcome IN ('succeeded','failed','skipped')),
+  detail TEXT CHECK (detail IS NULL OR length(detail) <= 200),
+  started_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  finished_at TEXT,
+  FOREIGN KEY (connector_id, account_id) REFERENCES connectors(id, account_id) ON DELETE CASCADE
+) STRICT;
+CREATE INDEX connector_syncs_connector_idx ON connector_syncs (connector_id, started_at DESC);
+`;
+
 const migrations = [
   { version: 1, sql: SCHEMA_V1 },
   { version: 2, sql: SCHEMA_V2 },
@@ -457,6 +472,7 @@ const migrations = [
   { version: 7, sql: SCHEMA_V7 },
   { version: 8, sql: SCHEMA_V8 },
   { version: 9, sql: SCHEMA_V9 },
+  { version: 10, sql: SCHEMA_V10 },
 ] as const;
 
 function schemaVersion(database: MigrationDatabase): number {

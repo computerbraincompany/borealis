@@ -122,18 +122,28 @@ export class AutomationStore {
     const nextRun = new Date((input.now ?? new Date()).getTime() + schedule * 60_000).toISOString();
     try {
       await this.ledger.withImmediateTransaction(async (transaction) => {
+        if (kind === "connector_sync") {
+          const owned = transaction.get("SELECT 1 FROM connectors WHERE id=? AND account_id=?", [targetId, accountId]);
+          if (!owned) throw new AutomationValidationError("target_id must reference a connector of this account");
+          // M09: at most one connector_sync automation per connector. The
+          // connector's schedule surface derives from this single row; silent
+          // duplicates would make the schedule ambiguous.
+          const duplicate = transaction.get(
+            "SELECT 1 FROM automations WHERE account_id=? AND kind='connector_sync' AND target_id=?",
+            [accountId, targetId]
+          );
+          if (duplicate) {
+            throw new AutomationValidationError("this connector already has a connector_sync automation");
+          }
+        } else {
+          const owned = transaction.get("SELECT 1 FROM chats WHERE id=? AND account_id=?", [targetId, accountId]);
+          if (!owned) throw new AutomationValidationError("target_id must reference a chat of this account");
+        }
         transaction.run(
           `INSERT INTO automations (id,account_id,name,kind,target_id,prompt,schedule_minutes,next_run_at,created_at,updated_at)
            VALUES (?,?,?,?,?,?,?,?,?,?)`,
           [id, accountId, name, kind, targetId, prompt, schedule, nextRun, at, at]
         );
-        if (kind === "connector_sync") {
-          const owned = transaction.get("SELECT 1 FROM connectors WHERE id=? AND account_id=?", [targetId, accountId]);
-          if (!owned) throw new AutomationValidationError("target_id must reference a connector of this account");
-        } else {
-          const owned = transaction.get("SELECT 1 FROM chats WHERE id=? AND account_id=?", [targetId, accountId]);
-          if (!owned) throw new AutomationValidationError("target_id must reference a chat of this account");
-        }
       });
     } catch (error) {
       if (error instanceof SqliteConstraintError && error.kind === "unique") {
@@ -251,6 +261,48 @@ export class AutomationStore {
         finished_at: row.finished_at === null || row.finished_at === undefined ? null : String(row.finished_at),
       })
     );
+  }
+
+  /**
+   * Connector_sync automations grouped by target connector id. The derived
+   * connector schedule surface only exposes targets with exactly one linked
+   * automation; legacy multiples surface through the PUT 409 instead of a
+   * guessed row.
+   */
+  async listConnectorSyncsForTargets(
+    accountIdValue: string,
+    targetIds: readonly string[]
+  ): Promise<Map<string, Automation[]>> {
+    const accountId = requiredId(accountIdValue, "account id");
+    const ids = [...new Set(targetIds.filter((id) => typeof id === "string" && id.length >= 1))];
+    const grouped = new Map<string, Automation[]>();
+    if (!ids.length) return grouped;
+    const placeholders = ids.map(() => "?").join(",");
+    const rows = await this.ledger.all<AutomationRow>(
+      `SELECT * FROM automations WHERE account_id=? AND kind='connector_sync' AND target_id IN (${placeholders})
+       ORDER BY created_at DESC,id DESC`,
+      [accountId, ...ids]
+    );
+    for (const row of rows) {
+      const automation = this.decode(row);
+      const existing = grouped.get(automation.target_id);
+      if (existing) existing.push(automation);
+      else grouped.set(automation.target_id, [automation]);
+    }
+    return grouped;
+  }
+
+  /**
+   * Teardown helper for connector deletion: removes every connector_sync
+   * automation bound to the connector (runs cascade via the automation_runs
+   * foreign key). Idempotent; returns the number of removed automations.
+   */
+  async deleteConnectorAutomations(accountIdValue: string, connectorIdValue: string): Promise<number> {
+    const deleted = await this.ledger.run(
+      "DELETE FROM automations WHERE account_id=? AND kind='connector_sync' AND target_id=?",
+      [requiredId(accountIdValue, "account id"), requiredId(connectorIdValue, "connector id")]
+    );
+    return deleted.changes;
   }
 
   /**

@@ -6,6 +6,7 @@ import { runAgent } from "./agent.js";
 import { acceptChatTurn } from "./turnContext.js";
 import { ActiveChatRunError } from "./db/stores/chatStore.js";
 import { AutomationStore } from "./automationStore.js";
+import { recordConnectorSync } from "./connectorSyncHistory.js";
 import { storageRuntime } from "./storageRuntime.js";
 import { SourceScopeError } from "./sourceScope.js";
 
@@ -32,20 +33,42 @@ export function createAutomationRunner(dependencies: AutomationRunnerDependencie
   let ticking = false;
 
   async function executeConnectorSync(automationId: string, accountId: string, connectorId: string): Promise<void> {
+    const startedAt = now().toISOString();
     const connector = await storageRuntime().sources.getConnector(accountId, connectorId);
     if (!connector) {
       await store.recordRun(automationId, accountId, "failed", "the bound connector no longer exists");
+      // The v10 foreign key rejects history for a deleted connector; the write
+      // is best effort and stays silent there.
+      await recordConnectorSync({
+        accountId,
+        connectorId,
+        trigger: "scheduled",
+        outcome: "failed",
+        detail: "the bound connector no longer exists",
+        startedAt,
+      });
       return;
     }
     if (connector.syncStatus === "syncing" || connector.syncStatus === "indexing") {
       await store.recordRun(automationId, accountId, "skipped", "a sync was already active");
+      await recordConnectorSync({
+        accountId,
+        connectorId,
+        trigger: "scheduled",
+        outcome: "skipped",
+        detail: "a sync was already active",
+        startedAt,
+      });
       return;
     }
     try {
       await dependencies.syncConnector(accountId, connectorId);
       await store.recordRun(automationId, accountId, "succeeded", null);
+      await recordConnectorSync({ accountId, connectorId, trigger: "scheduled", outcome: "succeeded", startedAt });
     } catch (error) {
-      await store.recordRun(automationId, accountId, "failed", safeDetail(error));
+      const detail = safeDetail(error);
+      await store.recordRun(automationId, accountId, "failed", detail);
+      await recordConnectorSync({ accountId, connectorId, trigger: "scheduled", outcome: "failed", detail, startedAt });
     }
   }
 

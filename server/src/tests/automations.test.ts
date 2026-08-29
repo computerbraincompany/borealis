@@ -10,6 +10,7 @@ import { installHttpBoundary } from "../httpErrors.js";
 import { automationRoutes } from "../routes/automations.js";
 import { closeStorageRuntime, initializeStorageRuntime, storageRuntime } from "../storageRuntime.js";
 import { LATEST_SQLITE_SCHEMA_VERSION } from "../db/migrations.js";
+import { SourceScopeError } from "../sourceScope.js";
 
 const OWNER = "11111111-1111-4111-8111-111111111111";
 const FOREIGN = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -78,6 +79,64 @@ describe("automation store and schema", () => {
       "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('automations','automation_runs')"
     );
     expect(tables.map((table) => table.name).sort()).toEqual(["automation_runs", "automations"]);
+  });
+
+  it("allows only one connector_sync automation per connector", async () => {
+    const app = await buildApp();
+    const connectorId = await insertConnector(OWNER);
+    const first = await app.inject({
+      method: "POST",
+      url: "/api/automations",
+      headers: ownerAuth,
+      body: { name: "First sync", kind: "connector_sync", target_id: connectorId, schedule_minutes: 60 },
+    });
+    expect(first.statusCode).toBe(201);
+
+    const second = await app.inject({
+      method: "POST",
+      url: "/api/automations",
+      headers: ownerAuth,
+      body: { name: "Second sync", kind: "connector_sync", target_id: connectorId, schedule_minutes: 30 },
+    });
+    expect(second.statusCode).toBe(400);
+    expect(second.json()).toEqual({ error: "this connector already has a connector_sync automation" });
+  });
+
+  it("removes only the bound connector's connector_sync automations", async () => {
+    const app = await buildApp();
+    const connectorId = await insertConnector(OWNER);
+    const otherConnectorId = await insertConnector(OWNER);
+    const chatId = await insertChat(OWNER);
+    async function createAutomation(body: Record<string, unknown>): Promise<string> {
+      const response = await app.inject({ method: "POST", url: "/api/automations", headers: ownerAuth, body });
+      expect(response.statusCode).toBe(201);
+      return response.json().id as string;
+    }
+    const boundSync = await createAutomation({
+      name: "Bound sync",
+      kind: "connector_sync",
+      target_id: connectorId,
+      schedule_minutes: 60,
+    });
+    const otherSync = await createAutomation({
+      name: "Other sync",
+      kind: "connector_sync",
+      target_id: otherConnectorId,
+      schedule_minutes: 60,
+    });
+    const digest = await createAutomation({
+      name: "Digest",
+      kind: "agent_turn",
+      target_id: chatId,
+      prompt: "Summarize the attached sources for the team.",
+      schedule_minutes: 60,
+    });
+
+    await expect(storageRuntime().automations.deleteConnectorAutomations(OWNER, connectorId)).resolves.toBe(1);
+    await expect(storageRuntime().automations.get(OWNER, boundSync)).resolves.toBeUndefined();
+    await expect(storageRuntime().automations.get(OWNER, otherSync)).resolves.toBeDefined();
+    await expect(storageRuntime().automations.get(OWNER, digest)).resolves.toBeDefined();
+    await expect(storageRuntime().automations.deleteConnectorAutomations(OWNER, connectorId)).resolves.toBe(0);
   });
 
   it("validates kind-specific targets and bounds", async () => {
@@ -238,6 +297,94 @@ describe("automation runner", () => {
     await runner.tick();
     expect(calls).toBe(5);
     void randomUUID;
+  });
+
+  it("records scheduled connector sync history for succeeded, failed, and skipped runs", async () => {
+    const app = await buildApp();
+    const connectorId = await insertConnector(OWNER);
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/automations",
+      headers: ownerAuth,
+      body: { name: "Scheduled sync", kind: "connector_sync", target_id: connectorId, schedule_minutes: 15 },
+    });
+    expect(created.statusCode).toBe(201);
+    const automationId = created.json().id as string;
+
+    const syncConnector = vi.fn<(accountId: string, connectorId: string) => Promise<unknown>>();
+    const runner = createAutomationRunner({
+      store: storageRuntime().automations,
+      syncConnector,
+      tickIntervalMs: 10_000,
+      // Each tick's clock advances past the previous reschedule.
+      now: (() => {
+        let tick = Date.now() + 60 * 60 * 1000;
+        return () => new Date((tick += 16 * 60_000));
+      })(),
+    });
+
+    syncConnector.mockResolvedValueOnce({});
+    await runner.tick();
+    syncConnector.mockRejectedValueOnce(new SourceScopeError(409, "the connector could not be refreshed"));
+    await runner.tick();
+    await storageRuntime().ledger.run("UPDATE connectors SET sync_status='syncing' WHERE id=?", [connectorId]);
+    await runner.tick();
+
+    const history = await storageRuntime().ledger.all<{
+      trigger: string;
+      outcome: string;
+      detail: string | null;
+      finished_at: string | null;
+    }>("SELECT trigger,outcome,detail,finished_at FROM connector_syncs ORDER BY id");
+    expect(history).toEqual([
+      { trigger: "scheduled", outcome: "succeeded", detail: null, finished_at: expect.any(String) },
+      {
+        trigger: "scheduled",
+        outcome: "failed",
+        detail: "the connector could not be refreshed",
+        finished_at: expect.any(String),
+      },
+      {
+        trigger: "scheduled",
+        outcome: "skipped",
+        detail: "a sync was already active",
+        finished_at: expect.any(String),
+      },
+    ]);
+
+    const runs = await app.inject({ method: "GET", url: `/api/automations/${automationId}/runs`, headers: ownerAuth });
+    expect((runs.json() as Array<{ outcome: string }>).map((run) => run.outcome)).toEqual([
+      "skipped",
+      "failed",
+      "succeeded",
+    ]);
+  });
+
+  it("keeps scheduled history best effort when the bound connector is gone", async () => {
+    const app = await buildApp();
+    const connectorId = await insertConnector(OWNER);
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/automations",
+      headers: ownerAuth,
+      body: { name: "Dangling sync", kind: "connector_sync", target_id: connectorId, schedule_minutes: 15 },
+    });
+    const automationId = created.json().id as string;
+    await storageRuntime().ledger.run("DELETE FROM connectors WHERE id=?", [connectorId]);
+
+    const runner = createAutomationRunner({
+      store: storageRuntime().automations,
+      syncConnector: vi.fn(),
+      tickIntervalMs: 10_000,
+      now: () => new Date(Date.now() + 60 * 60 * 1000),
+    });
+    await expect(runner.tick()).resolves.toBeUndefined();
+
+    const runs = await app.inject({ method: "GET", url: `/api/automations/${automationId}/runs`, headers: ownerAuth });
+    expect(runs.json()[0]).toMatchObject({ outcome: "failed", detail: "the bound connector no longer exists" });
+    // The history foreign key rejects rows for a deleted connector; the write
+    // is swallowed and records nothing.
+    await expect(storageRuntime().ledger.all("SELECT 1 FROM connector_syncs")).resolves.toEqual([]);
   });
 
   it("skips agent turns while the bound chat is busy and runs them when free", async () => {
