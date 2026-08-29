@@ -26,6 +26,7 @@ horizon, scoped so it can be verified without the next one.
 | [M07](M07-team-platform.md) | 3 | Small-team platform — sharing snapshots, audit plane, automations | DONE |
 | [M08](M08-citations.md) | 2 | Citations — numbered, clickable evidence that survives diligence review | DONE |
 | [M09](M09-connector-platform.md) | 2 | Connector platform surface — schedules on the connector, sync history, clean teardown | DONE |
+| [M10](M10-composer-instrument.md) | 1 | The composer as one instrument — libraries in the scope picker, answer typography | PLANNED |
 
 Unwritten specs are placeholders; a milestone gets its numbered file when its
 turn comes. Sequencing notes:
