@@ -1,6 +1,7 @@
 import path from "node:path";
 
 import { ChatStore } from "./db/stores/chatStore.js";
+import { AgentStore } from "./db/stores/agentStore.js";
 import { SqliteIngestionStore } from "./db/stores/ingestionStore.js";
 import { LibraryStore } from "./db/stores/libraryStore.js";
 import { RunStore } from "./db/stores/runStore.js";
@@ -25,6 +26,7 @@ export interface StorageRuntime {
   readonly runs: RunStore;
   readonly sources: SourceStore;
   readonly libraries: LibraryStore;
+  readonly agents: AgentStore;
   readonly sourceIngestion: SourceIngestionTransitions;
   readonly ingestion: SqliteIngestionStore;
   readonly vectors: LanceVectorIndex;
@@ -80,6 +82,7 @@ export async function initializeStorageRuntime(optionsValue: StorageRuntimeOptio
         chats: new ChatStore(ledger),
         runs: new RunStore(ledger),
         libraries: new LibraryStore(ledger),
+        agents: new AgentStore(ledger),
         sources: new SourceStore(ledger),
         sourceIngestion: new SourceIngestionTransitions(ledger),
         ingestion,
