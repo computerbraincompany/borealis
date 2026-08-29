@@ -324,4 +324,5 @@ export const config = {
 
   uploadDir: canonicalStorageDirectory(process.env.UPLOAD_DIR || path.join(storageDir, "uploads")),
   reportDir: canonicalStorageDirectory(process.env.REPORT_DIR || path.join(storageDir, "reports")),
+  containedDir: canonicalStorageDirectory(process.env.CONTAINED_DIR || path.join(storageDir, "models")),
 };
