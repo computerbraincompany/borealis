@@ -877,7 +877,8 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
     firstSubmitInFlightRef.current = true;
     firstSubmitTargetChatIdRef.current = null;
     firstSubmitSetupCompleteRef.current = false;
-    const selectedModel = newChatModelSelection ?? modelCatalog?.default_model ?? null;
+    const selectedModel =
+      newChatModelSelection ?? modelCatalog?.account_default_model ?? modelCatalog?.default_model ?? null;
     const selectedAgentId = newChatAgentSelection;
     const selectedSourceScope: SourceScopeInput =
       newChatSourceScope.source_mode === "all"
@@ -979,7 +980,11 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
   const isTitleSaving = detail ? Boolean(titleSavingByChat[detail.id]) : false;
   const modelDiscovery = modelCatalog?.discovery ?? (modelCatalogError ? "unavailable" : null);
   const modelOptions = modelCatalog?.models ?? [];
-  const newChatModel = newChatModelSelection ?? modelCatalog?.default_model ?? "Server default model";
+  const newChatModel =
+    newChatModelSelection ??
+    modelCatalog?.account_default_model ??
+    modelCatalog?.default_model ??
+    "Server default model";
   const newChatAttachedSources =
     newChatSourceScope.source_mode === "selected"
       ? newChatSourceScope.source_ids.flatMap((id) => {

@@ -12,6 +12,7 @@ function deferred<T>() {
 
 const liveCatalog: ModelsResponse = {
   default_model: "qwen-chat",
+  account_default_model: null,
   discovery: "live",
   models: [{ id: "qwen-chat", owned_by: "local" }],
 };
@@ -53,11 +54,13 @@ describe("useModelCatalog", () => {
     const newer = deferred<ModelsResponse>();
     const newerCatalog: ModelsResponse = {
       default_model: "new-default",
+      account_default_model: null,
       discovery: "live",
       models: [{ id: "new-default" }],
     };
     const olderCatalog: ModelsResponse = {
       default_model: "old-default",
+      account_default_model: null,
       discovery: "live",
       models: [{ id: "old-default" }],
     };

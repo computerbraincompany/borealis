@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Activity,
   Check,
@@ -24,7 +24,7 @@ import { useModelCatalog } from "@/hooks/useModelCatalog";
 import { useProviderSettings } from "@/hooks/useProviderSettings";
 import { useSystemHealth } from "@/hooks/useSystemHealth";
 import { useEgressAudit } from "@/hooks/useEgressAudit";
-import { clearSession, getUser } from "@/lib/api";
+import { clearSession, formatApiError, getUser, preferencesApi } from "@/lib/api";
 import { hasDesktopBridge } from "@/lib/desktopBootstrap";
 import { cn } from "@/lib/utils";
 
@@ -50,6 +50,11 @@ const APPEARANCE_OPTIONS: Array<{
 
 interface SettingsViewProps {
   onClose?: () => void;
+}
+
+interface PersonalDefaultFeedback {
+  kind: "error" | "success";
+  message: string;
 }
 
 function ManagedByEnvironment() {
@@ -88,6 +93,68 @@ export function SettingsView({ onClose }: SettingsViewProps) {
   const clearProviderApiKey = async () => {
     if (await provider.clearApiKey()) void refresh(true);
   };
+
+  const [personalDefault, setPersonalDefault] = useState<string | null>(null);
+  const [personalDefaultLoading, setPersonalDefaultLoading] = useState(true);
+  const [personalDefaultLoadError, setPersonalDefaultLoadError] = useState<string | null>(null);
+  const [personalDefaultSaving, setPersonalDefaultSaving] = useState(false);
+  const [personalDefaultFeedback, setPersonalDefaultFeedback] = useState<PersonalDefaultFeedback | null>(null);
+  const personalDefaultOpenedRef = useRef(false);
+  const personalDefaultSavingRef = useRef(false);
+
+  const loadPersonalDefault = useCallback(async () => {
+    setPersonalDefaultLoading(true);
+    setPersonalDefaultLoadError(null);
+    try {
+      const next = await preferencesApi.get();
+      setPersonalDefault(typeof next.default_chat_model === "string" ? next.default_chat_model : null);
+      setPersonalDefaultLoading(false);
+    } catch (failure: unknown) {
+      setPersonalDefaultLoading(false);
+      setPersonalDefaultLoadError(formatApiError(failure, "The personal default model could not be loaded."));
+    }
+  }, []);
+
+  useEffect(() => {
+    if (section !== "account" || personalDefaultOpenedRef.current) return;
+    personalDefaultOpenedRef.current = true;
+    void loadPersonalDefault();
+  }, [section, loadPersonalDefault]);
+
+  const retryPersonalDefaultLoad = () => {
+    void loadPersonalDefault();
+  };
+
+  const savePersonalDefault = async (value: string | null) => {
+    if (personalDefaultSavingRef.current) return;
+    personalDefaultSavingRef.current = true;
+    const previous = personalDefault;
+    setPersonalDefault(value);
+    setPersonalDefaultSaving(true);
+    setPersonalDefaultFeedback(null);
+    try {
+      const next = await preferencesApi.set(value);
+      setPersonalDefault(typeof next.default_chat_model === "string" ? next.default_chat_model : value);
+      setPersonalDefaultFeedback({
+        kind: "success",
+        message:
+          value === null
+            ? "Personal default cleared. New chats will use the workspace default."
+            : "Personal default model saved. New chats will start with it.",
+      });
+    } catch (failure: unknown) {
+      setPersonalDefault(previous);
+      setPersonalDefaultFeedback({
+        kind: "error",
+        message: formatApiError(failure, "The personal default model could not be saved."),
+      });
+    } finally {
+      personalDefaultSavingRef.current = false;
+      setPersonalDefaultSaving(false);
+    }
+  };
+
+  const personalModelOptions = catalog?.models ?? [];
 
   return (
     <Dialog
@@ -611,7 +678,9 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                   <h2 id="settings-account-heading" className="text-xl font-semibold tracking-tight text-foreground">
                     Account
                   </h2>
-                  <p className="mt-1 text-sm text-muted-foreground">View the signed-in account or end this session.</p>
+                  <p className="mt-1 text-sm text-muted-foreground">
+                    View the signed-in account, choose a personal default model, or end this session.
+                  </p>
                 </header>
                 <div className="flex flex-col gap-5 py-5 sm:flex-row sm:items-center sm:justify-between">
                   <div className="flex min-w-0 items-center gap-3">
@@ -634,6 +703,66 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                       <LogOut /> Sign out
                     </Button>
                   )}
+                </div>
+                <div className="border-t py-5">
+                  <h3 className="text-sm font-semibold text-foreground">Personal default model</h3>
+                  <p className="mt-1 max-w-prose text-xs leading-5 text-muted-foreground">
+                    New chats start with this model instead of the workspace default. Existing chats keep their own
+                    model.
+                  </p>
+                  {personalDefaultLoading ? (
+                    <div
+                      className="mt-3 h-9 w-full max-w-xs animate-pulse rounded-md bg-secondary"
+                      aria-label="Loading personal default model"
+                    />
+                  ) : personalDefaultLoadError ? (
+                    <div className="mt-3 rounded-lg border border-destructive/30 bg-destructive/10 p-4" role="alert">
+                      <p className="text-sm text-destructive">{personalDefaultLoadError}</p>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="mt-3"
+                        onClick={retryPersonalDefaultLoad}
+                      >
+                        <RefreshCw /> Try again
+                      </Button>
+                    </div>
+                  ) : (
+                    <div className="mt-3 w-full max-w-xs">
+                      <Label htmlFor="settings-personal-default-model">Personal default model</Label>
+                      <select
+                        id="settings-personal-default-model"
+                        value={personalDefault ?? ""}
+                        disabled={personalDefaultSaving}
+                        onChange={(event) =>
+                          void savePersonalDefault(event.target.value === "" ? null : event.target.value)
+                        }
+                        className="mt-2 h-9 w-full rounded-md border bg-background px-2 text-sm"
+                      >
+                        <option value="">Workspace default</option>
+                        {personalDefault !== null &&
+                          !personalModelOptions.some((option) => option.id === personalDefault) && (
+                            <option value={personalDefault}>{personalDefault}</option>
+                          )}
+                        {personalModelOptions.map((option) => (
+                          <option key={option.id} value={option.id}>
+                            {option.id}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+                  <div className="mt-2 min-h-5 text-xs" aria-live="polite">
+                    {personalDefaultFeedback && (
+                      <p
+                        role={personalDefaultFeedback.kind === "error" ? "alert" : "status"}
+                        className={personalDefaultFeedback.kind === "error" ? "text-destructive" : "text-success"}
+                      >
+                        {personalDefaultFeedback.message}
+                      </p>
+                    )}
+                  </div>
                 </div>
               </section>
             )}

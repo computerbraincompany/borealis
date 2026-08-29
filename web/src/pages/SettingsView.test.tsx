@@ -4,6 +4,8 @@ import { ApiError, type ModelsResponse, type ProviderSettingsResponse, type Syst
 const mocks = vi.hoisted(() => ({
   clearSession: vi.fn(),
   modelCatalog: vi.fn(),
+  preferencesGet: vi.fn(),
+  preferencesSet: vi.fn(),
   refresh: vi.fn(),
   setTheme: vi.fn(),
   settingsGet: vi.fn(),
@@ -37,6 +39,10 @@ vi.mock("@/lib/api", async () => {
       update: mocks.settingsUpdate,
       testConnection: mocks.settingsTest,
     },
+    preferencesApi: {
+      get: mocks.preferencesGet,
+      set: mocks.preferencesSet,
+    },
   };
 });
 
@@ -44,6 +50,7 @@ import { SettingsView } from "@/pages/SettingsView";
 
 const liveCatalog: ModelsResponse = {
   default_model: "qwen-chat",
+  account_default_model: null,
   discovery: "live",
   models: [{ id: "qwen-chat", owned_by: "LM Studio" }, { id: "analysis-large" }],
 };
@@ -115,6 +122,11 @@ describe("SettingsView", () => {
     mocks.clearSession.mockReset();
     delete window.borealisDesktop;
     mocks.refresh.mockReset();
+    mocks.preferencesGet.mockReset();
+    mocks.preferencesSet.mockReset();
+    // Most legacy Settings tests exercise a different section. Keeping this
+    // request pending prevents unrelated assertions from racing a form update.
+    mocks.preferencesGet.mockReturnValue(new Promise(() => undefined));
     mocks.settingsGet.mockReset();
     mocks.settingsTest.mockReset();
     mocks.settingsUpdate.mockReset();
@@ -226,9 +238,65 @@ describe("SettingsView", () => {
     expect(screen.queryByRole("button", { name: "Sign out" })).not.toBeInTheDocument();
   });
 
+  it("renders the saved personal default and saves a catalog model on change", async () => {
+    mocks.preferencesGet.mockResolvedValue({ default_chat_model: "analysis-large" });
+    mocks.preferencesSet.mockResolvedValue({ default_chat_model: "qwen-chat" });
+    render(<SettingsView />);
+    selectSettingsSection("Account");
+
+    const select = await screen.findByLabelText("Personal default model");
+    expect(select).toHaveValue("analysis-large");
+    expect(select).toBeEnabled();
+
+    fireEvent.change(select, { target: { value: "qwen-chat" } });
+    await waitFor(() => expect(mocks.preferencesSet).toHaveBeenCalledWith("qwen-chat"));
+    expect(await screen.findByRole("status")).toHaveTextContent("Personal default model saved.");
+    expect(screen.getByLabelText("Personal default model")).toHaveValue("qwen-chat");
+  });
+
+  it("sends null when the personal default is cleared to the workspace default", async () => {
+    mocks.preferencesGet.mockResolvedValue({ default_chat_model: "qwen-chat" });
+    mocks.preferencesSet.mockResolvedValue({ default_chat_model: null });
+    render(<SettingsView />);
+    selectSettingsSection("Account");
+
+    fireEvent.change(await screen.findByLabelText("Personal default model"), { target: { value: "" } });
+    await waitFor(() => expect(mocks.preferencesSet).toHaveBeenCalledWith(null));
+    expect(await screen.findByRole("status")).toHaveTextContent("Personal default cleared.");
+    expect(screen.getByLabelText("Personal default model")).toHaveValue("");
+  });
+
+  it("surfaces a bounded save error and keeps the previous personal default", async () => {
+    mocks.preferencesGet.mockResolvedValue({ default_chat_model: "qwen-chat" });
+    mocks.preferencesSet.mockRejectedValue(new Error("untrusted provider detail"));
+    render(<SettingsView />);
+    selectSettingsSection("Account");
+
+    const select = await screen.findByLabelText("Personal default model");
+    fireEvent.change(select, { target: { value: "analysis-large" } });
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("The personal default model could not be saved.");
+    expect(screen.queryByText(/untrusted provider detail/i)).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Personal default model")).toHaveValue("qwen-chat");
+  });
+
+  it("offers a retry when the personal default cannot be loaded", async () => {
+    mocks.preferencesGet
+      .mockRejectedValueOnce(new ApiError(503, "Preferences unavailable.", undefined, "preferences-request-3"))
+      .mockResolvedValueOnce({ default_chat_model: "qwen-chat" });
+    render(<SettingsView />);
+    selectSettingsSection("Account");
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Preferences unavailable. (reference: preferences-request-3)",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    expect(await screen.findByLabelText("Personal default model")).toHaveValue("qwen-chat");
+  });
+
   it("explains unavailable and empty discovery states", () => {
     mocks.modelCatalog.mockReturnValue({
-      catalog: { default_model: "qwen-chat", discovery: "unavailable", models: [] },
+      catalog: { default_model: "qwen-chat", account_default_model: null, discovery: "unavailable", models: [] },
       loading: false,
       error: null,
       refresh: mocks.refresh,
@@ -241,7 +309,7 @@ describe("SettingsView", () => {
     unmount();
 
     mocks.modelCatalog.mockReturnValue({
-      catalog: { default_model: "qwen-chat", discovery: "live", models: [] },
+      catalog: { default_model: "qwen-chat", account_default_model: null, discovery: "live", models: [] },
       loading: false,
       error: null,
       refresh: mocks.refresh,

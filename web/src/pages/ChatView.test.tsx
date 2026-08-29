@@ -219,6 +219,7 @@ describe("ChatView orchestration", () => {
     vi.spyOn(modelsApi, "list").mockResolvedValue({
       models: [{ id: "qwen-chat" }],
       default_model: "qwen-chat",
+      account_default_model: null,
       discovery: "live",
     });
     vi.spyOn(sourcesApi, "list").mockResolvedValue([]);
@@ -235,6 +236,7 @@ describe("ChatView orchestration", () => {
     vi.mocked(modelsApi.list).mockResolvedValue({
       models: [],
       default_model: "qwen-chat",
+      account_default_model: null,
       discovery: "unavailable",
     });
 
@@ -398,6 +400,52 @@ describe("ChatView orchestration", () => {
     expect(chatsApi.create).not.toHaveBeenCalled();
   });
 
+  it("starts the new-chat selector at the account default and leaves existing chats unchanged", async () => {
+    const user = userEvent.setup();
+    vi.mocked(modelsApi.list).mockResolvedValue({
+      models: [{ id: "qwen-chat" }, { id: "analysis-chat" }],
+      default_model: "qwen-chat",
+      account_default_model: "analysis-chat",
+      discovery: "live",
+    });
+
+    render(<ChatView />);
+
+    expect(await screen.findByRole("button", { name: "Chat model: analysis-chat" })).toBeEnabled();
+
+    await user.click(await screen.findByRole("button", { name: "Open Alpha" }));
+    expect(await screen.findByRole("button", { name: "Chat model: qwen-chat" })).toBeEnabled();
+  });
+
+  it("resolves a new chat's model from the account default when the composer selection is untouched", async () => {
+    const user = userEvent.setup();
+    const created = { ...chat, id: "chat-new", title: "New chat" };
+    const streamResponse = deferred<void>();
+    vi.mocked(modelsApi.list).mockResolvedValue({
+      models: [{ id: "qwen-chat" }, { id: "analysis-chat" }],
+      default_model: "qwen-chat",
+      account_default_model: "analysis-chat",
+      discovery: "live",
+    });
+    vi.mocked(chatsApi.create).mockResolvedValue(created);
+    vi.mocked(chatsApi.get).mockResolvedValue(detail(created));
+    vi.spyOn(apiModule, "streamAgentChat").mockReturnValue(streamResponse.promise);
+
+    render(<ChatView />);
+    expect(await screen.findByRole("button", { name: "Chat model: analysis-chat" })).toBeEnabled();
+
+    const composer = screen.getByPlaceholderText("Ask Borealis about your data…");
+    await user.type(composer, "use the account default");
+    await user.click(screen.getByTitle("Send"));
+
+    await waitFor(() => expect(apiModule.streamAgentChat).toHaveBeenCalledTimes(1));
+    expect(chatsApi.create).toHaveBeenCalledTimes(1);
+    expect(chatsApi.updateModel).toHaveBeenCalledOnce();
+    expect(chatsApi.updateModel).toHaveBeenCalledWith(created.id, "analysis-chat");
+
+    await act(async () => streamResponse.resolve());
+  });
+
   it("creates once with the selected root scope, saves the selected model, and streams once to that chat", async () => {
     const user = userEvent.setup();
     const created = { ...chat, id: "chat-new", title: "New chat" };
@@ -406,6 +454,7 @@ describe("ChatView orchestration", () => {
     vi.mocked(modelsApi.list).mockResolvedValue({
       models: [{ id: chat.model }, { id: selectedModel }],
       default_model: chat.model,
+      account_default_model: null,
       discovery: "live",
     });
     vi.mocked(sourcesApi.list).mockResolvedValue([source]);
@@ -460,6 +509,7 @@ describe("ChatView orchestration", () => {
     vi.mocked(modelsApi.list).mockResolvedValue({
       models: [{ id: chat.model }, { id: selectedModel }],
       default_model: chat.model,
+      account_default_model: null,
       discovery: "live",
     });
     vi.mocked(chatsApi.create).mockResolvedValue(created);
@@ -491,6 +541,7 @@ describe("ChatView orchestration", () => {
     vi.mocked(modelsApi.list).mockResolvedValue({
       models: [{ id: chat.model }, { id: selectedModel }],
       default_model: chat.model,
+      account_default_model: null,
       discovery: "live",
     });
     vi.mocked(chatsApi.create).mockResolvedValue(created);

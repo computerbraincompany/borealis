@@ -427,7 +427,13 @@ export interface ChatModelOption {
 export interface ModelsResponse {
   models: ChatModelOption[];
   default_model: string;
+  /** The signed-in account's own default chat model; null until set in Settings. */
+  account_default_model: string | null;
   discovery: "live" | "unavailable";
+}
+
+export interface AccountPreferences {
+  default_chat_model: string | null;
 }
 
 export type ProviderSettingName =
@@ -886,6 +892,16 @@ export const settingsApi = {
     api<ProviderSettingsResponse>("/api/settings", { method: "PATCH", body: JSON.stringify(body) }),
   testConnection: (body: ProviderSettingsPatch) =>
     api<ProviderConnectionTestResponse>("/api/settings/test", { method: "POST", body: JSON.stringify(body) }),
+};
+
+// ------------------------------------------------------------------ preferences
+export const preferencesApi = {
+  get: () => api<AccountPreferences>("/api/preferences"),
+  set: (defaultChatModel: string | null) =>
+    api<AccountPreferences>("/api/preferences", {
+      method: "PATCH",
+      body: JSON.stringify({ default_chat_model: defaultChatModel }),
+    }),
 };
 
 // ------------------------------------------------------------------ audit
