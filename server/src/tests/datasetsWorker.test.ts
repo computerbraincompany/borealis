@@ -450,7 +450,7 @@ describe("DuckDB dataset worker", () => {
     } finally {
       await __configureDatasetWorkerForTests({ queryTimeoutMs: 30_000 });
     }
-  });
+  }, 20_000); // seconds under parallel test load; the assertion itself must not flake. // Interrupting a saturating DuckDB aggregation is cooperative and can take
 
   it("lists and catalogs only explicitly requested registered metadata", async () => {
     const accountId = account();
