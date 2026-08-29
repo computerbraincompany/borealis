@@ -177,7 +177,7 @@ function sendConnectorError(reply: FastifyReply, error: unknown) {
   throw error;
 }
 
-async function syncConnector(
+export async function syncConnector(
   accountId: string,
   initialReservation?: ReservedConnectorPrepare,
   connectorId?: string

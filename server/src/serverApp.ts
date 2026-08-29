@@ -10,6 +10,7 @@ import { shutdownActiveRuns, recoverInterruptedRuns } from "./chatRuns.js";
 import { config } from "./config.js";
 import { shutdownDatasetWorker } from "./data/datasets.js";
 import { closeDb, initDb } from "./db.js";
+import { automationRunner } from "./automationRuntime.js";
 import { createDesktopBootstrapSession, type DesktopBootstrapSession } from "./desktopBootstrap.js";
 import { corsOrigin } from "./corsPolicy.js";
 import { installHttpBoundary } from "./httpErrors.js";
@@ -143,6 +144,7 @@ export async function startBorealisServer(options: StartBorealisServerOptions = 
   let workersStarted = false;
   let databaseStarted = false;
   let settingsStarted = false;
+  let automationSchedulerStarted = false;
   try {
     await initializeRuntimeSettings();
     settingsStarted = true;
@@ -153,6 +155,8 @@ export async function startBorealisServer(options: StartBorealisServerOptions = 
     if (interruptedRuns) app.log.warn({ interrupted_runs: interruptedRuns }, "recovered interrupted chat runs");
     await startIngestionWorkers();
     workersStarted = true;
+    automationRunner().start();
+    automationSchedulerStarted = true;
     const bootstrap = desktop ? await createDesktopBootstrapSession() : undefined;
     await app.listen({ port, host });
     const actualPort = listeningPort(app);
@@ -167,6 +171,10 @@ export async function startBorealisServer(options: StartBorealisServerOptions = 
       closePromise ??= (async () => {
         await closeHttpAfterDrainingRuns(activeApp);
         await stopIngestionWorkers().catch(() => {});
+        if (automationSchedulerStarted) {
+          automationRunner().stop();
+          automationSchedulerStarted = false;
+        }
         await startupReconciliation;
         await shutdownDatasetWorker().catch(() => {});
         try {

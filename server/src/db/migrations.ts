@@ -1,6 +1,6 @@
 import { SqliteMigrationError } from "./types.js";
 
-export const LATEST_SQLITE_SCHEMA_VERSION = 8;
+export const LATEST_SQLITE_SCHEMA_VERSION = 9;
 
 interface MigrationDatabase {
   exec(sql: string): unknown;
@@ -417,6 +417,36 @@ CREATE TABLE report_shares (
 CREATE INDEX report_shares_recipient_idx ON report_shares (recipient_account_id, shared_at DESC);
 `;
 
+const SCHEMA_V9 = `
+CREATE TABLE automations (
+  id TEXT PRIMARY KEY,
+  account_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('connector_sync','agent_turn')),
+  target_id TEXT NOT NULL,
+  prompt TEXT,
+  schedule_minutes INTEGER NOT NULL CHECK (schedule_minutes BETWEEN 15 AND 10080),
+  state TEXT NOT NULL DEFAULT 'active' CHECK (state IN ('active','paused')),
+  consecutive_failures INTEGER NOT NULL DEFAULT 0 CHECK (consecutive_failures >= 0),
+  last_run_at TEXT,
+  next_run_at TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  UNIQUE (account_id, name)
+) STRICT;
+
+CREATE TABLE automation_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  automation_id TEXT NOT NULL REFERENCES automations(id) ON DELETE CASCADE,
+  account_id TEXT NOT NULL,
+  outcome TEXT NOT NULL CHECK (outcome IN ('succeeded','failed','skipped')),
+  detail TEXT,
+  started_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  finished_at TEXT
+) STRICT;
+CREATE INDEX automation_runs_automation_idx ON automation_runs (automation_id, started_at DESC);
+`;
+
 const migrations = [
   { version: 1, sql: SCHEMA_V1 },
   { version: 2, sql: SCHEMA_V2 },
@@ -426,6 +456,7 @@ const migrations = [
   { version: 6, sql: SCHEMA_V6 },
   { version: 7, sql: SCHEMA_V7 },
   { version: 8, sql: SCHEMA_V8 },
+  { version: 9, sql: SCHEMA_V9 },
 ] as const;
 
 function schemaVersion(database: MigrationDatabase): number {
