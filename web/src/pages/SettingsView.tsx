@@ -23,6 +23,7 @@ import { Label } from "@/components/ui/label";
 import { useModelCatalog } from "@/hooks/useModelCatalog";
 import { useProviderSettings } from "@/hooks/useProviderSettings";
 import { useSystemHealth } from "@/hooks/useSystemHealth";
+import { useEgressAudit } from "@/hooks/useEgressAudit";
 import { clearSession, getUser } from "@/lib/api";
 import { hasDesktopBridge } from "@/lib/desktopBootstrap";
 import { cn } from "@/lib/utils";
@@ -64,6 +65,7 @@ export function SettingsView({ onClose }: SettingsViewProps) {
   const { catalog, loading, error, refresh } = useModelCatalog();
   const provider = useProviderSettings();
   const systemHealth = useSystemHealth();
+  const egressAudit = useEgressAudit();
   const { theme, resolvedTheme, setTheme } = useTheme();
   const user = getUser();
   const desktopWorkspace = hasDesktopBridge();
@@ -172,6 +174,42 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                     embedded
                   />
                 </div>
+                {egressAudit.events.length > 0 && (
+                  <section
+                    aria-labelledby="settings-egress-audit-heading"
+                    className="mt-6 overflow-hidden rounded-lg border"
+                  >
+                    <div className="border-b bg-secondary/30 px-5 py-4">
+                      <h3 id="settings-egress-audit-heading" className="text-sm font-semibold text-foreground">
+                        Egress audit
+                      </h3>
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        Content-free record of work sent to remote model providers: what kind, which endpoint host,
+                        when. Nothing here contains prompts or data.
+                      </p>
+                    </div>
+                    <ol className="divide-y">
+                      {egressAudit.events.map((event) => (
+                        <li
+                          key={event.id}
+                          className="flex flex-wrap items-center justify-between gap-2 px-5 py-2.5 text-xs"
+                        >
+                          <span className="font-medium text-foreground">
+                            {event.kind === "consent_acknowledged"
+                              ? "Consent acknowledged"
+                              : event.kind === "remote_turn"
+                                ? "Chat turn"
+                                : "Ingestion"}
+                          </span>
+                          <span className="font-mono text-muted-foreground">{event.endpoint_host ?? "—"}</span>
+                          <time dateTime={event.created_at} className="text-muted-foreground">
+                            {new Date(event.created_at).toLocaleString()}
+                          </time>
+                        </li>
+                      ))}
+                    </ol>
+                  </section>
+                )}
               </section>
             )}
 

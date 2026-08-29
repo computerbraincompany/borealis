@@ -1,4 +1,14 @@
-import { MessageSquare, Database, BookOpen, Bot, Plug, FileText, Settings2, Sparkles } from "lucide-react";
+import {
+  MessageSquare,
+  Database,
+  BookOpen,
+  Bot,
+  CalendarClock,
+  Plug,
+  FileText,
+  Settings2,
+  Sparkles,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 import { AccountMenu } from "@/components/AccountMenu";
 import { WorkspaceStatus } from "@/components/WorkspaceStatus";
@@ -8,6 +18,7 @@ const NAV_ITEMS = [
   { href: "/sources", label: "Sources", icon: Database },
   { href: "/libraries", label: "Libraries", icon: BookOpen },
   { href: "/agents", label: "Agents", icon: Bot },
+  { href: "/automations", label: "Automations", icon: CalendarClock },
   { href: "/connectors", label: "Connectors", icon: Plug },
   { href: "/reports", label: "Reports", icon: FileText },
   { href: "/settings", label: "Settings", icon: Settings2 },

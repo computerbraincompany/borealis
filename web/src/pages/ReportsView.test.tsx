@@ -5,6 +5,10 @@ const apiMocks = vi.hoisted(() => ({
   list: vi.fn(),
   remove: vi.fn(),
   rename: vi.fn(),
+  listShared: vi.fn(),
+  listShares: vi.fn(),
+  share: vi.fn(),
+  revoke: vi.fn(),
   chartsList: vi.fn(),
   chartsGet: vi.fn(),
   apiText: vi.fn(),
@@ -12,7 +16,15 @@ const apiMocks = vi.hoisted(() => ({
 }));
 
 vi.mock("@/lib/api", () => ({
-  reportsApi: { list: apiMocks.list, remove: apiMocks.remove, rename: apiMocks.rename },
+  reportsApi: {
+    list: apiMocks.list,
+    remove: apiMocks.remove,
+    rename: apiMocks.rename,
+    listShared: apiMocks.listShared,
+    listShares: apiMocks.listShares,
+    share: apiMocks.share,
+    revoke: apiMocks.revoke,
+  },
   chartsApi: { list: apiMocks.chartsList, get: apiMocks.chartsGet },
   apiText: apiMocks.apiText,
   formatApiError: (_error: unknown, fallback: string) => fallback,
@@ -78,6 +90,18 @@ describe("ReportsView preview", () => {
     apiMocks.list.mockResolvedValue(reports);
     apiMocks.chartsList.mockResolvedValue(charts);
     apiMocks.chartsGet.mockResolvedValue({ id: "c1", png_base64: "cG5nLWJ5dGVz" });
+    apiMocks.listShared.mockResolvedValue([
+      {
+        id: "shared-1",
+        title: "Diligence snapshot",
+        subtitle: null,
+        version: 2,
+        owner_account_id: "owner-2",
+        owner_email: "peer@example.test",
+        shared_at: "2026-01-03T00:00:00Z",
+        created_at: "2026-01-03T00:00:00Z",
+      },
+    ]);
   });
 
   it("aborts and ignores a stale request while using a script-only opaque sandbox", async () => {
@@ -117,8 +141,8 @@ describe("ReportsView preview", () => {
     render(<ReportsView />);
 
     await screen.findByText("First");
-    expect(screen.getByText("v1")).toBeInTheDocument();
-    expect(screen.getByText("v2")).toBeInTheDocument();
+    expect(screen.getAllByText("v1").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("v2").length).toBeGreaterThan(0);
 
     fireEvent.click(screen.getByRole("button", { name: "supersedes v1" }));
     await waitFor(() => expect(apiMocks.apiText).toHaveBeenCalledWith("/api/reports/r1/html", expect.anything()));
@@ -154,6 +178,15 @@ describe("ReportsView preview", () => {
     await waitFor(() =>
       expect(screen.getByAltText("Chart Monthly spend")).toHaveAttribute("src", "data:image/png;base64,cG5nLWJ5dGVz"),
     );
+  });
+
+  it("renders read-only snapshots shared by another workspace account", async () => {
+    render(<ReportsView />);
+
+    expect(await screen.findByRole("heading", { name: "Shared with me" })).toBeInTheDocument();
+    expect(screen.getByText("Diligence snapshot")).toBeInTheDocument();
+    expect(screen.getByText(/peer@example.test/)).toBeInTheDocument();
+    expect(screen.getAllByText("v2").length).toBeGreaterThan(0);
   });
 
   it("keeps reports usable when only the chart registry fails", async () => {

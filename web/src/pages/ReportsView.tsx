@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { BarChart3, Trash2, FileText, Eye, Download, MessageSquare, Pencil } from "lucide-react";
 import {
+  api,
   reportsApi,
   chartsApi,
   type Report,
   type ChartArtifactSummary,
+  type ReportShare,
+  type SharedReport,
   apiText,
   formatApiError,
   openProtected,
@@ -83,6 +86,11 @@ export function ReportsView() {
   const [renameTarget, setRenameTarget] = useState<Report | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [renaming, setRenaming] = useState(false);
+  const [sharedReports, setSharedReports] = useState<SharedReport[]>([]);
+  const [shareTarget, setShareTarget] = useState<Report | null>(null);
+  const [shareAccounts, setShareAccounts] = useState<Array<{ id: string; email: string }>>([]);
+  const [shareList, setShareList] = useState<ReportShare[]>([]);
+  const [sharing, setSharing] = useState(false);
   const previewRequestRef = useRef(0);
   const previewAbortRef = useRef<AbortController | null>(null);
 
@@ -103,6 +111,11 @@ export function ReportsView() {
       }
     } finally {
       setLoading(false);
+    }
+    try {
+      setSharedReports(await reportsApi.listShared());
+    } catch {
+      setSharedReports([]);
     }
   }, []);
 
@@ -135,6 +148,49 @@ export function ReportsView() {
       setPageError(formatApiError(failure, "Could not rename the report"));
     } finally {
       setRenaming(false);
+    }
+  };
+
+  const openShareDialog = async (report: Report) => {
+    setShareTarget(report);
+    setSharing(true);
+    setPageError(null);
+    try {
+      const [accounts, shares] = await Promise.all([
+        api<Array<{ id: string; email: string }>>("/api/accounts"),
+        reportsApi.listShares(report.id),
+      ]);
+      setShareAccounts(accounts);
+      setShareList(shares);
+    } catch (failure: unknown) {
+      setPageError(formatApiError(failure, "Could not load sharing state"));
+    } finally {
+      setSharing(false);
+    }
+  };
+
+  const shareWith = async (recipientAccountId: string) => {
+    if (!shareTarget) return;
+    setSharing(true);
+    setPageError(null);
+    try {
+      await reportsApi.share(shareTarget.id, recipientAccountId);
+      setShareList(await reportsApi.listShares(shareTarget.id));
+    } catch (failure: unknown) {
+      setPageError(formatApiError(failure, "Could not share the report"));
+    } finally {
+      setSharing(false);
+    }
+  };
+
+  const revokeShare = async (recipientAccountId: string) => {
+    if (!shareTarget) return;
+    setPageError(null);
+    try {
+      await reportsApi.revoke(shareTarget.id, recipientAccountId);
+      setShareList(await reportsApi.listShares(shareTarget.id));
+    } catch (failure: unknown) {
+      setPageError(formatApiError(failure, "Could not revoke the share"));
     }
   };
 
@@ -255,6 +311,9 @@ export function ReportsView() {
                   <Button variant="outline" size="sm" onClick={() => openPreview(r)}>
                     <Eye className="h-4 w-4" /> Preview
                   </Button>
+                  <Button variant="ghost" size="sm" onClick={() => void openShareDialog(r)} title="Share snapshot">
+                    Share
+                  </Button>
                   <Button
                     variant="ghost"
                     size="icon"
@@ -290,6 +349,69 @@ export function ReportsView() {
             );
           })}
         </div>
+      )}
+
+      {sharedReports.length > 0 && (
+        <section className="mt-12" aria-labelledby="shared-with-me-heading">
+          <h2 id="shared-with-me-heading" className="text-lg font-semibold tracking-tight">
+            Shared with me
+          </h2>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Read-only report snapshots other workspace accounts shared with you.
+          </p>
+          <div className="mt-4 space-y-3">
+            {sharedReports.map((shared) => (
+              <Card key={shared.id} className="flex items-center gap-4 p-4">
+                <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-secondary text-secondary-foreground">
+                  <FileText className="h-5 w-5" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <span className="truncate font-medium text-foreground">{shared.title}</span>
+                    <Badge variant="secondary">v{shared.version}</Badge>
+                  </div>
+                  <div className="mt-1 text-xs text-muted-foreground">
+                    From {shared.owner_email} · {formatDate(shared.shared_at)}
+                  </div>
+                </div>
+                <div className="flex shrink-0 items-center gap-1.5">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() =>
+                      void openPreview({
+                        id: shared.id,
+                        title: shared.title,
+                        subtitle: shared.subtitle,
+                        created_at: shared.created_at,
+                        updated_at: shared.created_at,
+                        chat_title: null,
+                        chat_id: null,
+                        version: shared.version,
+                        supersedes: null,
+                      })
+                    }
+                  >
+                    <Eye className="h-4 w-4" /> Preview
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    title="Download PDF"
+                    className="text-muted-foreground hover:text-primary"
+                    onClick={() =>
+                      void openProtected("pdf", `/api/reports/${shared.id}/pdf`, `${shared.title}.pdf`).catch(() =>
+                        setPageError("Could not download the shared report PDF"),
+                      )
+                    }
+                  >
+                    <Download className="h-4 w-4" />
+                  </Button>
+                </div>
+              </Card>
+            ))}
+          </div>
+        </section>
       )}
 
       {charts.length > 0 && (
@@ -343,6 +465,48 @@ export function ReportsView() {
               </Button>
             </div>
           </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* share dialog */}
+      <Dialog open={!!shareTarget} onOpenChange={(open) => !open && setShareTarget(null)}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Share "{shareTarget?.title}"</DialogTitle>
+            <DialogDescription>
+              Share this report snapshot with another account of this Borealis instance. Recipients get read-only
+              Preview and PDF access; you can revoke at any time.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2">
+            {shareAccounts
+              .filter((account) => account.id !== undefined)
+              .map((account) => {
+                const existing = shareList.find((share) => share.recipient_account_id === account.id);
+                return (
+                  <div
+                    key={account.id}
+                    className="flex items-center justify-between gap-2 rounded-md border px-3 py-2 text-sm"
+                  >
+                    <span className="min-w-0 truncate">{account.email}</span>
+                    {existing ? (
+                      <Button variant="ghost" size="sm" onClick={() => void revokeShare(account.id)} disabled={sharing}>
+                        Revoke
+                      </Button>
+                    ) : (
+                      <Button variant="outline" size="sm" onClick={() => void shareWith(account.id)} disabled={sharing}>
+                        Share
+                      </Button>
+                    )}
+                  </div>
+                );
+              })}
+            {sharing && shareAccounts.length === 0 && (
+              <p className="rounded-md border border-dashed px-3 py-4 text-center text-sm text-muted-foreground">
+                Loading workspace accounts…
+              </p>
+            )}
+          </div>
         </DialogContent>
       </Dialog>
 

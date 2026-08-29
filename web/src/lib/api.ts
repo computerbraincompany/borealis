@@ -730,6 +730,77 @@ export const settingsApi = {
     api<ProviderConnectionTestResponse>("/api/settings/test", { method: "POST", body: JSON.stringify(body) }),
 };
 
+// ------------------------------------------------------------------ audit
+export interface EgressEvent {
+  id: number;
+  kind: "consent_acknowledged" | "remote_turn" | "remote_ingest";
+  endpoint_host: string | null;
+  created_at: string;
+}
+
+export const auditApi = {
+  egress: (limit = 50) => api<EgressEvent[]>(`/api/audit/egress?limit=${limit}`),
+};
+
+// ------------------------------------------------------------------ shares
+export interface ReportShare {
+  recipient_account_id: string;
+  recipient_email: string;
+  shared_at: string;
+}
+
+export interface SharedReport {
+  id: string;
+  title: string;
+  subtitle: string | null;
+  version: number;
+  owner_account_id: string;
+  owner_email: string;
+  shared_at: string;
+  created_at: string;
+}
+
+// ------------------------------------------------------------------ automations
+export type AutomationKind = "connector_sync" | "agent_turn";
+
+export interface Automation {
+  id: string;
+  name: string;
+  kind: AutomationKind;
+  target_id: string;
+  prompt: string | null;
+  schedule_minutes: number;
+  state: "active" | "paused";
+  consecutive_failures: number;
+  last_run_at: string | null;
+  next_run_at: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AutomationRun {
+  id: number;
+  outcome: "succeeded" | "failed" | "skipped";
+  detail: string | null;
+  started_at: string;
+  finished_at: string | null;
+}
+
+export const automationsApi = {
+  list: () => api<Automation[]>("/api/automations"),
+  create: (body: {
+    name: string;
+    kind: AutomationKind;
+    target_id: string;
+    prompt?: string;
+    schedule_minutes: number;
+  }) => api<Automation>("/api/automations", { method: "POST", body: JSON.stringify(body) }),
+  update: (id: string, patch: { name?: string; state?: "active" | "paused"; schedule_minutes?: number }) =>
+    api<Automation>(`/api/automations/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
+  remove: (id: string) => api<{ ok: true }>(`/api/automations/${id}`, { method: "DELETE" }),
+  runs: (id: string, limit = 20) => api<AutomationRun[]>(`/api/automations/${id}/runs?limit=${limit}`),
+};
+
 // ------------------------------------------------------------------ system
 export const systemApi = {
   health: (signal?: AbortSignal) => api<SystemHealthResponse>("/api/health", { signal }),
@@ -833,6 +904,15 @@ export const connectorsApi = {
 // ------------------------------------------------------------------ reports
 export const reportsApi = {
   list: () => api<Report[]>("/api/reports"),
+  listShared: () => api<SharedReport[]>("/api/reports/shared"),
+  listShares: (id: string) => api<ReportShare[]>(`/api/reports/${id}/shares`),
+  share: (id: string, recipientAccountId: string) =>
+    api<ReportShare>(`/api/reports/${id}/shares`, {
+      method: "POST",
+      body: JSON.stringify({ recipient_account_id: recipientAccountId }),
+    }),
+  revoke: (id: string, recipientAccountId: string) =>
+    api<{ ok: true }>(`/api/reports/${id}/shares/${recipientAccountId}`, { method: "DELETE" }),
   get: (id: string) =>
     api<{
       id: string;
