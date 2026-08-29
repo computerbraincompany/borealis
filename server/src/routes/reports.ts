@@ -38,11 +38,21 @@ export async function reportRoutes(app: FastifyInstance): Promise<void> {
   });
 
   app.get("/api/reports/:id", { preHandler: requireAuth, schema: { params: idParamsSchema } }, async (req, reply) => {
-    const row = await storageRuntime().runs.getPublishedReport(getAccountId(req), (req.params as any).id);
+    const accountId = getAccountId(req);
+    let row = await storageRuntime().runs.getPublishedReport(accountId, (req.params as any).id);
+    let sharedByAccount = false;
+    let ownerId = accountId;
+    if (!row) {
+      ownerId = (await storageRuntime().runs.getReportShareOwner(accountId, (req.params as any).id)) ?? "";
+      if (ownerId) {
+        row = await storageRuntime().runs.getPublishedReport(ownerId, (req.params as any).id);
+        sharedByAccount = row !== undefined;
+      }
+    }
     if (!row) return reply.code(404).send({ error: "report not found" });
     const [htmlArtifact, pdfArtifact] = await Promise.all([
-      resolveReportArtifact({ accountId: getAccountId(req), reportId: row.id, filePath: row.html_path, kind: "html" }),
-      resolveReportArtifact({ accountId: getAccountId(req), reportId: row.id, filePath: row.pdf_path, kind: "pdf" }),
+      resolveReportArtifact({ accountId: ownerId, reportId: row.id, filePath: row.html_path, kind: "html" }),
+      resolveReportArtifact({ accountId: ownerId, reportId: row.id, filePath: row.pdf_path, kind: "pdf" }),
     ]);
     return reply.send({
       id: row.id,
@@ -54,6 +64,7 @@ export async function reportRoutes(app: FastifyInstance): Promise<void> {
       has_pdf: Boolean(pdfArtifact),
       version: row.version,
       supersedes: row.supersedes,
+      ...(sharedByAccount ? { shared_by_account: true } : {}),
       ...(row.payload === undefined ? {} : { payload: row.payload }),
     });
   });
@@ -112,6 +123,86 @@ export async function reportRoutes(app: FastifyInstance): Promise<void> {
         .send(await fs.readFile(artifact));
     }
   );
+
+  app.post(
+    "/api/reports/:id/shares",
+    {
+      preHandler: requireAuth,
+      schema: {
+        params: idParamsSchema,
+        body: {
+          type: "object",
+          required: ["recipient_account_id"],
+          additionalProperties: false,
+          properties: {
+            recipient_account_id: {
+              type: "string",
+              pattern: "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+            },
+          },
+        },
+      },
+    },
+    async (req, reply) => {
+      try {
+        const shared = await storageRuntime().runs.shareReport(
+          getAccountId(req),
+          (req.params as any).id,
+          (req.body as any).recipient_account_id
+        );
+        return reply.code(201).send(shared);
+      } catch (error) {
+        if (error instanceof ArtifactNotFoundError) return reply.code(404).send({ error: "report not found" });
+        if (error instanceof RangeError) return reply.code(400).send({ error: error.message });
+        throw error;
+      }
+    }
+  );
+
+  app.get(
+    "/api/reports/:id/shares",
+    { preHandler: requireAuth, schema: { params: idParamsSchema } },
+    async (req, reply) => {
+      return reply.send(await storageRuntime().runs.listReportShares(getAccountId(req), (req.params as any).id));
+    }
+  );
+
+  app.delete(
+    "/api/reports/:id/shares/:recipient",
+    {
+      preHandler: requireAuth,
+      schema: {
+        params: {
+          type: "object",
+          required: ["id", "recipient"],
+          additionalProperties: false,
+          properties: {
+            id: {
+              type: "string",
+              pattern: "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+            },
+            recipient: {
+              type: "string",
+              pattern: "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+            },
+          },
+        },
+      },
+    },
+    async (req, reply) => {
+      const revoked = await storageRuntime().runs.revokeReportShare(
+        getAccountId(req),
+        (req.params as any).id,
+        (req.params as any).recipient
+      );
+      if (!revoked) return reply.code(404).send({ error: "share not found" });
+      return reply.send({ ok: true });
+    }
+  );
+
+  app.get("/api/reports/shared", { preHandler: requireAuth }, async (req, reply) => {
+    return reply.send(await storageRuntime().runs.listSharedReports(getAccountId(req)));
+  });
 
   app.delete(
     "/api/reports/:id",

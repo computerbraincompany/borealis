@@ -222,6 +222,69 @@ describe("published report and chart routes", () => {
     expect(unauthenticated.statusCode).toBe(401);
   });
 
+  it("shares a report snapshot with another account and revokes it", async () => {
+    await insertReport(OWNER_REPORT, OWNER, "published", "Shared report");
+    const app = await buildApp();
+
+    const shared = await app.inject({
+      method: "POST",
+      url: `/api/reports/${OWNER_REPORT}/shares`,
+      headers: ownerAuth,
+      body: { recipient_account_id: FOREIGN },
+    });
+    expect(shared.statusCode).toBe(201);
+    expect(shared.json()).toMatchObject({ recipient_account_id: FOREIGN });
+
+    const selfShare = await app.inject({
+      method: "POST",
+      url: `/api/reports/${OWNER_REPORT}/shares`,
+      headers: ownerAuth,
+      body: { recipient_account_id: OWNER },
+    });
+    expect(selfShare.statusCode).toBe(400);
+
+    const pendingShare = await app.inject({
+      method: "POST",
+      url: `/api/reports/${PENDING_REPORT}/shares`,
+      headers: ownerAuth,
+      body: { recipient_account_id: FOREIGN },
+    });
+    expect(pendingShare.statusCode).toBe(404);
+
+    const foreignList = await app.inject({ method: "GET", url: "/api/reports/shared", headers: foreignAuth });
+    expect(foreignList.json()).toEqual([
+      expect.objectContaining({ id: OWNER_REPORT, title: "Shared report", version: 1, owner_account_id: OWNER }),
+    ]);
+
+    // The recipient can read the snapshot through the shared path.
+    const detail = await app.inject({ method: "GET", url: `/api/reports/${OWNER_REPORT}`, headers: foreignAuth });
+    expect(detail.json()).toMatchObject({ id: OWNER_REPORT, title: "Shared report", shared_by_account: true });
+    const foreignDelete = await app.inject({
+      method: "DELETE",
+      url: `/api/reports/${OWNER_REPORT}`,
+      headers: foreignAuth,
+    });
+    expect(foreignDelete.statusCode).toBe(404);
+
+    // Renaming stays owner-only and invisible to the snapshot reader.
+    const rename = await app.inject({
+      method: "PATCH",
+      url: `/api/reports/${OWNER_REPORT}`,
+      headers: foreignAuth,
+      body: { title: "Hijack" },
+    });
+    expect(rename.statusCode).toBe(404);
+
+    const revoked = await app.inject({
+      method: "DELETE",
+      url: `/api/reports/${OWNER_REPORT}/shares/${FOREIGN}`,
+      headers: ownerAuth,
+    });
+    expect(revoked.statusCode).toBe(200);
+    const afterRevoke = await app.inject({ method: "GET", url: `/api/reports/${OWNER_REPORT}`, headers: foreignAuth });
+    expect(afterRevoke.statusCode).toBe(404);
+  });
+
   it("lists the account's published chart registry without spec or bytes", async () => {
     await insertChart(OWNER_CHART, OWNER, "published", "owner", "owner-png", "bar");
     await insertChart(PENDING_CHART, OWNER, "pending", "pending", "pending-png");

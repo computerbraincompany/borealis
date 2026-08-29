@@ -888,6 +888,135 @@ export class RunStore {
       : Object.freeze({ ...report, payload: decodeJson(row.payload, "report payload") });
   }
 
+  async shareReport(
+    accountIdValue: string,
+    reportIdValue: string,
+    recipientIdValue: string
+  ): Promise<{ recipient_account_id: string; shared_at: string }> {
+    const accountId = identity(accountIdValue, "account id");
+    const reportId = identity(reportIdValue, "report id");
+    const recipient = identity(recipientIdValue, "recipient account id");
+    if (recipient === accountId) throw new RangeError("a report cannot be shared with its owner");
+    return this.ledger.withImmediateTransaction((transaction) => {
+      const report = transaction.get("SELECT 1 FROM reports WHERE id=? AND account_id=? AND status='published'", [
+        reportId,
+        accountId,
+      ]);
+      if (!report) throw new ArtifactNotFoundError("report");
+      const user = transaction.get("SELECT 1 FROM users WHERE id=?", [recipient]);
+      if (!user) throw new RangeError("recipient account does not exist");
+      transaction.run(
+        `INSERT INTO report_shares (report_id,owner_account_id,recipient_account_id)
+         VALUES (?,?,?)
+         ON CONFLICT(report_id, recipient_account_id) DO NOTHING`,
+        [reportId, accountId, recipient]
+      );
+      const row = transaction.get<{ shared_at?: unknown }>(
+        "SELECT shared_at FROM report_shares WHERE report_id=? AND recipient_account_id=?",
+        [reportId, recipient]
+      );
+      return Object.freeze({
+        recipient_account_id: recipient,
+        shared_at: requiredString(row?.shared_at, "share shared_at"),
+      });
+    });
+  }
+
+  async listReportShares(
+    accountIdValue: string,
+    reportIdValue: string
+  ): Promise<ReadonlyArray<{ recipient_account_id: string; recipient_email: string; shared_at: string }>> {
+    const rows = await this.ledger.all<{
+      recipient_account_id?: unknown;
+      recipient_email?: unknown;
+      shared_at?: unknown;
+    }>(
+      `SELECT rs.recipient_account_id,u.email AS recipient_email,rs.shared_at
+       FROM report_shares rs
+       JOIN users u ON u.id=rs.recipient_account_id
+       JOIN reports r ON r.id=rs.report_id AND r.account_id=rs.owner_account_id
+       WHERE rs.report_id=? AND rs.owner_account_id=?
+       ORDER BY rs.shared_at DESC,rs.recipient_account_id DESC`,
+      [identity(reportIdValue, "report id"), identity(accountIdValue, "account id")]
+    );
+    return rows.map((row) =>
+      Object.freeze({
+        recipient_account_id: requiredString(row.recipient_account_id, "share recipient"),
+        recipient_email: requiredString(row.recipient_email, "share recipient email"),
+        shared_at: decodeIsoTimestamp(row.shared_at, "share shared_at"),
+      })
+    );
+  }
+
+  async listSharedReports(recipientIdValue: string): Promise<
+    ReadonlyArray<{
+      id: string;
+      title: string;
+      subtitle: string | null;
+      version: number;
+      owner_account_id: string;
+      owner_email: string;
+      shared_at: string;
+      created_at: string;
+    }>
+  > {
+    const rows = await this.ledger.all<{
+      id?: unknown;
+      title?: unknown;
+      subtitle?: unknown;
+      version?: unknown;
+      owner_account_id?: unknown;
+      owner_email?: unknown;
+      shared_at?: unknown;
+      created_at?: unknown;
+    }>(
+      `SELECT r.id,r.title,r.subtitle,r.version,r.account_id AS owner_account_id,
+              u.email AS owner_email,rs.shared_at,r.created_at
+       FROM report_shares rs
+       JOIN reports r ON r.id=rs.report_id AND r.account_id=rs.owner_account_id AND r.status='published'
+       JOIN users u ON u.id=rs.owner_account_id
+       WHERE rs.recipient_account_id=?
+       ORDER BY rs.shared_at DESC,r.id DESC`,
+      [identity(recipientIdValue, "recipient account id")]
+    );
+    return rows.map((row) =>
+      Object.freeze({
+        id: requiredString(row.id, "shared report id"),
+        title: requiredString(row.title, "shared report title"),
+        subtitle: optionalString(row.subtitle, "shared report subtitle"),
+        version: decodeSafeInteger(row.version, "shared report version"),
+        owner_account_id: requiredString(row.owner_account_id, "share owner"),
+        owner_email: requiredString(row.owner_email, "share owner email"),
+        shared_at: decodeIsoTimestamp(row.shared_at, "share shared_at"),
+        created_at: decodeIsoTimestamp(row.created_at, "shared report created_at"),
+      })
+    );
+  }
+
+  async revokeReportShare(accountIdValue: string, reportIdValue: string, recipientIdValue: string): Promise<boolean> {
+    const updated = await this.ledger.run(
+      "DELETE FROM report_shares WHERE report_id=? AND owner_account_id=? AND recipient_account_id=?",
+      [
+        identity(reportIdValue, "report id"),
+        identity(accountIdValue, "account id"),
+        identity(recipientIdValue, "recipient account id"),
+      ]
+    );
+    return updated.changes === 1;
+  }
+
+  /** The owning account of a report this recipient may read, or null. */
+  async getReportShareOwner(recipientIdValue: string, reportIdValue: string): Promise<string | null> {
+    const row = await this.ledger.get<{ owner_account_id?: unknown }>(
+      `SELECT rs.owner_account_id
+       FROM report_shares rs
+       JOIN reports r ON r.id=rs.report_id AND r.account_id=rs.owner_account_id AND r.status='published'
+       WHERE rs.recipient_account_id=? AND rs.report_id=?`,
+      [identity(recipientIdValue, "recipient account id"), identity(reportIdValue, "report id")]
+    );
+    return row ? requiredString(row.owner_account_id, "share owner") : null;
+  }
+
   async renamePublishedReport(
     accountIdValue: string,
     reportIdValue: string,
