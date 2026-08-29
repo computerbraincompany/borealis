@@ -161,6 +161,13 @@ that provider's policy, linking to Settings. The snapshot comes from the
 authenticated `GET /api/status` endpoint and never contains the endpoint URL,
 key, provider errors, or model lists.
 
+Remote egress is also fail-closed: before the first chat turn, upload, or
+connector refresh against a remote provider, Borealis stops with a consent
+card naming the destination host and exactly which payload classes would be
+sent. Nothing leaves the machine until you acknowledge; the acknowledgment is
+per account, stored locally, and a switch back to a local provider lifts the
+gate immediately.
+
 Provider settings are shared by all accounts using the same server. A saved API
 key is stored in `settings.json` with mode `0600`, not encrypted or held in the
 macOS Keychain. Responses expose only whether a key is configured; they never

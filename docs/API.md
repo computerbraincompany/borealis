@@ -47,6 +47,17 @@ catalog probe as `/api/health`. The response never contains the endpoint URL,
 credentials, provider errors, or model lists; reachability loss is a status
 field, not an HTTP error.
 
+Remote-provider egress is fail-closed. While a remote (public) provider is
+configured and the account has not acknowledged remote egress, the
+payload-bearing routes — chat messages, source upload, source reingest, and
+connector create/sync — refuse with `403
+{"error":"...","code":"REMOTE_EGRESS_CONSENT_REQUIRED"}` before any payload is
+processed. `GET /api/consent/remote-egress` returns
+`{required,acknowledged_at,endpoint_host}`; `POST` records the per-account
+acknowledgment and unblocks the gated routes immediately. `endpoint_host` is
+present only while a remote provider is configured, is a response field only,
+and never appears in logs. Loopback and private-network providers never gate.
+
 The macOS app creates its single local account and passes a fresh session from
 Electron main through the trusted preload exactly once. That bootstrap is not an
 HTTP endpoint and does not change the public registration/login contract. The

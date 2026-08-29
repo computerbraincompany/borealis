@@ -266,6 +266,17 @@ errors, or model lists. The strip is informational chrome, not an
 authorization surface, and its egress wording must stay consistent with the
 Settings privacy text.
 
+Remote model-provider egress is fail-closed
+(`server/src/egressPolicy.ts`): while a remote provider is configured and the
+account has not acknowledged remote egress (`users.remote_egress_ack_at` from
+schema v4), chat messages, source upload/reingest, and connector
+create/sync return `403 REMOTE_EGRESS_CONSENT_REQUIRED` before any payload
+processing. Never weaken or bypass the gate in a handler; loopback and
+private providers never gate; acknowledgment unblocks without a restart. The
+consent response may name the configured `endpoint_host` to the authenticated
+account, but `endpoint_host` must never be logged. Consent-card, sidebar, and
+Settings payload-class wording must stay identical.
+
 Canonical operator overrides are `LLM_BASE_URL`, `LLM_API_KEY`,
 `LLM_CHAT_MODEL`, and `LLM_EMBED_MODEL`. The corresponding `LITELLM_*` names
 remain lower-precedence compatibility aliases only. Do not infer or reintroduce

@@ -6,7 +6,9 @@ exact payload class, then returns the result to the same task.* Plus Horizon
 2's standing rule that a remote provider is "a choice with a badge, not a
 default that forgot to speak."
 
-**Status:** IN PROGRESS
+**Status:** DONE (implemented in commits `98e3dee` — migration v4, egress
+policy, consent routes, and the fail-closed gates — and `8a88e8b` — the web
+consent card with acknowledge-and-resume; verification in milestones/README.md)
 
 ## Problem
 
