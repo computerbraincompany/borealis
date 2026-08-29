@@ -4,6 +4,7 @@ import { AuthPage } from "@/pages/AuthPage";
 import { ChatView } from "@/pages/ChatView";
 import { SourcesView } from "@/pages/SourcesView";
 import { LibrariesView } from "@/pages/LibrariesView";
+import { AgentsView } from "@/pages/AgentsView";
 import { ConnectorsView } from "@/pages/ConnectorsView";
 import { ReportsView } from "@/pages/ReportsView";
 import { SettingsView } from "@/pages/SettingsView";
@@ -73,6 +74,7 @@ export default function App() {
     );
   } else if (workspaceRoute.startsWith("/sources")) page = <SourcesView />;
   else if (workspaceRoute.startsWith("/libraries")) page = <LibrariesView />;
+  else if (workspaceRoute.startsWith("/agents")) page = <AgentsView />;
   else if (workspaceRoute.startsWith("/connectors")) page = <ConnectorsView />;
   else if (workspaceRoute.startsWith("/reports")) page = <ReportsView />;
   else page = <ChatView chatId={undefined} />;

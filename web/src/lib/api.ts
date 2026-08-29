@@ -203,6 +203,7 @@ export interface Chat {
   title: string;
   model: string;
   source_mode: SourceMode;
+  agent: { id: string; name: string } | null;
   created_at: string;
   updated_at: string;
 }
@@ -674,10 +675,10 @@ export const authApi = {
 // ------------------------------------------------------------------ chats
 export const chatsApi = {
   list: () => api<Chat[]>("/api/chats"),
-  create: (title?: string, scope: SourceScopeInput = { source_mode: "selected", source_ids: [] }) =>
+  create: (title?: string, scope: SourceScopeInput = { source_mode: "selected", source_ids: [] }, agentId?: string) =>
     api<Chat>("/api/chats", {
       method: "POST",
-      body: JSON.stringify({ title, ...scope }),
+      body: JSON.stringify({ title, ...scope, ...(agentId ? { agent_id: agentId } : {}) }),
     }),
   get: (id: string, page?: { beforeMessageId?: string; limit?: number }) => {
     const params = new URLSearchParams();
@@ -729,6 +730,39 @@ export const systemApi = {
 export const consentApi = {
   get: (signal?: AbortSignal) => api<RemoteEgressState>("/api/consent/remote-egress", { signal }),
   acknowledge: () => api<RemoteEgressState>("/api/consent/remote-egress", { method: "POST" }),
+};
+
+// ------------------------------------------------------------------ libraries
+export interface AgentSummary {
+  id: string;
+  name: string;
+  current_version: number;
+  instructions: string;
+  instructions_chars: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AgentRevision {
+  version: number;
+  instructions: string;
+  created_at: string;
+}
+
+export interface AgentDetail extends AgentSummary {
+  revisions: AgentRevision[];
+}
+
+export const MAX_AGENT_INSTRUCTION_CHARS = 8_000;
+
+export const agentsApi = {
+  list: () => api<AgentSummary[]>("/api/agents"),
+  create: (name: string, instructions: string) =>
+    api<AgentSummary>("/api/agents", { method: "POST", body: JSON.stringify({ name, instructions }) }),
+  get: (id: string) => api<AgentDetail>(`/api/agents/${id}`),
+  update: (id: string, patch: { name?: string; instructions?: string }) =>
+    api<AgentSummary>(`/api/agents/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
+  remove: (id: string) => api<{ ok: true }>(`/api/agents/${id}`, { method: "DELETE" }),
 };
 
 // ------------------------------------------------------------------ libraries

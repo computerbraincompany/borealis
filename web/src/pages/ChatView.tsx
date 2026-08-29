@@ -20,6 +20,7 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { ChatMessage } from "@/components/ChatMessage";
 import { ModelSelector } from "@/components/ModelSelector";
+import { AgentSelector } from "@/components/AgentSelector";
 import { ChatSourcePicker } from "@/components/ChatSourcePicker";
 import { ChatHistory } from "@/components/ChatHistory";
 import { ToolActivity } from "@/components/ToolActivity";
@@ -27,6 +28,7 @@ import { createStreamState, EMPTY_STREAM_STATE, streamsByChatReducer, type Strea
 import { useSourceCatalog } from "@/hooks/useSourceCatalog";
 import { useChatSessionController } from "@/hooks/useChatSessionController";
 import { useModelCatalog } from "@/hooks/useModelCatalog";
+import { agentsApi, type AgentSummary } from "@/lib/api";
 import { useEgressConsentGate } from "@/hooks/useEgressConsentGate";
 import { cancelRunThenAbort } from "@/lib/chatRun";
 import { prependOlderMessages } from "@/lib/chatHistoryPage";
@@ -56,6 +58,9 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
   const [olderMessagesError, setOlderMessagesError] = useState<string | null>(null);
   const [newChatError, setNewChatError] = useState<string | null>(null);
   const [newChatModelSelection, setNewChatModelSelection] = useState<string | null>(null);
+  const [newChatAgentSelection, setNewChatAgentSelection] = useState<string | null>(null);
+  const [agentCatalog, setAgentCatalog] = useState<AgentSummary[]>([]);
+  const [agentCatalogLoading, setAgentCatalogLoading] = useState(false);
   const [newChatSourceScope, setNewChatSourceScope] = useState<SourceScopeInput>({
     source_mode: "selected",
     source_ids: [],
@@ -87,6 +92,23 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
     createChat,
   } = useChatSessionController();
   const { handleConsentError, dialog: consentDialog } = useEgressConsentGate();
+
+  useEffect(() => {
+    let cancelled = false;
+    setAgentCatalogLoading(true);
+    agentsApi
+      .list()
+      .then((agents) => {
+        if (!cancelled) setAgentCatalog(agents);
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        if (!cancelled) setAgentCatalogLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const releaseFirstSubmit = useCallback(() => {
     firstSubmitInFlightRef.current = false;
@@ -827,6 +849,7 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
     firstSubmitTargetChatIdRef.current = null;
     firstSubmitSetupCompleteRef.current = false;
     const selectedModel = newChatModelSelection ?? modelCatalog?.default_model ?? null;
+    const selectedAgentId = newChatAgentSelection;
     const selectedSourceScope: SourceScopeInput =
       newChatSourceScope.source_mode === "all"
         ? { source_mode: "all" }
@@ -835,7 +858,7 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
 
     try {
       await createChat(
-        () => chatsApi.create(undefined, selectedSourceScope),
+        () => chatsApi.create(undefined, selectedSourceScope, selectedAgentId ?? undefined),
         async (created) => {
           createdChatId = created.id;
           chatListRequestRef.current += 1;
@@ -872,6 +895,7 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
 
           sendToChat(createdDetail, content);
           setNewChatModelSelection(null);
+          setNewChatAgentSelection(null);
           setNewChatSourceScope({ source_mode: "selected", source_ids: [] });
           firstSubmitSetupCompleteRef.current = true;
         },
@@ -1151,6 +1175,14 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
                             onRetry={() => void refreshModels(true)}
                             onDismissError={() => dismissModelError(detail.id)}
                           />
+                          <AgentSelector
+                            bound={detail.agent}
+                            agents={agentCatalog}
+                            selection={detail.agent?.id ?? null}
+                            loading={false}
+                            locked
+                            onSelect={() => undefined}
+                          />
                           <ChatSourcePicker
                             key={detail.id}
                             sourceMode={detail.source_mode}
@@ -1190,6 +1222,14 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
                             onChange={selectNewChatModel}
                             onRetry={() => void refreshModels(true)}
                             onDismissError={() => undefined}
+                          />
+                          <AgentSelector
+                            bound={null}
+                            agents={agentCatalog}
+                            selection={newChatAgentSelection}
+                            loading={agentCatalogLoading}
+                            locked={false}
+                            onSelect={setNewChatAgentSelection}
                           />
                           <ChatSourcePicker
                             key="new-chat"

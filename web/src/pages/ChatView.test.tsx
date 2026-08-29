@@ -155,6 +155,7 @@ const chat: Chat = {
   title: "Alpha",
   model: "qwen-chat",
   source_mode: "selected",
+  agent: null,
   created_at: "2026-01-01T00:00:00Z",
   updated_at: "2026-01-01T00:00:00Z",
 };
@@ -426,10 +427,14 @@ describe("ChatView orchestration", () => {
 
     await waitFor(() => expect(apiModule.streamAgentChat).toHaveBeenCalledTimes(1));
     expect(chatsApi.create).toHaveBeenCalledTimes(1);
-    expect(chatsApi.create).toHaveBeenCalledWith(undefined, {
-      source_mode: "selected",
-      source_ids: [source.id],
-    });
+    expect(chatsApi.create).toHaveBeenCalledWith(
+      undefined,
+      {
+        source_mode: "selected",
+        source_ids: [source.id],
+      },
+      undefined,
+    );
     expect(chatsApi.updateModel).toHaveBeenCalledOnce();
     expect(chatsApi.updateModel).toHaveBeenCalledWith(created.id, selectedModel);
     expect(apiModule.streamAgentChat).toHaveBeenCalledWith(
@@ -549,7 +554,7 @@ describe("ChatView orchestration", () => {
       ),
     );
     expect(chatsApi.create).toHaveBeenCalledTimes(1);
-    expect(chatsApi.create).toHaveBeenCalledWith(undefined, { source_mode: "selected", source_ids: [] });
+    expect(chatsApi.create).toHaveBeenCalledWith(undefined, { source_mode: "selected", source_ids: [] }, undefined);
     expect(chatsApi.updateModel).not.toHaveBeenCalled();
     expect(chatsApi.get).toHaveBeenCalledTimes(1);
     expect(window.location.hash).toBe("#/chat/chat-new");
