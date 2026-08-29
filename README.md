@@ -121,7 +121,10 @@ design.
 
 Borealis does not bundle model weights. Start LM Studio with a chat model that
 supports streaming tool calls and a separate embedding model, or configure a
-remote OpenAI-compatible provider under **Settings → Models**. The same provider
+remote OpenAI-compatible provider under **Settings → Models**. The agent needs
+**native** tool calling: a model that answers tool calls as plain text (for
+example `Action: list_sources()`) cannot drive the loop — pick a model whose
+runtime emits OpenAI `tool_calls`. The same provider
 origin serves `/v1/models`, `/v1/chat/completions`, and `/v1/embeddings`; the
 optional LM Studio URL is only a separate health probe, not an embedding endpoint.
 Local defaults are:

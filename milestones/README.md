@@ -40,3 +40,27 @@ turn comes. Sequencing notes:
 - Horizon 0 (honor what already works) has no milestone: it is the continuous
   obligation that `pnpm verify` and the personal-finance end-to-end fixture
   keep passing. It is already satisfied by plans 001–030.
+- M08–M11 finished the named Horizon 1–2 items (citations, connector platform
+  feel, the composer instrument, personal defaults). The remaining Horizon 3
+  sentence — *optional contained or cluster-local sandboxes for code that
+  earns the privilege* — is deliberately **deferred**, not forgotten: Borealis
+  has no arbitrary-code-execution surface today, and adding one without an
+  OS-grade isolation story would violate the fail-closed invariants
+  (AGENTS.md: "No user SQL that re-enables network. No renderer that navigates
+  to user content."). It returns to the ledger only with a concrete sandbox
+  design (hard process boundary, no network, no filesystem, bounded
+  CPU/time/memory) that survives review. *Other desktops* stays conditional
+  on the same strictness bar.
+
+## Verification record
+
+- 2026-08-29: complete `pnpm verify` green after M08–M11; the personal-finance
+  end-to-end use case was re-run live against loopback LM Studio
+  (`nvidia/nemotron-3-nano` chat, `text-embedding-nomic-embed-text-v1.5`
+  embeddings, isolated `BOREALIS_DATA_DIR`): four CSV fixtures uploaded and
+  ingested, a retrieval turn returned numbered evidence with resolved
+  citations (`[1]`–`[5]` mapped to the four sources), the per-chat model
+  switch route was exercised, and the analysis turn produced a chart and a
+  self-contained report (1.0 MB HTML, `%PDF-` signature). Note: LM Studio's
+  current runtime serves `qwen/qwen3.6-35b-a3b` without native tool calls;
+  the README now documents the symptom and the requirement.
