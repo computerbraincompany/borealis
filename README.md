@@ -286,7 +286,10 @@ chat `fetch_url` tool can fetch only public URLs explicitly written in the
 current message.
 
 Answers can show retrieved passages, charts, and saved query-result previews.
-**Download CSV** exports the saved preview, not an unlimited rerun of the SQL.
+Passages are retrieved with stable citation numbers, so grounded claims carry
+clickable `[n]` chips that open the evidence panel and highlight the supporting
+passage; markers that do not resolve stay plain text. **Download CSV** exports
+the saved preview, not an unlimited rerun of the SQL.
 Open generated HTML/PDF from chat or **Reports**. Reports keep per-chat
 versions with a supersedes chain, can be renamed in place, and the Reports
 surface lists the account's chart artifacts. **Libraries** group sources into

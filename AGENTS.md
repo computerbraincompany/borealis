@@ -252,6 +252,10 @@ the matching vector index.
 - Agent tools are wired through `TOOL_DEFS` in one streaming loop. Never expose
   provider reasoning, raw tool payloads, or exceptions in SSE. The UI receives
   only stable server-defined summaries.
+- Citation metadata (`server/src/citations.ts`) is derived only from the run's
+  own sanitized evidence array; the 1-based evidence position is the citation
+  number. Markers that do not resolve stay plain text in the UI, and passages
+  dropped by the evidence cap carry no number and must never be citable.
 - `makeReportPayload` keeps its 12-character chart-ID prefix fallback because
   models can garble long UUIDs. Report normalization strips inline
   `chart:`/`:::` tokens.

@@ -2,7 +2,13 @@
 
 **Horizon:** 2 — *Citation UX that can survive a diligence review.*
 
-**Status:** PLANNED
+**Status:** DONE (implemented in commits `c797183` — numbered evidence and
+citation metadata, and `c64b97a` — clickable chips and the evidence panel;
+documentation in the commit that closes this milestone)
+
+**Verification record (2026-08-29):** server 613 tests, web 163 tests, and the
+complete `pnpm verify` gate (typecheck, lint, format, tests, integration,
+builds, native smokes, policy check) green.
 
 ## Problem
 

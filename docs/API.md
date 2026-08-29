@@ -305,11 +305,16 @@ never sent as event payloads. Tool progress uses server-defined summaries;
 individual tool errors can be followed by further tool calls or a final answer.
 
 Assistant `meta` contains `charts` (chart UUIDs), `report` (a report UUID or
-`null`), `model`, `source_mode`, `source_ids`, `evidence`, and `query_results`.
-Evidence contains bounded `{source_id,chunk_id,source,excerpt,score}` records.
-Query display snapshots contain `{id,sql,columns,rows,row_count,truncated}`;
-they are bounded display artifacts, not complete query exports. User message
-metadata records only the accepted model and source snapshot.
+`null`), `model`, `source_mode`, `source_ids`, `citations`, `evidence`, and
+`query_results`. Evidence contains bounded
+`{source_id,chunk_id,source,excerpt,score}` records. `citations` maps each
+bracketed citation marker the answer actually used onto the run's own evidence:
+`{n,source_id,chunk_id,source}` with 1-based `n` into the `evidence` array,
+deduped and capped at 8. Markers that do not resolve to evidence are never
+recorded and stay plain text in the UI. Query display snapshots contain
+`{id,sql,columns,rows,row_count,truncated}`; they are bounded display
+artifacts, not complete query exports. User message metadata records only the
+accepted model and source snapshot.
 
 Only one run may be `running` or `cancelling` per chat; another message returns
 `409`. Disconnecting from SSE does not cancel the accepted run. There is no SSE
