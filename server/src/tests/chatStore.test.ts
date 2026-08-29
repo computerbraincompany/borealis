@@ -6,6 +6,7 @@ import { decodeBoolean, encodeJson } from "../db/codecs.js";
 import { openSqliteLedger } from "../db/sqlite.js";
 import {
   ActiveChatRunError,
+  AgentBindingUnavailableError,
   ChatStore,
   DuplicateEmailError,
   MAX_CHAT_SOURCE_SCOPE,
@@ -641,5 +642,142 @@ describe("ChatStore", () => {
       userMessage: { meta: { source_mode: "selected", source_ids: [] } },
     });
     await expect(store.sourceReferencedByActiveRun(owner, deleteFirstSource)).resolves.toBe(false);
+  });
+
+  describe("agent binding", () => {
+    async function insertAgent(
+      ledger: SqliteLedger,
+      accountId: string,
+      name = "Finance analyst",
+      instructions = "Reconcile totals first."
+    ): Promise<string> {
+      const agentId = randomUUID();
+      await ledger.run("INSERT INTO agents (id,account_id,name,current_version) VALUES (?,?,?,1)", [
+        agentId,
+        accountId,
+        name,
+      ]);
+      await ledger.run("INSERT INTO agent_revisions (agent_id,version,account_id,instructions) VALUES (?,?,?,?)", [
+        agentId,
+        1,
+        accountId,
+        instructions,
+      ]);
+      return agentId;
+    }
+
+    it("binds a write-once agent at creation and rejects foreign agents", async () => {
+      const { ledger, store } = await setup();
+      const owner = await createUser(store, "agent-owner");
+      const foreign = await createUser(store, "agent-foreign");
+      const agentId = await insertAgent(ledger, owner);
+      const foreignAgentId = await insertAgent(ledger, foreign, "Foreign agent");
+
+      const bound = await store.createChat({
+        accountId: owner,
+        title: "Bound chat",
+        titleIsManual: false,
+        model: "chat-model",
+        sourceScope: { source_mode: "selected", source_ids: [] },
+        agentId,
+      });
+      expect(bound.agent).toEqual({ id: agentId, name: "Finance analyst" });
+
+      await expect(
+        store.createChat({
+          accountId: owner,
+          title: "Foreign binding",
+          titleIsManual: false,
+          model: "chat-model",
+          sourceScope: { source_mode: "selected", source_ids: [] },
+          agentId: foreignAgentId,
+        })
+      ).rejects.toBeInstanceOf(AgentBindingUnavailableError);
+
+      await expect(
+        store.createChat({
+          accountId: owner,
+          title: "Unknown binding",
+          titleIsManual: false,
+          model: "chat-model",
+          sourceScope: { source_mode: "selected", source_ids: [] },
+          agentId: randomUUID(),
+        })
+      ).rejects.toBeInstanceOf(AgentBindingUnavailableError);
+    });
+
+    it("snapshots the bound agent's current revision onto the accepted turn", async () => {
+      const { ledger, store } = await setup();
+      const owner = await createUser(store, "snapshot-owner");
+      const agentId = await insertAgent(ledger, owner, "Finance analyst", "Reconcile totals first.");
+      const chatId = await store
+        .createChat({
+          accountId: owner,
+          title: "Snapshot chat",
+          titleIsManual: false,
+          model: "chat-model",
+          sourceScope: { source_mode: "selected", source_ids: [] },
+          agentId,
+        })
+        .then((chat) => chat.id);
+
+      const first = await store.acceptChatTurn(owner, chatId, "first turn");
+      expect(first.agent).toEqual({
+        id: agentId,
+        name: "Finance analyst",
+        version: 1,
+        instructions: "Reconcile totals first.",
+      });
+      const runRow = await ledger.get<{ agent_instructions: string | null }>(
+        "SELECT agent_instructions FROM chat_runs WHERE id=?",
+        [first.runId]
+      );
+      expect(runRow?.agent_instructions).toBe("Reconcile totals first.");
+      const messageMeta = await ledger.get<{ meta: string }>("SELECT meta FROM messages WHERE chat_id=?", [chatId]);
+      expect(JSON.parse(messageMeta?.meta ?? "{}").agent).toEqual({
+        id: agentId,
+        name: "Finance analyst",
+        version: 1,
+      });
+
+      // A later revision affects only turns accepted afterwards. The first
+      // run must reach a terminal state before another turn is accepted.
+      await ledger.run(
+        "UPDATE chat_runs SET status='completed',finished_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?",
+        [first.runId]
+      );
+      await ledger.run("INSERT INTO agent_revisions (agent_id,version,account_id,instructions) VALUES (?,?,?,?)", [
+        agentId,
+        2,
+        owner,
+        "Always open with the executive summary.",
+      ]);
+      await ledger.run("UPDATE agents SET current_version=2 WHERE id=?", [agentId]);
+
+      const second = await store.acceptChatTurn(owner, chatId, "second turn");
+      expect(second.agent).toMatchObject({ version: 2, instructions: "Always open with the executive summary." });
+    });
+
+    it("continues unbound when the bound agent is deleted", async () => {
+      const { ledger, store } = await setup();
+      const owner = await createUser(store, "delete-owner");
+      const agentId = await insertAgent(ledger, owner);
+      const chatId = await store
+        .createChat({
+          accountId: owner,
+          title: "Orphaned binding",
+          titleIsManual: false,
+          model: "chat-model",
+          sourceScope: { source_mode: "selected", source_ids: [] },
+          agentId,
+        })
+        .then((chat) => chat.id);
+
+      await ledger.run("DELETE FROM agents WHERE id=?", [agentId]);
+
+      const turn = await store.acceptChatTurn(owner, chatId, "turn after deletion");
+      expect(turn.agent).toBe(null);
+      await expect(store.listChats(owner)).resolves.toEqual([expect.objectContaining({ id: chatId, agent: null })]);
+    });
   });
 });

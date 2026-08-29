@@ -494,6 +494,7 @@ describe("chat persistence routes", () => {
       runId: "55555555-5555-4555-8555-555555555555",
       chatId,
       model: "saved-chat-model",
+      agent: null,
       sourceScope,
       userMessage: {
         id: 10,
@@ -543,6 +544,7 @@ describe("chat persistence routes", () => {
       runId: "55555555-5555-4555-8555-555555555555",
       chatId,
       model: "saved-chat-model",
+      agent: null,
       sourceScope,
       userMessage: {
         id: 11,
@@ -579,6 +581,7 @@ describe("chat persistence routes", () => {
       runId: "55555555-5555-4555-8555-555555555555",
       chatId,
       model: "saved-chat-model",
+      agent: null,
       sourceScope,
       userMessage: {
         id: 12,
@@ -614,6 +617,7 @@ describe("chat persistence routes", () => {
       runId: "55555555-5555-4555-8555-555555555555",
       chatId,
       model: "saved-chat-model",
+      agent: null,
       sourceScope,
       userMessage: {
         id: 12,
@@ -661,6 +665,7 @@ describe("chat persistence routes", () => {
       runId: "55555555-5555-4555-8555-555555555555",
       chatId,
       model: "saved-chat-model",
+      agent: null,
       sourceScope,
       userMessage: {
         id: 13,
@@ -705,6 +710,7 @@ describe("chat persistence routes", () => {
       runId: "55555555-5555-4555-8555-555555555555",
       chatId,
       model: "saved-chat-model",
+      agent: null,
       sourceScope,
       userMessage: {
         id: 14,
@@ -756,6 +762,7 @@ describe("chat persistence routes", () => {
       runId: "55555555-5555-4555-8555-555555555555",
       chatId,
       model: "unavailable-model",
+      agent: null,
       sourceScope,
       userMessage: {
         id: 11,
@@ -800,6 +807,7 @@ describe("remote egress consent gate", () => {
       runId: "55555555-5555-4555-8555-555555555555",
       chatId,
       model: "saved-chat-model",
+      agent: null,
       sourceScope,
       userMessage: {
         id: 12,
@@ -863,6 +871,7 @@ describe("remote egress consent gate", () => {
       runId: "55555555-5555-4555-8555-555555555555",
       chatId,
       model: "saved-chat-model",
+      agent: null,
       sourceScope: Object.freeze({
         mode: "selected" as const,
         attached: Object.freeze([]),

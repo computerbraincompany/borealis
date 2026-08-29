@@ -10,6 +10,7 @@ export interface AcceptedUserMessage {
     model: string;
     source_mode: "all" | "selected";
     source_ids: readonly string[];
+    agent?: Readonly<{ id: string; name: string; version: number }>;
   }>;
   readonly created_at: string;
 }
@@ -18,6 +19,8 @@ export interface AcceptedChatTurn {
   readonly chatId: string;
   readonly model: string;
   readonly sourceScope: ResolvedSourceScope;
+  /** Snapshot of the chat's bound agent at accept time; null when unbound. */
+  readonly agent: Readonly<{ id: string; name: string; version: number; instructions: string }> | null;
   readonly userMessage: AcceptedUserMessage;
   readonly runId: string;
 }

@@ -26,7 +26,8 @@ export type ChatSourceMode = "all" | "selected";
 export type ChatSourceScopeInput =
   { readonly source_mode: "all" } | { readonly source_mode: "selected"; readonly source_ids: readonly string[] };
 
-export type ChatStoreErrorCode = "DUPLICATE_EMAIL" | "ACTIVE_CHAT_RUN" | "STORE_NOT_FOUND" | "SOURCE_SCOPE_UNAVAILABLE";
+export type ChatStoreErrorCode =
+  "DUPLICATE_EMAIL" | "ACTIVE_CHAT_RUN" | "STORE_NOT_FOUND" | "SOURCE_SCOPE_UNAVAILABLE" | "AGENT_BINDING_UNAVAILABLE";
 
 export class ChatStoreError extends Error {
   constructor(
@@ -60,6 +61,14 @@ export class StoreNotFoundError extends ChatStoreError {
   ) {
     super("STORE_NOT_FOUND", `${resource} not found`, options);
     this.name = "StoreNotFoundError";
+  }
+}
+
+/** The chat-creation body referenced an unknown or foreign agent. */
+export class AgentBindingUnavailableError extends ChatStoreError {
+  constructor() {
+    super("AGENT_BINDING_UNAVAILABLE", "invalid agent_id");
+    this.name = "AgentBindingUnavailableError";
   }
 }
 
@@ -98,6 +107,8 @@ export interface ChatSummary {
   readonly title: string;
   readonly model: string;
   readonly source_mode: ChatSourceMode;
+  /** Write-once agent binding from chat creation; null when unbound. */
+  readonly agent: Readonly<{ id: string; name: string }> | null;
   readonly created_at: string;
   readonly updated_at: string;
 }
@@ -108,6 +119,7 @@ export interface CreateChatInput {
   readonly titleIsManual: boolean;
   readonly model: string;
   readonly sourceScope: ChatSourceScopeInput;
+  readonly agentId?: string | null;
 }
 
 export interface AttachedChatSource {
@@ -182,6 +194,8 @@ export interface AcceptedChatTurn {
   readonly chatId: string;
   readonly model: string;
   readonly sourceScope: ResolvedChatSourceScope;
+  /** Snapshot of the chat's bound agent at accept time; null when unbound. */
+  readonly agent: Readonly<{ id: string; name: string; version: number; instructions: string }> | null;
   readonly userMessage: AcceptedUserMessage;
   readonly runId: string;
 }
@@ -214,6 +228,8 @@ interface ChatRow {
   title_is_manual?: unknown;
   model?: unknown;
   source_mode?: unknown;
+  agent_id?: unknown;
+  agent_name?: unknown;
   created_at?: unknown;
   updated_at?: unknown;
 }
@@ -284,11 +300,15 @@ function decodeUser(row: UserRow): StoredUser {
 }
 
 function decodeChat(row: ChatRow): ChatSummary {
+  const agentId =
+    row.agent_id === null || row.agent_id === undefined ? null : requiredString(row.agent_id, "chat agent id");
   return Object.freeze({
     id: requiredString(row.id, "chat id"),
     title: requiredString(row.title, "chat title"),
     model: requiredString(row.model, "chat model"),
     source_mode: sourceMode(row.source_mode),
+    agent:
+      agentId === null ? null : Object.freeze({ id: agentId, name: requiredString(row.agent_name, "chat agent name") }),
     created_at: decodeIsoTimestamp(row.created_at, "chat created_at"),
     updated_at: decodeIsoTimestamp(row.updated_at, "chat updated_at"),
   });
@@ -481,8 +501,10 @@ export class ChatStore {
 
   async listChats(accountId: string): Promise<ChatSummary[]> {
     const rows = await this.ledger.all<ChatRow>(
-      `SELECT id,title,model,source_mode,created_at,updated_at
-       FROM chats WHERE account_id=? ORDER BY updated_at DESC,id DESC`,
+      `SELECT c.id,c.title,c.model,c.source_mode,c.agent_id,ag.name AS agent_name,c.created_at,c.updated_at
+       FROM chats c
+       LEFT JOIN agents ag ON ag.id=c.agent_id AND ag.account_id=c.account_id
+       WHERE c.account_id=? ORDER BY c.updated_at DESC,c.id DESC`,
       [identity(accountId, "account id")]
     );
     return rows.map((row) => decodeChat(row));
@@ -498,12 +520,32 @@ export class ChatStore {
     return this.ledger.withImmediateTransaction((transaction) => {
       this.assertUserExists(transaction, accountId);
       if (scope.source_mode === "selected") this.assertSourcesAvailable(transaction, accountId, scope.source_ids);
-      const row = transaction.get<ChatRow>(
+      if (input.agentId) {
+        const owned = transaction.get("SELECT 1 FROM agents WHERE id=? AND account_id=?", [input.agentId, accountId]);
+        if (!owned) throw new AgentBindingUnavailableError();
+      }
+      transaction.run(
         `INSERT INTO chats
-           (id,account_id,title,title_is_manual,model,source_mode,created_at,updated_at)
-         VALUES (?,?,?,?,?,?,?,?)
-         RETURNING id,title,model,source_mode,created_at,updated_at`,
-        [id, accountId, title, encodeBoolean(input.titleIsManual), model, scope.source_mode, timestamp, timestamp]
+           (id,account_id,title,title_is_manual,model,source_mode,agent_id,created_at,updated_at)
+         VALUES (?,?,?,?,?,?,?,?,?)`,
+        [
+          id,
+          accountId,
+          title,
+          encodeBoolean(input.titleIsManual),
+          model,
+          scope.source_mode,
+          input.agentId ?? null,
+          timestamp,
+          timestamp,
+        ]
+      );
+      const row = transaction.get<ChatRow>(
+        `SELECT c.id,c.title,c.model,c.source_mode,c.agent_id,ag.name AS agent_name,c.created_at,c.updated_at
+         FROM chats c
+         LEFT JOIN agents ag ON ag.id=c.agent_id AND ag.account_id=c.account_id
+         WHERE c.id=? AND c.account_id=?`,
+        [id, accountId]
       );
       if (!row) throw new StoreNotFoundError("chat");
       if (scope.source_mode === "selected") this.insertChatSources(transaction, id, accountId, scope.source_ids);
@@ -545,8 +587,10 @@ export class ChatStore {
 
     return this.ledger.withImmediateTransaction((transaction) => {
       const row = transaction.get<ChatRow>(
-        `SELECT id,title,model,source_mode,created_at,updated_at
-         FROM chats WHERE id=? AND account_id=?`,
+        `SELECT c.id,c.title,c.model,c.source_mode,c.agent_id,ag.name AS agent_name,c.created_at,c.updated_at
+         FROM chats c
+         LEFT JOIN agents ag ON ag.id=c.agent_id AND ag.account_id=c.account_id
+         WHERE c.id=? AND c.account_id=?`,
         [chatId, accountId]
       );
       if (!row) throw new StoreNotFoundError("chat");
@@ -641,26 +685,37 @@ export class ChatStore {
     const chatId = identity(chatIdValue, "chat id");
     const title = inputCodePointString(titleValue, "chat title", 80);
     const timestamp = this.timestamp();
-    const row = await this.ledger.get<ChatRow>(
+    const updated = await this.ledger.run(
       `UPDATE chats
        SET title=?,title_is_manual=1,
            updated_at=CASE WHEN updated_at<? THEN ? ELSE updated_at END
-       WHERE id=? AND account_id=?
-       RETURNING id,title,model,source_mode,created_at,updated_at`,
+       WHERE id=? AND account_id=?`,
       [title, timestamp, timestamp, chatId, accountId]
     );
-    if (!row) throw new StoreNotFoundError("chat");
-    return decodeChat(row);
+    if (updated.changes !== 1) throw new StoreNotFoundError("chat");
+    return this.getChatSummaryRow(accountId, chatId);
   }
 
   async updateModel(accountIdValue: string, chatIdValue: string, modelValue: string): Promise<ChatSummary> {
     const accountId = identity(accountIdValue, "account id");
     const chatId = identity(chatIdValue, "chat id");
     const model = inputString(modelValue, "chat model", 256);
+    const updated = await this.ledger.run("UPDATE chats SET model=? WHERE id=? AND account_id=?", [
+      model,
+      chatId,
+      accountId,
+    ]);
+    if (updated.changes !== 1) throw new StoreNotFoundError("chat");
+    return this.getChatSummaryRow(accountId, chatId);
+  }
+
+  private async getChatSummaryRow(accountId: string, chatId: string): Promise<ChatSummary> {
     const row = await this.ledger.get<ChatRow>(
-      `UPDATE chats SET model=? WHERE id=? AND account_id=?
-       RETURNING id,title,model,source_mode,created_at,updated_at`,
-      [model, chatId, accountId]
+      `SELECT c.id,c.title,c.model,c.source_mode,c.agent_id,ag.name AS agent_name,c.created_at,c.updated_at
+       FROM chats c
+       LEFT JOIN agents ag ON ag.id=c.agent_id AND ag.account_id=c.account_id
+       WHERE c.id=? AND c.account_id=?`,
+      [chatId, accountId]
     );
     if (!row) throw new StoreNotFoundError("chat");
     return decodeChat(row);
@@ -734,7 +789,7 @@ export class ChatStore {
     try {
       return await this.ledger.withImmediateTransaction(async (transaction) => {
         const chat = transaction.get<ChatRow>(
-          "SELECT model,source_mode,title,title_is_manual FROM chats WHERE id=? AND account_id=?",
+          "SELECT model,source_mode,title,title_is_manual,agent_id FROM chats WHERE id=? AND account_id=?",
           [chatId, accountId]
         );
         if (!chat) throw new StoreNotFoundError("chat");
@@ -743,12 +798,34 @@ export class ChatStore {
         const model = requiredString(chat.model, "chat model");
         const mode = sourceMode(chat.source_mode);
         const sourceScope = this.resolveSourceScopeInTransaction(transaction, accountId, chatId, mode);
+        // The agent binding is write-once at chat creation. Snapshot the exact
+        // current revision onto the run inside this transaction so later agent
+        // edits or deletion can never change a running turn's prompt.
+        let agent: AcceptedChatTurn["agent"] = null;
+        if (chat.agent_id !== null && chat.agent_id !== undefined) {
+          const bound = transaction.get<{ id?: unknown; name?: unknown; version?: unknown; instructions?: unknown }>(
+            `SELECT a.id,a.name,a.current_version AS version,r.instructions
+             FROM agents a
+             JOIN agent_revisions r ON r.agent_id=a.id AND r.version=a.current_version AND r.account_id=a.account_id
+             WHERE a.id=? AND a.account_id=?`,
+            [requiredString(chat.agent_id, "chat agent id"), accountId]
+          );
+          if (bound) {
+            agent = Object.freeze({
+              id: requiredString(bound.id, "agent id"),
+              name: requiredString(bound.name, "agent name"),
+              version: decodeSafeInteger(bound.version, "agent version"),
+              instructions: requiredString(bound.instructions, "agent instructions"),
+            });
+          }
+        }
         const runId = identity(this.createId(), "generated run id");
         const createdAt = this.timestamp();
         const meta = Object.freeze({
           model,
           source_mode: mode,
           source_ids: Object.freeze([...sourceScope.readySourceIds]),
+          ...(agent ? { agent: Object.freeze({ id: agent.id, name: agent.name, version: agent.version }) } : {}),
         });
         const hadMessages = Boolean(transaction.get("SELECT 1 FROM messages WHERE chat_id=? LIMIT 1", [chatId]));
         const messageResult = transaction.run(
@@ -758,9 +835,17 @@ export class ChatStore {
         );
         transaction.run(
           `INSERT INTO chat_runs
-             (id,account_id,chat_id,user_message_id,status,created_at,started_at)
-           VALUES (?,?,?,?,'running',?,?)`,
-          [runId, accountId, chatId, messageResult.lastInsertRowid, createdAt, createdAt]
+             (id,account_id,chat_id,user_message_id,status,agent_instructions,created_at,started_at)
+           VALUES (?,?,?,?,'running',?,?,?)`,
+          [
+            runId,
+            accountId,
+            chatId,
+            messageResult.lastInsertRowid,
+            agent ? agent.instructions : null,
+            createdAt,
+            createdAt,
+          ]
         );
         for (const sourceId of sourceScope.readySourceIds) {
           transaction.run("INSERT INTO chat_run_sources (run_id,source_id,account_id) VALUES (?,?,?)", [
@@ -770,7 +855,7 @@ export class ChatStore {
           ]);
         }
 
-        const snapshot = Object.freeze({ chatId, model, sourceScope, runId });
+        const snapshot = Object.freeze({ chatId, model, sourceScope, agent, runId });
         await hooks.afterSnapshot?.(snapshot);
 
         const title = requiredString(chat.title, "chat title");

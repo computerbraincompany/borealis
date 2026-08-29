@@ -4,7 +4,12 @@ import { getAccountId, requireAuth } from "../auth.js";
 import { enforceRemoteEgressConsent } from "../egressPolicy.js";
 import { beginRun, cancelRun, completeRunWithAssistant, finishRunDurably, isRunCancellation } from "../chatRuns.js";
 import { config } from "../config.js";
-import { ActiveChatRunError, SourceScopeUnavailableError, StoreNotFoundError } from "../db/stores/chatStore.js";
+import {
+  ActiveChatRunError,
+  AgentBindingUnavailableError,
+  SourceScopeUnavailableError,
+  StoreNotFoundError,
+} from "../db/stores/chatStore.js";
 import {
   parseSourceScopeInput,
   replaceChatSourceScope,
@@ -41,7 +46,7 @@ export async function chatRoutes(app: FastifyInstance): Promise<void> {
       schema: { tags: ["chats"], summary: "Create a chat", body: chatCreateBodySchema },
     },
     async (req, reply) => {
-      let parsed: { title: string; titleIsManual: boolean; scope: SourceScopeInput };
+      let parsed: { title: string; titleIsManual: boolean; scope: SourceScopeInput; agentId: string | null };
       try {
         parsed = parseChatCreateBody(req.body);
       } catch (error) {
@@ -56,6 +61,7 @@ export async function chatRoutes(app: FastifyInstance): Promise<void> {
           titleIsManual: parsed.titleIsManual,
           model: runtime.settings.chatModel,
           sourceScope: parsed.scope,
+          agentId: parsed.agentId,
         });
         return reply.send(chat);
       } catch (error) {
@@ -265,6 +271,7 @@ export async function chatRoutes(app: FastifyInstance): Promise<void> {
         const completion = await runAgent({
           accountId,
           ...turn,
+          agentInstructions: turn.agent?.instructions ?? null,
           content: turn.userMessage.content,
           emit,
           signal: controller.signal,
@@ -405,11 +412,16 @@ function boundedHistoryMeta(value: unknown): unknown {
   return { metadata_truncated: true };
 }
 
-function parseChatCreateBody(body: unknown): { title: string; titleIsManual: boolean; scope: SourceScopeInput } {
+function parseChatCreateBody(body: unknown): {
+  title: string;
+  titleIsManual: boolean;
+  scope: SourceScopeInput;
+  agentId: string | null;
+} {
   const value = body ?? {};
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new SourceScopeError(400, "invalid chat body");
   const record = value as Record<string, unknown>;
-  const allowed = new Set(["title", "source_mode", "source_ids"]);
+  const allowed = new Set(["title", "source_mode", "source_ids", "agent_id"]);
   if (Object.keys(record).some((key) => !allowed.has(key))) throw new SourceScopeError(400, "invalid chat body");
   const titleIsManual = Object.prototype.hasOwnProperty.call(record, "title");
   const title = titleIsManual ? parseChatTitle(record.title) : "New chat";
@@ -421,7 +433,20 @@ function parseChatCreateBody(body: unknown): { title: string; titleIsManual: boo
       : parseSourceScopeInput(
           Object.fromEntries(Object.entries(record).filter(([key]) => key === "source_mode" || key === "source_ids"))
         );
-  return { title, titleIsManual, scope };
+  // The agent binding is write-once at creation and must reference an owned
+  // agent; unknown or foreign ids fail closed before any row is written.
+  let agentId: string | null = null;
+  if (Object.prototype.hasOwnProperty.call(record, "agent_id")) {
+    const raw = record.agent_id;
+    if (
+      typeof raw !== "string" ||
+      !/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(raw)
+    ) {
+      throw new SourceScopeError(400, "invalid agent_id");
+    }
+    agentId = raw.toLowerCase();
+  }
+  return { title, titleIsManual, scope, agentId };
 }
 
 function parseChatTitle(value: unknown): string {
@@ -454,6 +479,7 @@ function sendSourceScopeError(reply: any, error: unknown) {
 
 function sendChatStoreError(reply: any, error: unknown, operation: "create" | "read" | "update" | "delete") {
   if (error instanceof SourceScopeError) return sendSourceScopeError(reply, error);
+  if (error instanceof AgentBindingUnavailableError) return reply.code(400).send({ error: error.message });
   if (error instanceof StoreNotFoundError) return reply.code(404).send({ error: "chat not found" });
   if (error instanceof ActiveChatRunError) return reply.code(409).send({ error: error.message });
   if (error instanceof SourceScopeUnavailableError) {
