@@ -281,7 +281,9 @@ Answers can show retrieved passages, charts, and saved query-result previews.
 **Download CSV** exports the saved preview, not an unlimited rerun of the SQL.
 Open generated HTML/PDF from chat or **Reports**. Reports keep per-chat
 versions with a supersedes chain, can be renamed in place, and the Reports
-surface lists the account's chart artifacts. Chat history supports title
+surface lists the account's chart artifacts. **Libraries** group sources into
+named, account-scoped collections you can curate and attach to a new chat as
+an explicit selected scope. Chat history supports title
 search, rename, and deletion; **Settings** also contains system readiness,
 Light/Dark/System appearance, and account controls.
 

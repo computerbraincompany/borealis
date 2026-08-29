@@ -20,7 +20,7 @@ horizon, scoped so it can be verified without the next one.
 | [M01](M01-ambient-locality.md) | 1 | Ambient locality — health, model presence, and egress state in the chrome | DONE |
 | [M02](M02-artifacts.md) | 2 | Artifacts — reports, charts, and query receipts with versions and lineage | DONE |
 | [M03](M03-egress-consent.md) | 1+2 | Egress consent cards — fail-closed gate and consent UI before data leaves the Mac | DONE |
-| [M04](M04-libraries.md) | 2 | Libraries — governed collections above a pile of uploads | IN PROGRESS |
+| [M04](M04-libraries.md) | 2 | Libraries — governed collections above a pile of uploads | DONE |
 | [M05](M05-named-agents.md) | 2 | Named agents — versioned instructions, tools, and source bindings | PLANNED |
 | [M06](M06-contained-models.md) | 1 | Contained-model lifecycle on macOS as a first-class mode | PLANNED |
 | [M07](M07-team-platform.md) | 3 | Small-team platform — sharing snapshots, audit plane, automations | PLANNED |

@@ -4,7 +4,17 @@
 above a pile of uploads. A library is something you attach, share inside a
 trust boundary, and cite.*
 
-**Status:** IN PROGRESS
+**Status:** DONE (implemented in commits `4eca825` — schema v5, library store,
+and routes — and `3170674` — the Libraries web surface; verification recorded
+in milestones/README.md)
+
+**Verification record (2026-08-29):** server 564 tests, web 139 tests, lint,
+format, builds, and desktop native smoke green via `pnpm verify`. Live
+browser-development check with a stub OpenAI-compatible embeddings provider:
+uploaded `budget.csv` to ready, created library "Budget check", added the
+member, and **Attach to new chat** created a chat whose composer showed
+"1 source" with budget.csv attached — the explicit selected-scope expansion
+working end to end.
 
 ## Problem
 

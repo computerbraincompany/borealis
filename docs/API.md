@@ -58,6 +58,22 @@ acknowledgment and unblocks the gated routes immediately. `endpoint_host` is
 present only while a remote provider is configured, is a response field only,
 and never appears in logs. Loopback and private-network providers never gate.
 
+### Libraries
+
+| Endpoint                        | Response                                                                                                     |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `GET /api/libraries`            | Array of `{id,name,member_count,created_at,updated_at}`, newest first.                                       |
+| `POST /api/libraries`           | Body `{name}` (1–120 chars, unique per account); returns `201` with the library.                              |
+| `GET /api/libraries/:id`        | `{id,name,created_at,updated_at,members}` with the members in the sources-list DTO.                          |
+| `PATCH /api/libraries/:id`      | Body `{name}`; returns the renamed library.                                                                   |
+| `PUT /api/libraries/:id/sources`| Body `{source_ids}` (≤100, distinct, all owned by the account); replaces membership exactly.                  |
+| `DELETE /api/libraries/:id`     | `{"ok":true}`; membership rows cascade. Sources and their data are never touched.                            |
+
+Libraries reference sources; they never copy or move them. There is no server
+side chat–library binding: attaching a library expands its ready members into
+a chat's explicit `selected` scope through the normal chat-creation contract,
+so the three-meaning source-scope semantics are unchanged.
+
 The macOS app creates its single local account and passes a fresh session from
 Electron main through the trusted preload exactly once. That bootstrap is not an
 HTTP endpoint and does not change the public registration/login contract. The

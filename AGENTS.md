@@ -222,6 +222,12 @@ the matching vector index.
   enter a turn snapshot. API clients omitting scope at chat creation retain
   legacy `all` behavior. Scope resolution is capped at 100 attached sources,
   including unready sources; it must fail rather than silently truncate a scope.
+- Libraries (`server/src/db/stores/libraryStore.ts`, schema v5) reference
+  sources without copying them. Attaching a library expands its ready members
+  into an explicit `selected` scope at attach time through the normal
+  chat-creation contract; never add a server-side dynamic chat↔library
+  resolution path without speccing it against the scope semantics above.
+  Library deletion cascades membership only — never sources or their data.
 - The OpenAI Node client defaults embeddings to base64 and decodes responses.
   Compatible local runtimes return float arrays, so `server/src/llm.ts` must
   continue sending `encoding_format: "float"` explicitly.
