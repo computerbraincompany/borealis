@@ -13,6 +13,7 @@ import { consentRoutes } from "./routes/consent.js";
 import { connectorRoutes } from "./routes/connectors.js";
 import { libraryRoutes } from "./routes/libraries.js";
 import { modelRoutes } from "./routes/models.js";
+import { preferencesRoutes } from "./routes/preferences.js";
 import { reportRoutes } from "./routes/reports.js";
 import { settingsRoutes } from "./routes/settings.js";
 import { sourceRoutes } from "./routes/sources.js";
@@ -42,6 +43,7 @@ export async function routes(app: FastifyInstance): Promise<void> {
 
   await app.register(modelRoutes);
   await app.register(settingsRoutes);
+  await app.register(preferencesRoutes);
   await app.register(systemRoutes);
   await app.register(consentRoutes);
   await app.register(auditRoutes);

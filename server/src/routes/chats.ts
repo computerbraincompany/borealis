@@ -55,12 +55,15 @@ export async function chatRoutes(app: FastifyInstance): Promise<void> {
       }
       const accountId = getAccountId(req);
       try {
-        const runtime = await getRuntimeSettings();
+        const [runtime, accountDefaultModel] = await Promise.all([
+          getRuntimeSettings(),
+          storageRuntime().chats.getDefaultChatModel(accountId),
+        ]);
         const chat = await storageRuntime().chats.createChat({
           accountId,
           title: parsed.title,
           titleIsManual: parsed.titleIsManual,
-          model: runtime.settings.chatModel,
+          model: accountDefaultModel ?? runtime.settings.chatModel,
           sourceScope: parsed.scope,
           agentId: parsed.agentId,
         });

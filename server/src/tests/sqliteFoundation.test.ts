@@ -108,6 +108,31 @@ describe("SQLite ledger foundation", () => {
     const user = await ledger.get<{ created_at: string }>("SELECT created_at FROM users WHERE id=?", [accountId]);
     expect(user?.created_at).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
     expect(decodeIsoTimestamp(user?.created_at)).toBe(user?.created_at);
+
+    const userColumns = await columnNames(ledger, "users");
+    expect(userColumns).toContain("default_chat_model");
+  });
+
+  it("enforces the personal default chat model column bounds", async () => {
+    const { ledger } = await temporaryLedger();
+    const account = randomUUID();
+    await insertUser(ledger, account, "defaults@example.test");
+    await expect(ledger.get("SELECT default_chat_model FROM users WHERE id=?", [account])).resolves.toEqual({
+      default_chat_model: null,
+    });
+
+    await ledger.run("UPDATE users SET default_chat_model=? WHERE id=?", ["personal-model", account]);
+    await expect(ledger.get("SELECT default_chat_model FROM users WHERE id=?", [account])).resolves.toEqual({
+      default_chat_model: "personal-model",
+    });
+    await expect(
+      ledger.run("UPDATE users SET default_chat_model=? WHERE id=?", ["x".repeat(201), account])
+    ).rejects.toMatchObject({ kind: "check" });
+
+    await ledger.run("UPDATE users SET default_chat_model=NULL WHERE id=?", [account]);
+    await expect(ledger.get("SELECT default_chat_model FROM users WHERE id=?", [account])).resolves.toEqual({
+      default_chat_model: null,
+    });
   });
 
   it("keeps migrations idempotent and rejects a newer on-disk schema", async () => {

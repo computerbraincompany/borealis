@@ -96,6 +96,34 @@ describe("ChatStore", () => {
     ).rejects.toBeInstanceOf(DuplicateEmailError);
   });
 
+  it("round-trips the personal default chat model with normalization and account scoping", async () => {
+    const { store } = await setup();
+    const owner = await createUser(store, "default-owner");
+    const other = await createUser(store, "default-other");
+
+    await expect(store.getDefaultChatModel(owner)).resolves.toBeNull();
+    await expect(store.setDefaultChatModel(owner, "  personal-model  ")).resolves.toBe("personal-model");
+    await expect(store.getDefaultChatModel(owner)).resolves.toBe("personal-model");
+
+    // Whitespace-only normalizes to null, matching the empty-string contract.
+    await expect(store.setDefaultChatModel(owner, "   ")).resolves.toBeNull();
+    await expect(store.getDefaultChatModel(owner)).resolves.toBeNull();
+
+    // The other account stays untouched throughout.
+    await expect(store.setDefaultChatModel(owner, "scoped-model")).resolves.toBe("scoped-model");
+    await expect(store.getDefaultChatModel(other)).resolves.toBeNull();
+
+    await expect(store.setDefaultChatModel(owner, null)).resolves.toBeNull();
+    await expect(store.getDefaultChatModel(owner)).resolves.toBeNull();
+
+    await expect(store.setDefaultChatModel(owner, "x".repeat(201))).rejects.toBeInstanceOf(TypeError);
+    await expect(store.getDefaultChatModel(owner)).resolves.toBeNull();
+
+    const missing = randomUUID();
+    await expect(store.getDefaultChatModel(missing)).rejects.toBeInstanceOf(StoreNotFoundError);
+    await expect(store.setDefaultChatModel(missing, "model")).rejects.toBeInstanceOf(StoreNotFoundError);
+  });
+
   it("creates all, selected, and selected-empty chats atomically without exposing foreign source ids", async () => {
     const { ledger, store } = await setup();
     const owner = await createUser(store, "scope-owner");

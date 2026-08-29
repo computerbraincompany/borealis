@@ -1,6 +1,6 @@
 import { SqliteMigrationError } from "./types.js";
 
-export const LATEST_SQLITE_SCHEMA_VERSION = 10;
+export const LATEST_SQLITE_SCHEMA_VERSION = 11;
 
 interface MigrationDatabase {
   exec(sql: string): unknown;
@@ -462,6 +462,10 @@ CREATE TABLE connector_syncs (
 CREATE INDEX connector_syncs_connector_idx ON connector_syncs (connector_id, started_at DESC);
 `;
 
+const SCHEMA_V11 = `
+ALTER TABLE users ADD COLUMN default_chat_model TEXT CHECK (default_chat_model IS NULL OR length(default_chat_model) <= 200);
+`;
+
 const migrations = [
   { version: 1, sql: SCHEMA_V1 },
   { version: 2, sql: SCHEMA_V2 },
@@ -473,6 +477,7 @@ const migrations = [
   { version: 8, sql: SCHEMA_V8 },
   { version: 9, sql: SCHEMA_V9 },
   { version: 10, sql: SCHEMA_V10 },
+  { version: 11, sql: SCHEMA_V11 },
 ] as const;
 
 function schemaVersion(database: MigrationDatabase): number {

@@ -14,6 +14,7 @@ import { SqliteConstraintError, type SqliteLedger, type SqliteTransaction } from
 export const MAX_CHAT_SOURCE_SCOPE = 100;
 export const MAX_CHAT_HISTORY_PAGE = 100;
 export const MAX_AGENT_HISTORY_MESSAGES = 500;
+export const MAX_DEFAULT_CHAT_MODEL_CHARS = 200;
 
 const DEFAULT_HISTORY_LIMIT = 80;
 const DEFAULT_MAX_HISTORY_CHARS = 120_000;
@@ -497,6 +498,30 @@ export class ChatStore {
       identity(accountIdValue, "account id"),
     ]);
     if (updated.changes !== 1) throw new StoreNotFoundError("user");
+  }
+
+  async getDefaultChatModel(accountIdValue: string): Promise<string | null> {
+    const row = await this.ledger.get<{ default_chat_model?: unknown }>(
+      "SELECT default_chat_model FROM users WHERE id=?",
+      [identity(accountIdValue, "account id")]
+    );
+    if (!row) throw new StoreNotFoundError("user");
+    const raw = row.default_chat_model;
+    return raw === null || raw === undefined ? null : requiredString(raw, "default chat model");
+  }
+
+  async setDefaultChatModel(accountIdValue: string, model: string | null): Promise<string | null> {
+    const trimmed = model === null ? null : model.trim();
+    const normalized =
+      trimmed === null || trimmed.length === 0
+        ? null
+        : inputString(trimmed, "default chat model", MAX_DEFAULT_CHAT_MODEL_CHARS);
+    const updated = await this.ledger.run("UPDATE users SET default_chat_model=? WHERE id=?", [
+      normalized,
+      identity(accountIdValue, "account id"),
+    ]);
+    if (updated.changes !== 1) throw new StoreNotFoundError("user");
+    return normalized;
   }
 
   async listChats(accountId: string): Promise<ChatSummary[]> {

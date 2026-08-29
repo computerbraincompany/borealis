@@ -143,12 +143,46 @@ describe("model catalog route", () => {
     });
 
     expect(response.statusCode).toBe(200);
-    expect(Object.keys(response.json()).sort()).toEqual(["default_model", "discovery", "models"]);
+    expect(Object.keys(response.json()).sort()).toEqual([
+      "account_default_model",
+      "default_model",
+      "discovery",
+      "models",
+    ]);
     expect(response.json()).toEqual({
       models: [{ id: "chat-b", owned_by: "local" }, { id: "qwen-chat" }],
       default_model: "qwen-chat",
+      account_default_model: null,
       discovery: "live",
     });
+  });
+
+  it("exposes the account default model alongside the workspace default", async () => {
+    const app = await buildApp();
+    const client = await getLlmClient();
+    vi.spyOn(client.models, "list").mockResolvedValue({
+      data: [{ id: "personal-default" }],
+    } as any);
+    const saved = await app.inject({
+      method: "PATCH",
+      url: "/api/preferences",
+      headers: authHeader,
+      payload: { default_chat_model: "personal-default" },
+    });
+    expect(saved.statusCode).toBe(200);
+
+    const catalog = await app.inject({ method: "GET", url: "/api/models?refresh=1", headers: authHeader });
+    expect(catalog.statusCode).toBe(200);
+    expect(catalog.json()).toMatchObject({
+      default_model: "qwen-chat",
+      account_default_model: "personal-default",
+    });
+
+    const otherHeader = {
+      authorization: `Bearer ${signToken({ userId: otherAccountId, email: "other@example.test" })}`,
+    };
+    const otherCatalog = await app.inject({ method: "GET", url: "/api/models?refresh=1", headers: otherHeader });
+    expect(otherCatalog.json()).toMatchObject({ default_model: "qwen-chat", account_default_model: null });
   });
 
   it("publishes protected API security with explicit public auth and health overrides", async () => {
@@ -266,6 +300,32 @@ describe("chat persistence routes", () => {
     ).resolves.toEqual({ title_is_manual: 1n });
   });
 
+  it("stamps the account default chat model on new chats while other accounts keep the workspace default", async () => {
+    const app = await buildApp();
+    const saved = await app.inject({
+      method: "PATCH",
+      url: "/api/preferences",
+      headers: authHeader,
+      payload: { default_chat_model: "personal-default" },
+    });
+    expect(saved.statusCode).toBe(200);
+
+    const created = await app.inject({ method: "POST", url: "/api/chats", headers: authHeader, payload: {} });
+    expect(created.statusCode).toBe(200);
+    expect(created.json().model).toBe("personal-default");
+
+    const otherHeader = {
+      authorization: `Bearer ${signToken({ userId: otherAccountId, email: "other@example.test" })}`,
+    };
+    const otherCreated = await app.inject({ method: "POST", url: "/api/chats", headers: otherHeader, payload: {} });
+    expect(otherCreated.statusCode).toBe(200);
+    expect(otherCreated.json().model).toBe("qwen-chat");
+
+    // The configured model of an existing chat never changes implicitly.
+    const reread = await app.inject({ method: "GET", url: `/api/chats/${created.json().id}`, headers: authHeader });
+    expect(reread.json().model).toBe("personal-default");
+  });
+
   it("hot-applies saved model defaults to discovery, new chats, and embedding-role rejection", async () => {
     const app = await buildApp();
     const beforeRevision = (await getRuntimeSettings()).revision;
@@ -295,6 +355,7 @@ describe("chat persistence routes", () => {
     expect(catalog.json()).toEqual({
       models: [{ id: "saved-default-chat" }],
       default_model: "saved-default-chat",
+      account_default_model: null,
       discovery: "live",
     });
 

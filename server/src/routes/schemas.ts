@@ -34,6 +34,16 @@ export const connectorScheduleBodySchema = {
   },
 } as const;
 
+export const preferencesBodySchema = {
+  type: "object",
+  required: ["default_chat_model"],
+  additionalProperties: false,
+  properties: {
+    // null restores the workspace default; otherwise a bounded, non-blank model id.
+    default_chat_model: { type: ["string", "null"], minLength: 1, maxLength: 200, pattern: "\\S" },
+  },
+} as const;
+
 export const sourceScopeBodySchema = {
   type: "object",
   description:
