@@ -4,7 +4,14 @@
 instrument.* Plus the visual register line: *typography that can carry a
 financial narrative.*
 
-**Status:** PLANNED
+**Status:** DONE (implemented in commits `6239be9` — library attach in the
+composer scope picker, and `89679d2` — answer typography; documentation in the
+commit that closes this milestone)
+
+**Verification record (2026-08-29):** web 180 tests, and the complete
+`pnpm verify` gate green. Visual composition check: the picker renders the
+"Attach a library" group in new-chat and existing-chat rows; answer typography
+changes are token-based and theme-consistent by construction.
 
 ## Problem
 
