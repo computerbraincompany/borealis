@@ -130,6 +130,14 @@ Local defaults are:
 - chat model: `qwen-chat`
 - embedding model: `nomic-embed`
 
+Contained mode is the first-class local path beside those options: point
+Borealis at a `llama-server` binary and a model file (which it can download and
+SHA-256-verify into the app's own data directory), and it starts, health-checks,
+and stops the engine as part of the workspace — switching the provider to the
+engine's loopback origin and restoring whatever was there before. When the
+endpoint is managed by an environment override, Borealis reports the stand-down
+instead of overriding it.
+
 These model names are aliases defined in
 [server/src/llmAliases.ts](server/src/llmAliases.ts):
 

@@ -5,7 +5,10 @@ macOS as a first-class path beside "paste a cluster origin."* Plus the vision's
 model topology: contained mode is a first-class personality — offline-capable,
 zero token meter, honest about limits.
 
-**Status:** IN PROGRESS
+**Status:** DONE (implemented in commits `af49681` — verified downloads and
+config storage, `05af22c` — engine lifecycle with first-class endpoint
+switching, `7adac79` — ambient status, shutdown, and desktop data paths, and
+the documentation slice; verification recorded in milestones/README.md)
 
 ## Problem
 

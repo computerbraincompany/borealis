@@ -58,6 +58,44 @@ acknowledgment and unblocks the gated routes immediately. `endpoint_host` is
 present only while a remote provider is configured, is a response field only,
 and never appears in logs. Loopback and private-network providers never gate.
 
+### Contained models
+
+Contained mode lets Borealis own a local model engine end to end: verified
+weight downloads, a managed loopback `llama-server` process, and first-class
+provider switching. All routes require authentication.
+
+| Endpoint                                | Response                                                                                                    |
+| --------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `GET /api/contained`                    | `{config,engine,downloads}` — current configuration, engine state, and download states.                      |
+| `PUT /api/contained/config`             | Body `{enabled,binary_path,model_path,extra_args?}`; absolute paths, mode-`0600` `contained.json`.           |
+| `POST /api/contained/downloads`         | Body `{url,filename,sha256}`; `202` with the download state.                                                 |
+| `DELETE /api/contained/downloads/:name` | `{"ok":true}`; cancels and removes the `.part` artifact.                                                     |
+| `POST /api/contained/engine/start`      | `202` with the engine state; health is polled in the background.                                              |
+| `POST /api/contained/engine/stop`       | Engine state after an orderly SIGTERM (bounded SIGKILL).                                                     |
+
+Download contract: `filename` is 1–180 characters of `[A-Za-z0-9._-]` (no
+separators), `sha256` is mandatory and verified before the file is atomically
+renamed into place — a mismatch deletes the artifact and records a failed
+state. Downloads resume from the existing `.part` byte range, are bounded in
+size, and accept only HTTPS or loopback HTTP origins without credentials,
+query, or fragments. Redirects are refused.
+
+Engine contract: Borealis spawns the configured binary as
+`<binary> -m <model_path> --host 127.0.0.1 --port <os-assigned>
+[extra_args...]` (the llama.cpp `llama-server` shape), polls body-free
+`GET /v1/models` until healthy within a 180-second budget, and reports
+`off/starting/healthy/crashed/stopped`. When healthy, and only when the
+provider endpoint is not environment-managed, the engine's loopback origin is
+applied through the live settings store and the prior origin is restored on
+stop; an environment-managed endpoint is reported via
+`endpoint_managed_by_env` instead of being overridden. Engine process output
+is never read or logged, and orderly shutdown stops the engine before the
+embedded stores close.
+
+`GET /api/status` carries the ambient `contained` section
+(`{state,model,endpoint_host,endpoint_managed_by_env}` or `null`) so the
+workspace chrome can say "On this Mac · contained".
+
 ### Agents
 
 | Endpoint               | Response                                                                                                        |

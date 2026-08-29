@@ -176,6 +176,7 @@ absolute `--user-data-dir` override):
 | `lancedb/`        | Embedding vectors paired with the SQLite ledger.                                         |
 | `uploads/`        | Account/source-scoped uploads and connector caches.                                      |
 | `reports/`        | Generated HTML and PDF files.                                                            |
+| `models/`         | Contained-mode model downloads (checksum-verified) and `contained.json`.                  |
 | `settings.json`   | Provider settings, written atomically with mode `0600`.                                  |
 | `jwt.secret`      | Generated signing secret, created once with mode `0600` unless `JWT_SECRET` is supplied. |
 

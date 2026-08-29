@@ -273,6 +273,14 @@ Environment values win over `settings.json` and disable the corresponding field.
 against the draft effective configuration without persisting it. It checks HTTP
 success, not model availability, tool support, or embedding compatibility.
 
+Contained-model invariants (`server/src/contained/`): the engine binds
+loopback only and is spawned with the llama-server arg contract; its output is
+never read or logged. Auto-apply switches the provider origin only through the
+live settings store, never when `LLM_BASE_URL` is environment-managed, and
+always restores the prior origin on stop. Downloads require SHA-256
+verification before atomic rename; `.part` artifacts never count as model
+files. Engine stop is part of the orderly shutdown path (`closeDb`).
+
 The ambient chrome strip is fed by `GET /api/status`
 (`server/src/workspaceStatus.ts`). Keep its probe body-free, bounded, and
 redirect-refusing via `server/src/endpointProbe.ts`; the response carries

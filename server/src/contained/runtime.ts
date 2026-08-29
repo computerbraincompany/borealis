@@ -18,8 +18,7 @@ function createLiveEndpointApply() {
     },
     async applyEndpoint(engineBaseUrl: string): Promise<void> {
       const snapshot = await getRuntimeSettings();
-      previousBaseUrl =
-        snapshot.settings.llmBaseUrl === engineBaseUrl ? previousBaseUrl : snapshot.settings.llmBaseUrl;
+      previousBaseUrl = snapshot.settings.llmBaseUrl === engineBaseUrl ? previousBaseUrl : snapshot.settings.llmBaseUrl;
       await runtimeSettingsStore().patch({ llmBaseUrl: engineBaseUrl });
     },
     async restoreEndpoint(engineBaseUrl: string): Promise<void> {
