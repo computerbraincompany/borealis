@@ -542,6 +542,8 @@ every backing file.
 - `GET /api/connectors`
 - `POST /api/connectors`
 - `POST /api/connectors/:id/sync`
+- `PUT /api/connectors/:id/schedule`
+- `GET /api/connectors/:id/syncs`
 - `DELETE /api/connectors/:id`
 
 Creation accepts exactly:
@@ -562,12 +564,29 @@ URL of at most 2,000 characters, without embedded credentials; fragments are
 discarded. A collision with an existing source/table returns `409`.
 
 List and creation responses contain `id`, `account_id`, `name`, `type`,
-`config`, `target_table`, `last_sync`, `sync_status`, `sync_error`, and
-`created_at`. Note that the input field is `display_name`, but the response field
-is `name`. Sync success returns `{"synced":true,"processing":true}`. Poll the
-connector and its source: `syncing` means download/preparation, `indexing` means
-ingestion is still pending, `idle` means the generation was promoted, and
-`error` reports a bounded failure. `last_sync` advances only after promotion.
+`config`, `target_table`, `last_sync`, `sync_status`, `sync_error`,
+`created_at`, and `schedule`. Note that the input field is `display_name`, but
+the response field is `name`. Sync success returns
+`{"synced":true,"processing":true}`. Poll the connector and its source:
+`syncing` means download/preparation, `indexing` means ingestion is still
+pending, `idle` means the generation was promoted, and `error` reports a
+bounded failure. `last_sync` advances only after promotion.
+
+`schedule` is the connector's derived refresh schedule — the connector's single
+`connector_sync` automation: `{automation_id,schedule_minutes,state,next_run_at,last_run_at}`
+or `null`. `PUT /api/connectors/:id/schedule` with
+`{"schedule_minutes":15..10080|null}` creates, updates, or removes that
+automation (idempotent on `null`) behind the remote-egress consent gate;
+ambiguous legacy setups with multiple `connector_sync` automations on one
+connector return `409` instead of guessing. The Automations surface remains
+authoritative for the underlying rows. Deleting a connector deletes its
+schedule automations and history with it.
+
+`GET /api/connectors/:id/syncs?limit<=50` returns that connector's bounded,
+content-free sync history, newest first:
+`{id,trigger,outcome,detail,started_at,finished_at}` with `trigger` in
+`create|manual|scheduled`, `outcome` in `succeeded|failed|skipped`, and
+`detail` carrying only safe runner reason strings.
 
 Connector creation durably reserves the connector before attempting its first
 download. A `422` creation response still contains that connector's ID and

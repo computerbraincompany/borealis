@@ -236,6 +236,11 @@ the matching vector index.
   reuse the consent gate and one-run-per-chat constraints, record bounded
   generic run details, pause after five consecutive failures, and their
   scheduler is unref'd and stopped during orderly shutdown.
+- Connector schedules are a derived convenience surface over `connector_sync`
+  automations (at most one per connector, enforced in the automation store);
+  the Automations view stays authoritative. Connector deletion cascades the
+  linked automations and sync-history rows; history entries are content-free
+  and best-effort, never load-bearing.
 - Agents (`server/src/db/stores/agentStore.ts`, schema v6) are named,
   versioned instruction sets. The chat binding is write-once at creation
   (`chats.agent_id`, `SET NULL` on agent deletion) and cannot change

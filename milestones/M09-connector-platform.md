@@ -3,7 +3,12 @@
 **Horizon:** 2 — *Connectors that are still few, still bounded, and finally feel
 like part of a platform rather than a URL form.*
 
-**Status:** PLANNED
+**Status:** DONE (implemented in commits `56a0efd` — schedules and sync
+history on the server, and `b11c4dc` — the Connectors view surface;
+documentation in the commit that closes this milestone)
+
+**Verification record (2026-08-29):** server 627 unit + 68 integration tests,
+web 173 tests, and the complete `pnpm verify` gate green.
 
 ## Problem
 

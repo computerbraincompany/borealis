@@ -280,7 +280,11 @@ action. Tabular retrieval uses a bounded row preview; ask quantitative questions
 through SQL so the agent can query the full registered table.
 
 **Connectors** import public CSV or JSON URLs and provide **Sync now** for
-refreshing them; they are not a scheduled sync service. Private/loopback URLs,
+refreshing them; they are not a scheduled sync service by themselves, but each
+connector carries a refresh schedule (Off / 15 min / hourly / 6 hours / daily)
+backed by the same `connector_sync` automation rows shown in **Automations** —
+one per connector, deleted with the connector. The card also shows a
+content-free sync history (trigger, outcome, time). Private/loopback URLs,
 URL credentials, and arbitrary request headers are unsupported. The separate
 chat `fetch_url` tool can fetch only public URLs explicitly written in the
 current message.

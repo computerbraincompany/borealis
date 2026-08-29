@@ -25,7 +25,7 @@ horizon, scoped so it can be verified without the next one.
 | [M06](M06-contained-models.md) | 1 | Contained-model lifecycle on macOS as a first-class mode | DONE |
 | [M07](M07-team-platform.md) | 3 | Small-team platform — sharing snapshots, audit plane, automations | DONE |
 | [M08](M08-citations.md) | 2 | Citations — numbered, clickable evidence that survives diligence review | DONE |
-| [M09](M09-connector-platform.md) | 2 | Connector platform surface — schedules on the connector, sync history, clean teardown | PLANNED |
+| [M09](M09-connector-platform.md) | 2 | Connector platform surface — schedules on the connector, sync history, clean teardown | DONE |
 
 Unwritten specs are placeholders; a milestone gets its numbered file when its
 turn comes. Sequencing notes:
