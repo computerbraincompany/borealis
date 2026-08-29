@@ -22,7 +22,7 @@ horizon, scoped so it can be verified without the next one.
 | [M03](M03-egress-consent.md) | 1+2 | Egress consent cards — fail-closed gate and consent UI before data leaves the Mac | DONE |
 | [M04](M04-libraries.md) | 2 | Libraries — governed collections above a pile of uploads | DONE |
 | [M05](M05-named-agents.md) | 2 | Named agents — versioned instructions, tools, and source bindings | DONE |
-| [M06](M06-contained-models.md) | 1 | Contained-model lifecycle on macOS as a first-class mode | PLANNED |
+| [M06](M06-contained-models.md) | 1 | Contained-model lifecycle on macOS as a first-class mode | IN PROGRESS |
 | [M07](M07-team-platform.md) | 3 | Small-team platform — sharing snapshots, audit plane, automations | PLANNED |
 
 Unwritten specs are placeholders; a milestone gets its numbered file when its
