@@ -67,18 +67,16 @@ describe("LibrariesView", () => {
 
   it("lists libraries with member counts and creates one", async () => {
     apiMocks.create.mockResolvedValue({ ...libraries[0], id: "lib2", name: "Diligence" });
-    apiMocks.list
-      .mockResolvedValueOnce(libraries)
-      .mockResolvedValue([
-        ...libraries,
-        {
-          id: "lib2",
-          name: "Diligence",
-          member_count: 0,
-          created_at: "2026-01-02T00:00:00Z",
-          updated_at: "2026-01-02T00:00:00Z",
-        },
-      ]);
+    apiMocks.list.mockResolvedValueOnce(libraries).mockResolvedValue([
+      ...libraries,
+      {
+        id: "lib2",
+        name: "Diligence",
+        member_count: 0,
+        created_at: "2026-01-02T00:00:00Z",
+        updated_at: "2026-01-02T00:00:00Z",
+      },
+    ]);
     render(<LibrariesView />);
 
     expect(await screen.findByText("Finance data room")).toBeInTheDocument();
@@ -95,12 +93,10 @@ describe("LibrariesView", () => {
 
   it("manages members through exact-set replacement", async () => {
     apiMocks.setMembers.mockResolvedValue({ ok: true });
-    apiMocks.get
-      .mockResolvedValueOnce(detail)
-      .mockResolvedValue({
-        ...detail,
-        members: [...detail.members, { id: "s3", name: "extra", display_name: "extra.csv", status: "ready" }],
-      });
+    apiMocks.get.mockResolvedValueOnce(detail).mockResolvedValue({
+      ...detail,
+      members: [...detail.members, { id: "s3", name: "extra", display_name: "extra.csv", status: "ready" }],
+    });
     render(<LibrariesView />);
 
     fireEvent.click(await screen.findByRole("button", { name: "Finance data room" }));
