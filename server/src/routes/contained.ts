@@ -1,5 +1,7 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { requireAuth } from "../auth.js";
+import { runtimeSettingsStore, getRuntimeSettings } from "../runtimeSettings.js";
+import { createContainedEngineManager } from "../contained/engineManager.js";
 import {
   ContainedConfigError,
   readContainedConfig,
@@ -45,6 +47,42 @@ const containedFilenameParams = {
 
 const downloadManager = createContainedDownloadManager();
 
+/**
+ * The production endpoint auto-apply: remembers the origin it replaced and
+ * restores it on stop if the provider still points at the engine. The settings
+ * store throws SettingsEnvironmentOverrideError when the environment owns the
+ * endpoint, which the engine manager reports instead of fighting.
+ */
+function createLiveEndpointApply() {
+  let previousBaseUrl: string | null = null;
+  return {
+    async isEndpointEnvManaged(): Promise<boolean> {
+      const snapshot = await getRuntimeSettings();
+      return snapshot.environmentOverrides.includes("llm_base_url");
+    },
+    async applyEndpoint(engineBaseUrl: string): Promise<void> {
+      const snapshot = await getRuntimeSettings();
+      previousBaseUrl = snapshot.settings.llmBaseUrl === engineBaseUrl ? previousBaseUrl : snapshot.settings.llmBaseUrl;
+      await runtimeSettingsStore().patch({ llmBaseUrl: engineBaseUrl });
+    },
+    async restoreEndpoint(engineBaseUrl: string): Promise<void> {
+      if (previousBaseUrl === null) return;
+      const snapshot = await getRuntimeSettings();
+      if (snapshot.settings.llmBaseUrl !== engineBaseUrl) return;
+      await runtimeSettingsStore().patch({ llmBaseUrl: previousBaseUrl });
+      previousBaseUrl = null;
+    },
+  };
+}
+
+const endpointApply = createLiveEndpointApply();
+
+const engineManager = createContainedEngineManager({
+  isEndpointEnvManaged: endpointApply.isEndpointEnvManaged,
+  applyEndpoint: endpointApply.applyEndpoint,
+  restoreEndpoint: endpointApply.restoreEndpoint,
+});
+
 function sendContainedError(reply: FastifyReply, error: unknown): boolean {
   if (error instanceof ContainedConfigError) {
     reply.code(400).send({ error: error.message });
@@ -62,7 +100,7 @@ export async function containedRoutes(app: FastifyInstance): Promise<void> {
     try {
       return reply.send({
         config: await readContainedConfig(),
-        engine: null,
+        engine: engineManager.snapshot(),
         downloads: downloadManager.snapshot(),
       });
     } catch (error) {
@@ -105,6 +143,25 @@ export async function containedRoutes(app: FastifyInstance): Promise<void> {
       }
     }
   );
+
+  app.post("/api/contained/engine/start", { preHandler: requireAuth }, async (_req, reply) => {
+    try {
+      const state = await engineManager.start();
+      return reply.code(202).send(state);
+    } catch (error) {
+      if (sendContainedError(reply, error)) return;
+      throw error;
+    }
+  });
+
+  app.post("/api/contained/engine/stop", { preHandler: requireAuth }, async (_req, reply) => {
+    try {
+      return reply.send(await engineManager.stop());
+    } catch (error) {
+      if (sendContainedError(reply, error)) return;
+      throw error;
+    }
+  });
 
   app.delete(
     "/api/contained/downloads/:filename",
