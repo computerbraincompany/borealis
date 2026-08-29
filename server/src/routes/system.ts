@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { requireAuth } from "../auth.js";
 import { checkSystemHealth } from "../systemHealth.js";
 import { createWorkspaceStatus, type WorkspaceStatus } from "../workspaceStatus.js";
+import { engineManager } from "../contained/runtime.js";
 
 export interface SystemRouteOptions {
   /** Test seam; production uses the module-level cached status. */
@@ -10,7 +11,7 @@ export interface SystemRouteOptions {
 
 // The cache lives for the process so the chrome can poll cheaply. The snapshot
 // never contains the endpoint URL, credentials, provider errors, or model lists.
-const cachedWorkspaceStatus = createWorkspaceStatus();
+const cachedWorkspaceStatus = createWorkspaceStatus({ contained: () => engineManager.snapshot() });
 
 export async function systemRoutes(app: FastifyInstance, options: SystemRouteOptions = {}): Promise<void> {
   const workspaceStatus = options.workspaceStatus ?? cachedWorkspaceStatus;

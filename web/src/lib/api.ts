@@ -430,12 +430,22 @@ export interface SystemHealthResponse {
 
 export type ProviderLocality = "local" | "private" | "remote";
 
+export type ContainedEngineState = "off" | "starting" | "healthy" | "crashed" | "stopped";
+
+export interface ContainedStatus {
+  state: ContainedEngineState;
+  model: string | null;
+  endpoint_host: string | null;
+  endpoint_managed_by_env: boolean;
+}
+
 export interface WorkspaceStatusResponse {
   locality: ProviderLocality;
   endpoint_reachable: boolean;
   lm_studio_reachable: boolean | null;
   chat_model: string;
   embed_model: string;
+  contained: ContainedStatus | null;
   checked_at: string;
   latency_ms: number;
 }

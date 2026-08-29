@@ -44,12 +44,12 @@ async function writeModelFile(): Promise<string> {
 }
 
 /** Spawn wrapper that forwards the manager-chosen port to the stub engine. */
-function stubSpawnWrapper(record: Array<{ file: string; args: string[] }>) {
-  return ((file: string, args: readonly string[], options?: unknown) =>
+function stubSpawnWrapper() {
+  return (file: string, args: readonly string[], options?: unknown) =>
     spawn(file, args, {
       ...(options as object),
       env: { ...process.env, STUB_PORT: String(args[args.indexOf("--port") + 1]) },
-    })) as never;
+    });
 }
 
 async function waitForState(snapshot: () => { state: string }, state: string, attempts = 200): Promise<void> {
@@ -92,7 +92,7 @@ describe("contained engine manager", () => {
     const manager = createContainedEngineManager({
       spawn: ((file: string, args: readonly string[], options?: unknown) => {
         spawnCalls.push({ file, args: [...args] });
-        return stubSpawnWrapper(spawnCalls)(file, args, options);
+        return stubSpawnWrapper()(file, args, options);
       }) as never,
       // Health succeeds only against the port the manager actually chose.
       probe: (async (url: string) => {
@@ -146,7 +146,7 @@ describe("contained engine manager", () => {
 
     let applied = 0;
     const manager = createContainedEngineManager({
-      spawn: stubSpawnWrapper([]),
+      spawn: stubSpawnWrapper() as never,
       probe: (async (url: string) => url.includes("127.0.0.1")) as never,
       isEndpointEnvManaged: async () => true,
       applyEndpoint: async () => {

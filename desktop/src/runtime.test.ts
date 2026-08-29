@@ -33,6 +33,7 @@ test("resolves every durable path beneath the exact userData directory", () => {
     lance: path.join(userData, "lancedb"),
     uploads: path.join(userData, "uploads"),
     reports: path.join(userData, "reports"),
+    containedModels: path.join(userData, "models"),
     settings: path.join(userData, "settings.json"),
     jwtSecret: path.join(userData, "jwt.secret"),
     staticWeb: path.join(application, "runtime", "web"),

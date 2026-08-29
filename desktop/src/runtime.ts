@@ -8,6 +8,7 @@ export interface DesktopPaths {
   readonly reports: string;
   readonly settings: string;
   readonly jwtSecret: string;
+  readonly containedModels: string;
   readonly staticWeb: string;
   readonly backendEntry: string;
 }
@@ -34,6 +35,7 @@ export function resolveDesktopPaths(
     lance: path.join(resolvedUserData, "lancedb"),
     uploads: path.join(resolvedUserData, "uploads"),
     reports: path.join(resolvedUserData, "reports"),
+    containedModels: path.join(resolvedUserData, "models"),
     settings: path.join(resolvedUserData, "settings.json"),
     jwtSecret: path.join(resolvedUserData, "jwt.secret"),
     staticWeb: path.join(runtime, "web"),
@@ -54,6 +56,7 @@ export function backendEnvironment(
     LANCEDB_DIR: paths.lance,
     UPLOAD_DIR: paths.uploads,
     REPORT_DIR: paths.reports,
+    CONTAINED_DIR: paths.containedModels,
     SETTINGS_FILE: paths.settings,
     JWT_SECRET_FILE: paths.jwtSecret,
     STATIC_WEB_DIR: paths.staticWeb,

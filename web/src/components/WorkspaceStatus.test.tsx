@@ -18,6 +18,7 @@ const localStatus = {
   lm_studio_reachable: null,
   chat_model: "qwen3-32b",
   embed_model: "bge-m3",
+  contained: null,
   checked_at: "2026-08-29T10:00:00.000Z",
   latency_ms: 12,
 };
@@ -63,6 +64,44 @@ describe("WorkspaceStatus", () => {
 
     expect(screen.getByText("Checking locality…")).toBeInTheDocument();
     expect(screen.getByText("Endpoint status unavailable")).toBeInTheDocument();
+  });
+
+  it("shows the contained engine state when healthy", () => {
+    mockStatus({
+      status: {
+        ...localStatus,
+        contained: {
+          state: "healthy",
+          model: "qwen3-8b.gguf",
+          endpoint_host: "127.0.0.1:51129",
+          endpoint_managed_by_env: false,
+        },
+      },
+      checking: false,
+    });
+    render(<WorkspaceStatus />);
+
+    expect(screen.getByText("On this Mac · contained")).toBeInTheDocument();
+    expect(screen.getByTitle("Contained model qwen3-8b.gguf")).toBeInTheDocument();
+  });
+
+  it("names the environment stand-down when the engine cannot switch the endpoint", () => {
+    mockStatus({
+      status: {
+        ...localStatus,
+        contained: {
+          state: "healthy",
+          model: "qwen3-8b.gguf",
+          endpoint_host: "127.0.0.1:51129",
+          endpoint_managed_by_env: true,
+        },
+      },
+      checking: false,
+    });
+    render(<WorkspaceStatus />);
+
+    expect(screen.getByText("On this Mac · contained")).toBeInTheDocument();
+    expect(screen.getByTitle(/endpoint is managed by an environment override/)).toBeInTheDocument();
   });
 
   it("marks an unreachable endpoint without pretending it is healthy", () => {

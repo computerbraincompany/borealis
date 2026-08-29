@@ -16,6 +16,7 @@ const localStatus: WorkspaceStatusResponse = {
   lm_studio_reachable: null,
   chat_model: "qwen3-32b",
   embed_model: "bge-m3",
+  contained: null,
   checked_at: "2026-08-29T10:00:00.000Z",
   latency_ms: 12,
 };

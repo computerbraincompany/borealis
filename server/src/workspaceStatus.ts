@@ -1,6 +1,7 @@
 import type { EffectiveLlmSettings } from "./settingsStore.js";
 import { getEffectiveLlmSettings } from "./runtimeSettings.js";
 import { probeEndpointOk } from "./endpointProbe.js";
+import type { ContainedEngineStatus } from "./contained/engineManager.js";
 
 export type ProviderLocality = "local" | "private" | "remote";
 
@@ -16,6 +17,12 @@ export interface WorkspaceStatus {
   readonly lm_studio_reachable: boolean | null;
   readonly chat_model: string;
   readonly embed_model: string;
+  readonly contained: {
+    readonly state: ContainedEngineStatus["state"];
+    readonly model: string | null;
+    readonly endpoint_host: string | null;
+    readonly endpoint_managed_by_env: boolean;
+  } | null;
   readonly checked_at: string;
   readonly latency_ms: number;
 }
@@ -27,6 +34,8 @@ export interface WorkspaceStatusDependencies {
   readonly now?: () => number;
   readonly probe?: typeof probeEndpointOk;
   readonly llmSettings?: () => Promise<EffectiveLlmSettings>;
+  /** Ambient contained-engine view; null when no engine is active. */
+  readonly contained?: () => ContainedEngineStatus | null;
 }
 
 function parseIpv4(host: string): readonly [number, number, number, number] | undefined {
@@ -126,6 +135,7 @@ export function createWorkspaceStatus(dependencies: WorkspaceStatusDependencies 
   const now = dependencies.now ?? Date.now;
   const probe = dependencies.probe ?? probeEndpointOk;
   const llmSettings = dependencies.llmSettings ?? getEffectiveLlmSettings;
+  const contained = dependencies.contained ?? (() => null);
 
   let cache: { readonly status: WorkspaceStatus; readonly at: number } | undefined;
   let inFlight: Promise<WorkspaceStatus> | undefined;
@@ -145,12 +155,22 @@ export function createWorkspaceStatus(dependencies: WorkspaceStatusDependencies 
         : Promise.resolve(null),
     ]);
     const latency = Math.max(0, Math.min(Math.round(now() - startedAt), STATUS_PROBE_TIMEOUT_MS));
+    const engine = contained();
     return Object.freeze({
       locality: classifyProviderLocality(settings.llmBaseUrl),
       endpoint_reachable: endpointReachable,
       lm_studio_reachable: lmStudioReachable,
       chat_model: settings.chatModel,
       embed_model: settings.embedModel,
+      contained:
+        engine && engine.state !== "off"
+          ? Object.freeze({
+              state: engine.state,
+              model: engine.model,
+              endpoint_host: engine.endpoint_host,
+              endpoint_managed_by_env: engine.endpoint_managed_by_env,
+            })
+          : null,
       checked_at: new Date(now()).toISOString(),
       latency_ms: latency,
     });
