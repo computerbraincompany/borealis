@@ -23,7 +23,7 @@ horizon, scoped so it can be verified without the next one.
 | [M04](M04-libraries.md) | 2 | Libraries — governed collections above a pile of uploads | DONE |
 | [M05](M05-named-agents.md) | 2 | Named agents — versioned instructions, tools, and source bindings | DONE |
 | [M06](M06-contained-models.md) | 1 | Contained-model lifecycle on macOS as a first-class mode | DONE |
-| [M07](M07-team-platform.md) | 3 | Small-team platform — sharing snapshots, audit plane, automations | PLANNED |
+| [M07](M07-team-platform.md) | 3 | Small-team platform — sharing snapshots, audit plane, automations | IN PROGRESS |
 
 Unwritten specs are placeholders; a milestone gets its numbered file when its
 turn comes. Sequencing notes:
