@@ -1,6 +1,6 @@
 import { SqliteMigrationError } from "./types.js";
 
-export const LATEST_SQLITE_SCHEMA_VERSION = 4;
+export const LATEST_SQLITE_SCHEMA_VERSION = 5;
 
 interface MigrationDatabase {
   exec(sql: string): unknown;
@@ -343,11 +343,35 @@ const SCHEMA_V4 = `
 ALTER TABLE users ADD COLUMN remote_egress_ack_at TEXT;
 `;
 
+const SCHEMA_V5 = `
+CREATE TABLE libraries (
+  id TEXT PRIMARY KEY,
+  account_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  UNIQUE (id, account_id),
+  UNIQUE (account_id, name)
+) STRICT;
+
+CREATE TABLE library_sources (
+  library_id TEXT NOT NULL,
+  source_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  added_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  PRIMARY KEY (library_id, source_id),
+  FOREIGN KEY (library_id, account_id) REFERENCES libraries(id, account_id) ON DELETE CASCADE,
+  FOREIGN KEY (source_id, account_id) REFERENCES sources(id, account_id) ON DELETE CASCADE
+) STRICT;
+CREATE INDEX library_sources_source_idx ON library_sources (account_id, source_id);
+`;
+
 const migrations = [
   { version: 1, sql: SCHEMA_V1 },
   { version: 2, sql: SCHEMA_V2 },
   { version: 3, sql: SCHEMA_V3 },
   { version: 4, sql: SCHEMA_V4 },
+  { version: 5, sql: SCHEMA_V5 },
 ] as const;
 
 function schemaVersion(database: MigrationDatabase): number {

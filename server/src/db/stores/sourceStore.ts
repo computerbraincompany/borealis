@@ -21,7 +21,7 @@ const MAX_META_BYTES = 64 * 1024;
 const MAX_CONFIG_BYTES = 8 * 1024;
 const MAX_ERROR_LENGTH = 512;
 
-const SOURCE_COLUMNS = `
+export const SOURCE_COLUMNS = `
   id, account_id, name, kind, connector, display_name, file_path, url, mime,
   size_bytes, status, meta, ready_generation, created_at
 `;
@@ -790,7 +790,7 @@ function pendingDeletesForConnector(
     .map(decodePendingDelete);
 }
 
-function decodeSource(row: SourceRow): SourceRecord {
+export function decodeSource(row: SourceRow): SourceRecord {
   return {
     id: storedText(row.id, "source id"),
     accountId: storedText(row.account_id, "source account id"),

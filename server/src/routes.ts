@@ -7,6 +7,7 @@ import { chartRoutes } from "./routes/charts.js";
 import { chatRoutes } from "./routes/chats.js";
 import { consentRoutes } from "./routes/consent.js";
 import { connectorRoutes } from "./routes/connectors.js";
+import { libraryRoutes } from "./routes/libraries.js";
 import { modelRoutes } from "./routes/models.js";
 import { reportRoutes } from "./routes/reports.js";
 import { settingsRoutes } from "./routes/settings.js";
@@ -41,6 +42,7 @@ export async function routes(app: FastifyInstance): Promise<void> {
   await app.register(consentRoutes);
   await app.register(chatRoutes);
   await app.register(sourceRoutes);
+  await app.register(libraryRoutes);
   await app.register(connectorRoutes);
   await app.register(reportRoutes);
   await app.register(chartRoutes);
