@@ -13,6 +13,7 @@ import { isTabularSource, sanitizeDatasetName, wakeIngestionWorkers } from "../i
 import { publicIngestionFailure } from "../ingestionFailures.js";
 import { completeSourceDeleteIntents } from "../sourceCleanup.js";
 import { enforceRemoteEgressConsent } from "../egressPolicy.js";
+import { auditRemoteEgress } from "../egressAudit.js";
 import { storageRuntime } from "../storageRuntime.js";
 import { cleanupCreatedUploadResource, createUploadResourceDirectory } from "../storageArtifacts.js";
 import { idParamsSchema } from "./schemas.js";
@@ -100,6 +101,7 @@ export async function sourceRoutes(app: FastifyInstance): Promise<void> {
     async (req, reply) => {
       const accountId = getAccountId(req);
       if (!(await enforceRemoteEgressConsent(reply, accountId))) return;
+      void auditRemoteEgress("remote_ingest", accountId);
       const file = await req.file();
       if (!file) return reply.code(400).send({ error: "no file" });
       const safeOriginal =
@@ -160,6 +162,7 @@ export async function sourceRoutes(app: FastifyInstance): Promise<void> {
     { preHandler: requireAuth, schema: { params: idParamsSchema } },
     async (req, reply) => {
       if (!(await enforceRemoteEgressConsent(reply, getAccountId(req)))) return;
+      void auditRemoteEgress("remote_ingest", getAccountId(req));
       try {
         const reservation = await storageRuntime().sourceIngestion.reserveSourceReingest(
           getAccountId(req),

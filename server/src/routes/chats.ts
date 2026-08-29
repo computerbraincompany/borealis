@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { runAgent } from "../agent.js";
 import { getAccountId, requireAuth } from "../auth.js";
 import { enforceRemoteEgressConsent } from "../egressPolicy.js";
+import { auditRemoteEgress } from "../egressAudit.js";
 import { beginRun, cancelRun, completeRunWithAssistant, finishRunDurably, isRunCancellation } from "../chatRuns.js";
 import { config } from "../config.js";
 import {
@@ -246,6 +247,7 @@ export async function chatRoutes(app: FastifyInstance): Promise<void> {
         return reply.code(413).send({ error: `message exceeds ${config.maxMessageChars} characters` });
       }
       if (!(await enforceRemoteEgressConsent(reply, accountId))) return;
+      void auditRemoteEgress("remote_turn", accountId);
       let turn;
       try {
         turn = await acceptChatTurn(accountId, chatId, content);

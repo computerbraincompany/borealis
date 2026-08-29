@@ -1,6 +1,6 @@
 import { SqliteMigrationError } from "./types.js";
 
-export const LATEST_SQLITE_SCHEMA_VERSION = 6;
+export const LATEST_SQLITE_SCHEMA_VERSION = 7;
 
 interface MigrationDatabase {
   exec(sql: string): unknown;
@@ -392,6 +392,17 @@ ALTER TABLE chats ADD COLUMN agent_id TEXT REFERENCES agents(id) ON DELETE SET N
 ALTER TABLE chat_runs ADD COLUMN agent_instructions TEXT;
 `;
 
+const SCHEMA_V7 = `
+CREATE TABLE egress_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  account_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL CHECK (kind IN ('consent_acknowledged','remote_turn','remote_ingest')),
+  endpoint_host TEXT,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+) STRICT;
+CREATE INDEX egress_events_account_idx ON egress_events (account_id, created_at DESC);
+`;
+
 const migrations = [
   { version: 1, sql: SCHEMA_V1 },
   { version: 2, sql: SCHEMA_V2 },
@@ -399,6 +410,7 @@ const migrations = [
   { version: 4, sql: SCHEMA_V4 },
   { version: 5, sql: SCHEMA_V5 },
   { version: 6, sql: SCHEMA_V6 },
+  { version: 7, sql: SCHEMA_V7 },
 ] as const;
 
 function schemaVersion(database: MigrationDatabase): number {

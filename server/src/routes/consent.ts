@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { getAccountId, requireAuth } from "../auth.js";
 import { acknowledgeRemoteEgress, remoteEgressState } from "../egressPolicy.js";
+import { recordEgressEvent } from "../egressAudit.js";
 
 export async function consentRoutes(app: FastifyInstance): Promise<void> {
   app.get(
@@ -18,6 +19,11 @@ export async function consentRoutes(app: FastifyInstance): Promise<void> {
       preHandler: requireAuth,
       schema: { tags: ["consent"], summary: "Acknowledge remote model-provider egress" },
     },
-    async (req, reply) => reply.send(await acknowledgeRemoteEgress(getAccountId(req)))
+    async (req, reply) => {
+      const accountId = getAccountId(req);
+      const state = await acknowledgeRemoteEgress(accountId);
+      await recordEgressEvent("consent_acknowledged", accountId, state.endpoint_host);
+      return reply.send(state);
+    }
   );
 }
