@@ -4,6 +4,7 @@ import {
   ApiError,
   chatsApi,
   formatApiError,
+  librariesApi,
   parseCitationRefs,
   parseQueryResultArtifacts,
   sourcesApi,
@@ -12,6 +13,7 @@ import {
   type Chat,
   type ChatDetail,
   type ChatRunTerminalStatus,
+  type LibrarySummary,
   type Message,
   type Source,
   type SourceScopeInput,
@@ -62,6 +64,9 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
   const [newChatAgentSelection, setNewChatAgentSelection] = useState<string | null>(null);
   const [agentCatalog, setAgentCatalog] = useState<AgentSummary[]>([]);
   const [agentCatalogLoading, setAgentCatalogLoading] = useState(false);
+  const [libraries, setLibraries] = useState<LibrarySummary[]>([]);
+  const [librariesLoading, setLibrariesLoading] = useState(false);
+  const [librariesError, setLibrariesError] = useState<string | null>(null);
   const [newChatSourceScope, setNewChatSourceScope] = useState<SourceScopeInput>({
     source_mode: "selected",
     source_ids: [],
@@ -76,6 +81,7 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
   const bottomRef = useRef<HTMLDivElement>(null);
   const stepKeyRef = useRef(0);
   const chatListRequestRef = useRef(0);
+  const librariesRequestRef = useRef(0);
   const newChatRequestRef = useRef<string | null>(null);
   const appliedDetailChatIdRef = useRef<string | null>(null);
   const firstSubmitInFlightRef = useRef(false);
@@ -131,6 +137,24 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
       const latest = await chatsApi.list();
       if (isMounted() && requestId === chatListRequestRef.current) setChats(latest);
     } catch {}
+  }, [isMounted]);
+
+  // Library catalog for the composer's scope picker. A failed load keeps the
+  // previous catalog (if any) and surfaces a retryable error to the picker.
+  const loadLibraries = useCallback(async () => {
+    const requestId = ++librariesRequestRef.current;
+    setLibrariesLoading(true);
+    try {
+      const catalog = await librariesApi.list();
+      if (!isMounted() || requestId !== librariesRequestRef.current) return;
+      setLibraries(catalog);
+      setLibrariesError(null);
+    } catch (error: unknown) {
+      if (!isMounted() || requestId !== librariesRequestRef.current) return;
+      setLibrariesError(formatApiError(error, "Could not load libraries"));
+    } finally {
+      if (isMounted() && requestId === librariesRequestRef.current) setLibrariesLoading(false);
+    }
   }, [isMounted]);
 
   const reconcileCatalog = useCallback((catalog: Source[]) => {
@@ -268,6 +292,10 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
   useEffect(() => {
     void refreshSources(true);
   }, [refreshSources]);
+
+  useEffect(() => {
+    void loadLibraries();
+  }, [loadLibraries]);
 
   useEffect(() => {
     const activeRun = detail?.active_run;
@@ -1201,6 +1229,10 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
                             onApply={saveSourceScope}
                             onUpload={uploadSource}
                             onRetrySources={() => refreshSources(true)}
+                            libraries={libraries}
+                            librariesLoading={librariesLoading}
+                            librariesError={librariesError}
+                            onRetryLibraries={() => void loadLibraries()}
                           />
                         </div>
                         <ActiveSourceScope
@@ -1247,6 +1279,10 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
                             onApply={saveNewChatSourceScope}
                             onUpload={uploadSource}
                             onRetrySources={() => refreshSources(true)}
+                            libraries={libraries}
+                            librariesLoading={librariesLoading}
+                            librariesError={librariesError}
+                            onRetryLibraries={() => void loadLibraries()}
                           />
                         </div>
                         <ActiveSourceScope

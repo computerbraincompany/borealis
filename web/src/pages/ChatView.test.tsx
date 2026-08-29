@@ -5,6 +5,7 @@ import * as apiModule from "@/lib/api";
 import {
   ApiError,
   chatsApi,
+  librariesApi,
   modelsApi,
   sourcesApi,
   type AttachedSource,
@@ -221,6 +222,7 @@ describe("ChatView orchestration", () => {
       discovery: "live",
     });
     vi.spyOn(sourcesApi, "list").mockResolvedValue([]);
+    vi.spyOn(librariesApi, "list").mockResolvedValue([]);
   });
 
   it("links the conversation footer to Settings with truthful model availability", async () => {

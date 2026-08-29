@@ -7,6 +7,7 @@ import {
   Database,
   FileText,
   Info,
+  Library as LibraryIcon,
   LoaderCircle,
   Search,
   Table2,
@@ -14,7 +15,16 @@ import {
   X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { formatApiError, type AttachedSource, type Source, type SourceMode, type SourceScopeInput } from "@/lib/api";
+import {
+  formatApiError,
+  librariesApi,
+  MAX_LIBRARY_MEMBERS,
+  type AttachedSource,
+  type LibrarySummary,
+  type Source,
+  type SourceMode,
+  type SourceScopeInput,
+} from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { SOURCE_FILE_ACCEPT } from "@/lib/sourceFiles";
 import {
@@ -41,6 +51,10 @@ interface ChatSourcePickerProps {
   onApply: (scope: SourceScopeInput) => Promise<void>;
   onUpload: (file: File) => Promise<Source>;
   onRetrySources: () => Promise<void>;
+  libraries?: LibrarySummary[] | null;
+  librariesLoading?: boolean;
+  librariesError?: string | null;
+  onRetryLibraries?: () => void;
 }
 
 export function ChatSourcePicker({
@@ -55,6 +69,10 @@ export function ChatSourcePicker({
   onApply,
   onUpload,
   onRetrySources,
+  libraries = null,
+  librariesLoading = false,
+  librariesError = null,
+  onRetryLibraries,
 }: ChatSourcePickerProps) {
   const searchId = useId();
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -64,13 +82,16 @@ export function ChatSourcePicker({
   const [error, setError] = useState<string | null>(null);
   const [uploadingFileName, setUploadingFileName] = useState<string | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [attachingLibraryName, setAttachingLibraryName] = useState<string | null>(null);
 
   const selectedIds = useMemo(
     () => new Set(sourceMode === "selected" ? attachedSources.map((source) => source.id) : []),
     [attachedSources, sourceMode],
   );
   const isUploading = uploadingFileName !== null;
-  const busy = disabled || saving || pending || isUploading;
+  const isAttachingLibrary = attachingLibraryName !== null;
+  const busy = disabled || saving || pending || isUploading || isAttachingLibrary;
+  const hasLibraries = (libraries?.length ?? 0) > 0;
 
   const filteredSources = useMemo(() => {
     const query = search.trim().toLocaleLowerCase();
@@ -122,6 +143,34 @@ export function ChatSourcePicker({
       next.add(sourceId);
     }
     void commit({ source_mode: "selected", source_ids: [...next] });
+  };
+
+  // Attaching a library expands its ready members into an explicit `selected`
+  // scope at attach time (the same contract as the Libraries view). The fetch
+  // never widens the scope: over-cap libraries fail instead of truncating.
+  const attachLibrary = async (library: LibrarySummary) => {
+    if (busy) return;
+    setError(null);
+    setAttachingLibraryName(library.name);
+    try {
+      const detail = await librariesApi.get(library.id);
+      const readyIds = detail.members.filter((member) => member.status === "ready").map((member) => member.id);
+      if (readyIds.length === 0) {
+        setError(`“${library.name}” has no ready members yet.`);
+        return;
+      }
+      if (readyIds.length > MAX_LIBRARY_MEMBERS) {
+        setError(
+          `“${library.name}” has more than ${MAX_LIBRARY_MEMBERS} ready sources; a chat can use at most ${MAX_LIBRARY_MEMBERS} selected sources.`,
+        );
+        return;
+      }
+      await commit({ source_mode: "selected", source_ids: readyIds });
+    } catch (reason: unknown) {
+      setError(formatApiError(reason, `Could not attach “${library.name}”`));
+    } finally {
+      setAttachingLibraryName(null);
+    }
   };
 
   const uploadFile = async (file: File) => {
@@ -207,7 +256,7 @@ export function ChatSourcePicker({
           sideOffset={8}
           collisionPadding={12}
           sticky="always"
-          aria-busy={saving || pending || isUploading}
+          aria-busy={saving || pending || isUploading || isAttachingLibrary}
           className="flex max-h-[calc(100vh-1.5rem)] w-[min(24rem,calc(100vw-1.5rem))] flex-col overflow-hidden rounded-lg p-0 shadow-lg"
         >
           <div className="flex items-center gap-3 px-3 py-3">
@@ -281,6 +330,60 @@ export function ChatSourcePicker({
               )}
             </DropdownMenuItem>
           </DropdownMenuGroup>
+
+          {(hasLibraries || librariesError) && (
+            <>
+              <DropdownMenuSeparator className="mx-0 my-0" />
+              <DropdownMenuGroup className="p-1.5">
+                <DropdownMenuLabel className="px-2.5 py-1">Attach a library</DropdownMenuLabel>
+                {librariesLoading && (
+                  <p className="flex items-center gap-2 px-2.5 py-1.5 text-[11px] text-muted-foreground">
+                    <LoaderCircle className="size-3 animate-spin" /> Loading libraries…
+                  </p>
+                )}
+                {librariesError && (
+                  <div className="m-1 flex items-start gap-2 rounded-md bg-warning/10 px-2.5 py-2 text-xs" role="alert">
+                    <CircleAlert className="mt-0.5 size-3.5 shrink-0 text-warning" />
+                    <span className="min-w-0 flex-1 text-foreground">{librariesError}</span>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      disabled={librariesLoading || busy}
+                      onClick={() => onRetryLibraries?.()}
+                      className="h-6 shrink-0 px-2"
+                    >
+                      Retry
+                    </Button>
+                  </div>
+                )}
+                {(libraries ?? []).map((library) => (
+                  <DropdownMenuItem
+                    key={library.id}
+                    disabled={busy}
+                    onSelect={(event) => {
+                      event.preventDefault();
+                      void attachLibrary(library);
+                    }}
+                    className="min-h-11 px-2.5 py-2"
+                  >
+                    <LibraryIcon />
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-sm font-medium text-foreground" title={library.name}>
+                        {library.name}
+                      </span>
+                      <span className="block text-[11px] text-muted-foreground">
+                        {library.member_count} {library.member_count === 1 ? "member" : "members"}
+                      </span>
+                    </span>
+                    {attachingLibraryName === library.name && (
+                      <LoaderCircle className="animate-spin text-primary" aria-label={`Attaching ${library.name}`} />
+                    )}
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuGroup>
+            </>
+          )}
 
           <DropdownMenuSeparator className="mx-0 my-0" />
 

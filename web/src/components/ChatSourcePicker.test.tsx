@@ -1,7 +1,17 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { AttachedSource, Source, SourceScopeInput } from "@/lib/api";
+import type { AttachedSource, LibrarySummary, Source, SourceScopeInput } from "@/lib/api";
 import { ChatSourcePicker } from "@/components/ChatSourcePicker";
+
+const apiMocks = vi.hoisted(() => ({
+  librariesGet: vi.fn(),
+}));
+
+vi.mock("@/lib/api", () => ({
+  formatApiError: (_error: unknown, fallback: string) => fallback,
+  librariesApi: { get: apiMocks.librariesGet },
+  MAX_LIBRARY_MEMBERS: 100,
+}));
 
 const baseSource: Source = {
   id: "source-1",
@@ -12,6 +22,18 @@ const baseSource: Source = {
   status: "ready",
   created_at: "2026-08-26T00:00:00.000Z",
 };
+
+const financeLibrary: LibrarySummary = {
+  id: "lib-1",
+  name: "Finance data room",
+  member_count: 2,
+  created_at: "2026-08-26T00:00:00.000Z",
+  updated_at: "2026-08-26T00:00:00.000Z",
+};
+
+function member(id: string, status = "ready"): Source {
+  return { ...baseSource, id, name: `${id}.csv`, display_name: `${id}.csv`, status };
+}
 
 function attached(source: Source = baseSource): AttachedSource {
   return {
@@ -141,5 +163,105 @@ describe("ChatSourcePicker", () => {
       "Could not update this chat's sources",
     );
     expect(screen.getByRole("menu")).toBeVisible();
+  });
+
+  describe("libraries", () => {
+    beforeEach(() => {
+      apiMocks.librariesGet.mockReset();
+    });
+
+    it("lists libraries with names and member counts inside the picker menu", async () => {
+      const user = userEvent.setup();
+      renderPicker({
+        libraries: [financeLibrary, { ...financeLibrary, id: "lib-2", name: "Diligence room", member_count: 1 }],
+      });
+      await user.click(screen.getByRole("button", { name: "Chat sources: No sources" }));
+
+      expect(screen.getByText("Attach a library")).toBeVisible();
+      expect(screen.getByRole("menuitem", { name: /Finance data room/ })).toBeVisible();
+      expect(screen.getByText("2 members")).toBeVisible();
+      expect(screen.getByRole("menuitem", { name: /Diligence room/ })).toBeVisible();
+      expect(screen.getByText("1 member")).toBeVisible();
+    });
+
+    it("hides the library section when the catalog is empty", async () => {
+      const user = userEvent.setup();
+      renderPicker({ libraries: [] });
+      await user.click(screen.getByRole("button", { name: "Chat sources: No sources" }));
+
+      expect(screen.queryByText("Attach a library")).not.toBeInTheDocument();
+      expect(screen.getByRole("menuitemcheckbox", { name: "Select source: Quarterly revenue.csv" })).toBeVisible();
+    });
+
+    it("shows a loading line while the library catalog loads", async () => {
+      const user = userEvent.setup();
+      renderPicker({ libraries: [financeLibrary], librariesLoading: true });
+      await user.click(screen.getByRole("button", { name: "Chat sources: No sources" }));
+
+      expect(screen.getByText("Loading libraries…")).toBeVisible();
+    });
+
+    it("attaches a library's ready members as the explicit selected scope", async () => {
+      const user = userEvent.setup();
+      apiMocks.librariesGet.mockResolvedValue({
+        ...financeLibrary,
+        members: [member("ready-1"), member("processing-1", "index"), member("ready-2")],
+      });
+      const { onApply } = renderPicker({ libraries: [financeLibrary] });
+      await user.click(screen.getByRole("button", { name: "Chat sources: No sources" }));
+
+      await user.click(screen.getByRole("menuitem", { name: /Finance data room/ }));
+
+      await waitFor(() =>
+        expect(onApply).toHaveBeenCalledWith({ source_mode: "selected", source_ids: ["ready-1", "ready-2"] }),
+      );
+      expect(apiMocks.librariesGet).toHaveBeenCalledWith("lib-1");
+      expect(screen.getByRole("menu")).toBeVisible();
+    });
+
+    it("explains a library that has no ready members without applying a scope", async () => {
+      const user = userEvent.setup();
+      apiMocks.librariesGet.mockResolvedValue({
+        ...financeLibrary,
+        members: [member("processing-1", "index")],
+      });
+      const { onApply } = renderPicker({ libraries: [financeLibrary] });
+      await user.click(screen.getByRole("button", { name: "Chat sources: No sources" }));
+
+      await user.click(screen.getByRole("menuitem", { name: /Finance data room/ }));
+
+      expect(await screen.findByText(/Source selection unchanged:/)).toHaveTextContent("has no ready members yet");
+      expect(onApply).not.toHaveBeenCalled();
+      expect(screen.getByRole("menu")).toBeVisible();
+    });
+
+    it("fails an over-cap library attach instead of truncating the scope", async () => {
+      const user = userEvent.setup();
+      apiMocks.librariesGet.mockResolvedValue({
+        ...financeLibrary,
+        members: Array.from({ length: 101 }, (_, index) => member(`ready-${index}`)),
+      });
+      const { onApply } = renderPicker({ libraries: [financeLibrary] });
+      await user.click(screen.getByRole("button", { name: "Chat sources: No sources" }));
+
+      await user.click(screen.getByRole("menuitem", { name: /Finance data room/ }));
+
+      expect(await screen.findByText(/Source selection unchanged:/)).toHaveTextContent(
+        "more than 100 ready sources; a chat can use at most 100 selected sources",
+      );
+      expect(onApply).not.toHaveBeenCalled();
+    });
+
+    it("surfaces library catalog errors as a bounded banner with retry", async () => {
+      const user = userEvent.setup();
+      const onRetryLibraries = vi.fn<() => void>();
+      renderPicker({ libraries: null, librariesError: "Could not load libraries", onRetryLibraries });
+      await user.click(screen.getByRole("button", { name: "Chat sources: No sources" }));
+
+      expect(screen.getByRole("alert")).toHaveTextContent("Could not load libraries");
+
+      await user.click(screen.getByRole("button", { name: "Retry" }));
+      expect(onRetryLibraries).toHaveBeenCalledTimes(1);
+    });
   });
 });
