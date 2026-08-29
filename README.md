@@ -302,7 +302,9 @@ an explicit selected scope — from the Libraries surface or directly in the
 chat composer's source picker, which expands a library's ready members into
 the chat's selection at attach time. **Agents** are named, versioned instruction sets
 you bind to a chat at creation; they shape how the grounded loop works but
-never widen what the runner can see or do. For small teams on one Borealis
+never widen what the runner can see or do. Each account can set a **personal
+default chat model** in Settings → Account; new chats start from it and fall
+back to the workspace default when it is unset. For small teams on one Borealis
 instance, reports can be shared with sibling accounts as read-only snapshots,
 Settings keeps a content-free egress audit of what was sent to remote
 providers, and **Automations** run scheduled connector refreshes and chat

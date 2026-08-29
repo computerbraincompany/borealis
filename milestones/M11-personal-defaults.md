@@ -3,7 +3,12 @@
 **Horizon:** 2 — *Personal agent — the default workspace brain: model, source
 habits, and capabilities that belong to you.*
 
-**Status:** PLANNED
+**Status:** DONE (implemented in commits `9994724` — the per-account default
+resolution on the server, and `2fbbd53` — the Settings and composer surfaces;
+documentation in the commit that closes this milestone)
+
+**Verification record (2026-08-29):** server 642 unit + 70 integration tests,
+web 186 tests, and the complete `pnpm verify` gate green.
 
 ## Problem
 

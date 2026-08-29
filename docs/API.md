@@ -367,9 +367,15 @@ informational chrome state, not an authorization surface.
 {
   "models": [{ "id": "qwen-chat" }],
   "default_model": "qwen-chat",
+  "account_default_model": null,
   "discovery": "live"
 }
 ```
+
+`account_default_model` is the requesting account's personal default chat model
+(see Preferences below) or `null`. New chats resolve their model as: the
+composer's explicit choice, else the account default, else the workspace
+`default_model`.
 
 Entries contain only `id` and optional `owned_by`, are deduplicated and sorted,
 and exclude the configured embedding identity. Known physical model IDs map
@@ -386,7 +392,7 @@ to appear in the current catalog.
 | Endpoint                            | Request and response                                                                                    |
 | ----------------------------------- | ------------------------------------------------------------------------------------------------------- |
 | `GET /api/chats`                    | Array of `{id,title,model,source_mode,created_at,updated_at}`, ordered by latest activity, then ID.     |
-| `POST /api/chats`                   | Optional `title` and source-scope union; returns the chat summary. Uses the current default chat model. |
+| `POST /api/chats`                   | Optional `title` and source-scope union; returns the chat summary. Uses the account's default chat model when set, else the workspace default. |
 | `GET /api/chats/:id`                | Summary, sources, bounded history page, and active run; accepts `limit` and `before_message_id`.        |
 | `PATCH /api/chats/:id`              | Exactly one of `{"title":"..."}` or `{"model":"..."}`; returns the updated summary.                     |
 | `PUT /api/chats/:id/sources`        | Source-scope union; returns `{source_mode,sources}`.                                                    |
@@ -411,6 +417,17 @@ scope explicitly.
 - `GET /api/settings`
 - `PATCH /api/settings`
 - `POST /api/settings/test`
+
+### Account Preferences
+
+- `GET /api/preferences` → `{default_chat_model: string|null}` (requireAuth)
+- `PATCH /api/preferences` → body `{default_chat_model: string|null}`; returns
+  the stored value. Shape-validated only (trimmed, 1–200 characters, or
+  `null`): the id is not checked against the live catalog, and a stale id
+  falls back to the workspace default at chat-creation time. The model of an
+  existing chat never changes implicitly. Model resolution precedence: the
+  composer's explicit choice > the account's `default_chat_model` > the
+  workspace `default_model`.
 
 `GET /api/settings` returns the effective OpenAI-compatible provider
 configuration:

@@ -257,6 +257,11 @@ the matching vector index.
 - Agent tools are wired through `TOOL_DEFS` in one streaming loop. Never expose
   provider reasoning, raw tool payloads, or exceptions in SSE. The UI receives
   only stable server-defined summaries.
+- Model resolution precedence for new chats: the composer's explicit choice,
+  else the account's `default_chat_model` (schema v11), else the workspace
+  `default_model`. The model of an existing chat never changes implicitly.
+  New web chats still start selected-empty — that fail-closed scope default
+  is an invariant, not a preference.
 - Citation metadata (`server/src/citations.ts`) is derived only from the run's
   own sanitized evidence array; the 1-based evidence position is the citation
   number. Markers that do not resolve stay plain text in the UI, and passages
