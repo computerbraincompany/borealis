@@ -89,31 +89,53 @@ The durable core is deliberately split by job:
 | SQLite | Relational ledger and chunk text |
 | LanceDB | Account- and source-scoped embedding vectors |
 | DuckDB | Bounded analytical SQL over user tabular files |
-| Filesystem | Uploads, reports, settings, signing secret |
+| Filesystem | Uploads, reports, provider/contained settings, model files, signing secret |
 
 People upload CSV, TSV, XLSX, Parquet, JSON, JSONL, PDF, DOCX, and plain
 text, or pull public CSV/JSON URLs through connectors. They attach a
 deliberate source scope to a chat. The agent can retrieve passages, list
 sources, query and describe tables, render charts, create HTML/PDF reports,
-and fetch a public URL the user wrote in the current turn. Answers can
-carry retrieved evidence, chart cards, and saved query previews. Reports
-are self-contained; renderers are deny-by-default.
+and fetch a public URL the user wrote in the current turn. Answers can carry
+numbered, clickable citations into retrieved evidence, chart cards, and saved
+query previews. Reports are self-contained, versioned, linked by supersession,
+renamable, and backed by a durable chart registry; renderers are
+deny-by-default.
 
 Model calls already go to an OpenAI-compatible endpoint. The default is
 loopback LM Studio. Settings persist the origin, optional key, and chat /
-embedding model IDs. The product does not bundle weights. A remote
-provider is allowed only over HTTPS; loopback may use HTTP. Parsing, SQL,
-storage, and rendering stay on the machine. Ingestion text, prompts, and
-retrieval queries follow whichever provider is configured — and the UI
-must keep saying so.
+embedding model IDs, while each account may choose a personal default chat
+model. Contained mode can download and SHA-256-verify a model file, manage an
+operator-supplied `llama-server` on loopback, switch the live provider to it,
+and restore the previous origin on stop. The app still does not bundle an
+engine binary or model weights. A remote provider is allowed only over HTTPS;
+loopback may use HTTP. Parsing, SQL, storage, and rendering stay on the
+machine. Ingestion text, retrieval queries, prompts, chat history, and selected
+source/tool context follow whichever provider is configured. The normal
+payload-bearing entry points are fail-closed until the account acknowledges
+remote egress; the consent UI names the current destination and payload classes,
+but the acknowledgment is per account rather than per host. The UI keeps the
+boundary ambient after consent. Scheduled connector execution still has a known
+consent-enforcement defect tracked in M07 and must not be mistaken for the
+intended contract.
 
-The current surfaces are Chat, Sources, Connectors, Reports, and Settings.
-That is already a data platform in miniature. It is not yet a local North,
-and it is not yet a Portable-class object.
+The current surfaces are Chat, Sources, Libraries, Agents, Automations,
+Connectors, Reports, and Settings. Libraries are account-scoped source
+collections that expand into an explicit chat scope. Named agents keep
+versioned instructions and bind to a chat at creation without changing its
+tools or authorization. Reports can be shared read-only with sibling accounts
+on the same instance. Interval automations run connector refreshes and agent
+turns; agent turns reuse the normal consent and run gates, while the outstanding
+connector-sync gate defect remains documented in M07. Settings exposes a
+best-effort, content-free activity log for selected remote-capable attempts,
+not proof of completed network egress.
 
-What is missing is not “more chat.” It is presence, locality as a first-class
-state, artifacts that outlive a thread, reusable intelligence, and the
-courage to look like a product someone would put on a partner’s desk.
+That is already a local data platform in miniature, not merely a document-chat
+prototype. The remaining distance is depth: standalone artifact kinds beyond
+reports and charts, plus promotion of query receipts beyond chat metadata;
+richer review and governance than same-instance snapshot sharing; a contained
+runtime that does not require operator assembly; and the same product finish
+across every workflow. Multi-step automation graphs, public sharing, arbitrary
+code execution, and other desktop targets remain outside the shipping surface.
 
 ---
 
@@ -136,8 +158,8 @@ queries, charts, documents — are the product.
 
 *Platform* means the same workspace can grow from a single analyst’s
 laptop to a small team’s shared brain without changing genre: still an
-app, still private, still inspectable. Agents, libraries, and later
-automations are layers on that substrate, not a second company.
+app, still private, still inspectable. Agents, libraries, and automations
+are layers on that substrate, not a second company.
 
 ### The object you open
 
@@ -178,8 +200,9 @@ In every case the loop is the same:
    not chain-of-thought theater.
 4. **Keep** — charts, query receipts, and reports persist as artifacts
    with lineage, not as chat decoration.
-5. **Share later** — when sharing exists, it is a snapshot with a
-   policy, not a paste into the public web.
+5. **Share** — reports already move between sibling accounts as read-only
+   snapshots. Every broader sharing path remains a snapshot with a policy,
+   not a paste into the public web.
 
 ### The intelligence it grows
 
@@ -195,10 +218,11 @@ of *reusable intelligence* over the same local stores:
   is something you attach, share inside a trust boundary, and cite.
 - **Artifacts** — documents, tables, charts, and reports with versions
   and provenance. Chat creates them; it does not trap them.
-- **Automations, later** — durable multi-step work with tests, schedules,
-  and human review. We earn this only after the artifact and evidence
-  substrate is real. A graph builder on top of an empty platform is
-  North cosplay.
+- **Automations** — durable scheduled work with tests and human review.
+  Today’s interval-based connector refresh and agent-turn digests are the
+  smallest earned slice. Multi-step workflows come only after their artifact
+  and evidence substrate is real; a graph builder on top of an empty platform
+  is North cosplay.
 
 We will not clone North’s taxonomy for its own sake. We will take the
 jobs that made North a platform — grounded work, reusable agents, durable
@@ -217,13 +241,13 @@ inference contract. Everything else is a way to satisfy it.
 ```text
 ┌──────────────────── Borealis.app ─────────────────────┐
 │  Electron shell · local API · SQLite · LanceDB · DuckDB │
-│  UI: composer, sources, artifacts, locality, consent    │
+│  Composer · libraries · artifacts · locality · consent  │
 └───────────────┬───────────────────┬───────────────────┘
                 │                   │
      contained models        linked compute
      (same Mac)              (your LAN / cluster)
-     MLX / llama.cpp /       LiteLLM · vLLM · LM Studio
-     bundled runtime         DGX Spark · workstation GPU
+     managed llama-server    compatible proxy · vLLM · LM Studio
+     verified model files    DGX Spark · workstation GPU
                 │                   │
                 └─────────┬─────────┘
                           │
@@ -234,11 +258,12 @@ inference contract. Everything else is a way to satisfy it.
 
 **Contained.** On macOS this is the elegant path. Apple Silicon can host
 a strong chat model and a dedicated embedding model on the same machine
-as the UI. A future Borealis may download, verify, and lifecycle those
-weights inside the app — the Portable Computer move — because the
-platform is already a desktop product. Contained mode is a first-class
-personality: offline-capable, zero token meter, slightly smaller models,
-honest about what they cannot do.
+as the UI. Borealis already downloads and verifies model files, manages an
+operator-supplied `llama-server`, and owns its loopback lifecycle — the first
+Portable Computer move. It does not yet bundle that engine or a curated model,
+so installation still asks the operator to assemble the final pieces. The
+destination is a first-class contained personality: offline-capable, zero
+token meter, slightly smaller models, and honest about what they cannot do.
 
 **Linked.** This is the typical professional topology and the one we
 optimize the Settings story for. The app runs on a MacBook. Inference
@@ -253,11 +278,11 @@ pasting a URL into a developer form.
 **Remote.** A hosted OpenAI-compatible API remains valid. It is never
 silent. The privacy boundary is already true and must stay productized:
 when a remote provider is configured, ingestion text, retrieval queries,
-prompts, and selected tool context leave the machine under that
-provider’s policy. A source need not be attached to a chat for its
-ingestion text to be sent. Parsing, DuckDB, stores, and rendering remain
-local. Remote is a choice with a badge, not a default that forgot to
-speak.
+prompts, chat history, and selected source/tool context leave the machine
+under that provider’s policy. A source need not be attached to a chat for its
+ingestion text to be sent. Parsing, DuckDB, stores, and rendering remain local.
+Remote is a consent-gated choice with a standing badge, not a default that
+forgot to speak.
 
 Three rules will not move:
 
@@ -320,11 +345,13 @@ a report they can send.
 internal-tools owner who will put a Spark or a workstation on the LAN
 and refuses to make the company’s memory a SaaS tenant.
 
-**The team that will come later.** Two to twenty people who need shared
-libraries, named agents, and an audit of what left the building — without
-standing up North’s cluster. Desktop-first does not mean single-player
-forever. It means the first ten users should not require a platform
-team.
+**The small team sharing one private workspace.** Two to twenty people who
+need shared evidence, named agents, scheduled work, and a reviewable log of
+remote-capable activity — without standing up North’s cluster. Borealis already
+provides the first same-instance slice through report snapshots, content-free
+activity receipts, and reviewable automation output, with the M07 ledger naming
+the authorization gaps still to close. Desktop-first does not mean
+single-player; it means the first ten users should not require a platform team.
 
 **Not the target, yet:** a hyperscaler IT org buying a Kubernetes
 estate; a consumer who wants a general computer agent to file Slack
@@ -357,8 +384,9 @@ the wedge.
 
 ## Horizons
 
-This is direction, not a backlog. Implementation plans live elsewhere.
-The North and Portable Computer archives remain dated research.
+This is direction, not a backlog. Several named slices already ship; their
+completion record lives in the milestone ledger. The North and Portable
+Computer archives remain dated research.
 
 ### Horizon 0 — honor what already works
 
@@ -369,31 +397,35 @@ personal-finance fixture end to end is fiction.
 
 ### Horizon 1 — the object on the desk
 
-Make the Electron app feel like the product we just described. Locality
-and provider topology as UI, not only a Settings form. Health, model
-presence, and egress state in the chrome. A composer that treats
-library, model, and scope as one instrument. Contained-model lifecycle
-on macOS as a first-class path beside “paste a cluster origin.” Visual
-design that can sit next to Portable Computer without looking like an
-admin console.
+Keep making the Electron app feel like the product we just described.
+Locality, model presence, and egress state now live in the chrome. The
+composer treats library, model, and scope as one instrument. macOS has an
+API-managed contained-model path and ambient status beside “paste a cluster
+origin,” but the Settings management panel is still outstanding. The enduring
+bar is visual and operational: the whole application should sit next to Portable
+Computer without looking or behaving like an admin console.
 
 ### Horizon 2 — the intelligence layer
 
-Promote reports, charts, and query receipts into a real artifact model
-with versions and lineage. Libraries above uploads. Named, versioned
-agents that bind instructions, tools, and sources without widening
-authorization. Citation UX that can survive a diligence review.
-Connectors that are still few, still bounded, and finally feel like
-part of a platform rather than a URL form.
+Reports and charts now have versions, lineage, and registry surfaces; query
+receipts survive in chat. Libraries sit above uploads. Named agents bind
+versioned instructions without widening authorization, and numbered citations
+connect claims to frozen evidence. Connector schedules and history make the
+bounded public-URL catalog feel like part of a platform. The destination
+continues beyond this first layer: more artifact kinds, governed agent tool and
+source policy, regeneration from provenance, and citation-grade exports.
 
 ### Horizon 3 — the small-team platform
 
-Sharing snapshots inside a trust boundary. An administration and audit
-plane that fits a desktop-and-cluster deployment. Automations with
-human review for work that already has artifacts and evidence. Optional
-contained or cluster-local sandboxes for code that earns the privilege.
-Other desktops only with a sandbox and packaging story as strict as
-macOS.
+Same-instance report snapshots, content-free activity receipts, and interval
+automations establish the first small-team slice, but M07 remains incomplete
+until shared-report authorization and connector-sync consent match their
+fail-closed contracts. The destination is a fuller administration and audit
+plane for desktop-and-cluster deployment, plus automations with explicit human
+review for work that already has artifacts and evidence. Optional contained or
+cluster-local sandboxes for code are deferred until they have a hard process
+boundary with no network or filesystem and bounded CPU, time, and memory. Other
+desktops wait for a sandbox and packaging story as strict as macOS.
 
 We will know we are there when a partner can sit down at a MacBook,
 point Borealis at a Spark, drop a data room, and feel — in the first
@@ -409,6 +441,8 @@ minute — that this is the private North they were told did not exist.
 | [API reference](API.md) | Current HTTP, SSE, and resource contracts |
 | [Desktop guide](../desktop/README.md) | Electron packaging, profiles, and native checks |
 | [Contributor instructions](../AGENTS.md) | Architecture and security invariants for people who change the code |
+| [Milestone ledger](../milestones/README.md) | Active implementation ledger and completed slices toward this vision |
+| [Advisor remediation](../advisor-plans/README.md) | Active engineering-remediation ledger from the 2026-08-30 audit, not product direction |
 | [North research archive](cohere-north/README.md) | Dated external research (2026-08-22). Comparative evidence, not a Borealis spec or roadmap |
 | [Completed plans](../plans/README.md) | Historical implementation, not an active backlog |
 

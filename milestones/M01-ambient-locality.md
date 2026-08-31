@@ -38,7 +38,8 @@ Without opening Settings, the shell always shows:
 
 ## Non-goals
 
-- No per-operation consent cards (later composer milestone).
+- No per-operation consent cards in M01; the fail-closed remote-provider
+  consent card arrived in M03.
 - No change to the `GET /api/health` contract; the Settings readiness matrix
   stays as it is.
 - No new outbound policy: the probe reuses the existing body-free

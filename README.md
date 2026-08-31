@@ -1,8 +1,8 @@
 # Borealis ⚡
 
 _Borealis — after the Aurora Borealis, the northern lights. A free and
-open-source agentic workspace for chatting with documents and tabular data, then
-turning answers into polished HTML and PDF reports._
+open-source agentic workspace for grounding chat and reusable agents in documents
+and tabular data, then turning answers into durable charts and reports._
 
 Borealis accepts CSV, TSV, XLSX, Parquet, JSON, JSONL, PDF, DOCX, TXT, Markdown, and
 bounded public URL connectors. Its agent can retrieve evidence, query tabular
@@ -20,18 +20,22 @@ to LM Studio or another OpenAI-compatible endpoint.
 | [Contributor instructions](AGENTS.md)        | Architecture, commands, and security invariants                            |
 | [Configuration example](server/.env.example) | Optional environment overrides, defaults, and valid ranges                 |
 | [Milestones](milestones/README.md)           | Active implementation ledger toward the product vision                     |
+| [Advisor plans](advisor-plans/README.md)      | Active engineering-remediation ledger from the 2026-08-30 audit             |
 
-[Milestones](milestones/README.md) are the active implementation ledger toward
-the vision. [Completed implementation plans](plans/README.md) and the dated
-[product research archive](docs/cohere-north/README.md) preserve historical
-decisions and proposals; they are not current setup instructions or a list of
-unimplemented requirements.
+[Milestones](milestones/README.md) are the active product implementation ledger
+toward the vision. [Advisor plans](advisor-plans/README.md) track the separate
+active engineering-remediation audit. [Completed implementation
+plans](plans/README.md) and the dated [product research
+archive](docs/cohere-north/README.md) preserve historical decisions and
+proposals; they are not current setup instructions or a list of unimplemented
+requirements.
 
 ## Architecture
 
 ```text
 desktop/    Electron shell for Apple Silicon macOS 13+
-web/        React + Vite UI: chat, sources, connectors, reports, and Settings
+web/        React + Vite UI: chat, sources, libraries, agents, automations,
+            connectors, reports, and Settings
 server/     Fastify API, agent loop, ingestion, retrieval, and rendering
 data/       deterministic personal-finance fixtures
 ```
@@ -43,11 +47,12 @@ repository gate is the root `pnpm verify` script. Do not install `server`,
 
 The durable store is deliberately split by job:
 
-- SQLite stores users, chats, runs, sources, jobs, and chunk text.
+- SQLite stores account preferences, chats and runs, sources and jobs, libraries,
+  agents, automations, artifact metadata, shares, audit receipts, and chunk text.
 - LanceDB stores scoped embedding vectors for retrieval.
 - DuckDB runs bounded analytical SQL against uploaded tabular data.
-- The filesystem stores uploads, reports, settings, and the generated JWT
-  signing secret.
+- The filesystem stores uploads, reports, contained-model configuration and
+  downloads, provider settings, and the generated JWT signing secret.
 
 The browser development stack uses an isolated Playwright Chromium instance for
 chart PNG and report PDF output. The packaged app does not include that browser;
@@ -76,12 +81,16 @@ Durable files live under:
   lancedb/
   uploads/
   reports/
+  models/
   settings.json
+  contained.json
   jwt.secret
 ```
 
-The JWT secret is generated once with mode `0600`, and provider settings are
-also written with mode `0600`. No `.env` file is required.
+The JWT secret is generated once with mode `0600`; provider settings are
+written atomically with mode `0600`, and contained-engine configuration is
+created with mode `0600` but currently updated by direct overwrite. No `.env`
+file is required.
 
 Install dependencies and launch a development build:
 
@@ -104,9 +113,9 @@ Artifacts are written to `desktop/release/` as
 `Borealis-<version>-macOS-arm64.dmg` and `.zip`. The unsigned target is for local
 testing, deterministically disables signing/notarization, and currently uses
 Electron's default application icon. Distribution builds use
-`pnpm --filter borealis-desktop package:mac` and need a Developer ID Application
-certificate plus notarization credentials supplied only in the release
-environment; certificates and credentials must never be committed. See
+`pnpm exec turbo run package:mac --filter=borealis-desktop` and need a Developer
+ID Application certificate plus notarization credentials supplied only in the
+release environment; certificates and credentials must never be committed. See
 [desktop/README.md](desktop/README.md) for the exact variables and package
 verification commands. A successful `package:mac` command alone does not prove
 that signing and notarization happened; verify the resulting artifact.
@@ -133,13 +142,16 @@ Local defaults are:
 - chat model: `qwen-chat`
 - embedding model: `nomic-embed`
 
-Contained mode is the first-class local path beside those options: point
-Borealis at a `llama-server` binary and a model file (which it can download and
-SHA-256-verify into the app's own data directory), and it starts, health-checks,
-and stops the engine as part of the workspace — switching the provider to the
-engine's loopback origin and restoring whatever was there before. When the
-endpoint is managed by an environment override, Borealis reports the stand-down
-instead of overriding it.
+The contained-mode backend is an authenticated, API-driven local path beside
+those options. Point Borealis at a `llama-server` binary and model file (which
+it can download and SHA-256-verify into the app's own data directory), then use
+the [contained-model API](docs/API.md#contained-models) to start and stop the
+engine. Borealis health-checks and stops that process as part of the workspace,
+switches the provider to its loopback origin, and restores whatever was there
+before. Workspace chrome shows its state, but the Settings UI does not yet
+provide contained setup or lifecycle controls. When the endpoint is managed by
+an environment override, Borealis reports the stand-down instead of overriding
+it.
 
 These model names are aliases defined in
 [server/src/llmAliases.ts](server/src/llmAliases.ts):
@@ -172,12 +184,16 @@ that provider's policy, linking to Settings. The snapshot comes from the
 authenticated `GET /api/status` endpoint and never contains the endpoint URL,
 key, provider errors, or model lists.
 
-Remote egress is also fail-closed: before the first chat turn, upload, or
-connector refresh against a remote provider, Borealis stops with a consent
-card naming the destination host and exactly which payload classes would be
-sent. Nothing leaves the machine until you acknowledge; the acknowledgment is
-per account, stored locally, and a switch back to a local provider lifts the
-gate immediately.
+Remote egress is intended to be fail-closed: before the first chat turn, source
+upload or reingest, or connector creation, manual sync, or schedule change
+against a remote provider, Borealis stops with a consent card naming the
+current destination host and payload classes. The acknowledgment is per
+account, not per host, and remains stored across provider changes; switching to
+a local provider makes the gate inapplicable immediately. A known gap in
+generic and scheduled `connector_sync` automations can bypass this gate, so do
+not use those automations with a remote provider until the issue described in
+the [API reference](docs/API.md#workspace-audit-shares-and-automations) is
+fixed.
 
 Provider settings are shared by all accounts using the same server. A saved API
 key is stored in `settings.json` with mode `0600`, not encrypted or held in the
@@ -282,15 +298,13 @@ before asking about them. Failed sources show a safe explanation and a **Retry**
 action. Tabular retrieval uses a bounded row preview; ask quantitative questions
 through SQL so the agent can query the full registered table.
 
-**Connectors** import public CSV or JSON URLs and provide **Sync now** for
-refreshing them; they are not a scheduled sync service by themselves, but each
-connector carries a refresh schedule (Off / 15 min / hourly / 6 hours / daily)
-backed by the same `connector_sync` automation rows shown in **Automations** —
-one per connector, deleted with the connector. The card also shows a
-content-free sync history (trigger, outcome, time). Private/loopback URLs,
-URL credentials, and arbitrary request headers are unsupported. The separate
-chat `fetch_url` tool can fetch only public URLs explicitly written in the
-current message.
+**Connectors** import public CSV or JSON URLs and support both **Sync now** and a
+refresh schedule (Off / 15 min / hourly / 6 hours / daily). Schedules are backed
+by the same `connector_sync` automation rows shown in **Automations** — one per
+connector, deleted with the connector. The card also shows a content-free sync
+history (trigger, outcome, time). Private/loopback URLs, URL credentials, and
+arbitrary request headers are unsupported. The separate chat `fetch_url` tool
+can fetch only public URLs explicitly written in the current message.
 
 Answers can show retrieved passages, charts, and saved query-result previews.
 Passages are retrieved with stable citation numbers, so grounded claims carry
@@ -309,10 +323,11 @@ never widen what the runner can see or do. Each account can set a **personal
 default chat model** in Settings → Account; new chats start from it and fall
 back to the workspace default when it is unset. For small teams on one Borealis
 instance, reports can be shared with sibling accounts as read-only snapshots,
-Settings keeps a content-free egress audit of what was sent to remote
-providers, and **Automations** run scheduled connector refreshes and chat
-digest turns through the same gates as manual work — five consecutive failures
-pause them. Chat history supports title
+Settings shows a best-effort, content-free activity log for consent and selected
+remote-capable operation attempts, and **Automations** run scheduled connector
+refreshes and chat digest turns — five consecutive failures pause them. The
+[API reference](docs/API.md#workspace-audit-shares-and-automations) records
+current sharing, audit, and connector-consent limitations. Chat history supports title
 search, rename, and deletion; **Settings** also contains system readiness,
 Light/Dark/System appearance, and account controls.
 
@@ -378,7 +393,8 @@ Quit Borealis before copying its data directory. The SQLite ledger and LanceDB
 vector directory are one logical store and must be backed up and restored
 together; restoring only one side can produce missing or orphaned retrieval
 entries. Copying the entire `Borealis/` application-data directory also preserves
-uploads, reports, provider settings, and the JWT secret.
+uploads, reports, contained-model configuration and downloaded model files,
+provider settings, and the JWT secret.
 
 For browser development, stop both development processes and copy all of
 `.borealis/` (or the configured `BOREALIS_DATA_DIR`). Include any files relocated
@@ -403,6 +419,16 @@ settings file or generated-secret file.
   connector refreshes.
 - One canonical ECharts contract shared by the UI, report HTML, chart PNG, and
   report PDF renderers.
+- Durable artifact lineage, chart and query receipts, and read-only report
+  sharing inside one Borealis instance.
+- Account-scoped libraries, versioned agent instructions, and personal model
+  defaults that never widen a chat's source scope or authorization.
+- Durable chat-turn and connector-sync automations, connector schedules, and
+  content-free egress/sync audit history.
+- Ambient provider locality, direct-route remote-egress consent, and an
+  API-managed loopback `llama-server` lifecycle for contained models; current
+  disclosure, automation, and Settings-control gaps are recorded in the
+  milestone ledger.
 - Self-contained report HTML with restrictive CSP and renderer policies that
   deny network and local-file requests.
 - JWT/bcrypt authentication, exact-origin browser CORS, same-origin desktop UI,

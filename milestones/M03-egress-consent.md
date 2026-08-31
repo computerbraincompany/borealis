@@ -6,9 +6,18 @@ exact payload class, then returns the result to the same task.* Plus Horizon
 2's standing rule that a remote provider is "a choice with a badge, not a
 default that forgot to speak."
 
-**Status:** DONE (implemented in commits `98e3dee` — migration v4, egress
-policy, consent routes, and the fail-closed gates — and `8a88e8b` — the web
-consent card with acknowledge-and-resume; verification in milestones/README.md)
+**Status:** PARTIAL. Commits `98e3dee` (migration v4, consent routes, and the
+direct-route fail-closed gates) and `8a88e8b` (the web consent card with
+acknowledge-and-resume) shipped the core. The consent card, sidebar, and
+Settings disclosures no longer use identical payload-class wording, so the
+disclosure criterion below remains open.
+
+**Current wording drift (reviewed 2026-08-31):** the consent dialog names
+upload/ingestion text, prompts, chat history, retrieval queries, and selected
+tool context; the sidebar omits chat history; Settings mentions only prompts
+and retrieved document/data context. The full consent-dialog list is the
+canonical boundary. M07 separately tracks the connector-automation path that
+does not recheck this gate.
 
 ## Problem
 
@@ -35,7 +44,8 @@ text.
 ## Non-goals
 
 - No per-message consent; the acknowledgment is workspace-wide per account and
-  revocable only by changing the provider or a future settings control.
+  remains stored across provider changes. A local/private provider makes the
+  gate inapplicable; there is no separate revoke control.
 - No consent for loopback/private providers — those never trigger the gate.
 - No change to the SSRF-bounded `fetch_url`/connector download policy (those
   surfaces have their own rules; consent covers model-provider egress).
@@ -70,6 +80,7 @@ New module `server/src/egressPolicy.ts`:
   - connector create and manual sync — connector ingestion text.
   Each gate reads the effective settings snapshot once per request; a provider
   switched to loopback between requests immediately lifts the gate.
+  M09 later applies the same gate to connector schedule changes.
 
 Tests: migration on existing rows; gate refused-then-allowed for each guarded
 route (loopback never gates; remote gates until acknowledgment; acknowledgment
@@ -79,9 +90,10 @@ and sanitized); consent routes tenant-scoped.
 ## Web spec
 
 - `web/src/lib/api.ts`: `RemoteEgressState` type, `consentApi.get/acknowledge`.
-- `web/src/hooks/useEgressConsent.ts`: exposes current state and an
-  `acknowledge()`; used by ChatView, SourcesView, ConnectorsView.
-- Consent card (shared component `EgressConsentCard`): heading "Some data
+- `web/src/hooks/useEgressConsentGate.tsx`: recognizes the stable 403, loads
+  the current state, acknowledges, and retries the blocked action; it is used
+  by ChatView, SourcesView, and ConnectorsView.
+- Consent dialog (shared through `useEgressConsentGate`): heading "Some data
   would leave this Mac", the destination host, the exact payload classes
   (upload/ingestion text, prompts, chat history, retrieval queries, selected
   tool context — wording identical to Settings and the sidebar strip), and two

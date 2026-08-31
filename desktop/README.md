@@ -2,7 +2,8 @@
 
 The desktop package builds the Apple Silicon macOS 13+ Electron application. It
 embeds the compiled Node server and React UI while storing the SQLite ledger,
-LanceDB index, uploads, reports, model settings, and generated JWT secret under
+LanceDB index, uploads, reports, provider and contained-model configuration,
+downloaded model files, and generated JWT secret under
 `~/Library/Application Support/Borealis/`.
 
 ## Develop
@@ -93,7 +94,13 @@ the UI, run the utility-process smoke, or check signing.
 
 `package:dir` builds the application directory without DMG/ZIP installers. It
 uses the normal builder configuration and may sign or notarize when credentials
-are available; use `package:unsigned` when signing must be disabled.
+are available; use `package:unsigned` when signing must be disabled. On a clean
+checkout, invoke the directory target through Turborepo so it builds and copies
+the server and web runtime first:
+
+```bash
+pnpm exec turbo run package:dir --filter=borealis-desktop
+```
 
 `desktop/runtime/`, `desktop/release/`, compiled output, and dependencies are
 generated and intentionally ignored. The entitlement plists under
@@ -112,8 +119,13 @@ Developer ID Application certificate and private key available in the keychain
 `CSC_KEY_PASSWORD`. Supply one complete notarization credential set and run:
 
 ```bash
-pnpm --filter borealis-desktop package:mac
+pnpm exec turbo run package:mac --filter=borealis-desktop
 ```
+
+The Turborepo invocation builds the shell, server, and web UI and refreshes
+`desktop/runtime/` before Electron Builder runs. Calling the filtered
+`package:mac` package script directly assumes those generated inputs are already
+current.
 
 The pinned builder accepts:
 
@@ -149,13 +161,24 @@ are neither signed nor notarized. The embedded native SQLite, LanceDB, and
 DuckDB addons and direct `userData` storage need a separately designed sandbox
 migration before a store build is possible.
 
-The application does not contain model weights or start a model server. Start
-LM Studio separately, or configure an HTTPS OpenAI-compatible provider in
-Borealis Settings. The default endpoint is `http://127.0.0.1:1234`. With a remote
-provider, source text sent for ingestion embeddings, retrieval queries, prompts,
-chat history, and selected source/tool context leave the machine under that
-provider's data policy. Ingestion can send source text before it is attached to
-a chat; parsing, analytical SQL, storage, and report rendering remain local.
+The application does not bundle model weights or a model-server binary. In
+contained mode, Borealis streams a requested model into a resumable `.part`
+file below `models/` and promotes it to a complete model only after mandatory
+SHA-256 verification. It can start a user-supplied `llama-server` binary on an
+OS-assigned loopback port, health-check the process, switch the live provider
+origin to it unless `LLM_BASE_URL` is environment-managed, restore the previous
+origin on stop, and stop the process during orderly app shutdown. See the
+[contained-model API contract](../docs/API.md#contained-models) for setup,
+download, and lifecycle details. Contained configuration alone does not start
+the engine.
+
+Alternatively, start LM Studio separately or configure an HTTPS
+OpenAI-compatible provider in Borealis Settings. The default endpoint is
+`http://127.0.0.1:1234`. With a remote provider, source text sent for ingestion
+embeddings, retrieval queries, prompts, chat history, and selected source/tool
+context leave the machine under that provider's data policy. Ingestion can send
+source text before it is attached to a chat; parsing, analytical SQL, storage,
+and report rendering remain local.
 
 ## Local profile and storage
 
@@ -170,15 +193,16 @@ there is no local-profile password to enter in the browser login form.
 Durable data is stored beneath `~/Library/Application Support/Borealis/` (or the
 absolute `--user-data-dir` override):
 
-| Path              | Contents                                                                                 |
-| ----------------- | ---------------------------------------------------------------------------------------- |
-| `borealis.sqlite` | Relational ledger and chunk text; SQLite may also create WAL/SHM files.                  |
-| `lancedb/`        | Embedding vectors paired with the SQLite ledger.                                         |
-| `uploads/`        | Account/source-scoped uploads and connector caches.                                      |
-| `reports/`        | Generated HTML and PDF files.                                                            |
-| `models/`         | Contained-mode model downloads (checksum-verified) and `contained.json`.                  |
-| `settings.json`   | Provider settings, written atomically with mode `0600`.                                  |
-| `jwt.secret`      | Generated signing secret, created once with mode `0600` unless `JWT_SECRET` is supplied. |
+| Path              | Contents                                                                                  |
+| ----------------- | ----------------------------------------------------------------------------------------- |
+| `borealis.sqlite` | Relational ledger and chunk text; SQLite may also create WAL/SHM files.                   |
+| `lancedb/`        | Embedding vectors paired with the SQLite ledger.                                          |
+| `uploads/`        | Account/source-scoped uploads and connector caches.                                       |
+| `reports/`        | Generated HTML and PDF files.                                                             |
+| `models/`         | Checksum-verified contained-model downloads and resumable `.part` files.                  |
+| `contained.json`  | Contained-engine paths/arguments; created mode `0600`, currently updated by direct write. |
+| `settings.json`   | Provider settings, written atomically with mode `0600`.                                   |
+| `jwt.secret`      | Generated signing secret, created once with mode `0600` unless `JWT_SECRET` is supplied.  |
 
 Electron also stores its browser profile/cache under this directory. The
 desktop host does not load `.env` files. Inherited provider environment
@@ -189,10 +213,12 @@ See [server/.env.example](../server/.env.example) for supported operator values.
 
 Quit Borealis before backing up or restoring the entire data directory. SQLite
 and LanceDB are one logical store and must stay together, along with any SQLite
-WAL state, uploads, reports, settings, and the signing secret. Closing the last
-window also quits the app. Shutdown aborts active runs, stops ingestion, and
-closes DuckDB, LanceDB, and SQLite before acknowledging completion; the shell
-allows eight seconds before killing an unresponsive backend.
+WAL state, uploads, reports, downloaded models, contained configuration,
+provider settings, and the signing secret. Closing the last window also quits
+the app. Shutdown aborts active runs, stops ingestion and the automation
+scheduler, stops any contained engine, and closes DuckDB, LanceDB, and SQLite
+before acknowledging completion; the shell allows eight seconds before killing
+an unresponsive backend.
 
 Preserve environment-managed configuration separately when moving or restoring
 a profile, especially `EMBEDDING_DIM` and an explicit `JWT_SECRET`; the data

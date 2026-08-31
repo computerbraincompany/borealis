@@ -4,10 +4,27 @@
 and audit plane that fits a desktop-and-cluster deployment. Automations with
 human review for work that already has artifacts and evidence.*
 
-**Status:** DONE (implemented in commits `4cb696a` — egress audit plane,
-`bc37dbb` — report snapshot shares, `57e011c` — durable automations, and
-`f499808` — the workspace surfaces; verification recorded in
-milestones/README.md)
+**Status:** PARTIAL. Commits `4cb696a` (egress activity receipts), `a61e88e`
+(report snapshot shares), `212f861` (durable automations), and `f499808` (the
+workspace surfaces) shipped the three slices, but the current implementation
+does not yet satisfy two authorization contracts below.
+
+## Current implementation drift (reviewed 2026-08-31)
+
+- Shared readers currently receive the report's stored payload from the detail
+  route, while recipient HTML/PDF requests return `404`. The intended contract
+  is recipient detail/HTML/PDF with payload owner-only.
+- Generic `connector_sync` automation creation/update and scheduled execution
+  do not apply or recheck remote-egress consent. Agent-turn automations do, and
+  connector schedule changes made through the connector route gate the mutation
+  itself.
+- Egress rows are best-effort activity receipts written for consent and selected
+  gate-passed remote-capable attempts. They do not prove that bytes reached a
+  provider and are not an exhaustive network-egress audit. The current Settings
+  description calls them work "sent" and therefore overstates the evidence.
+
+The specification below preserves the intended fail-closed contract; the gaps
+above are defects to close, not weaker replacement requirements.
 
 **Verification record (2026-08-29):** server 598 tests, web 151 tests,
 desktop 13 tests, lint, format, builds, and native smokes green via
@@ -17,8 +34,8 @@ follows this commit).
 ## Problem
 
 Borealis is single-player at the edges: reports cannot move between the
-accounts of one workspace, nothing durable records *what actually left the
-machine* (the M03 consent is a one-time acknowledgment, not an audit), and all
+accounts of one workspace, nothing durable records remote-capable activity
+(the M03 consent is a one-time acknowledgment, not an activity log), and all
 recurring work — connector refresh, review digests — depends on someone
 remembering to click.
 
@@ -60,7 +77,6 @@ CREATE TABLE egress_events (
   account_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   kind TEXT NOT NULL CHECK (kind IN ('consent_acknowledged','remote_turn','remote_ingest')),
   endpoint_host TEXT,
-  request_id TEXT,
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 ) STRICT;
 CREATE INDEX egress_events_account_idx ON egress_events (account_id, created_at DESC);
@@ -73,33 +89,34 @@ CREATE INDEX egress_events_account_idx ON egress_events (account_id, created_at 
   `remote_ingest` (upload, reingest, connector create/sync). Failures to
   record never fail the request (best-effort, swallowed).
 - `GET /api/audit/egress?limit<=200` → the account's events, newest first:
-  `{id,kind,endpoint_host,created_at}` (request_id stays server-side).
+  `{id,kind,endpoint_host,created_at}`.
 - Content-free by construction; nothing here is logged.
 
 ### Slice B — report snapshot shares (schema v8)
 
 ```sql
+CREATE UNIQUE INDEX reports_id_account_uidx ON reports (id, account_id);
+
 CREATE TABLE report_shares (
   report_id TEXT NOT NULL,
   owner_account_id TEXT NOT NULL,
-  recipient_account_id TEXT NOT NULL,
+  recipient_account_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   shared_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   PRIMARY KEY (report_id, recipient_account_id),
-  FOREIGN KEY (report_id, owner_account_id) REFERENCES reports(id, account_id) ON DELETE CASCADE,
-  FOREIGN KEY (recipient_account_id) REFERENCES users(id) ON DELETE CASCADE
+  FOREIGN KEY (report_id, owner_account_id) REFERENCES reports(id, account_id) ON DELETE CASCADE
 ) STRICT;
 CREATE INDEX report_shares_recipient_idx ON report_shares (recipient_account_id, shared_at DESC);
 ```
 
-Notes: `reports` already has `UNIQUE (id, account_id)` — verify before relying
-on the composite FK (add `UNIQUE (id, account_id)` in the migration if
-missing). Shares are version-immutable snapshots of the *report row*; a newer
-report version is a different row and is not automatically shared.
+The migration adds the unique `(id, account_id)` index required by the
+composite report foreign key. Shares are version-immutable snapshots of the
+*report row*; a newer report version is a different row and is not
+automatically shared.
 
 - New store methods on `runStore.ts`: `shareReport(owner, reportId,
   recipient)`, `listReportShares(owner, reportId)`,
   `listSharedReports(recipient)` (joined report metadata), `revokeReportShare`
-  (owner), `getReportShare(recipient, reportId)` for the read path.
+  (owner), `getReportShareOwner(recipient, reportId)` for the read path.
 - Routes: `POST /api/reports/:id/shares {recipient_account_id}`,
   `GET /api/reports/:id/shares` (owner), `DELETE
   /api/reports/:id/shares/:recipient` (owner), `GET /api/reports/shared` (the
@@ -118,7 +135,7 @@ CREATE TABLE automations (
   name TEXT NOT NULL,
   kind TEXT NOT NULL CHECK (kind IN ('connector_sync','agent_turn')),
   target_id TEXT NOT NULL,
-  prompt TEXT CHECK (prompt IS NULL OR (length(prompt) >= 1 AND length(prompt) <= 8_000)),
+  prompt TEXT,
   schedule_minutes INTEGER NOT NULL CHECK (schedule_minutes BETWEEN 15 AND 10080),
   state TEXT NOT NULL DEFAULT 'active' CHECK (state IN ('active','paused')),
   consecutive_failures INTEGER NOT NULL DEFAULT 0 CHECK (consecutive_failures >= 0),
@@ -143,7 +160,8 @@ CREATE TABLE automation_runs (
 - `server/src/automationStore.ts`: CRUD (`name` 1–80 chars unique per account;
   kind `connector_sync` requires an owned connector in `target_id`, kind
   `agent_turn` requires an owned chat; `agent_turn.prompt` required for
-  agent_turn, forbidden for connector_sync), pause/resume, delete (cascade
+  agent_turn and bounded to 8,000 characters at the store boundary, forbidden
+  for connector_sync), pause/resume, delete (cascade
   runs), and `claimDue(accountId?)` — atomically due rows whose
   `next_run_at <= now`, rescheduling `next_run_at` inside the claim
   transaction (at-least-once; crash between claim and execution records a

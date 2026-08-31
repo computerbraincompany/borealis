@@ -98,7 +98,7 @@ and the guarded real-pgvector integration suite when `TEST_DATABASE_URL` named
 an explicitly disposable database ending in `_test`. CI provisioned that
 database and ran the complete matrix with ephemeral credentials.
 
-The current [verification guide](../README.md) and
-[`scripts/verify.sh`](../scripts/verify.sh) supersede those commands. Current
-integration tests use disposable SQLite and LanceDB stores without an external
-database URL.
+The current [verification guide](../README.md) and root `pnpm verify` gate
+supersede those commands. The gate starts with `scripts/policy-check.mjs`, and
+current integration tests use disposable SQLite and LanceDB stores without an
+external database URL.

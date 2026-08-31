@@ -1,6 +1,6 @@
 # Implementation plan archive
 
-**Status reviewed:** 2026-08-28, against commit `4d44096`.
+**Status reviewed:** 2026-08-31, against commit `f1b9293`.
 
 All plans **001–030 are DONE**; there is no active implementation plan in this
 ledger. These files preserve the original execution specifications and recorded
@@ -10,9 +10,12 @@ against the current checkout or treat historical test counts as a fresh test run
 
 For the supported implementation, use the [project README](../README.md),
 [API reference](../docs/API.md), [desktop guide](../desktop/README.md), and
-[contributor instructions](../AGENTS.md). The separate
-[North research archive](../docs/cohere-north/README.md) is dated external
-research and an independent proposal, not an active Borealis roadmap.
+[contributor instructions](../AGENTS.md). Product work after this archive is
+recorded in the [milestone ledger](../milestones/README.md); current audited
+engineering remediation is tracked separately in
+[advisor-plans](../advisor-plans/README.md). The separate [North research
+archive](../docs/cohere-north/README.md) is dated external research and an
+independent proposal, not an active Borealis roadmap.
 
 ## Background
 
@@ -30,6 +33,12 @@ and connected the Node server directly to OpenAI-compatible model endpoints.
 Plan 030 packaged that Node-only tree as a macOS Electron app with a SQLite
 ledger, LanceDB embeddings, and cloud-optional LLM settings. It depends on
 029; both implementations landed in `4d44096`.
+Milestones M01–M11 subsequently added ambient locality, artifact lineage,
+egress consent, libraries, named-agent instructions, contained models,
+same-instance sharing and audit, automations, citations, connector schedules,
+composer refinements, and personal model defaults. Their specifications and
+completion evidence live in `milestones/`; M03, M06, and M07 also record current
+implementation gaps. None of them reopen plans 001–030.
 
 Later plans supersede earlier implementation details. In particular, 029/030
 removed Python, Postgres/pgvector, and Docker from the supported runtime. Plan
@@ -314,7 +323,7 @@ section are historical, not instructions for the current tree.
   server, rehydratable after reload, and expose an authoritative terminal event.
 - **Direction items, deferred** (product options, not bugs): an in-app “load
   sample data” button (the current fixture command is
-  `npx --prefix server --no-install tsx data/generate_sample.ts`) and connector
+  `pnpm --filter borealis-server exec tsx ../data/generate_sample.ts`) and connector
   edit/rename remain unplanned. Visible retrieved evidence was implemented by
   Plan 025. The previously listed CI item was superseded by Plan 028.
 
@@ -364,14 +373,15 @@ The notes below distinguish completed work from options still outside the
 implemented product; they do not authorize future implementation.
 
 1. **DONE in Plan 026 — inline query-result tables + CSV export in chat.**
-2. **Store report payloads → rename/regenerate reports** — still unplanned.
-   The current SQLite report records keep artifact paths and metadata, not the
-   assembled report payload. The original JSONB suggestion assumed the removed
-   Postgres ledger and is not a current implementation instruction.
-3. **Scheduled connector auto-resync** — still unplanned. Connector refresh is
-   currently initiated through create/manual-sync routes; adding scheduling
-   would require an explicit design for durable execution, ownership, and
-   conflicts with active refreshes and chat runs.
+2. **DONE in M02 — store report payloads and rename reports.** Reports now keep
+   a bounded normalized payload plus per-chat versions and supersession
+   lineage. Model-driven regeneration from that payload remains unplanned.
+   The original JSONB suggestion assumed the removed Postgres ledger and is
+   not a current implementation instruction.
+3. **DONE in M07/M09 — scheduled connector refresh.** Connector schedules are
+   the same durable `connector_sync` automation rows shown in Automations;
+   connectors expose schedule controls and content-free sync history, and
+   deletion tears down the linked automation.
 4. **Partly DONE in Plan 027 — chat rename/generated titles.** Markdown export
    remains unplanned.
 5. **Compare-periods tooling (spike)** — suggested prompts are finance

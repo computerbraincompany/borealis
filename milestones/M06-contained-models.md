@@ -5,10 +5,12 @@ macOS as a first-class path beside "paste a cluster origin."* Plus the vision's
 model topology: contained mode is a first-class personality — offline-capable,
 zero token meter, honest about limits.
 
-**Status:** DONE (implemented in commits `af49681` — verified downloads and
-config storage, `05af22c` — engine lifecycle with first-class endpoint
-switching, `7adac79` — ambient status, shutdown, and desktop data paths, and
-the documentation slice; verification recorded in milestones/README.md)
+**Status:** PARTIAL. Commits `af49681` (verified downloads and config storage),
+`05af22c` (engine lifecycle and endpoint switching), and `7adac79` (ambient
+status, shutdown, and desktop data paths) shipped the backend/API and chrome
+slices. The Settings management panel and atomic configuration replacement in
+this specification remain unimplemented. Engine spawn-error handling and
+deterministic missing-path diagnostics also remain open.
 
 ## Problem
 
@@ -58,11 +60,13 @@ Directories and config (read `config.ts`, `settingsStore.ts`,
 - `config.containedDir = canonicalStorageDirectory(process.env.CONTAINED_DIR ||
   <storageDir>/models)` — in desktop this resolves under Electron `userData`
   like every other durable path.
-- Contained configuration lives in `<storageDir>/contained.json` (mode `0600`,
-  atomic writes) with its own tiny store `server/src/contained/configStore.ts`:
-  `{ enabled: boolean, binary_path: string, model_path: string,
-  extra_args: string[] }`. Paths must be absolute without `~`; `extra_args`
-  bounded (32 items × 200 chars). Invalid config fails closed on read.
+- Contained configuration lives in `<storageDir>/contained.json` with its own
+  tiny store `server/src/contained/configStore.ts`: `{ enabled: boolean,
+  binary_path: string, model_path: string, extra_args: string[] }`. Paths must
+  be absolute without `~`; `extra_args` is bounded (32 items × 200 chars), and
+  invalid config fails closed on read. The current writer uses a direct
+  mode-`0600` `writeFile`; the specified same-directory atomic replacement is
+  still outstanding, and overwriting an existing file does not repair its mode.
 
 Download manager (`server/src/contained/downloadManager.ts`):
 
@@ -90,8 +94,11 @@ Engine manager (`server/src/contained/engineManager.ts`):
   [...extra_args]`. Health = body-free `GET /v1/models` (the shared
   `endpointProbe`) polled every 500 ms up to 180 s; states: `off` → `starting`
   → `healthy` | `crashed` (process exit) | `stopped`. One engine at a time;
-  `stop()` sends SIGTERM with a bounded kill timeout. Spawn errors and early
-  exits are captured, never logged with contents.
+  `stop()` sends SIGTERM with a bounded kill timeout. Early exits are captured
+  and never logged with contents. The current manager does not listen for the
+  child's `error` event, so non-executable or raced-away binaries can escape the
+  bounded state machine. Its concurrent binary/model existence checks also make
+  the missing-field error nondeterministic when both paths are absent.
 - **Auto-apply**: on first `healthy`, if the effective `llm_base_url` is not
   environment-managed, the manager records the previous origin and patches
   `llmBaseUrl` to `http://127.0.0.1:<port>` via `runtimeSettingsStore().patch`
@@ -113,8 +120,8 @@ envelope):
 - `POST /api/contained/engine/start` (202 with state; health continues in the
   background), `POST /api/contained/engine/stop`.
 - `GET /api/status` gains an injectable `contained` section:
-  `{enabled, state, model: <filename>, endpoint_host: "127.0.0.1:<port>" |
-  null, endpoint_managed_by_env}` or `null` when no engine is configured —
+  `{state, model: <filename>|null, endpoint_host: "127.0.0.1:<port>"|null,
+  endpoint_managed_by_env}` or `null` while the engine state is `off` —
   loopback-local facts only, still no credentials or provider URLs.
 
 Tests:
@@ -141,21 +148,21 @@ Tests:
 - Orderly shutdown already runs through the backend; the engine stop hook
   lives server-side, so no desktop code changes beyond the env value.
 
-## Web spec
+## Web spec — partial
 
-- `web/src/lib/api.ts`: `ContainedState`, `ContainedConfig`, `DownloadState`
-  types + `containedApi` (get/config/download/cancelDownload/start/stop);
-  `WorkspaceStatusResponse.contained` field.
-- `WorkspaceStatus` strip: when `contained.state === "healthy"`, the locality
+- **Shipped:** `WorkspaceStatusResponse.contained` and the `WorkspaceStatus`
+  strip. When `contained.state === "healthy"`, the locality
   row reads **"On this Mac · contained"** with the model filename in the
   tooltip; `endpoint_managed_by_env` appends "endpoint managed by environment"
   to the hint.
-- Contained management lives under Settings → Models as a bounded panel:
+- **Outstanding:** full `ContainedConfig`/`DownloadState` client types and a
+  `containedApi` wrapper for get/config/download/cancel/start/stop.
+- **Outstanding:** contained management under Settings → Models as a bounded panel:
   enable toggle, binary/model paths, download form (URL, filename, SHA-256)
   with per-download state, start/stop buttons with live state. Out of scope:
   download progress percentages in the sidebar.
-- Tests: strip healthy/managed states; panel create-config, download, start,
-  stop flows.
+- **Tests:** the strip's healthy/managed states ship; panel create-config,
+  download, start, and stop flows remain outstanding with the panel.
 
 ## Documentation tasks
 
@@ -173,6 +180,10 @@ Tests:
 
 ## Done criteria
 
+- The milestone remains partial until the Settings control surface above ships
+  and configuration writes use an atomic replacement that preserves mode
+  `0600`; engine spawn errors must enter a bounded state, and path diagnostics
+  must be deterministic (or their test must not assume an ordering).
 - `pnpm verify` green including the new suites.
 - Live check: download a fixture model file with checksum verification into
   the data directory, start the stub engine, see `/api/status` report

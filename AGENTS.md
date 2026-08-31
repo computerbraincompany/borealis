@@ -11,8 +11,9 @@ destination, not a list of current features or an implementation backlog.
 ## Architecture
 
 - `server/` — Node.js 22 (TypeScript, ESM) Fastify API. It owns authentication,
-  the agent loop, durable ingestion and chat runs, retrieval, connectors,
-  reports, and static web hosting. Resource routes live under
+  account preferences, the agent loop, durable ingestion and chat runs,
+  retrieval, libraries, agents, automations, connectors, artifact sharing and
+  audit metadata, reports, and static web hosting. Resource routes live under
   `server/src/routes/`; data internals live under `server/src/data/`.
 - `server/src/db/` — SQLite migrations, codecs, and async store facades for the
   relational ledger and chunk text. `server/src/storageRuntime.ts` composes the
@@ -22,8 +23,8 @@ destination, not a list of current features or an implementation backlog.
 - DuckDB — analytical engine for user tabular files only, isolated in a worker
   thread. It is not the application ledger.
 - `web/` — Vite + React + TypeScript + Tailwind UI. Pages cover auth, chat,
-  sources, URL connectors, reports, and the workspace Settings modal. Browser
-  development proxies `/api` to port 3000.
+  sources, libraries, agents, automations, URL connectors, reports, and the
+  workspace Settings modal. Browser development proxies `/api` to port 3000.
 - `desktop/` — Electron main/preload shell for Apple Silicon macOS 13+. It runs
   the compiled Fastify backend in a utility process and serves the built web UI
   from the backend's exact loopback origin.
@@ -49,7 +50,8 @@ repository root.
 pnpm install
 pnpm --filter borealis-server exec playwright install chromium
 
-# Browser development; embedded engines need no external service.
+# Browser development; embedded stores need no external database.
+# Start the configured model endpoint separately for live inference.
 pnpm dev
 
 # Server
@@ -111,7 +113,10 @@ below `~/Library/Application Support/Borealis/`:
 - `lancedb/` — embedding vectors;
 - `uploads/` — account/source-scoped input and connector files;
 - `reports/` — HTML/PDF artifacts;
+- `models/` — verified contained-model downloads;
 - `settings.json` — provider settings, atomically written with mode `0600`;
+- `contained.json` — contained-engine configuration, initially created with mode
+  `0600` (M06 tracks atomic-update and mode-repair gaps);
 - `jwt.secret` — generated once with mode `0600`.
 
 Environment overrides are documented in `server/.env.example`. A configured
@@ -120,8 +125,8 @@ the secret file without following symlinks and repairs its mode to `0600`.
 
 SQLite and LanceDB are one logical store. Back them up and restore them together,
 with Borealis stopped. Prefer copying the complete application-data directory so
-SQLite WAL state, uploads, reports, settings, and the signing secret stay with
-the matching vector index.
+SQLite WAL state, uploads, reports, contained-model state, settings, and the
+signing secret stay with the matching vector index.
 
 ## Data flow
 
@@ -131,11 +136,12 @@ the matching vector index.
    stable chunk UUIDs, stage text in SQLite and vectors in LanceDB, then promote
    one generation using the two-store protocol.
 2. `POST /api/chats/:id/messages` commits the user message, model, source mode,
-   concrete ready source IDs, and durable run in one SQLite transaction. It then
-   streams sanitized SSE events from `server/src/agent.ts` for at most eight
-   iterations. One active run is allowed per chat; deletion of the run requests
-   cancellation. Activity events arrive during execution, but the answer's
-   `delta` is sent as a complete string after persistence, not token by token.
+   concrete ready source IDs, bound-agent instruction revision, and durable run
+   in one SQLite transaction. It then streams sanitized SSE events from
+   `server/src/agent.ts` for at most eight iterations. One active run is allowed
+   per chat; deletion of the run requests cancellation. Activity events arrive
+   during execution, but the answer's `delta` is sent as a complete string after
+   persistence, not token by token.
 3. Agent tools in `server/src/tools.ts` are `retrieve`, `list_sources`,
    `query_data`, `describe_data`, `render_chart`, `create_report`, and
    `fetch_url`. Every stored-data tool consumes the immutable source snapshot.
@@ -236,6 +242,11 @@ the matching vector index.
   reuse the consent gate and one-run-per-chat constraints, record bounded
   generic run details, pause after five consecutive failures, and their
   scheduler is unref'd and stopped during orderly shutdown.
+  **Known implementation drift (reviewed 2026-08-31):** shared detail currently
+  exposes stored payload while recipient HTML/PDF remains owner-only, and
+  `connector_sync` automation creation/execution does not consistently enforce
+  remote-egress consent. M07 tracks both defects. Preserve the intended
+  fail-closed contract above; do not normalize these behaviors as policy.
 - Connector schedules are a derived convenience surface over `connector_sync`
   automations (at most one per connector, enforced in the automation store);
   the Automations view stays authoritative. Connector deletion cascades the
@@ -302,6 +313,11 @@ live settings store, never when `LLM_BASE_URL` is environment-managed, and
 always restores the prior origin on stop. Downloads require SHA-256
 verification before atomic rename; `.part` artifacts never count as model
 files. Engine stop is part of the orderly shutdown path (`closeDb`).
+The current `contained.json` writer is a direct mode-`0600` overwrite rather
+than an atomic replacement, and the web app exposes ambient state but no
+contained-management panel. The engine manager also lacks a child-process
+`error` listener and has nondeterministic diagnostics when both configured
+paths are missing. M06 remains partial until those gaps are closed.
 
 The ambient chrome strip is fed by `GET /api/status`
 (`server/src/workspaceStatus.ts`). Keep its probe body-free, bounded, and
@@ -322,6 +338,8 @@ private providers never gate; acknowledgment unblocks without a restart. The
 consent response may name the configured `endpoint_host` to the authenticated
 account, but `endpoint_host` must never be logged. Consent-card, sidebar, and
 Settings payload-class wording must stay identical.
+The current three surfaces are not yet identical; treat that as an outstanding
+consent-disclosure defect rather than precedent for further divergence.
 
 Canonical operator overrides are `LLM_BASE_URL`, `LLM_API_KEY`,
 `LLM_CHAT_MODEL`, and `LLM_EMBED_MODEL`. The corresponding `LITELLM_*` names
@@ -417,21 +435,24 @@ clean utility-process shutdown.
 Keep [README.md](README.md), [docs/API.md](docs/API.md),
 [docs/VISION.md](docs/VISION.md), [desktop/README.md](desktop/README.md),
 [server/.env.example](server/.env.example), and
-[milestones/](milestones/README.md) aligned with implementation changes. Check
-package scripts, route schemas and runtime validation, environment precedence,
-resource limits, and verification coverage rather than copying claims from old
-plans. Document provider-bound ingestion text as well as chat context when
-describing privacy. Root `scripts/policy-check.mjs` is the current
+[milestones/](milestones/README.md) aligned with implementation changes. Keep
+[advisor-plans/](advisor-plans/README.md) current as its remediation work lands.
+Check package scripts, route schemas and runtime validation, environment
+precedence, resource limits, and verification coverage rather than copying
+claims from old plans. Document provider-bound ingestion text as well as chat
+context when describing privacy. Root `scripts/policy-check.mjs` is the current
 remnant/fixture gate; do not reintroduce `scripts/verify.sh` or per-package npm
 lockfiles.
 
 [docs/VISION.md](docs/VISION.md) is the product destination. Update it when the
 intended product changes; do not treat it as current architecture or a work
 queue. [milestones/](milestones/README.md) is the active implementation ledger.
+[advisor-plans/](advisor-plans/README.md) is the separate active
+engineering-remediation ledger from the 2026-08-30 audit.
 [plans/](plans/README.md) contains completed historical specifications, not an
 active backlog. [docs/cohere-north/](docs/cohere-north/README.md) is dated
 product research and proposed designs, not the current Borealis architecture.
-Preserve that boundary and do not present historical checklists as current
+Preserve those boundaries and do not present historical checklists as current
 instructions.
 
 Use `git ls-files` when auditing all tracked docs: ordinary `rg --files` omits

@@ -5,9 +5,9 @@ receipts into a real artifact model with versions and lineage… Artifacts —
 documents, tables, charts, and reports with versions and provenance. Chat
 creates them; it does not trap them.*
 
-**Status:** DONE (implemented in slices `fb10673` — versions/payloads,
-rename + chart registry, and the web lineage/gallery slice; verification
-recorded in milestones/README.md)
+**Status:** DONE (implemented in commits `fb10673` — versions/payloads,
+`99da4ee` — rename and chart registry, and `d3a0c26` — the web
+lineage/gallery surface; verification recorded in milestones/README.md)
 
 ## Problem
 
@@ -40,7 +40,8 @@ versions and provenance that survive their thread.
 - No document/table artifacts and no "Artifacts" nav rename yet — reports and
   charts gain lineage first; the surface renames when a third artifact kind
   exists.
-- No sharing, no cross-account anything.
+- No sharing in M02; same-instance, read-only report sharing arrived later in
+  M07.
 - No change to the pending→published run lifecycle or the deletion/cleanup
   protocol beyond the new columns.
 
@@ -68,8 +69,9 @@ Behavior:
   `GET /api/reports/:id` additionally returns the stored `payload` when present.
 - `GET /api/charts` returns the account's published charts, newest first,
   bounded (200) with `{id, run_id, chat_id, title, kind, created_at}` derived
-  from the canonical spec — no PNG bytes, no raw spec echo in the list. PNG
-  remains `GET /api/charts/:id`.
+  from the canonical spec — no PNG bytes, no raw spec echo in the list. Chart
+  detail, including `png_base64` when available, remains
+  `GET /api/charts/:id`.
 - Sanitization unchanged: no model text in logs; DTO fields are already
   user-visible report/chart metadata.
 

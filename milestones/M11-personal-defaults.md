@@ -45,10 +45,10 @@ model ownership that belongs to the account, not the workspace.
   string normalizes to null).
 - `PATCH /api/preferences` (requireAuth, bodyLimit small): body
   `{default_chat_model: string|null}`; shape-validated only — the model id is
-  NOT checked against the live catalog (the provider may be unreachable; a
-  stale id falls back gracefully at resolution time). Returns
-  `{default_chat_model}`. Add `GET /api/preferences` returning the same shape
-  for surface hydration.
+  NOT checked against the live catalog (the provider may be unreachable; an
+  unadvertised saved id remains explicit rather than being silently rewritten).
+  Returns `{default_chat_model}`. Add `GET /api/preferences` returning the same
+  shape for surface hydration.
 - Resolution: chat creation stamps `accountDefault ?? runtime.settings.chatModel`.
   `GET /api/models` gains `account_default_model: string|null` alongside
   `default_model`. Precedence documented in docs/API.md: per-chat PATCH (after

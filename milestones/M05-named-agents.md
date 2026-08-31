@@ -1,9 +1,10 @@
-# M05 — Named agents: versioned instructions, tools, and source bindings
+# M05 — Named agents: versioned instructions with write-once chat bindings
 
 **Horizon:** 2 ("the intelligence layer") — *Named agents — versioned
 instructions, tools, and source bindings for a job: "finance analyst,"
 "diligence," "ops brief." They do not grant data the runner cannot already
-see.*
+see.* This milestone delivers the versioned-instruction and chat-binding slice;
+agent-specific tool and source policy remain outside its scope.
 
 **Status:** DONE (implemented in commits `aeccbd7` — schema v6, agent store,
 and routes — `d8703ef` — chat binding, run snapshot, and prompt integration —
@@ -87,9 +88,9 @@ ALTER TABLE chat_runs ADD COLUMN agent_instructions TEXT;
 New store `server/src/db/stores/agentStore.ts`:
 
 - `listAgents(accountId)` → `[{id,name,current_version,instructions
-  (current revision text),instructions_chars,updated_at}]`.
-- `createAgent(accountId, {name, instructions})` → agent at version 1.
-- `getAgent(accountId, id)` → agent + `revisions` (descending) + current
+  (current revision text),instructions_chars,created_at,updated_at}]`.
+- `createAgent(accountId, name, instructions)` → agent at version 1.
+- `getAgentDetail(accountId, id)` → agent + `revisions` (descending) + current
   instructions.
 - `renameAgent(accountId, id, name)`; `deleteAgent(accountId, id)` → boolean
   (chats keep running; their `agent_id` becomes NULL).
@@ -97,12 +98,11 @@ New store `server/src/db/stores/agentStore.ts`:
   inserts a new revision row. Name is 1–80 chars unique per account;
   instructions are 1–8,000 characters (`MAX_AGENT_INSTRUCTION_CHARS`), bounded
   at the store boundary like every other input.
-- `getCurrentRevision(accountId, chatId)`: resolved inside the turn
-  transaction in `chatStore.acceptChatTurn` — reads `chats.agent_id`, joins
-  the agent's current revision, and snapshots
-  `chat_runs.agent_instructions` (revision id and instructions text) in the
-  same atomic accept. `AcceptedChatTurn` gains `agent:
-  {revisionId, name, instructions} | null`.
+- `chatStore.acceptChatTurn` resolves the binding inside the turn transaction:
+  it reads `chats.agent_id`, joins the agent's current revision, and snapshots
+  the instructions text into `chat_runs.agent_instructions` in the same atomic
+  accept. `AcceptedChatTurn` gains `agent:
+  {id, name, version, instructions} | null`.
 
 Prompt integration (`server/src/agent.ts`):
 
@@ -183,5 +183,6 @@ Tests (follow `libraryRoutes.test.ts` and `modelRoutes.test.ts` harnesses):
 - `pnpm verify` green including the new backend and web tests.
 - Creating an agent, binding it in the composer, and sending a turn produces a
   run whose durable row carries that agent's current instructions; revising
-  the agent afterwards affects only later chats' turns.
+  the agent afterwards affects only later accepted turns, including later
+  turns in the same bound chat.
 - Deleting an agent leaves bound chats working and unbound.

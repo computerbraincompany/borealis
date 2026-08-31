@@ -47,46 +47,74 @@ catalog probe as `/api/health`. The response never contains the endpoint URL,
 credentials, provider errors, or model lists; reachability loss is a status
 field, not an HTTP error.
 
-Remote-provider egress is fail-closed. While a remote (public) provider is
-configured and the account has not acknowledged remote egress, the
-payload-bearing routes — chat messages, source upload, source reingest, and
-connector create/sync — refuse with `403
+The direct/manual remote-provider payload routes are fail-closed. While a
+remote (public) provider is configured and the account has not acknowledged
+remote egress, chat messages, source upload, source reingest, connector
+create/manual sync, and connector schedule changes refuse with `403
 {"error":"...","code":"REMOTE_EGRESS_CONSENT_REQUIRED"}` before any payload is
 processed. `GET /api/consent/remote-egress` returns
-`{required,acknowledged_at,endpoint_host}`; `POST` records the per-account
-acknowledgment and unblocks the gated routes immediately. `endpoint_host` is
-present only while a remote provider is configured, is a response field only,
-and never appears in logs. Loopback and private-network providers never gate.
+`{required,acknowledged_at,endpoint_host}`; `POST /api/consent/remote-egress`
+records the per-account acknowledgment and unblocks the gated routes
+immediately. The acknowledgment is not bound to a host and remains stored when
+the provider changes. `endpoint_host` names the currently configured remote
+host only, is a response field only, and never appears in logs. Loopback and
+private-network providers never gate.
+
+Known implementation gap: `POST /api/automations` and
+`PATCH /api/automations/:id` do not currently apply the consent gate to
+`connector_sync` rows, and scheduled connector executions do not recheck it. A
+schedule created while the provider is local can therefore run after a switch
+to an unacknowledged remote provider. Agent-turn automations do recheck consent,
+and `PUT /api/connectors/:id/schedule` gates the schedule mutation itself. Treat
+the connector-automation behavior as a security defect and do not use
+`connector_sync` automations with a remote provider until it is fixed.
 
 ### Workspace: audit, shares, and automations
 
 Small-team surfaces on one Borealis instance. All routes require
 authentication and stay account-scoped.
 
-| Endpoint                              | Response                                                                                          |
-| ------------------------------------- | -------------------------------------------------------------------------------------------------- |
-| `GET /api/audit/egress?limit<=200`    | Content-free egress events: `{id,kind,endpoint_host,created_at}`, newest first.                    |
-| `GET /api/accounts`                   | `[{id,email}]` — the workspace accounts available for snapshot sharing.                            |
-| `POST /api/reports/:id/shares`        | Body `{recipient_account_id}`; `201` with `{recipient_account_id,shared_at}`.                      |
-| `GET /api/reports/:id/shares`         | Shares of one owned report, recipient emails included.                                             |
-| `DELETE /api/reports/:id/shares/:recipient` | `{"ok":true}` — owner-only revocation.                                                       |
-| `GET /api/reports/shared`             | Reports shared with the caller: read-only snapshots with `owner_email`.                            |
-| `GET /api/automations`                | Account automations with schedule, state, and failure counters.                                    |
-| `POST /api/automations`               | `{name,kind,target_id,schedule_minutes,prompt?}` (15–10,080 minutes; prompt required for `agent_turn`). |
-| `PATCH /api/automations/:id`          | `{name?,state?,schedule_minutes?}`.                                                                |
-| `DELETE /api/automations/:id`         | `{"ok":true}`; run history cascades.                                                               |
-| `GET /api/automations/:id/runs`       | Bounded run history `{outcome,detail,started_at,finished_at}`.                                     |
+| Endpoint                                    | Response                                                                                                               |
+| ------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `GET /api/audit/egress?limit<=200`          | Content-free egress events: `{id,kind,endpoint_host,created_at}`, newest first.                                        |
+| `GET /api/accounts`                         | `[{id,email}]` — the workspace accounts available for snapshot sharing.                                                |
+| `POST /api/reports/:id/shares`              | Body `{recipient_account_id}`; `201` with `{recipient_account_id,shared_at}`.                                          |
+| `GET /api/reports/:id/shares`               | Shares of one owned report, recipient emails included.                                                                 |
+| `DELETE /api/reports/:id/shares/:recipient` | `{"ok":true}` — owner-only revocation.                                                                                 |
+| `GET /api/reports/shared`                   | Reports shared with the caller: read-only snapshots with `owner_email`.                                                |
+| `GET /api/automations`                      | Account automations with schedule, state, and failure counters.                                                        |
+| `POST /api/automations`                     | `{name,kind,target_id,schedule_minutes,prompt?}`; returns `201` (15–10,080 minutes; prompt required for `agent_turn`). |
+| `PATCH /api/automations/:id`                | `{name?,state?,schedule_minutes?}`.                                                                                    |
+| `DELETE /api/automations/:id`               | `{"ok":true}`; run history cascades.                                                                                   |
+| `GET /api/automations/:id/runs`             | Run history `{id,outcome,detail,started_at,finished_at}`; newest first, default 20 and maximum 50.                     |
+| `GET /api/automations/_scheduler`           | `{running:boolean}` for the in-process scheduler.                                                                      |
 
-Sharing contract: shares exist only between accounts of this instance, are
-created for published reports, and grant exactly read-only detail/HTML/PDF
-access — rename, delete, payload, and further sharing stay with the owner.
-Revocation is immediate. Automation runs are content-free; details use generic
-phrases, and five consecutive failures pause the automation. Agent-turn
-automations go through the same acceptance path as a human turn — the consent
-gate, one-run-per-chat, and durable run records all apply — and a busy chat or
-missing consent records a `skipped` run. Audit events never contain prompts,
-source text, SQL, or model output, and are best-effort: a failed audit write
-never fails the request that produced it.
+Shares exist only between accounts of this instance and are created for
+published reports. The intended authorization contract grants recipients
+read-only detail/HTML/PDF access while rename, delete, stored payload, and
+further sharing remain owner-only. The current implementation does not yet
+honor that boundary: shared readers receive the stored payload on
+`GET /api/reports/:id`, while the HTML and PDF routes remain owner-only and
+return `404` to recipients. The shared-report Preview and Download controls
+therefore fail. Do not treat report sharing as a safe owner-only payload
+boundary until this defect is fixed. Revocation of the detail access is
+immediate.
+
+Automation history records are content-free; details use generic phrases of at
+most 500 characters, and five consecutive failures pause the automation. Names
+are trimmed, unique per account, and contain 1–80 characters. `target_id` must
+name an owned connector for `connector_sync` or an owned chat for `agent_turn`;
+prompts contain at most 8,000 characters. The scheduler checks once per minute
+and claims at most 20 due rows per tick. Agent-turn automations go through the
+same acceptance path as a human turn — the consent gate, one-run-per-chat, and
+durable run records all apply — and a busy chat or missing consent records a
+`skipped` run. Connector-sync consent has the known gap described above.
+
+Audit events never contain prompts, source text, SQL, or model output, and are
+best-effort: a failed audit write never fails the request that produced it.
+They are activity receipts for consent acknowledgments and selected
+remote-capable turn/ingestion attempts, not proof that data reached or was
+accepted by a provider and not an exhaustive network-egress audit.
 
 ### Contained models
 
@@ -94,21 +122,38 @@ Contained mode lets Borealis own a local model engine end to end: verified
 weight downloads, a managed loopback `llama-server` process, and first-class
 provider switching. All routes require authentication.
 
-| Endpoint                                | Response                                                                                                    |
-| --------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| `GET /api/contained`                    | `{config,engine,downloads}` — current configuration, engine state, and download states.                      |
-| `PUT /api/contained/config`             | Body `{enabled,binary_path,model_path,extra_args?}`; absolute paths, mode-`0600` `contained.json`.           |
-| `POST /api/contained/downloads`         | Body `{url,filename,sha256}`; `202` with the download state.                                                 |
-| `DELETE /api/contained/downloads/:name` | `{"ok":true}`; cancels and removes the `.part` artifact.                                                     |
-| `POST /api/contained/engine/start`      | `202` with the engine state; health is polled in the background.                                              |
-| `POST /api/contained/engine/stop`       | Engine state after an orderly SIGTERM (bounded SIGKILL).                                                     |
+| Endpoint                                    | Response                                                                                                                   |
+| ------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `GET /api/contained`                        | `{config,engine,downloads}` — current configuration, engine state, and in-process download states.                         |
+| `PUT /api/contained/config`                 | Body `{enabled,binary_path?,model_path?,extra_args?}`; returns the normalized config, and paths are required when enabled. |
+| `POST /api/contained/downloads`             | Body `{url,filename,sha256}`; `202` with the download state.                                                               |
+| `DELETE /api/contained/downloads/:filename` | `{"ok":true}`; cancels a tracked download and removes its `.part` artifact; an untracked filename returns `404`.           |
+| `POST /api/contained/engine/start`          | `202` with the engine state; health is polled in the background.                                                           |
+| `POST /api/contained/engine/stop`           | Engine state after an orderly SIGTERM (bounded SIGKILL).                                                                   |
 
-Download contract: `filename` is 1–180 characters of `[A-Za-z0-9._-]` (no
-separators), `sha256` is mandatory and verified before the file is atomically
-renamed into place — a mismatch deletes the artifact and records a failed
-state. Downloads resume from the existing `.part` byte range, are bounded in
-size, and accept only HTTPS or loopback HTTP origins without credentials,
-query, or fragments. Redirects are refused.
+Configuration is stored at `<BOREALIS_DATA_DIR>/contained.json`. The file is
+created with mode `0600`, but updates currently overwrite it directly rather
+than using an atomic replacement and do not repair an externally changed mode.
+Disabling needs only `{enabled:false}` and normalizes the path/argument fields
+to empty values. Enabling requires absolute `binary_path` and `model_path`
+values (no `~` or NUL); existence is checked when the engine starts.
+`extra_args` accepts at most 32 strings of 1–200 characters.
+`config` is `null` before one is saved. `engine` contains
+`{state,model,endpoint_host,endpoint_managed_by_env,pid,started_at,error}`, with
+state in `off|starting|healthy|crashed|stopped`; download rows contain
+`{filename,url_host,state,bytes_received,total_bytes,error}`, with state in
+`downloading|verifying|complete|failed|canceled`.
+
+Download contract: `filename` is 1–180 characters of `[A-Za-z0-9._-]`, cannot
+contain `..`, and contains no path separators. `sha256` is mandatory and
+verified before the file is atomically renamed into place — a mismatch deletes
+the artifact and records a failed state. Downloads live under `CONTAINED_DIR`
+(default `<BOREALIS_DATA_DIR>/models`), resume from an existing `.part` byte
+range, and default to a 64 GiB ceiling configurable with the positive safe
+integer `CONTAINED_MAX_DOWNLOAD_BYTES`. The URL may contain a path but must use
+HTTPS or loopback HTTP and cannot contain credentials, a query, or a fragment.
+Redirects are refused. Download snapshots are process-local bookkeeping;
+canceling never deletes an already verified final model file.
 
 Engine contract: Borealis spawns the configured binary as
 `<binary> -m <model_path> --host 127.0.0.1 --port <os-assigned>
@@ -122,25 +167,32 @@ stop; an environment-managed endpoint is reported via
 is never read or logged, and orderly shutdown stops the engine before the
 embedded stores close.
 
+Known engine-start gap: the manager checks that both paths exist, but it does
+not currently subscribe to the spawned child's `error` event. A binary that is
+non-executable or disappears after preflight can therefore surface as an
+unhandled process error instead of a bounded `crashed` state. The binary/model
+existence checks also run concurrently, so when both paths are absent the
+reported field is nondeterministic.
+
 `GET /api/status` carries the ambient `contained` section
 (`{state,model,endpoint_host,endpoint_managed_by_env}` or `null`) so the
 workspace chrome can say "On this Mac · contained".
 
 ### Agents
 
-| Endpoint               | Response                                                                                                        |
-| ---------------------- | --------------------------------------------------------------------------------------------------------------- |
-| `GET /api/agents`      | Array of `{id,name,current_version,instructions,instructions_chars,created_at,updated_at}`, newest first.       |
-| `POST /api/agents`     | Body `{name,instructions}` (name 1–80 chars unique per account; instructions 1–8,000 chars); returns `201`.     |
-| `GET /api/agents/:id`  | `{...summary,revisions}` with every immutable revision, newest first.                                            |
-| `PATCH /api/agents/:id`| Body `{name?}`, `{instructions?}`, or both; new instructions become the next immutable revision.                 |
-| `DELETE /api/agents/:id`| `{"ok":true}`; bound chats keep running and become unbound (`agent_id` is `SET NULL`).                         |
+| Endpoint                 | Response                                                                                                    |
+| ------------------------ | ----------------------------------------------------------------------------------------------------------- |
+| `GET /api/agents`        | Array of `{id,name,current_version,instructions,instructions_chars,created_at,updated_at}`, newest first.   |
+| `POST /api/agents`       | Body `{name,instructions}` (name 1–80 chars unique per account; instructions 1–8,000 chars); returns `201`. |
+| `GET /api/agents/:id`    | `{...summary,revisions}` with every immutable revision, newest first.                                       |
+| `PATCH /api/agents/:id`  | Body `{name?}`, `{instructions?}`, or both; new instructions become the next immutable revision.            |
+| `DELETE /api/agents/:id` | `{"ok":true}`; bound chats keep running and become unbound (`agent_id` is `SET NULL`).                      |
 
 A chat may bind one agent when it is created: `POST /api/chats` accepts an
 optional `agent_id` (must reference an owned agent; unknown or foreign ids
 return `400`). The binding is write-once — it cannot be changed or removed
 while the chat exists, and chat DTOs carry `agent: {id,name} | null`. At turn
-acceptance the server resolves the agent's *current* revision inside the
+acceptance the server resolves the agent's _current_ revision inside the
 accept transaction and stores its instructions on the durable run
 (`chat_runs.agent_instructions`); later agent edits or deletion never change a
 running or completed turn. During the run, the instructions are appended to
@@ -152,19 +204,23 @@ are never logged.
 
 ### Libraries
 
-| Endpoint                        | Response                                                                                                     |
-| ------------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| `GET /api/libraries`            | Array of `{id,name,member_count,created_at,updated_at}`, newest first.                                       |
-| `POST /api/libraries`           | Body `{name}` (1–120 chars, unique per account); returns `201` with the library.                              |
-| `GET /api/libraries/:id`        | `{id,name,created_at,updated_at,members}` with the members in the sources-list DTO.                          |
-| `PATCH /api/libraries/:id`      | Body `{name}`; returns the renamed library.                                                                   |
-| `PUT /api/libraries/:id/sources`| Body `{source_ids}` (≤100, distinct, all owned by the account); replaces membership exactly.                  |
-| `DELETE /api/libraries/:id`     | `{"ok":true}`; membership rows cascade. Sources and their data are never touched.                            |
+| Endpoint                         | Response                                                                                             |
+| -------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `GET /api/libraries`             | Array of `{id,name,member_count,created_at,updated_at}`, newest first.                               |
+| `POST /api/libraries`            | Body `{name}` (1–120 chars, unique per account); returns `201` with the library.                     |
+| `GET /api/libraries/:id`         | `{id,name,created_at,updated_at,members}`; members use the full source resource DTO described below. |
+| `PATCH /api/libraries/:id`       | Body `{name}`; returns the renamed library.                                                          |
+| `PUT /api/libraries/:id/sources` | Body `{source_ids}` (≤100, distinct, all owned by the account); replaces membership exactly.         |
+| `DELETE /api/libraries/:id`      | `{"ok":true}`; membership rows cascade. Sources and their data are never touched.                    |
 
 Libraries reference sources; they never copy or move them. There is no server
 side chat–library binding: attaching a library expands its ready members into
 a chat's explicit `selected` scope through the normal chat-creation contract,
-so the three-meaning source-scope semantics are unchanged.
+so the three-meaning source-scope semantics are unchanged. Member rows include
+the source's `account_id`, connector, stored `file_path`, URL, metadata, and
+ready generation, as upload/reingest responses do; local paths are not API
+URLs. Replacing membership returns `{"ok":true}` and rejects an unknown or
+foreign source with `404` without changing the existing membership.
 
 The macOS app creates its single local account and passes a fresh session from
 Electron main through the trusted preload exactly once. That bootstrap is not an
@@ -248,8 +304,8 @@ returns `409`; use `PUT /api/chats/:id/sources` to choose a smaller selection.
 
 Only ready sources grant stored-data access in a turn. The accepted model, source
 mode, and concrete ready source IDs are committed with the user message and run
-in one SQLite transaction. Later model or source changes affect the next turn, not an
-already accepted run. This is a stored-data tool boundary: prior conversation
+in one SQLite transaction. Later model or source changes affect the next turn,
+not an already accepted run. This is a stored-data tool boundary: prior conversation
 messages can still contain information from earlier turns. `fetch_url` is a
 separate capability and accepts only a public HTTP(S) URL explicitly written in
 the current user message, even when the stored-source selection is empty.
@@ -313,8 +369,10 @@ bracketed citation marker the answer actually used onto the run's own evidence:
 deduped and capped at 8. Markers that do not resolve to evidence are never
 recorded and stay plain text in the UI. Query display snapshots contain
 `{id,sql,columns,rows,row_count,truncated}`; they are bounded display
-artifacts, not complete query exports. User message metadata records only the
-accepted model and source snapshot.
+artifacts, not complete query exports. User message metadata records the
+accepted model and source snapshot, plus an optional
+`agent: {id,name,version}` revision snapshot when the chat is bound to an
+agent.
 
 Only one run may be `running` or `cancelling` per chat; another message returns
 `409`. Disconnecting from SSE does not cancel the accepted run. There is no SSE
@@ -355,10 +413,12 @@ The model probe checks catalog reachability, not whether a chat or embedding
 request will succeed; readiness does not run inference or render a report.
 
 `GET /api/status` returns
-`{locality,endpoint_reachable,lm_studio_reachable,chat_model,embed_model,checked_at,latency_ms}`.
+`{locality,endpoint_reachable,lm_studio_reachable,chat_model,embed_model,contained,checked_at,latency_ms}`.
 `locality` is `local`, `private`, or `remote`; `lm_studio_reachable` is `null`
 when no separate LM Studio health endpoint is configured. Latency is bounded to
-0–2,000 ms and served from a 20-second single-flight cache. The snapshot is
+0–2,000 ms and served from a 20-second single-flight cache. `contained` is
+`null` while the managed engine is `off`; otherwise it is
+`{state,model,endpoint_host,endpoint_managed_by_env}`. The snapshot is
 informational chrome state, not an authorization surface.
 
 `GET /api/models` returns, for example:
@@ -373,9 +433,9 @@ informational chrome state, not an authorization surface.
 ```
 
 `account_default_model` is the requesting account's personal default chat model
-(see Preferences below) or `null`. New chats resolve their model as: the
-composer's explicit choice, else the account default, else the workspace
-`default_model`.
+(see Preferences below) or `null`. `POST /api/chats` stamps that value when it
+is non-null, otherwise the workspace `default_model`. The web composer applies
+an explicit selection as a per-chat patch before accepting the first turn.
 
 Entries contain only `id` and optional `owned_by`, are deduplicated and sorted,
 and exclude the configured embedding identity. Known physical model IDs map
@@ -389,16 +449,16 @@ to appear in the current catalog.
 
 ### Chats
 
-| Endpoint                            | Request and response                                                                                    |
-| ----------------------------------- | ------------------------------------------------------------------------------------------------------- |
-| `GET /api/chats`                    | Array of `{id,title,model,source_mode,created_at,updated_at}`, ordered by latest activity, then ID.     |
+| Endpoint                            | Request and response                                                                                                                           |
+| ----------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /api/chats`                    | Array of `{id,title,model,source_mode,agent,created_at,updated_at}`, ordered by latest activity, then ID.                                      |
 | `POST /api/chats`                   | Optional `title` and source-scope union; returns the chat summary. Uses the account's default chat model when set, else the workspace default. |
-| `GET /api/chats/:id`                | Summary, sources, bounded history page, and active run; accepts `limit` and `before_message_id`.        |
-| `PATCH /api/chats/:id`              | Exactly one of `{"title":"..."}` or `{"model":"..."}`; returns the updated summary.                     |
-| `PUT /api/chats/:id/sources`        | Source-scope union; returns `{source_mode,sources}`.                                                    |
-| `DELETE /api/chats/:id`             | Returns `{"ok":true}`; `409` while the chat has an active run.                                          |
-| `POST /api/chats/:id/messages`      | `{"content":"..."}`; SSE contract above.                                                                |
-| `DELETE /api/chats/:id/runs/:runId` | Cancellation contract above.                                                                            |
+| `GET /api/chats/:id`                | Summary, sources, bounded history page, and active run; accepts `limit` and `before_message_id`.                                               |
+| `PATCH /api/chats/:id`              | Exactly one of `{"title":"..."}` or `{"model":"..."}`; returns the updated summary.                                                            |
+| `PUT /api/chats/:id/sources`        | Source-scope union; returns `{source_mode,sources}`.                                                                                           |
+| `DELETE /api/chats/:id`             | Returns `{"ok":true}`; `409` while the chat has an active run.                                                                                 |
+| `POST /api/chats/:id/messages`      | `{"content":"..."}`; SSE contract above.                                                                                                       |
+| `DELETE /api/chats/:id/runs/:runId` | Cancellation contract above.                                                                                                                   |
 
 Titles are trimmed and must contain 1–80 Unicode characters. An omitted title
 starts as `New chat` and becomes the first message's first 80 characters;
@@ -423,11 +483,13 @@ scope explicitly.
 - `GET /api/preferences` → `{default_chat_model: string|null}` (requireAuth)
 - `PATCH /api/preferences` → body `{default_chat_model: string|null}`; returns
   the stored value. Shape-validated only (trimmed, 1–200 characters, or
-  `null`): the id is not checked against the live catalog, and a stale id
-  falls back to the workspace default at chat-creation time. The model of an
-  existing chat never changes implicitly. Model resolution precedence: the
-  composer's explicit choice > the account's `default_chat_model` > the
-  workspace `default_model`.
+  `null`): the id is not checked against the live catalog. API chat creation
+  stamps any non-null stored value even when it is stale or absent from current
+  discovery; the provider may then reject it at run time. Clear the preference
+  to `null` to restore the workspace default. The model of an existing chat
+  never changes implicitly. An explicit composer choice is applied with the
+  per-chat model patch before the first turn, so effective first-turn
+  precedence is: explicit chat model > account default > workspace default.
 
 `GET /api/settings` returns the effective OpenAI-compatible provider
 configuration:
@@ -503,7 +565,7 @@ while retaining an unmatched ledger.
 
 | Endpoint                         | Request and response                                                                                                      |
 | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| `GET /api/sources`               | Array of compact metadata with an optional `tabular` summary; no full dataset preview.                                    |
+| `GET /api/sources`               | The newest 200 compact metadata rows with an optional `tabular` summary; no full dataset preview.                         |
 | `POST /api/sources/upload`       | One multipart file, conventionally named `file`, without text fields; returns the reserved source and `processing: true`. |
 | `POST /api/sources/:id/reingest` | No body; returns the source and `processing: true` after reserving a new ingestion generation.                            |
 | `DELETE /api/sources/:id`        | Removes the owned source from the ledger and queues scoped artifact cleanup; returns `{"ok":true}`.                       |
@@ -529,8 +591,8 @@ Uploads stream to disk under an account/source UUID directory, with the byte
 limit enforced even if the multipart stream is truncated. The initial response
 means ingestion is queued, not complete. Poll `GET /api/sources` while a source
 is `index`; stop on `ready` or `error`. Transient processing failures are retried
-automatically. Reingestion uses the saved file or connector cache; use connector
-sync to download a fresh URL version.
+automatically, for at most three total attempts. Reingestion uses the saved file
+or connector cache; use connector sync to download a fresh URL version.
 
 On `error`, `meta` contains safe `error`, `error_code`, `error_detail`, and
 `error_stage` fields. The list entry also includes
@@ -580,7 +642,8 @@ to lowercase, and must be unique within the account. `config.url` is an HTTP(S)
 URL of at most 2,000 characters, without embedded credentials; fragments are
 discarded. A collision with an existing source/table returns `409`.
 
-List and creation responses contain `id`, `account_id`, `name`, `type`,
+The connector list returns the newest 200 rows. List and creation responses
+contain `id`, `account_id`, `name`, `type`,
 `config`, `target_table`, `last_sync`, `sync_status`, `sync_error`,
 `created_at`, and `schedule`. Note that the input field is `display_name`, but
 the response field is `name`. Sync success returns
@@ -600,7 +663,7 @@ authoritative for the underlying rows. Deleting a connector deletes its
 schedule automations and history with it.
 
 `GET /api/connectors/:id/syncs?limit<=50` returns that connector's bounded,
-content-free sync history, newest first:
+content-free sync history, newest first (default 20):
 `{id,trigger,outcome,detail,started_at,finished_at}` with `trigger` in
 `create|manual|scheduled`, `outcome` in `succeeded|failed|skipped`, and
 `detail` carrying only safe runner reason strings.
@@ -623,17 +686,17 @@ while it is `index`.
 
 ### Reports and charts
 
-| Endpoint                    | Response                                                                                                    |
-| --------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| `GET /api/reports`          | Array of `{id,title,subtitle,chat_id,chat_title,created_at,updated_at,version,supersedes}`, newest first; no filesystem paths or payloads. |
-| `GET /api/reports/:id`      | `{id,title,subtitle,created_at,updated_at,has_html,has_pdf,version,supersedes}` plus the stored normalized `payload` when one was captured. |
-| `PATCH /api/reports/:id`    | Body `{title}` (1–200 chars); returns the renamed report DTO.                                               |
-| `GET /api/reports/:id/html` | Self-contained `text/html`.                                                                                 |
-| `GET /api/reports/:id/pdf`  | `application/pdf` attachment with a `%PDF-` signature.                                                      |
-| `DELETE /api/reports/:id`   | `{"ok":true}`, or `503 {"error":"report cleanup deferred"}` if physical cleanup must retry.                 |
-| `GET /api/charts`           | Array of `{id,run_id,chat_id,title,kind,created_at}` for published charts, newest first, bounded to 200; no spec echo or PNG bytes. |
-| `GET /api/charts/:id`       | `{id,spec,echarts,png_base64}`.                                                                             |
-| `POST /api/charts/:id/png`  | No body; JSON `{png_base64}`, not raw PNG bytes.                                                            |
+| Endpoint                    | Response                                                                                                                                                                                                                        |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /api/reports`          | Array of `{id,title,subtitle,chat_id,chat_title,created_at,updated_at,version,supersedes}`, newest first; no filesystem paths or payloads.                                                                                      |
+| `GET /api/reports/:id`      | `{id,title,subtitle,created_at,updated_at,has_html,has_pdf,version,supersedes}`; owner detail adds `payload` when available. Shared detail currently adds both `shared_by_account:true` and `payload` — the known defect above. |
+| `PATCH /api/reports/:id`    | Body `{title}` (1–200 chars); returns the renamed report DTO.                                                                                                                                                                   |
+| `GET /api/reports/:id/html` | Owner-only today: self-contained `text/html`; shared recipients currently receive `404`.                                                                                                                                        |
+| `GET /api/reports/:id/pdf`  | Owner-only today: `application/pdf` attachment with a `%PDF-` signature; shared recipients currently receive `404`.                                                                                                             |
+| `DELETE /api/reports/:id`   | `{"ok":true}`, or `503 {"error":"report cleanup deferred"}` if physical cleanup must retry.                                                                                                                                     |
+| `GET /api/charts`           | Array of `{id,run_id,chat_id,title,kind,created_at}` for published charts, newest first, bounded to 200; no spec echo or PNG bytes.                                                                                             |
+| `GET /api/charts/:id`       | `{id,spec,echarts,png_base64}`.                                                                                                                                                                                                 |
+| `POST /api/charts/:id/png`  | No body; JSON `{png_base64}`, not raw PNG bytes.                                                                                                                                                                                |
 
 Reports carry per-chat lineage: the first published report for a chat is
 `version 1`; each later report the agent creates in the same chat takes the
@@ -641,8 +704,8 @@ next version and names the report it `supersedes`. Versions count published
 reports only — pending artifacts from failed or discarded runs never join the
 chain — and superseded reports are never deleted automatically. The stored
 payload is the normalized report document (sections, resolved chart specs,
-tables); it is omitted when it exceeded the capture bound and is never included
-in list responses.
+tables); it is omitted when its serialized JSON exceeds 400,000 characters and
+is never included in list responses.
 
 The agent's `render_chart` and `create_report` tools create artifacts; there are
 no public creation endpoints. Charts/reports remain private to their pending
@@ -664,8 +727,9 @@ The canonical chart spec has `type`, `title`, `subtitle`, `categories`, `series`
 `items`, `x_label`, and `y_label`. Supported types are `line`, `bar`, `area`,
 `scatter`, `pie`, and `donut`. Cartesian charts use string categories and series
 `{name,data,color}` with matching lengths. Pie/donut charts use
-`{name,value,color}` items with nonnegative values and a positive total. Colors
-are canonical six-digit hex values; numeric values are finite and bounded.
+`{name,value,color}` items with nonnegative values and a positive total. Stored
+colors are canonical six-digit hex values; missing or invalid input colors use
+the Borealis palette. Numeric values are finite and bounded.
 [charts.ts](../server/src/data/charts.ts) is the shared contract for stored
 charts, the UI, report HTML, and both static renderers.
 
@@ -684,6 +748,11 @@ HTTP endpoints:
 | `create_report` | Stages at most one report per run, using only charts owned by the same run.                                    |
 | `fetch_url`     | Fetches a public URL explicitly present in the current user message, independently of stored-source selection. |
 
+Agent web fetches discard fragments, reject URL credentials and non-default
+ports, pin DNS to public addresses, and revalidate every redirect. An HTTPS URL
+cannot redirect to HTTP; private, loopback, link-local, and otherwise unsafe
+destinations are denied.
+
 Tabular sources retain the full registered dataset for SQL, while ingestion
 embeds a bounded preview of up to 40 rows. Retrieval is not an exhaustive search
 of every dataset cell. Document extraction is also bounded; large documents can
@@ -701,12 +770,14 @@ DuckDB is reserved for bounded analytical queries over user tables.
 Stop Borealis before backup or restore. The SQLite file and LanceDB directory
 are one logical store and must be copied and restored together. Prefer copying
 the complete application-data directory, including SQLite WAL files, uploads,
-reports, `settings.json`, and `jwt.secret`. The desktop paths are
-`borealis.sqlite` and `lancedb/` beneath
-`~/Library/Application Support/Borealis/`; browser development uses the same
-names under `.borealis/` unless configured otherwise. Protect backups as private
-data because they can contain source content, provider credentials, and the JWT
-signing secret.
+reports, the default `models/` directory, `contained.json`, `settings.json`, and
+`jwt.secret`. The desktop stores these names beneath
+`~/Library/Application Support/Borealis/`; browser development uses
+`<repo>/.borealis/` unless configured otherwise. If `CONTAINED_DIR` relocates
+model weights outside the application-data directory, back up that directory
+separately; `contained.json` remains in the application-data root. Protect
+backups as private data because they can contain source content, provider
+credentials, model weights, and the JWT signing secret.
 
 Securely preserve and reapply operator environment overrides separately,
 especially `JWT_SECRET`, `EMBEDDING_DIM`, and provider/model settings. They are
@@ -727,43 +798,49 @@ Configurable defaults are shown in [server/.env.example](../server/.env.example)
 | `MAX_INGEST_CHUNKS`    | 2,500 chunks per generation   | 10,000                                                |
 
 All configured budgets must be positive integers. HTTP bodies have additional
-route limits: 2 KiB for auth, 4 KiB for chat patches, 8 KiB for connector
-creation, and 16 KiB for chat creation/source scope and Settings requests.
-Message transport permits JSON escaping within the decoded character limit;
-uploads allow a 64 KiB multipart envelope above the file limit. History metadata
-is capped at 32,000 characters per message.
+route limits: 1 KiB for Preferences and connector schedule changes, 2 KiB for
+auth, 4 KiB for chat patches, 8 KiB for connector creation, and 16 KiB for chat
+creation/source scope and Settings requests. Message JSON uses
+`MAX_MESSAGE_CHARS * 12 + 4,096` bytes so escape-heavy input can still reach the
+decoded character validator. Other JSON routes inherit the 20 MiB server
+ceiling while their schemas impose much smaller field limits. Uploads allow a
+64 KiB multipart envelope above the file limit. History metadata is capped at
+32,000 characters per message.
 
 The following fixed boundaries apply to internal operations. A tool result can
 be truncated even though the source itself is ready; consumers should honor
 `truncated`, `columns_truncated`, and returned-row counts rather than assuming a
 complete result.
 
-| Boundary                   | Limit                                                                                                                                                                                                                                                                               |
-| -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Connector download         | 50 MiB, 60 seconds, three redirects; oversized downloads fail.                                                                                                                                                                                                                      |
-| Agent web fetch            | 1,000,000 response bytes, 15 seconds, three redirects; tool text is capped at 12,000 characters.                                                                                                                                                                                    |
-| DuckDB query               | 30-second SQL execution deadline; 500 rows, 100 columns, 50,000 cells, 1,000,000 returned characters, and 10,000 characters per cell. Agent SQL is capped at 20,000 characters (worker ceiling: 100,000).                                                                           |
-| Dataset extraction         | Worker ceiling of 2,000 rows, 500 columns, 50,000 cells, 1,000,000 characters, and 10,000 characters per cell; the facade requests at most 100 rows and ingestion uses 40.                                                                                                          |
-| Dataset description        | Up to 100,000 profiled rows, 100 columns, and 128,000 returned characters; top values are computed for at most 20 columns.                                                                                                                                                          |
-| Registered dataset/catalog | 500 columns per table; 100 allowed tables per scope; eight cached scopes per account; 256,000 characters per catalog response.                                                                                                                                                      |
-| Agent execution            | Eight model iterations, eight tool calls per round, 24 calls per run, and 120 seconds per tool. Tool arguments are capped at 20,000 characters per call and 80,000 per model round; serialized tool responses added to the model conversation are capped at 12,000 characters each. |
-| Evidence display           | Eight passages, 800 characters per excerpt, and 6,000 aggregate characters.                                                                                                                                                                                                         |
-| Query display snapshots    | Three queries per assistant message; 32 columns and 100 rows per query, 500 cells and 30,000 serialized characters across snapshots.                                                                                                                                                |
-| Chart spec                 | 500 categories, 20 series, 100 pie items, 500 characters per label; finite numbers with magnitude at most `1e15`.                                                                                                                                                                   |
-| Report                     | One per run; 20 sections (50,000 characters each), 20 charts, eight tables (32 columns and 60 rows each). The agent additionally caps section text at 200,000 characters and tables at 1,000 cells/100,000 characters in aggregate.                                                 |
-| Static rendering           | PNG data URLs up to 8 MiB; Electron additionally validates a 16 MiB HTML IPC payload ceiling and a 90-second render-request deadline.                                                                                                                                               |
+| Boundary                   | Limit                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Connector download         | 50 MiB, 60 seconds, three redirects; oversized downloads fail.                                                                                                                                                                                                                                                                                                                                                                                   |
+| Contained-model download   | 64 GiB per file by default (`CONTAINED_MAX_DOWNLOAD_BYTES` accepts a positive safe integer); SHA-256 verification precedes atomic publication, and redirects are refused.                                                                                                                                                                                                                                                                        |
+| Agent web fetch            | 1,000,000 response bytes, 15 seconds, three redirects; tool text is capped at 12,000 characters.                                                                                                                                                                                                                                                                                                                                                 |
+| DuckDB query               | 30-second SQL execution deadline; 500 rows, 100 columns, 50,000 cells, 1,000,000 returned characters, and 10,000 characters per cell. Agent SQL is capped at 20,000 characters (worker ceiling: 100,000).                                                                                                                                                                                                                                        |
+| Dataset extraction         | Worker ceiling of 2,000 rows, 500 columns, 50,000 cells, 1,000,000 characters, and 10,000 characters per cell; the facade requests at most 100 rows and ingestion uses 40.                                                                                                                                                                                                                                                                       |
+| Dataset description        | Up to 100,000 profiled rows, 100 columns, and 128,000 returned characters; top values are computed for at most 20 columns.                                                                                                                                                                                                                                                                                                                       |
+| Registered dataset/catalog | 500 columns per table; 100 allowed tables per scope; eight cached scopes per account; four DuckDB threads, 512 MiB memory, 512 MiB temporary data per scope; 256,000 characters per catalog response.                                                                                                                                                                                                                                            |
+| Agent execution            | Eight model iterations, eight tool calls per round, 24 calls per run, 120 seconds per model request, and 120 seconds per tool. Each model request asks for at most 2,400 output tokens; streamed content and reasoning are each capped at 32,000 characters. Tool arguments are capped at 20,000 characters per call and 80,000 per model round; serialized tool responses added to the model conversation are capped at 12,000 characters each. |
+| Evidence display           | Eight passages, 800 characters per excerpt, and 6,000 aggregate characters.                                                                                                                                                                                                                                                                                                                                                                      |
+| Query display snapshots    | Three queries per assistant message; 32 columns and 100 rows per query, 500 cells and 30,000 serialized characters across snapshots.                                                                                                                                                                                                                                                                                                             |
+| Chart spec                 | 500 categories, 20 series, 100 pie items, 500 characters per label; finite numbers with magnitude at most `1e15`.                                                                                                                                                                                                                                                                                                                                |
+| Report                     | One per run; 20 sections (50,000 characters each), 20 charts, eight tables (32 columns and 60 rows each). The agent additionally caps section text at 200,000 characters and tables at 1,000 cells/100,000 characters in aggregate; stored normalized payload JSON is capped at 400,000 characters.                                                                                                                                              |
+| Static rendering           | PNG data URLs up to 8 MiB; Electron additionally validates a 16 MiB HTML IPC payload ceiling and a 90-second render-request deadline.                                                                                                                                                                                                                                                                                                            |
 
 File-processing ceilings also include the first 500 PDF pages; DOCX archives
 with at most 2,048 members, 100 MiB total expansion, 50 MiB per member, and a
 200:1 compression ratio; and XLSX archives with at most 10,000 members, 100 MiB
-total expansion, and 50 MiB per member. The XLSX first-sheet parser permits up to
-200,000 logical rows, 10,000 columns, and 2,000,000 cells, but the registered
-dataset still has the stricter 500-column limit.
+total expansion, 50 MiB per member, and 1,000,000 bytes per cell. Encrypted,
+ZIP64, and multi-disk XLSX files are rejected. The first-sheet parser permits
+up to 200,000 logical rows, 10,000 columns, 2,000,000 cells, and 100 MiB of CSV
+output, but the registered dataset still has the stricter 500-column limit.
 
 | HTTP status | Typical meaning                                                                                                        |
 | ----------- | ---------------------------------------------------------------------------------------------------------------------- |
 | `400`       | Malformed input, invalid settings/scope, or unavailable attachment IDs.                                                |
 | `401`       | Missing/invalid JWT or incorrect login credentials.                                                                    |
+| `403`       | Remote-provider payload route blocked until `REMOTE_EGRESS_CONSENT_REQUIRED` is acknowledged.                          |
 | `404`       | Unknown/unowned resource, pending artifact, or unavailable export.                                                     |
 | `409`       | Active chat run/sync, source mutation conflict, scope overflow, duplicate email/table, or environment-managed setting. |
 | `413`       | Request body or upload exceeds its size boundary.                                                                      |
