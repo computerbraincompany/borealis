@@ -6,10 +6,13 @@ so this active ledger lives separately in `advisor-plans/`.
 The product roadmap remains in `milestones/`; this ledger tracks audited
 engineering remediation and is not a second source of product direction.
 
-These plans cover all 23 vetted remediation findings from the 2026-08-30 deep
-audit. The four optional product-direction ideas (model qualification, managed
-embedding migrations, local OCR, and portable workspace archives) are not part
-of this remediation ledger and must not be implemented implicitly.
+Plans 001–023 cover the vetted remediation findings from the 2026-08-30 deep
+audit. Plans 024–037 are the operator-selected second wave from the 2026-08-31
+follow-up audit: ten additional remediation findings plus model-pair
+qualification, managed embedding reindexing, bounded local OCR, and portable
+workspace archives. Those four product-direction items are now explicit work;
+they must still preserve the same storage, egress, rendering, and desktop trust
+boundaries as the remediation plans.
 
 Each executor must read its plan completely, run the drift check first, honor
 the stated scope and STOP conditions, and report every skipped or failed gate.
@@ -43,7 +46,21 @@ requests it.
 | [020](020-type-connector-refresh-protocol-state.md) | Type connector-refresh protocol state in a durable table | P2 | L | 003, 006, 012, 014, 015, 016 | TODO |
 | [021](021-stabilize-exceljs-parser-boundary.md) | Stabilize the ExcelJS parser boundary | P3 | L | — | TODO |
 | [022](022-make-server-web-contracts-executable.md) | Make server/web API contracts executable | P3 | L | 007, 010, 014, 018 | TODO |
-| [023](023-refresh-current-documentation.md) | Refresh current documentation after all remediation | P2 | M | 001–022 | TODO |
+| [024](024-preserve-connector-cache-cleanup.md) | Preserve connector-cache cleanup until deletion is proven | P1 | M | — | TODO |
+| [025](025-record-automation-terminal-outcomes.md) | Record truthful automation terminal outcomes | P1 | S | — | TODO |
+| [026](026-authenticate-before-body-parsing.md) | Authenticate protected requests before body parsing | P1 | M | — | TODO |
+| [027](027-merge-streamed-tool-names.md) | Merge streamed tool names without dropping valid fragments | P1 | S | — | TODO |
+| [028](028-preserve-chart-provenance.md) | Preserve published chart provenance | P2 | S | — | TODO |
+| [029](029-cover-duckdb-query-preflight-deadlines.md) | Cover DuckDB query preflight with deadlines and cancellation | P2 | M | — | TODO |
+| [030](030-own-secondary-dialog-requests.md) | Give secondary dialogs exact asynchronous request ownership | P2 | M | — | TODO |
+| [031](031-paginate-resource-catalogs.md) | Paginate resource catalogs without hiding older records | P2 | L | — | TODO |
+| [032](032-harden-electron-fuses.md) | Harden Electron production fuses and code-loading policy | P2 | M | — | TODO |
+| [033](033-split-web-route-and-chart-bundles.md) | Split web route and chart bundles with enforced budgets | P2 | M | — | TODO |
+| [034](034-qualify-model-pairs.md) | Qualify configured chat and embedding model pairs | P2 | M | — | TODO |
+| [035](035-manage-embedding-reindex.md) | Manage embedding-model reindexing as a durable workspace operation | P1 | L | 034 | TODO |
+| [036](036-add-bounded-local-ocr.md) | Add bounded local OCR for image-only PDF pages | P2 | L | — | TODO |
+| [037](037-add-portable-workspace-archives.md) | Add verified portable workspace archives | P2 | L | — | TODO |
+| [023](023-refresh-current-documentation.md) | Refresh current documentation after all remediation | P2 | M | 001–022, 024–037 | TODO |
 
 Status values: `TODO`, `IN PROGRESS`, `DONE`, `BLOCKED` (with a one-line
 reason), or `REJECTED` (with a one-line rationale).
@@ -86,7 +103,33 @@ reason), or `REJECTED` (with a one-line rationale).
   in 010, route/runtime composition in 014, and auth throttling in 018; generated
   contracts must derive from repaired behavior rather than encode an old bug.
 - Plan 023 runs last and reconciles every operator, API, privacy, storage,
-  verification, and product-current-state document with the implemented tree.
+  verification, and product-current-state document with the implemented tree,
+  including the selected second-wave plans 024–037.
+- Plan 024 is independent of plan 011's upload-artifact correction, but must
+  land before plan 016 rewrites reconciliation and before plan 020 changes the
+  connector refresh protocol. Later execution of plan 011 must retain plan
+  024's connector-specific proof-of-absence behavior.
+- Plans 025, 027, 028, and 029 are small, independent correctness boundaries.
+  Land them before plan 004's vertical agent test so that test characterizes
+  truthful automation completion, supported stream chunking, chart lineage,
+  and the complete DuckDB deadline.
+- Plan 026 should precede plans 018 and 022. Authentication throttling must use
+  the final pre-parse hook placement, and generated contracts must document the
+  final per-route body budgets and error precedence.
+- Plan 031 must precede plan 022 so executable contracts are generated from the
+  paginated response shape. Plan 030 should land before or alongside that web
+  client migration so stale dialog responses cannot overwrite a newer page.
+- Plan 033 should precede plan 019 so the normal packaged lifecycle test proves
+  every lazy chunk is present and same-origin loadable. Plan 032 replaces the
+  packaged `ELECTRON_RUN_AS_NODE` dependency and should then be rechecked by
+  plan 019 rather than weakening a fuse for test convenience.
+- Plan 034 establishes the synthetic, content-free capability proof consumed by
+  plan 035. Plan 035 must not mix embedding identities inside a retrievable
+  corpus or consume schema numbers reserved by plans 006, 012, and 020.
+- Plans 036 and 037 are additive product surfaces. OCR stays local and bounded
+  at the extraction boundary. Workspace archives operate only with an exact
+  stopped-workspace ownership proof and never expose instance-wide secrets to
+  ordinary authenticated accounts.
 
 ## Repository verification contract
 
@@ -131,9 +174,10 @@ their supported host.
   updates only documents that claim to describe the current product or supported
   operation.
 
-## Deferred product direction
+## Selected product direction
 
-The audit also identified four separately selectable design/spike candidates:
-model-pair qualification, managed embedding reindex/migration, bounded local OCR,
-and verified portable workspace archives. They are deliberately excluded here
-because they add product scope rather than remediate existing defects.
+The four product-direction candidates from the first audit were explicitly
+selected on 2026-08-31 and now have shipping plans 034–037. Their presence in
+this engineering ledger does not move product intent out of `docs/VISION.md`;
+the plans define implementation and verification, while the vision remains the
+authoritative destination.

@@ -3,20 +3,20 @@
 > **Executor instructions**: This is the final documentation sweep. Follow the plan step by step, run every verification command, and confirm its expected result. Derive statements from the final source, schemas, scripts, and passing tests — completed plans are context, not proof. If a “STOP condition” occurs, stop and report; do not document intended or unverified behavior. When done, update only this plan’s status row in `advisor-plans/README.md` unless a reviewer told you they own the index.
 >
 > **Drift check (run first)**: `git diff --stat f1b9293..HEAD -- README.md AGENTS.md docs/API.md docs/VISION.md desktop/README.md server/.env.example milestones/README.md advisor-plans/README.md`
-> Extensive expected drift comes from plans 001–022. Confirm every dependency is `DONE`, then compare these “Current state” excerpts with the final files. Any unfinished dependency or undocumented material behavior is a STOP condition.
+> Extensive expected drift comes from plans 001–022 and 024–037. Confirm every dependency is `DONE`, then compare these “Current state” excerpts with the final files. Any unfinished dependency or undocumented material behavior is a STOP condition.
 
 ## Status
 
 - **Priority**: P2
 - **Effort**: M
 - **Risk**: MED
-- **Depends on**: `advisor-plans/001-partition-server-test-suites.md`, `advisor-plans/002-make-desktop-verification-source-current.md`, `advisor-plans/003-add-historical-migration-fixtures.md`, `advisor-plans/004-add-vertical-agent-integration-test.md`, `advisor-plans/005-bind-provider-credentials-to-origin.md`, `advisor-plans/006-bind-egress-consent-to-provider-revision.md`, `advisor-plans/007-restrict-contained-engine-control.md`, `advisor-plans/008-harden-contained-download-transport.md`, `advisor-plans/009-eliminate-unsolicited-ui-egress.md`, `advisor-plans/010-authorize-shared-report-artifacts.md`, `advisor-plans/011-preserve-source-cleanup-intents.md`, `advisor-plans/012-enforce-automation-target-ownership.md`, `advisor-plans/013-drain-automation-scheduler-on-shutdown.md`, `advisor-plans/014-create-owned-application-runtime.md`, `advisor-plans/015-shorten-vector-promotion-transaction.md`, `advisor-plans/016-bound-periodic-storage-reconciliation.md`, `advisor-plans/017-move-document-extraction-to-worker.md`, `advisor-plans/018-throttle-public-authentication.md`, `advisor-plans/019-add-packaged-electron-lifecycle-test.md`, `advisor-plans/020-type-connector-refresh-protocol-state.md`, `advisor-plans/021-stabilize-exceljs-parser-boundary.md`, `advisor-plans/022-make-server-web-contracts-executable.md`
+- **Depends on**: all behavioral plans `001`–`022` and `024`–`037`; see `advisor-plans/README.md` for the canonical dependency graph
 - **Category**: docs
 - **Planned at**: commit `f1b9293`, 2026-08-30
 
 ## Why this matters
 
-The remediation series changes operator commands, three consecutive SQLite schemas, egress and contained-engine authority boundaries, shutdown/recovery behavior, parser isolation, and executable API contracts. Documentation already mixes current inventory, product destination, completed milestones, historical plans, and manual verification gaps. Reconcile the seven current-reference documents only after every behavioral plan lands, so operators and future agents receive one accurate, non-secret account of what ships and what remains aspirational.
+The remediation series changes operator commands, three consecutive SQLite schemas, egress and contained-engine authority boundaries, shutdown/recovery behavior, parser isolation, executable API contracts, catalog shapes, model qualification and reindexing, local OCR, and workspace backup/restore. Documentation already mixes current inventory, product destination, completed milestones, historical plans, and manual verification gaps. Reconcile the seven current-reference documents only after every behavioral plan lands, so operators and future agents receive one accurate, non-secret account of what ships and what remains aspirational.
 
 ## Current state
 
@@ -70,12 +70,16 @@ For each row, read the completed plan for intent, then verify the final named so
 | 015–016 | Short promotion transactions with snapshot recheck; bounded periodic pages/external work, a finite complete startup-delete snapshot, and owned pump drainage | ingestion store/lifecycle tests, reconciliation owner/scheduler/snapshot tests |
 | 017–018 | Worker-thread PDF/DOCX event-loop isolation with timeout, V8 heap/stack ceilings, and existing parser budgets (not an RSS sandbox); public auth throttling before bcrypt with 429/`Retry-After` | extraction worker/import policy/tests; auth limiter/routes/OpenAPI tests |
 | 019–022 | Real packaged lifecycle smoke through bootstrap and authenticated `/api/me`, schema-v14 typed connector refresh/recovery plus final attempts-first repair indexes, exact guarded ExcelJS boundary, generated server/web contracts and stale check | desktop package scripts/CI, `v014.sql`/refresh store/query plans, manifests/policy, contract generator/scripts |
+| 024–029 | Proven connector-cache deletion, truthful automation terminal outcomes, pre-parse authentication/body budgets, lossless streamed tool names, retained chart lineage, and full DuckDB query deadlines | connector cleanup/repair, automation runner/history, auth hooks/routes, LLM stream merger, chart/run store, dataset worker and focused tests |
+| 030–033 | Exact dialog request ownership, bounded keyset catalogs, hardened Electron fuses/normal packaged native acceptance, and lazy route/chart chunks with enforced budgets | React views/hooks, catalog stores/routes/generated contracts, builder/fuse/package tests, Vite manifest/budget checks |
+| 034–035 | Explicit synthetic model-pair qualification and a durable, crash-recoverable whole-corpus embedding reindex/swap | qualification service/routes/UI, settings codecs, migration coordinator/private manifest, staged/live Lance indexes, startup recovery tests |
+| 036–037 | Bounded local macOS PDF OCR and encrypted, integrity-verified offline workspace archives with exact instance locking and recoverable restore | extraction worker/helper/package assets, archive codec/CLI/lock/store verifier and adversarial tests |
 
 ## Commands you will need
 
 | Purpose | Command | Expected on success |
 |---|---|---|
-| Dependency status | `node -e "const s=require('node:fs').readFileSync('advisor-plans/README.md','utf8');const open=s.split(/\r?\n/).filter(l=>/^\| \[\d{3}\]/.test(l)&&!/\| DONE \|$/.test(l)&&!/^\| \[023\]/.test(l));if(open.length){console.error('unfinished prerequisite plans');process.exit(1)}"` | exit 0; plans 001–022 are all `DONE` |
+| Dependency status | `node -e "const s=require('node:fs').readFileSync('advisor-plans/README.md','utf8');const open=s.split(/\r?\n/).filter(l=>/^\| \[\d{3}\]/.test(l)&&!/\| DONE \|$/.test(l)&&!/^\| \[023\]/.test(l));if(open.length){console.error('unfinished prerequisite plans');process.exit(1)}"` | exit 0; plans 001–022 and 024–037 are all `DONE` |
 | Tracked current references | `git ls-files --error-unmatch README.md AGENTS.md docs/API.md docs/VISION.md desktop/README.md server/.env.example milestones/README.md` | exit 0 and prints all seven maintained documentation paths with exact case |
 | Contract freshness | `pnpm contracts:check` | exit 0; generated web contracts are current and no files are written |
 | Environment example validation | `pnpm policy && pnpm --filter borealis-server exec vitest run src/tests/config.test.ts` | exit 0; policy and live configuration parsing cover `server/.env.example` |
@@ -104,7 +108,8 @@ For each row, read the completed plan for intent, then verify the final named so
 - `plans/**`: completed historical implementation specifications.
 - `milestones/M*.md`: completed milestone records.
 - `docs/cohere-north/**`: dated external research/proposed designs.
-- `advisor-plans/001-*.md` through `022-*.md`: immutable remediation handoffs.
+- `advisor-plans/001-*.md` through `022-*.md` and `024-*.md` through
+  `037-*.md`: completed implementation handoffs.
 - Adding environment knobs, API fields, commands, guarantees, roadmap work, or product claims not supported by final code and passing tests.
 - Live-model, signing/notarization, release-distribution, or model-quality verification.
 - Reading real `.env`, `settings.json`, `jwt.secret`, provider keys, tokens, user content, or database contents.
@@ -122,14 +127,17 @@ For each row, read the completed plan for intent, then verify the final named so
 
 Run the dependency-status command. Confirm the index dependency notes still reserve schema v12 for plan 006, v13 for plan 012, and v14 for plan 020. Confirm a clean working tree before documentation edits; if the reviewer has uncommitted work, STOP rather than mixing it into the sweep.
 
-Read all 22 completed plans, but build the final fact set from live code/tests:
+Read all 36 completed behavioral plans, but build the final fact set from live
+code/tests:
 
 - run `git ls-files --error-unmatch README.md AGENTS.md docs/API.md docs/VISION.md desktop/README.md server/.env.example milestones/README.md` to prove the seven maintained references are tracked with exact-case paths; use a separate unfiltered `git ls-files '*.md'` inventory when checking intentionally ignored tracked research;
 - read final root/Turbo/package scripts and CI before naming any command or claiming gate coverage;
 - read `LATEST_SQLITE_SCHEMA_VERSION`, v12/v13/v14 deltas, and migration tests before naming schema behavior;
 - read OpenAPI route schemas/generated contracts plus runtime validators before documenting requests/responses;
 - read configuration parsing/precedence and `server/.env.example` before describing environment values;
-- read owned runtime, scheduler, extraction, connector refresh, contained, report share, cleanup, and desktop acceptance tests before describing lifecycle/recovery/security;
+- read owned runtime, scheduler, extraction/OCR, connector refresh, contained,
+  report share, cleanup, model qualification/reindex, archive/lock, catalog, and
+  desktop acceptance tests before describing lifecycle/recovery/security;
 - never use historical plan prose as the sole evidence for a current claim.
 
 Run `pnpm contracts:check`, `pnpm policy`, and `pnpm verify` before writing. On the supported desktop host, also run the packaged lifecycle command. Record which commands actually passed in temporary notes outside the repository; do not capture logs containing dynamic values.
@@ -144,10 +152,15 @@ In `README.md`:
 - update the shipping feature inventory to include agents, libraries, citations, shares, automations/schedules, ambient status, preferences, and contained-model lifecycle without turning README into an API dump;
 - describe origin-bound provider credentials and consent in user language: remote provider changes require consent for that destination, and ingestion/chat/retrieval payloads are authorized at the final outbound boundary;
 - describe desktop-operator-only contained mutation and redacted local-path responses; browser accounts remain ordinary users;
-- replace stale verification coverage with exact post-001/002/004/019/022 commands and exclusions. Distinguish root `pnpm verify`, graphical renderer verification, packaged lifecycle/native checks, fixture-based vertical coverage, live-model analysis, and signing/notarization;
+- replace stale verification coverage with exact post-001/002/004/019/022/032/033/036/037 commands and exclusions. Distinguish root `pnpm verify`, graphical renderer verification, fuse/bundle checks, packaged lifecycle/native/OCR/archive checks, fixture-based vertical coverage, live-model analysis, and signing/notarization;
 - state that orderly shutdown rejects new contained downloads and joins active
   request/writer/handle work before the desktop reports stopped;
-- keep backup advice for the complete application-data directory and environment-managed configuration accurate after schemas v12–v14.
+- replace manual-copy-only backup guidance with the final offline encrypted
+  archive/verified restore workflow while preserving stopped-workspace and
+  relocated-path requirements;
+- describe model-pair qualification and managed embedding reindexing without
+  implying that reachability is compatibility or that migration can bypass
+  remote-egress consent.
 
 In `AGENTS.md`, update the source-of-truth command/invariant sections, not merely prose around them:
 
@@ -160,6 +173,12 @@ In `AGENTS.md`, update the source-of-truth command/invariant sections, not merel
 - short vector promotion transactions and bounded periodic/full startup reconciliation;
 - worker-thread PDF/DOCX parsing with a timeout, existing byte/archive/output budgets, and V8 heap/stack ceilings—explicitly not an OS-level RSS/native-allocation sandbox—and the exact guarded ExcelJS boundary;
 - generated API contract workflow and the rule that runtime parsers still validate untrusted JSON;
+- pre-parse authentication and per-route body limits, cursor-bounded catalogs,
+  exact async UI ownership, truthful terminal outcomes, stream merge behavior,
+  chart lineage, and complete query deadlines;
+- hardened Electron fuses and ASAR loading, lazy bundle budgets, synthetic
+  model qualification, crash-safe embedding reindex, bounded local OCR, and
+  exact-lock encrypted workspace archives;
 - documentation roles, including `advisor-plans/` as the remediation record, while `plans/` and research stay historical.
 
 Do not paste plan checklists into either document. State stable invariants and operator actions only.
@@ -179,11 +198,17 @@ Use the final OpenAPI document, route schemas, generated types, and route tests 
   reservation, shutdown drainage, and ordinary-account 403 behavior;
 - plan-010 shared report detail/HTML/PDF authorization and owner-only mutation;
 - durable automation ownership/cascades, scheduler shutdown semantics where API-relevant, and bounded generic history;
-- connector refresh public states/errors without exposing the internal cache paths represented by schema v14;
+- connector refresh public states/errors without exposing the internal cache paths represented by schema v14, including durable cache-deletion retry semantics;
+- paginated catalog request/response/cursor contracts and the intentional
+  pre-1.0 array-to-envelope break;
+- model qualification and reindex status/retry/cancel contracts, including
+  stable content-free result codes and `EMBEDDING_REINDEX_REQUIRED`;
+- local OCR availability/details and offline archive CLI boundaries without
+  exposing paths, manifest members, recognized text, secrets, or provider data;
 - exact parser/resource limits, noting CPU-heavy PDF/DOCX extraction is event-loop isolated in a worker with a timeout and V8 heap/stack ceilings while Buffers/native allocations lack a hard RSS cap; XLSX remains offline/streaming/guarded;
 - generated OpenAPI/client check commands where maintainers need them.
 
-Update `server/.env.example` only from live configuration parsing. Correct precedence/security comments made stale by plans 005–022, but do not add fixed auth-throttle limits, desktop capability claims, lifecycle-smoke flags, contract-generator temporary variables, or internal schema/state fields as operator environment options. Keep every credential placeholder empty/commented and never inspect a real value.
+Update `server/.env.example` only from live configuration parsing. Correct precedence/security comments made stale by plans 005–037, but do not add fixed auth-throttle limits, desktop capability claims, lifecycle-smoke flags, contract-generator temporary variables, test seams, archive passphrases, or internal schema/state fields as operator environment options. Keep every credential placeholder empty/commented and never inspect a real value.
 
 **Verify**: `pnpm contracts:check && pnpm policy && pnpm --filter borealis-server exec vitest run src/tests/config.test.ts && git diff --check HEAD -- docs/API.md server/.env.example` → exit 0; a manual endpoint/status/field comparison against generated contracts finds no documented field absent from code and no code-supported operator variable absent from the example. Inspect the `.env.example` diff manually for comment syntax, exact names accepted by the live parser, precedence comments, and blank credential placeholders.
 
@@ -194,6 +219,11 @@ Update `desktop/README.md` from the final plan-002 and plan-019 package scripts:
 - focused `test` is source-current; public `render:smoke` owns its build; aggregate `verify` builds once and runs the compiled renderer smoke;
 - `package:lifecycle:smoke` launches the actual unsigned arm64 packaged binary twice against one isolated profile and proves UI load, trusted bootstrap consumption, profile reuse, and graceful owned-runtime acknowledgment;
 - `package:native:smoke` remains a separate ABI/packaging check and does not launch the normal UI;
+- fuse inspection and packaged native acceptance use the normal hardened app
+  path and never depend on `ELECTRON_RUN_AS_NODE`, debug IPC, or relaxed ASAR
+  policy;
+- lazy route/chart chunks and the local OCR helper are copied into the packaged
+  runtime and remain same-origin/offline;
 - CI ordering and supported Apple Silicon macOS/graphical-session requirements are exact;
 - neither packaged smoke validates model quality, live provider calls, signing/notarization, DMG installation, or the full finance/report flow;
 - profile paths, copied runtime/native isolation, one-shot preload, renderer hardening, and signing behavior remain accurate.
@@ -206,7 +236,7 @@ Do not document the internal lifecycle test flag, its synthetic secret, temporar
 
 Edit `docs/VISION.md` surgically:
 
-- update only factual “today” inventory and stale future-tense claims for capabilities now proven shipped (agents, libraries, artifacts/shares, automations, citations, personal defaults, ambient locality, and contained model download/lifecycle);
+- update only factual “today” inventory and stale future-tense claims for capabilities now proven shipped (agents, libraries, artifacts/shares, automations, citations, personal defaults, ambient locality, contained model download/lifecycle, model qualification/reindex, local OCR, and portable workspace archives);
 - change “Share later,” “Automations, later,” and “A future Borealis may download…” wording so it no longer denies shipped substrate;
 - retain forward-looking ambitions such as richer reusable intelligence, human-review workflows, optional sandboxed code only after an OS-grade design, other desktops only with equivalent sandbox/packaging, and product-quality aspirations;
 - preserve principles, product thesis, model-topology distinctions, Horizon structure, and the explicit sentence that horizons are direction rather than backlog;
@@ -222,7 +252,8 @@ In `milestones/README.md`:
 
 - keep M01–M11 and every completed specification unchanged;
 - retain the distinction between vision, product milestone ledger, completed historical `plans/`, dated research, and the advisor remediation ledger;
-- do not convert plans 001–022 into new product milestones or imply an unwritten milestone exists;
+- do not convert plans 001–022 or 024–037 into new product milestones or imply
+  an unwritten milestone exists;
 - retain the 2026-08-29 live-model verification record exactly unless correcting an independently proven typo;
 - obtain the execution date with `date -u +%F` after the final commands pass, and add a concise remediation verification record dated with that exact output only for commands actually run in step 1/final verification. Never copy the plan's `Planned at` date into the verification record. Name fixture/mock/package scope and explicitly exclude unrun live-provider, signing, notarization, and release-distribution checks.
 
@@ -250,7 +281,7 @@ Run these stale-claim checks:
 
 ## Test plan
 
-- Dependency/status gate: every behavioral plan 001–022 is complete before prose changes.
+- Dependency/status gate: every behavioral plan 001–022 and 024–037 is complete before prose changes.
 - Executable contract check: API docs are compared with current schemas/generated client, not historical examples.
 - Full fixture/mock gate: current commands and internal invariants are proven by `pnpm verify`.
 - Packaged acceptance: desktop docs describe the actual post-plan-019 lifecycle/native commands and their exclusions.
@@ -261,7 +292,7 @@ Run these stale-claim checks:
 
 ## Done criteria
 
-- [ ] Plans 001–022 are `DONE`, their final focused tests pass, and no behavior is documented solely from a plan.
+- [ ] Plans 001–022 and 024–037 are `DONE`, their final focused tests pass, and no behavior is documented solely from a plan.
 - [ ] README, API, desktop guide, environment example, AGENTS, VISION, and milestone ledger agree on current commands and behavior.
 - [ ] Root `AGENTS.md` includes the new operator capability, schemas v12–v14, last-mile egress, scheduler drain, owned runtime, extraction worker, reconciliation/promotion, parser, and contract invariants.
 - [ ] `docs/VISION.md` clearly separates shipping inventory from destination/horizons and no longer calls shipped sharing/automation/contained capabilities future-only.
@@ -278,7 +309,7 @@ Run these stale-claim checks:
 
 Stop and report rather than guessing if:
 
-- Any plan 001–022 is not `DONE`, its final tests fail, or implementation differs materially from its target contract.
+- Any plan 001–022 or 024–037 is not `DONE`, its final tests fail, or implementation differs materially from its target contract.
 - The worktree is not clean before this documentation-only branch or contains changes not attributable to this plan.
 - Route schemas/generated types/runtime validation disagree about an API shape or status.
 - `LATEST_SQLITE_SCHEMA_VERSION` is not exactly 14 with v12/v13/v14 owned by plans 006/012/020 respectively.
