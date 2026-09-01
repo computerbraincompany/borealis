@@ -25,7 +25,7 @@ horizon, scoped so it can be verified without the next one.
 | --------------------------------- | ------- | ------------------------------------------------------------------------------------- | ------- |
 | [M01](M01-ambient-locality.md)    | 1       | Ambient locality — health, model presence, and egress state in the chrome             | DONE    |
 | [M02](M02-artifacts.md)           | 2       | Artifacts — report versions and lineage, stored payloads, and chart registry          | DONE    |
-| [M03](M03-egress-consent.md)      | 1+2     | Egress consent cards — fail-closed gate and consent UI for direct payload routes      | PARTIAL |
+| [M03](M03-egress-consent.md)      | 1+2     | Egress consent cards — fail-closed gate and consent UI for direct payload routes      | DONE    |
 | [M04](M04-libraries.md)           | 2       | Libraries — governed collections above a pile of uploads                              | DONE    |
 | [M05](M05-named-agents.md)        | 2       | Named agents — versioned instructions with write-once chat bindings                   | DONE    |
 | [M06](M06-contained-models.md)    | 1       | Contained-model lifecycle on macOS as a first-class mode                              | PARTIAL |
@@ -35,11 +35,14 @@ horizon, scoped so it can be verified without the next one.
 | [M10](M10-composer-instrument.md) | 1       | The composer as one instrument — libraries in the scope picker, answer typography     | DONE    |
 | [M11](M11-personal-defaults.md)   | 2       | Personal defaults — the account's own default chat model                              | DONE    |
 
-M03, M06, and M07 have shipped cores but remain partial: M03 needs consistent
-payload-class disclosures; M06 needs its Settings management panel and atomic
-config replacement plus engine-start hardening; M07 needs shared-report
-authorization, connector-sync consent remediation, and precise audit wording.
-The other written milestones are complete. New product scope receives M12
+M06 and M07 have shipped cores but remain partial: M06 needs its Settings
+management panel and atomic config replacement plus engine-start hardening;
+M07 needs shared-report authorization, connector-sync consent remediation, and
+precise audit wording. M03 closed its remaining disclosure-consistency work on
+2026-09-01: the consent card, sidebar strip, and Settings privacy text now
+render one shared payload-class constant
+(`web/src/lib/egressDisclosure.ts`). The other written milestones are
+complete. New product scope receives M12
 rather than turning the vision or historical plan archive into an implicit
 backlog; remediation may close the existing milestone that owns the contract.
 The operator-selected product slices in advisor plans 034–037 now ship as
@@ -75,6 +78,10 @@ Completed sequencing notes:
 
 ## Verification record
 
+- 2026-09-01: M03 closed — the consent card, sidebar strip, and Settings
+  privacy text now render one shared payload-class constant
+  (`web/src/lib/egressDisclosure.ts`); WorkspaceStatus, SettingsView, and
+  useEgressConsentGate suites green; README and docs/VISION.md aligned.
 - 2026-09-01: advisor plan wave 024–037 passed root `pnpm verify`, desktop
   `verify`, `package:unsigned`, packaged fuse/ASAR inspection, the packaged
   native/raster-OCR smoke, and the retained-entitlement matrix on Apple Silicon

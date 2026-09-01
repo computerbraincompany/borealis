@@ -28,6 +28,7 @@ import { useSystemHealth } from "@/hooks/useSystemHealth";
 import { useEgressAudit } from "@/hooks/useEgressAudit";
 import { clearSession, formatApiError, getUser, preferencesApi } from "@/lib/api";
 import { hasDesktopBridge } from "@/lib/desktopBootstrap";
+import { EGRESS_PAYLOAD_CLASSES } from "@/lib/egressDisclosure";
 import { cn } from "@/lib/utils";
 
 type SettingsSection = "system" | "models" | "appearance" | "account";
@@ -694,8 +695,9 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                             aria-hidden="true"
                           />
                           <p className="text-xs leading-5 text-muted-foreground">
-                            Remote providers receive your prompts and any retrieved document or data context needed to
-                            answer them. Review the provider’s data policy before saving.
+                            Remote providers receive the {EGRESS_PAYLOAD_CLASSES} under that provider's data policy.
+                            Parsing, SQL, storage, and report rendering stay on this machine. Review the provider's data
+                            policy before saving.
                           </p>
                         </div>
 

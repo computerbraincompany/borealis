@@ -54,7 +54,9 @@ describe("WorkspaceStatus", () => {
     expect(link).toHaveAttribute("href", "#/settings");
     expect(disclosure.closest("p")).toHaveAttribute(
       "title",
-      expect.stringContaining("Ingestion text, prompts, retrieval queries"),
+      expect.stringContaining(
+        "The upload and ingestion text, prompts, chat history, retrieval queries, and selected tool context",
+      ),
     );
   });
 

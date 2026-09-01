@@ -286,8 +286,8 @@ pasting a URL into a developer form.
 
 **Remote.** A hosted OpenAI-compatible API remains valid. It is never
 silent. The privacy boundary is already true and must stay productized:
-when a remote provider is configured, ingestion text, retrieval queries,
-prompts, chat history, and selected source/tool context leave the machine
+when a remote provider is configured, upload and ingestion text, prompts,
+chat history, retrieval queries, and selected tool context leave the machine
 under that provider’s policy. A source need not be attached to a chat for its
 ingestion text to be sent. Parsing, DuckDB, stores, and rendering remain local.
 Remote is a consent-gated choice with a standing badge, not a default that

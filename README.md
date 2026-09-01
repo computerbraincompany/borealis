@@ -190,9 +190,10 @@ operations without a restart.
 The workspace sidebar always shows where inference runs — **On this Mac**,
 **Private network**, or **Remote provider** — together with endpoint
 reachability and the configured chat model. When a remote provider is
-configured, the sidebar keeps a standing disclosure that ingestion text,
-prompts, retrieval queries, and selected tool context leave the machine under
-that provider's policy, linking to Settings. The snapshot comes from the
+configured, the sidebar keeps a standing disclosure that the upload and
+ingestion text, prompts, chat history, retrieval queries, and selected tool
+context leave the machine under that provider's policy, linking to Settings.
+The snapshot comes from the
 authenticated `GET /api/status` endpoint and never contains the endpoint URL,
 key, provider errors, or model lists.
 

@@ -1,5 +1,6 @@
 import { useWorkspaceStatus } from "@/hooks/useWorkspaceStatus";
 import type { ProviderLocality } from "@/lib/api";
+import { EGRESS_PAYLOAD_CLASSES } from "@/lib/egressDisclosure";
 import { cn } from "@/lib/utils";
 
 const LOCALITY_LABEL: Record<ProviderLocality, string> = {
@@ -16,7 +17,7 @@ const LOCALITY_DOT: Record<ProviderLocality, string> = {
 
 function localityHint(locality: ProviderLocality, containedManaged: boolean): string {
   if (locality === "remote") {
-    return "A remote provider is configured. Ingestion text, prompts, retrieval queries, and selected tool context leave this machine under that provider's policy.";
+    return `A remote provider is configured. The ${EGRESS_PAYLOAD_CLASSES} leave this machine under that provider's policy.`;
   }
   if (containedManaged) {
     return "The provider endpoint is managed by an environment override, so the contained engine cannot switch it.";

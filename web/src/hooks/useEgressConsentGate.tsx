@@ -3,9 +3,7 @@ import { AlertTriangle, ExternalLink } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { consentApi, isRemoteEgressConsentError, type RemoteEgressState } from "@/lib/api";
-
-const PAYLOAD_CLASSES =
-  "upload and ingestion text, prompts, chat history, retrieval queries, and selected tool context";
+import { EGRESS_PAYLOAD_CLASSES as PAYLOAD_CLASSES } from "@/lib/egressDisclosure";
 
 function EgressConsentDialog({
   state,

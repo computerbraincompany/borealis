@@ -657,7 +657,7 @@ describe("SettingsView", () => {
     const endpoint = await screen.findByLabelText("Chat endpoint URL");
     fireEvent.change(endpoint, { target: { value: "https://api.example.test" } });
     expect(
-      screen.getByText(/Remote providers receive your prompts and any retrieved document or data context/i),
+      screen.getByText(/Remote providers receive the upload and ingestion text, prompts, chat history/i),
     ).toBeInTheDocument();
 
     const lmStudio = screen.getByLabelText("LM Studio URL (optional)");

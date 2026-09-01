@@ -6,11 +6,13 @@ exact payload class, then returns the result to the same task.* Plus Horizon
 2's standing rule that a remote provider is "a choice with a badge, not a
 default that forgot to speak."
 
-**Status:** PARTIAL. Commits `98e3dee` (migration v4, consent routes, and the
-direct-route fail-closed gates) and `8a88e8b` (the web consent card with
-acknowledge-and-resume) shipped the core. The consent card, sidebar, and
-Settings disclosures no longer use identical payload-class wording, so the
-disclosure criterion below remains open.
+**Status:** DONE (2026-09-01). Commits `98e3dee` (migration v4, consent routes,
+and the direct-route fail-closed gates) and `8a88e8b` (the web consent card
+with acknowledge-and-resume) shipped the core; the disclosure-consistency
+remediation unified the payload-class wording: `web/src/lib/egressDisclosure.ts`
+holds the canonical constant consumed by the consent card, the sidebar strip,
+and the Settings privacy text, with tests asserting the identical list on all
+three surfaces.
 
 **Current wording drift (reviewed 2026-08-31):** the consent dialog names
 upload/ingestion text, prompts, chat history, retrieval queries, and selected
