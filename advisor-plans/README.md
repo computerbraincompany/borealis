@@ -10,9 +10,9 @@ Plans 001–023 cover the vetted remediation findings from the 2026-08-30 deep
 audit. Plans 024–037 are the operator-selected second wave from the 2026-08-31
 follow-up audit: ten additional remediation findings plus model-pair
 qualification, managed embedding reindexing, bounded local OCR, and portable
-workspace archives. Those four product-direction items are now explicit work;
-they must still preserve the same storage, egress, rendering, and desktop trust
-boundaries as the remediation plans.
+workspace archives. That second wave was implemented across 2026-08-31 and
+2026-09-01 while preserving the same storage, egress, rendering, and desktop
+trust boundaries as the remediation plans.
 
 Each executor must read its plan completely, run the drift check first, honor
 the stated scope and STOP conditions, and report every skipped or failed gate.
@@ -22,59 +22,89 @@ requests it.
 
 ## Execution order and status
 
-| Plan | Title | Priority | Effort | Depends on | Status |
-|---|---|---:|---:|---|---|
-| [001](001-partition-server-test-suites.md) | Partition the server unit and integration test suites | P2 | S | — | TODO |
-| [002](002-make-desktop-verification-source-current.md) | Make every desktop verification command source-current | P2 | M | — | TODO |
-| [003](003-add-historical-migration-fixtures.md) | Add executable historical SQLite migration fixtures | P1 | M | — | TODO |
-| [004](004-add-vertical-agent-integration-test.md) | Add a vertical agent-turn integration test | P1 | L | 001 | TODO |
-| [005](005-bind-provider-credentials-to-origin.md) | Bind every provider credential to one endpoint origin | P1 | M | — | TODO |
-| [006](006-bind-egress-consent-to-provider-revision.md) | Bind egress consent and outbound calls to the current provider origin | P1 | L | 003, 005 | TODO |
-| [007](007-restrict-contained-engine-control.md) | Restrict contained-engine control to the desktop operator | P1 | L | 004, 005, 006 | TODO |
-| [008](008-harden-contained-download-transport.md) | Harden contained-model download transport | P1 | L | 007 | TODO |
-| [009](009-eliminate-unsolicited-ui-egress.md) | Eliminate unsolicited UI egress | P1 | M | — | TODO |
-| [010](010-authorize-shared-report-artifacts.md) | Authorize shared report artifacts consistently | P1 | S | — | TODO |
-| [011](011-preserve-source-cleanup-intents.md) | Preserve source cleanup intents until artifact removal is proven | P1 | S | — | TODO |
-| [012](012-enforce-automation-target-ownership.md) | Enforce automation target ownership in SQLite | P1 | M | 003, 006 | TODO |
-| [013](013-drain-automation-scheduler-on-shutdown.md) | Drain the automation scheduler before storage shutdown | P1 | M | 006 | TODO |
-| [014](014-create-owned-application-runtime.md) | Create an owned application runtime | P2 | L | 004, 007, 008, 009, 013 | TODO |
-| [015](015-shorten-vector-promotion-transaction.md) | Move vector verification outside the promotion write transaction | P1 | M | 004 | TODO |
-| [016](016-bound-periodic-storage-reconciliation.md) | Bound periodic storage reconciliation | P2 | L | 011, 014, 015 | TODO |
-| [017](017-move-document-extraction-to-worker.md) | Move document extraction to a bounded worker | P2 | L | 004 | TODO |
-| [018](018-throttle-public-authentication.md) | Throttle public authentication before password work | P2 | M | 007, 014 | TODO |
-| [019](019-add-packaged-electron-lifecycle-test.md) | Add packaged Electron lifecycle acceptance coverage | P2 | L | 002, 014 | TODO |
-| [020](020-type-connector-refresh-protocol-state.md) | Type connector-refresh protocol state in a durable table | P2 | L | 003, 006, 012, 014, 015, 016 | TODO |
-| [021](021-stabilize-exceljs-parser-boundary.md) | Stabilize the ExcelJS parser boundary | P3 | L | — | TODO |
-| [022](022-make-server-web-contracts-executable.md) | Make server/web API contracts executable | P3 | L | 007, 010, 014, 018 | TODO |
-| [024](024-preserve-connector-cache-cleanup.md) | Preserve connector-cache cleanup until deletion is proven | P1 | M | — | TODO |
-| [025](025-record-automation-terminal-outcomes.md) | Record truthful automation terminal outcomes | P1 | S | — | TODO |
-| [026](026-authenticate-before-body-parsing.md) | Authenticate protected requests before body parsing | P1 | M | — | TODO |
-| [027](027-merge-streamed-tool-names.md) | Merge streamed tool names without dropping valid fragments | P1 | S | — | TODO |
-| [028](028-preserve-chart-provenance.md) | Preserve published chart provenance | P2 | S | — | TODO |
-| [029](029-cover-duckdb-query-preflight-deadlines.md) | Cover DuckDB query preflight with deadlines and cancellation | P2 | M | — | TODO |
-| [030](030-own-secondary-dialog-requests.md) | Give secondary dialogs exact asynchronous request ownership | P2 | M | — | TODO |
-| [031](031-paginate-resource-catalogs.md) | Paginate resource catalogs without hiding older records | P2 | L | — | TODO |
-| [032](032-harden-electron-fuses.md) | Harden Electron production fuses and code-loading policy | P2 | M | — | TODO |
-| [033](033-split-web-route-and-chart-bundles.md) | Split web route and chart bundles with enforced budgets | P2 | M | — | TODO |
-| [034](034-qualify-model-pairs.md) | Qualify configured chat and embedding model pairs | P2 | M | — | TODO |
-| [035](035-manage-embedding-reindex.md) | Manage embedding-model reindexing as a durable workspace operation | P1 | L | 034 | TODO |
-| [036](036-add-bounded-local-ocr.md) | Add bounded local OCR for image-only PDF pages | P2 | L | — | TODO |
-| [037](037-add-portable-workspace-archives.md) | Add verified portable workspace archives | P2 | L | — | TODO |
-| [023](023-refresh-current-documentation.md) | Refresh current documentation after all remediation | P2 | M | 001–022, 024–037 | TODO |
+| Plan                                                   | Title                                                                 | Priority | Effort | Depends on                        | Status |
+| ------------------------------------------------------ | --------------------------------------------------------------------- | -------: | -----: | --------------------------------- | ------ |
+| [001](001-partition-server-test-suites.md)             | Partition the server unit and integration test suites                 |       P2 |      S | —                                 | TODO   |
+| [002](002-make-desktop-verification-source-current.md) | Make every desktop verification command source-current                |       P2 |      M | —                                 | TODO   |
+| [003](003-add-historical-migration-fixtures.md)        | Add executable historical SQLite migration fixtures                   |       P1 |      M | 031                               | TODO   |
+| [004](004-add-vertical-agent-integration-test.md)      | Add a vertical agent-turn integration test                            |       P1 |      L | 001                               | TODO   |
+| [005](005-bind-provider-credentials-to-origin.md)      | Bind every provider credential to one endpoint origin                 |       P1 |      M | —                                 | TODO   |
+| [006](006-bind-egress-consent-to-provider-revision.md) | Bind egress consent and outbound calls to the current provider origin |       P1 |      L | 003, 005, 031                     | TODO   |
+| [007](007-restrict-contained-engine-control.md)        | Restrict contained-engine control to the desktop operator             |       P1 |      L | 004, 005, 006                     | TODO   |
+| [008](008-harden-contained-download-transport.md)      | Harden contained-model download transport                             |       P1 |      L | 007                               | TODO   |
+| [009](009-eliminate-unsolicited-ui-egress.md)          | Eliminate unsolicited UI egress                                       |       P1 |      M | —                                 | TODO   |
+| [010](010-authorize-shared-report-artifacts.md)        | Authorize shared report artifacts consistently                        |       P1 |      S | —                                 | TODO   |
+| [011](011-preserve-source-cleanup-intents.md)          | Preserve source cleanup intents until artifact removal is proven      |       P1 |      S | —                                 | TODO   |
+| [012](012-enforce-automation-target-ownership.md)      | Enforce automation target ownership in SQLite                         |       P1 |      M | 003, 006, 031                     | TODO   |
+| [013](013-drain-automation-scheduler-on-shutdown.md)   | Drain the automation scheduler before storage shutdown                |       P1 |      M | 006                               | TODO   |
+| [014](014-create-owned-application-runtime.md)         | Create an owned application runtime                                   |       P2 |      L | 004, 007, 008, 009, 013           | TODO   |
+| [015](015-shorten-vector-promotion-transaction.md)     | Move vector verification outside the promotion write transaction      |       P1 |      M | 004                               | TODO   |
+| [016](016-bound-periodic-storage-reconciliation.md)    | Bound periodic storage reconciliation                                 |       P2 |      L | 011, 014, 015                     | TODO   |
+| [017](017-move-document-extraction-to-worker.md)       | Move document extraction to a bounded worker                          |       P2 |      L | 004, 036                          | TODO   |
+| [018](018-throttle-public-authentication.md)           | Throttle public authentication before password work                   |       P2 |      M | 007, 014                          | TODO   |
+| [019](019-add-packaged-electron-lifecycle-test.md)     | Add packaged Electron lifecycle acceptance coverage                   |       P2 |      L | 002, 014, 032, 033, 036           | TODO   |
+| [020](020-type-connector-refresh-protocol-state.md)    | Type connector-refresh protocol state in a durable table              |       P2 |      L | 003, 006, 012, 014–016, 031       | TODO   |
+| [021](021-stabilize-exceljs-parser-boundary.md)        | Stabilize the ExcelJS parser boundary                                 |       P3 |      L | —                                 | TODO   |
+| [022](022-make-server-web-contracts-executable.md)     | Make server/web API contracts executable                              |       P3 |      L | 007, 010, 014, 018, 031, 034, 035 | TODO   |
+| [024](024-preserve-connector-cache-cleanup.md)         | Preserve connector-cache cleanup until deletion is proven             |       P1 |      M | —                                 | DONE   |
+| [025](025-record-automation-terminal-outcomes.md)      | Record truthful automation terminal outcomes                          |       P1 |      S | —                                 | DONE   |
+| [026](026-authenticate-before-body-parsing.md)         | Authenticate protected requests before body parsing                   |       P1 |      M | —                                 | DONE   |
+| [027](027-merge-streamed-tool-names.md)                | Merge streamed tool names without dropping valid fragments            |       P1 |      S | —                                 | DONE   |
+| [028](028-preserve-chart-provenance.md)                | Preserve published chart provenance                                   |       P2 |      S | —                                 | DONE   |
+| [029](029-cover-duckdb-query-preflight-deadlines.md)   | Cover DuckDB query preflight with deadlines and cancellation          |       P2 |      M | —                                 | DONE   |
+| [030](030-own-secondary-dialog-requests.md)            | Give secondary dialogs exact asynchronous request ownership           |       P2 |      M | —                                 | DONE   |
+| [031](031-paginate-resource-catalogs.md)               | Paginate resource catalogs without hiding older records               |       P2 |      L | —                                 | DONE   |
+| [032](032-harden-electron-fuses.md)                    | Harden Electron production fuses and code-loading policy              |       P2 |      M | —                                 | DONE   |
+| [033](033-split-web-route-and-chart-bundles.md)        | Split web route and chart bundles with enforced budgets               |       P2 |      M | —                                 | DONE   |
+| [034](034-qualify-model-pairs.md)                      | Qualify configured chat and embedding model pairs                     |       P2 |      M | —                                 | DONE   |
+| [035](035-manage-embedding-reindex.md)                 | Manage embedding-model reindexing as a durable workspace operation    |       P1 |      L | 034                               | DONE   |
+| [036](036-add-bounded-local-ocr.md)                    | Add bounded local OCR for image-only PDF pages                        |       P2 |      L | —                                 | DONE   |
+| [037](037-add-portable-workspace-archives.md)          | Add verified portable workspace archives                              |       P2 |      L | —                                 | DONE   |
+| [023](023-refresh-current-documentation.md)            | Refresh current documentation after all remediation                   |       P2 |      M | 001–022, 024–037                  | TODO   |
 
 Status values: `TODO`, `IN PROGRESS`, `DONE`, `BLOCKED` (with a one-line
 reason), or `REJECTED` (with a one-line rationale).
 
+### Second-wave completion record
+
+Plans 024–037 landed as one coordinated implementation wave. Evidence is kept
+next to each plan and includes focused server/web/desktop tests, adversarial
+storage and route cases, production bundle budgets, packaged Electron fuse/ASAR
+inspection, packaged raster-only PDF recognition through the unpacked JXA
+PDFKit/Vision helper, and encrypted archive round trips with offline
+SQLite/LanceDB/DuckDB verification. The repository-level acceptance
+contract remains the root `pnpm verify` gate plus the platform-specific
+packaging and live-provider checks named by the applicable plan; commit history
+is the authoritative record of those final command results.
+
+The completed wave passed root `pnpm verify`, desktop `verify`,
+`package:unsigned`, packaged fuse/ASAR inspection, the packaged native/raster-OCR
+smoke, and the deterministic retained-entitlement matrix on 2026-09-01 using
+the supported Apple Silicon macOS host. The live content-free qualification
+probe also passed against loopback LM Studio with the local Qwen 3.8/Nomic
+768-dimensional pair.
+
 ## Dependency notes
 
-- Plans 001–004 improve the verification foundation. They are recommended early;
-  urgent independent security fixes 005 and 009 need not wait for the larger
-  vertical harness, while 007 deliberately consumes plan 004's route test.
-- Schema work is serialized. Plan 006 adds schema v12, plan 012 adds v13, and
-  plan 020 adds v14. Plan 003 must land first; an executor must STOP instead of
-  renumbering or combining migrations when the expected predecessor is absent.
+- The table's `Depends on` column records ordering edges, including completed
+  predecessors when their sequencing or delivered behavior is required. Every
+  active plan also has a `Preserve completed baseline` entry for the applicable
+  Plans 024–037; that intentional overlap makes the shipped contract explicit,
+  not optional drift or work to be reimplemented.
+- Plans 001, 002, and 004 improve the verification foundation. They are
+  recommended early; urgent independent security fixes 005 and 009 need not
+  wait for the larger vertical harness, while 007 deliberately consumes plan
+  004's route test. Plan 003 now follows completed plan 031 so its historical
+  inventory includes the shipped v12 catalog-index migration.
+- Schema work is serialized. Completed plan 031 owns schema v12, plan 006 adds
+  v13, plan 012 adds v14, and plan 020 adds v15. Plan 003 must capture the
+  contiguous history through v12 before plan 006; an executor must STOP instead
+  of renumbering or combining migrations when the expected predecessor is absent.
 - Plan 005 establishes canonical provider identity. Plan 006 reuses that exact
-  identity for stored consent and last-mile outbound authorization.
+  identity for stored consent and last-mile outbound authorization while
+  preserving Plan 034's request-local qualifier, Plan 035's provider/index
+  migration snapshot, and Plan 036's immutable per-job ingestion embedding
+  session.
 - Plan 007 consumes plan 004's vertical composition test, plan 005's mutation-
   token-protected contained endpoint apply/restore contract, and plan 006's
   provider-revision/last-mile authorization behavior. It removes untrusted
@@ -90,18 +120,28 @@ reason), or `REJECTED` (with a one-line rationale).
   lifecycle, and plan 015's characterized SQLite/LanceDB promotion boundary
   before changing retry ordering and repair scheduling. It bounds returned
   pages/external work and freezes a finite startup-delete snapshot; plan 020's
-  v14 migration adds the exact attempts-first indexes that bound final SQLite
+  v15 migration adds the exact attempts-first indexes that bound final SQLite
   queue-selection scans.
+- Plan 017 moves extraction behind a worker without moving Plan 036's local OCR
+  child outside parent-owned cancellation/drain or re-OCRing meaningful text
+  pages.
 - Plan 018 follows plans 007 and 014 because its public-auth changes must retain
   the desktop-operator claim, exact bootstrap authorization boundary, and final
   explicit route/scheduler composition.
 - Plan 019 runs after the desktop command cleanup in 002 and the runtime
-  ownership work in 014 so it verifies the intended final lifecycle.
-- Plan 020 owns schema v14 after 003/006/012 and consumes the final application,
+  ownership work in 014 so it verifies the intended final lifecycle. It must
+  exercise Plan 032's fuse/environment/entitlement policy, Plan 033's complete
+  lazy graph and budgets, Plan 035's restart-required migration state, Plan
+  036's packaged raster OCR, and Plan 037's workspace lock.
+- Plan 020 owns schema v15 after 003/006/012/031 and consumes the final application,
   promotion, and bounded-reconciliation contracts from 014–016.
 - Plan 022 follows contained/API redaction in 007, shared-report authorization
   in 010, route/runtime composition in 014, and auth throttling in 018; generated
   contracts must derive from repaired behavior rather than encode an old bug.
+  Its inventory also includes Plan 025's skipped automation outcome, Plan 026's
+  pre-parse limits, Plan 028's chart lineage, Plan 030's signal-capable clients,
+  every Plan 031 catalog/status endpoint, Plan 034 qualification, and Plan 035
+  migration/settings routes.
 - Plan 023 runs last and reconciles every operator, API, privacy, storage,
   verification, and product-current-state document with the implemented tree,
   including the selected second-wave plans 024–037.
@@ -136,16 +176,17 @@ reason), or `REJECTED` (with a one-line rationale).
 Run commands from the repository root with Node.js 22.13 or newer 22.x and
 pnpm 10.x. `.nvmrc` pins Node.js 22.22.3.
 
-| Surface | Required command |
-|---|---|
-| Policy | `pnpm policy` |
-| Server typecheck/lint/format | `pnpm --filter borealis-server typecheck && pnpm --filter borealis-server lint && pnpm --filter borealis-server format:check` |
-| Server unit/integration | `pnpm --filter borealis-server test && pnpm --filter borealis-server test:integration` |
-| Web checks | `pnpm --filter borealis-web typecheck && pnpm --filter borealis-web test && pnpm --filter borealis-web lint && pnpm --filter borealis-web format:check && pnpm --filter borealis-web build` |
-| Generated API contract freshness (after plan 022) | `pnpm contracts:check` |
-| Desktop checks | `pnpm --filter borealis-desktop verify` |
-| Complete repository | `pnpm verify` |
-| Unsigned/package acceptance after plan 019 | `pnpm package:unsigned && pnpm --filter borealis-desktop package:lifecycle:smoke && pnpm --filter borealis-desktop package:native:smoke` |
+| Surface                                           | Required command                                                                                                                                                                                      |
+| ------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Policy                                            | `pnpm policy`                                                                                                                                                                                         |
+| Server typecheck/lint/format                      | `pnpm --filter borealis-server typecheck && pnpm --filter borealis-server lint && pnpm --filter borealis-server format:check`                                                                         |
+| Server unit/integration                           | `pnpm --filter borealis-server test && pnpm --filter borealis-server test:integration`                                                                                                                |
+| Web checks                                        | `pnpm --filter borealis-web typecheck && pnpm --filter borealis-web test && pnpm --filter borealis-web lint && pnpm --filter borealis-web format:check && pnpm --filter borealis-web build`           |
+| Generated API contract freshness (after plan 022) | `pnpm contracts:check`                                                                                                                                                                                |
+| Desktop checks                                    | `pnpm --filter borealis-desktop verify`                                                                                                                                                               |
+| Complete repository                               | `pnpm verify`                                                                                                                                                                                         |
+| Current packaged security/OCR acceptance          | `pnpm package:unsigned && pnpm --filter borealis-desktop package:native:smoke && pnpm --filter borealis-desktop package:entitlements:smoke`                                                           |
+| Unsigned/package acceptance after plan 019        | `pnpm package:unsigned && pnpm --filter borealis-desktop package:lifecycle:smoke && pnpm --filter borealis-desktop package:native:smoke && pnpm --filter borealis-desktop package:entitlements:smoke` |
 
 Individual plans narrow these gates during implementation and require the
 appropriate complete gate before completion. Playwright Chromium must be
@@ -177,7 +218,7 @@ their supported host.
 ## Selected product direction
 
 The four product-direction candidates from the first audit were explicitly
-selected on 2026-08-31 and now have shipping plans 034–037. Their presence in
-this engineering ledger does not move product intent out of `docs/VISION.md`;
-the plans define implementation and verification, while the vision remains the
-authoritative destination.
+selected and implemented across 2026-08-31 and 2026-09-01 through plans
+034–037. Their presence in this engineering ledger does not move product intent
+out of `docs/VISION.md`; the plans record implementation and verification, while
+the vision remains the authoritative destination.

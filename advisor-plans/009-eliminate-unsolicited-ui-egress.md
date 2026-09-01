@@ -3,7 +3,12 @@
 > **Executor instructions**: Follow this plan step by step. Run every verification command and confirm the expected result before moving to the next step. If anything in the "STOP conditions" section occurs, stop and report; do not improvise. When done, update the status row for this plan in `advisor-plans/README.md` unless a reviewer dispatched you and told you they maintain the index.
 >
 > **Drift check (run first)**: `git diff --stat f1b9293..HEAD -- web/index.html web/tailwind.config.js web/src server/src/serverApp.ts server/src/tests/serverApp.test.ts scripts/policy-check.mjs`
-> If any in-scope file changed since this plan was written, compare the "Current state" excerpts against the live code before proceeding. If behavior or test seams no longer match, STOP and report.
+> Plans 030, 031, and 033 intentionally changed request ownership, paged
+> catalogs, route-level lazy loading, chart loading, and bundle-budget policy
+> throughout `web/src`. Those are required baseline behavior, not drift: retain
+> every abort/token guard, pagination merge, lazy boundary, and offline chunk.
+> Compare other changes with the excerpts and STOP only on an unrelated material
+> shell-egress or CSP mismatch.
 
 ## Status
 
@@ -11,6 +16,7 @@
 - **Effort**: M
 - **Risk**: MED
 - **Depends on**: none
+- **Preserve completed baseline**: Plans 030, 031, and 033
 - **Category**: security
 - **Planned at**: commit `f1b9293`, 2026-08-30
 
@@ -76,13 +82,13 @@ CSP remains the runtime backstop.
 
 ## Commands you will need
 
-| Purpose | Command | Expected on success |
-|---|---|---|
-| Static policy | `pnpm policy` | exit 0; no external-shell-resource diagnostic |
-| Static-host tests | `pnpm --filter borealis-server exec vitest run src/tests/serverApp.test.ts` | all tests pass |
-| Server checks | `pnpm --filter borealis-server typecheck && pnpm --filter borealis-server lint && pnpm --filter borealis-server format:check` | exit 0, no errors or warnings |
-| Web checks | `pnpm --filter borealis-web typecheck && pnpm --filter borealis-web test && pnpm --filter borealis-web lint && pnpm --filter borealis-web format:check && pnpm --filter borealis-web build` | exit 0; tests pass and Vite builds the shell |
-| Final repository gate | `pnpm verify` | exit 0 and prints `ALL GATES GREEN` on a fully provisioned supported host |
+| Purpose               | Command                                                                                                                                                                                     | Expected on success                                                       |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
+| Static policy         | `pnpm policy`                                                                                                                                                                               | exit 0; no external-shell-resource diagnostic                             |
+| Static-host tests     | `pnpm --filter borealis-server exec vitest run src/tests/serverApp.test.ts`                                                                                                                 | all tests pass                                                            |
+| Server checks         | `pnpm --filter borealis-server typecheck && pnpm --filter borealis-server lint && pnpm --filter borealis-server format:check`                                                               | exit 0, no errors or warnings                                             |
+| Web checks            | `pnpm --filter borealis-web typecheck && pnpm --filter borealis-web test && pnpm --filter borealis-web lint && pnpm --filter borealis-web format:check && pnpm --filter borealis-web build` | exit 0; tests pass and Vite builds the shell                              |
+| Final repository gate | `pnpm verify`                                                                                                                                                                               | exit 0 and prints `ALL GATES GREEN` on a fully provisioned supported host |
 
 ## Scope
 

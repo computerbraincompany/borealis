@@ -2,6 +2,7 @@
 
 ## Status
 
+- **State**: DONE (2026-09-01)
 - **Priority**: P2
 - **Effort**: M
 - **Risk**: HIGH
@@ -20,15 +21,17 @@ native addon set.
 
 ## Target contract
 
-- Production fuses disable RunAsNode, `NODE_OPTIONS`/extra-CA environment
-  handling, CLI inspector arguments, and file-protocol extra privileges.
+- Production fuses disable RunAsNode, `NODE_OPTIONS` handling, CLI inspector
+  arguments, browser-process V8 snapshots, and file-protocol extra privileges.
+  A positive utility-process environment allowlist strips extra-CA, Node,
+  Electron debug, `DYLD_*`, and storage-path injection variables.
 - Embedded ASAR integrity validation and only-load-from-ASAR are enabled; cookie
   encryption is enabled for new profiles.
 - A packaged verification path launches the normal app/utility-process path and
   proves SQLite, LanceDB, and DuckDB native loading without re-enabling a fuse,
   debug IPC, Node integration, or arbitrary output.
-- Packaged application launch uses an allowlisted environment that strips Node,
-  Electron debug, and `DYLD_*` injection variables.
+- Packaged application launch adds only the exact shell-owned storage, bind,
+  static-UI, and render values to that allowlisted environment.
 - `disable-library-validation` and unsigned-executable-memory are removed only
   individually after signed/ad-hoc packaged tests prove V8 and every addon work.
   If proof is unavailable, retain the minimum unproven entitlement with a
@@ -65,10 +68,31 @@ native addon set.
 
 ## Done criteria
 
-- [ ] Dangerous production fuses have explicit hardened values.
-- [ ] Verification no longer relies on RunAsNode.
-- [ ] ASAR integrity/only-load policy is tested from the packaged app.
-- [ ] Every retained entitlement has recorded reproducible necessity.
+- [x] Dangerous production fuses have explicit hardened values.
+- [x] Verification no longer relies on RunAsNode.
+- [x] ASAR integrity/only-load policy is tested from the packaged app.
+- [x] Every retained entitlement has recorded reproducible necessity.
+
+## Completion record
+
+- A strict reviewed fuse policy disables production Node/inspector injection,
+  enables cookie encryption and ASAR integrity/only-load, and fails on new fuse
+  wire entries; the utility process now receives a positive environment list.
+- Packaged fuse/ASAR inspection and the real-executable native smoke run under
+  hostile environment/CLI inputs without relying on `RunAsNode`; desktop docs
+  record the necessity of every retained hardened-runtime entitlement. A
+  2026-09-01 ad-hoc hardened-runtime matrix over the same packaged app passed
+  with the exact retained `allow-jit`/`disable-library-validation` pair, failed
+  when either was removed, and passed without the App Sandbox-only
+  `network.client`; that unnecessary entitlement was removed. `codesign`
+  inspection confirmed the runtime flag and exact entitlements, and no
+  unsigned-executable-memory entitlement is present.
+- `pnpm --filter borealis-desktop package:entitlements:smoke` now reproduces
+  that matrix on copy-on-write disposable app bundles: the retained pair must
+  pass, while removing either retained entitlement must fail the packaged
+  native/OCR smoke. The Apple Silicon packaging job runs it immediately after
+  the packaged native smoke so fuse/entitlement regressions cannot merge as a
+  manual-only check.
 
 ## STOP conditions
 

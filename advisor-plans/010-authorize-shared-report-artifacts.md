@@ -3,7 +3,12 @@
 > **Executor instructions**: Follow this plan step by step. Run every verification command and confirm the expected result before moving to the next step. If a STOP condition occurs, stop and report; do not improvise. When complete, update this plan's row in `advisor-plans/README.md` unless the reviewer owns index maintenance.
 >
 > **Drift check (run first)**: `git diff --stat f1b9293..HEAD -- server/src/routes/reports.ts server/src/tests/reportChartRoutes.test.ts`
-> If either in-scope file changed, compare the excerpts below with live code before proceeding. A mismatched authorization or artifact-resolution path is a STOP condition.
+> Plans 026, 028, and 031 intentionally changed report body/auth boundaries,
+> chart provenance, and report/share catalog pagination. Preserve `onRequest`
+> authentication, derived body limits, published-chart `run_id`/`chat_id`, and
+> `{ items, next_cursor }` list envelopes while centralizing shared artifact
+> authorization. These changes are not a drift STOP; stop only for a different
+> authorization or artifact-resolution contract.
 
 ## Status
 
@@ -11,6 +16,7 @@
 - **Effort**: S
 - **Risk**: LOW
 - **Depends on**: none
+- **Preserve completed baseline**: Plans 026, 028, and 031
 - **Category**: bug
 - **Planned at**: commit `f1b9293`, 2026-08-30
 
@@ -24,13 +30,23 @@ Report sharing promises a recipient read-only access to the report detail, HTML,
 
   ```ts
   const accountId = getAccountId(req);
-  let row = await storageRuntime().runs.getPublishedReport(accountId, (req.params as any).id);
+  let row = await storageRuntime().runs.getPublishedReport(
+    accountId,
+    (req.params as any).id,
+  );
   let sharedByAccount = false;
   let ownerId = accountId;
   if (!row) {
-    ownerId = (await storageRuntime().runs.getReportShareOwner(accountId, (req.params as any).id)) ?? "";
+    ownerId =
+      (await storageRuntime().runs.getReportShareOwner(
+        accountId,
+        (req.params as any).id,
+      )) ?? "";
     if (ownerId) {
-      row = await storageRuntime().runs.getPublishedReport(ownerId, (req.params as any).id);
+      row = await storageRuntime().runs.getPublishedReport(
+        ownerId,
+        (req.params as any).id,
+      );
       sharedByAccount = row !== undefined;
     }
   }
@@ -42,7 +58,10 @@ Report sharing promises a recipient read-only access to the report detail, HTML,
 - The HTML endpoint repeats an owner-only lookup (`server/src/routes/reports.ts:86-103`):
 
   ```ts
-  const row = await storageRuntime().runs.getPublishedReport(getAccountId(req), (req.params as any).id);
+  const row = await storageRuntime().runs.getPublishedReport(
+    getAccountId(req),
+    (req.params as any).id,
+  );
   if (!row) return reply.code(404).send({ error: "report not found" });
   const artifact = await resolveReportArtifact({
     accountId: getAccountId(req),
@@ -64,14 +83,14 @@ Report sharing promises a recipient read-only access to the report detail, HTML,
 
 ## Commands you will need
 
-| Purpose | Command | Expected on success |
-|---|---|---|
-| Focused regression | `pnpm --filter borealis-server exec vitest run src/tests/reportChartRoutes.test.ts` | all report/chart route tests pass |
-| Server typecheck | `pnpm --filter borealis-server typecheck` | exit 0, no TypeScript errors |
-| Server lint | `pnpm --filter borealis-server lint` | exit 0, no warnings |
-| Server format check | `pnpm --filter borealis-server format:check` | exit 0 |
-| Full server tests | `pnpm --filter borealis-server test` | all tests pass |
-| Final repository gate | `pnpm verify` | exit 0 and prints `ALL GATES GREEN` on a provisioned supported host |
+| Purpose               | Command                                                                             | Expected on success                                                 |
+| --------------------- | ----------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
+| Focused regression    | `pnpm --filter borealis-server exec vitest run src/tests/reportChartRoutes.test.ts` | all report/chart route tests pass                                   |
+| Server typecheck      | `pnpm --filter borealis-server typecheck`                                           | exit 0, no TypeScript errors                                        |
+| Server lint           | `pnpm --filter borealis-server lint`                                                | exit 0, no warnings                                                 |
+| Server format check   | `pnpm --filter borealis-server format:check`                                        | exit 0                                                              |
+| Full server tests     | `pnpm --filter borealis-server test`                                                | all tests pass                                                      |
+| Final repository gate | `pnpm verify`                                                                       | exit 0 and prints `ALL GATES GREEN` on a provisioned supported host |
 
 ## Scope
 

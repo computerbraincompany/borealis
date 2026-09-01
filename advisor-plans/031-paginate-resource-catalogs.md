@@ -2,6 +2,7 @@
 
 ## Status
 
+- **State**: DONE (2026-09-01)
 - **Priority**: P2
 - **Effort**: L
 - **Risk**: MED
@@ -20,9 +21,10 @@ requests and React state grow with workspace age.
 
 - Catalog endpoints return `{ items, next_cursor }` with a default page of 50
   and a hard maximum of 100.
-- Cursors are bounded opaque base64url payloads containing only the endpoint's
-  deterministic ordering tuple. Malformed, oversized, cross-endpoint, or
-  wrong-version cursors return 400 and never widen tenant scope.
+- Cursors are bounded opaque base64url payloads containing only a version,
+  endpoint discriminator, and that endpoint's deterministic ordering tuple.
+  Malformed, oversized, cross-endpoint, or wrong-version cursors return 400 and
+  never widen tenant scope.
 - Pagination is keyset-based with stable tie-breaking IDs: `created_at,id`, or
   `updated_at,id` for chats.
 - No page skips or duplicates records that share timestamps. Concurrent newer
@@ -54,6 +56,10 @@ requests and React state grow with workspace age.
    cursors, tenant isolation, empty/final pages, and target selection beyond 100.
 6. Update API polling guidance so ingestion refreshes page one without dropping
    already loaded older rows.
+7. Poll transitional sources/connectors through an exact account-scoped status
+   batch capped at 50 unique UUIDs. Rotate a persistent queue so page-one
+   displacement, continuous inserts, or one failed batch cannot starve older
+   transitions; reconcile head and exact requests independently.
 
 ## Verification
 
@@ -62,10 +68,31 @@ requests and React state grow with workspace age.
 
 ## Done criteria
 
-- [ ] Every primary catalog is bounded and continuable.
-- [ ] Older sources/connectors remain manageable and selectable.
-- [ ] No consumer silently treats a page as the full account catalog.
-- [ ] Contracts/docs/tests use one response shape.
+- [x] Every primary catalog is bounded and continuable.
+- [x] Older sources/connectors remain manageable and selectable.
+- [x] No consumer silently treats a page as the full account catalog.
+- [x] Contracts/docs/tests use one response shape.
+
+## Completion record
+
+- Eight primary catalogs use one endpoint-bound opaque keyset cursor and the
+  `{items,next_cursor}` envelope with default 50 / maximum 100 page sizes.
+- Store query-plan/index tests, route pagination/security tests, runtime web
+  decoders, and every catalog consumer cover continuation, refresh races,
+  selectors, and explicit load-more controls.
+- Query-plan evidence required a schema migration: v12 now owns only the exact
+  account/order indexes for the seven non-chat catalog scans. Future active
+  plans reserve v13 for provider-bound consent, v14 for automation ownership,
+  and v15 for typed connector-refresh state.
+- Head refreshes keep the newest copy of a repeated ID, while continuation
+  merges preserve visible order but replace stale copies with the page's current
+  row. Source and connector polling uses authenticated `POST .../status`
+  endpoints with at most 50 unique IDs and `{items,missing_ids}` results. A
+  persistent round-robin queue survives prepended catalog churn and advances
+  after failures; head and exact results reconcile independently, so an older
+  queued source or syncing connector reaches terminal state even after more
+  than one page of newer inserts. Deterministic tests cover displacement,
+  failed-batch rotation, account isolation, and partial failure.
 
 ## STOP conditions
 

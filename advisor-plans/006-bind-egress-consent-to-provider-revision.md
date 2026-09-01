@@ -1,166 +1,153 @@
 # Plan 006: Bind egress consent and outbound calls to the current provider origin
 
 > **Executor instructions**: Execute this plan step by step. Preserve both the
-> early route gate and a same-snapshot gate at the actual model-call boundary.
-> Never log prompts, source text, endpoint URLs, credentials, or provider bodies.
-> Stop on any STOP condition. A reviewer maintains `advisor-plans/README.md`; do
-> not edit it.
+> early route/automation gate and an exact-snapshot authorization at every
+> workspace-content model boundary. Never log prompts, source text, recognized
+> OCR text, endpoint URLs, credentials, raw provider output, or provider error
+> bodies. Preserve Plans 034-036 exactly as described below; in particular, do
+> not turn qualification into durable consent, weaken embedding-migration
+> identity checks, or replace the durable ingestion embedding-session contract
+> with per-batch live Settings reads. Stop on any STOP condition. A reviewer
+> maintains `advisor-plans/README.md`; do not edit it.
 >
 > **Drift check (run first)**:
-> `git diff --stat f1b9293..HEAD -- server/src/db/migrations.ts server/src/db/stores/chatStore.ts server/src/settingsStore.ts server/src/egressPolicy.ts server/src/routes/consent.ts server/src/llm.ts server/src/agent.ts server/src/retrieve.ts server/src/ingestionEngine.ts server/src/ingest.ts server/src/automationRunner.ts server/src/tests/fixtures/sqlite server/src/tests/sqliteFoundation.test.ts server/src/tests/egressConsent.test.ts server/src/tests/modelRoutes.test.ts server/src/tests/sourceManagementRoutes.test.ts server/src/tests/agentModel.test.ts server/src/tests/ingestionEngine.test.ts server/src/tests/llm.test.ts server/src/tests/retrieve.test.ts server/src/tests/thinkSplitter.test.ts server/src/tests/connectorRoutes.test.ts README.md docs/API.md`
-> Plan 003 and Plan 005 are declared dependencies; drift caused only by those
-> plans is expected and must match their documented contracts. Other material
-> drift is a STOP condition.
+> `git diff --stat f1b9293..HEAD -- server/src/db/migrations.ts server/src/db/stores/chatStore.ts server/src/settingsStore.ts server/src/runtimeSettings.ts server/src/egressPolicy.ts server/src/egressAudit.ts server/src/routes/consent.ts server/src/routes/chats.ts server/src/routes/connectors.ts server/src/routes/models.ts server/src/routes/embeddingMigration.ts server/src/llm.ts server/src/agent.ts server/src/retrieve.ts server/src/ingestionEmbedding.ts server/src/ingestionEngine.ts server/src/ingest.ts server/src/embeddingMigration.ts server/src/automationRunner.ts server/src/tests/fixtures/sqlite server/src/tests/sqliteFoundation.test.ts server/src/tests/egressConsent.test.ts server/src/tests/modelRoutes.test.ts server/src/tests/sourceManagementRoutes.test.ts server/src/tests/agentModel.test.ts server/src/tests/ingestionEmbedding.test.ts server/src/tests/ingestionEngine.test.ts server/src/tests/embeddingMigration.test.ts server/src/tests/embeddingMigrationRoutes.test.ts server/src/tests/llm.test.ts server/src/tests/retrieve.test.ts server/src/tests/thinkSplitter.test.ts server/src/tests/connectorRoutes.test.ts server/src/tests/automations.test.ts README.md docs/API.md AGENTS.md`
+> Plans 003 and 005 are prerequisites. Completed Plans 031, 034, 035, and 036
+> are required baseline drift and must match the contracts recorded here. Any
+> other material drift is a STOP condition.
 
 ## Status
 
+- **State**: TODO
 - **Priority**: P1
 - **Effort**: L
 - **Risk**: HIGH
-- **Depends on**: `advisor-plans/003-add-historical-migration-fixtures.md`, `advisor-plans/005-bind-provider-credentials-to-origin.md`
+- **Depends on**: `advisor-plans/003-add-historical-migration-fixtures.md`, `advisor-plans/005-bind-provider-credentials-to-origin.md`, `advisor-plans/031-paginate-resource-catalogs.md`
+- **Preserve completed baseline**: Plans 031, 034, 035, and 036
 - **Category**: security
-- **Planned at**: commit `f1b9293`, 2026-08-30
+- **Planned at**: commit `f1b9293`, 2026-08-30; rebased onto the
+  2026-09-01 Plan 031/034/035/036 baseline
 
 ## Why this matters
 
-Consent is currently represented only by a timestamp. Once an account
-acknowledges any remote provider, the timestamp authorizes every later remote
-origin. There is also a time-of-check/time-of-use gap: routes gate before
-accepting a turn or upload, while the agent or background ingestion worker reads
-live settings later. Bind the durable acknowledgment to the canonical remote
-origin and make each payload-bearing model call authorize and use one immutable
-runtime snapshot.
+Durable consent is currently only a timestamp. Once an account acknowledges one
+remote provider, that scalar authorizes every later remote origin. Regular chat
+and retrieval calls also resolve live Settings inside the LLM helper after the
+route gate, so an origin can change between authorization and transport.
 
-## Current state
+Completed Plan 036 closed this race for queued ingestion in a narrow and correct
+way: each durable job creates one account-authorized embedding session from one
+immutable provider snapshot immediately before its first embedding transport,
+then every batch stays on that session. The session still accepts any non-null
+timestamp, however. Completed Plan 035 has the same residual defect in its
+affected-account migration checks. This plan binds those existing exact-snapshot
+flows to the acknowledged origin and closes the remaining chat, retrieval, and
+scheduled-connector gaps without reopening their architecture.
 
-- `server/src/db/migrations.ts:342-344` added only a timestamp in v4:
+## Current state after Plans 031 and 034-036
 
-  ```sql
-  ALTER TABLE users ADD COLUMN remote_egress_ack_at TEXT;
-  ```
-
-- `server/src/db/stores/chatStore.ts:483-502` reads that scalar and updates it
-  independently:
-
-  ```ts
-  async getRemoteEgressAckAt(accountIdValue: string): Promise<string | null> {
-    const row = await this.ledger.get<{ remote_egress_ack_at?: unknown }>(
-      "SELECT remote_egress_ack_at FROM users WHERE id=?",
-      [identity(accountIdValue, "account id")]
-    );
-    if (!row) throw new StoreNotFoundError("user");
-    const raw = row.remote_egress_ack_at;
-    return raw === null || raw === undefined ? null : requiredString(raw, "remote egress acknowledgment");
-  }
-  ```
-
-  The paired write is also currently timestamp-only
-  (`server/src/db/stores/chatStore.ts:494-501`):
-
-  ```ts
-  async acknowledgeRemoteEgress(accountIdValue: string, acknowledgedAtValue: string): Promise<void> {
-    const acknowledgedAt = inputString(acknowledgedAtValue, "remote egress acknowledgment", 64);
-    const updated = await this.ledger.run("UPDATE users SET remote_egress_ack_at=? WHERE id=?", [
-      acknowledgedAt,
-      identity(accountIdValue, "account id"),
-    ]);
-    if (updated.changes !== 1) throw new StoreNotFoundError("user");
-  }
-  ```
-
-- `server/src/egressPolicy.ts:37-60` obtains live settings separately from the
-  scalar acknowledgment and decides solely from `acknowledged_at`:
-
-  ```ts
-  async function stateFor(accountId: string, acknowledgedAt: string | null): Promise<RemoteEgressState> {
-    const settings = await getEffectiveLlmSettings();
-    const required = isRemoteProvider(settings.llmBaseUrl);
-    return {
-      required,
-      acknowledged_at: acknowledgedAt,
-      endpoint_host: required ? endpointHost(settings.llmBaseUrl) : null,
-    };
-  }
-
-  /** The consent-state view for the authenticated account. */
-  export async function remoteEgressState(accountId: string): Promise<RemoteEgressState> {
-    const acknowledgedAt = await storageRuntime().chats.getRemoteEgressAckAt(accountId);
-    return stateFor(accountId, acknowledgedAt);
-  }
-
-  /**
-   * The fail-closed egress gate for payload-bearing routes. It throws only when a
-   * remote provider is configured and this account has not acknowledged remote
-   * egress; loopback and private-network providers never gate.
-   */
-  export async function requireRemoteEgressConsent(accountId: string): Promise<void> {
-    const state = await remoteEgressState(accountId);
-    if (state.required && !state.acknowledged_at) throw new RemoteEgressConsentRequiredError();
-  }
-  ```
-
-- `server/src/routes/chats.ts:252` gates before `acceptChatTurn`, but
-  `server/src/agent.ts:249` calls `streamingChat` later. The latter resolves live
-  settings inside `server/src/llm.ts`, so an origin change can occur between the
-  gate and the outbound request.
-- `server/src/routes/sources.ts:103,164` gates before reserving ingestion, while
-  `server/src/ingestionEngine.ts:183-189` can embed staged source text much later:
-
-  ```ts
-  let embeddings: number[][];
-  try {
-    embeddings = await this.dependencies.embed(batch.map((chunk) => chunk.content));
-  } catch {
-    throw new IngestionStageError("EMBEDDING_UNAVAILABLE");
-  }
-  ```
-
-- `server/src/retrieve.ts:9-17` embeds the user's retrieval query without an
-  account-scoped authorization at the LLM boundary.
-- `server/src/automationRunner.ts:78-87` performs an early consent check before
-  accepting an automated turn. Keep it, but do not rely on it as the final gate.
-- `server/src/tests/egressConsent.test.ts:89-108` proves switching back to
-  loopback lifts the gate, but it does not switch from acknowledged remote A to
-  remote B.
-- `server/src/tests/connectorRoutes.test.ts:555-558` writes the timestamp column
-  directly; update direct test fixtures to include the bound origin after v12.
-- Settled behavior: loopback/private providers never gate; remote provider
-  payloads gate before request processing; acknowledgment takes effect without
-  restart; endpoint host may be returned to the authenticated account but never
-  logged.
+- Plan 031 owns SQLite schema v12 exclusively for the account/order catalog
+  indexes. This plan owns v13; v14 and v15 remain reserved for Plans 012 and 020.
+- Schema v4 added only `users.remote_egress_ack_at`. `ChatStore` reads and
+  writes that scalar independently, so no durable destination is remembered.
+- `egressPolicy.ts` reads the timestamp and live effective Settings separately.
+  `requireRemoteEgressConsent(accountId)` therefore proves only that _some_
+  remote provider was acknowledged.
+- Protected chat, upload, reingest, connector create/sync/schedule, embedding-
+  migration start, and agent-turn automation paths have early gates. Keep those
+  gates for fail-fast behavior and for preventing request-body or durable
+  mutation work when the mismatch is already known.
+- `streamingChat`, `chatOnce`, and `embed` do not require an account. Their
+  internal runtime resolver calls `getRuntimeSettings()`, and `retrieve` calls
+  the account-less embed helper. A Settings change after an early gate can
+  therefore retarget prompt/history/tool context or a retrieval query.
+- `createAuthorizedIngestionEmbeddingSession(accountId)` already captures one
+  `RuntimeSettingsSnapshot`, checks the owning account, builds one embedding
+  executor from that exact settings object, and returns it to
+  `IngestionExecutorDependencies.createEmbeddingSession`. Every durable batch,
+  including OCR-derived text, uses that session. Its only defect is the scalar
+  timestamp check.
+- Plan 035's migration captures a qualified baseline/target provider snapshot,
+  persists a content-free provider revision, validates live/staged/backup index
+  identity, and embeds through one target executor. Its bounded manifest-account
+  checks still query only `remote_egress_ack_at`.
+- Plan 034 qualification is intentionally different from workspace consent. A
+  remote draft requires an explicit request-local acknowledgment of the exact
+  canonical draft origin, sends only fixed synthetic probes, and persists no
+  consent. That contract is already complete.
+- Manual connector operations and schedule creation gate early, but a due
+  `connector_sync` automation can call `syncConnector` without a consent check.
+  The later ingestion session prevents model transport, but scheduled work must
+  also fail fast before it reserves or downloads a refresh.
+- Existing public behavior remains settled: loopback/private providers never
+  gate; the consent response is
+  `{required,acknowledged_at,endpoint_host}`; the stable denial is
+  `403 REMOTE_EGRESS_CONSENT_REQUIRED`; endpoint host may be returned to its
+  authenticated account or stored in the content-free audit ledger, but no
+  endpoint URL or host is logged.
 
 ## Target contract
 
-- SQLite schema v12 adds nullable `users.remote_egress_ack_origin` (canonical
-  bare origin, bounded text). Existing timestamp rows migrate with a null origin
-  and therefore become unacknowledged until the account consents again.
-- Acknowledgment writes timestamp and current canonical remote origin together.
-- Public state keeps `{required,acknowledged_at,endpoint_host}`. When the stored
-  origin does not match the current remote origin, `acknowledged_at` is `null`.
-- Consent for remote A does not authorize remote B. The single row remembers
-  only the most recently acknowledged remote origin: switching A → B without
-  acknowledging B leaves A stored, so returning to A reuses it; acknowledging B
-  replaces A, so a later return to A requires consent again. Loopback/private
-  remains ungated and does not overwrite the remembered remote origin.
-- Every payload-bearing chat or embedding call obtains one runtime settings
-  snapshot, validates that exact snapshot's origin against the account's stored
-  consent, and constructs/uses the client for the same snapshot. No second live
-  settings read may retarget the authorized payload.
-- Early route and automation gates remain for fail-fast/no-payload-processing
-  behavior. The immediate LLM gate closes races and protects background work.
+- SQLite schema v13 adds nullable `users.remote_egress_ack_origin`, containing
+  only the canonical bare remote origin and bounded to the Settings endpoint
+  limit. Existing timestamp rows migrate with a null origin and are therefore
+  unacknowledged for every remote provider until the account consents again.
+- A remote acknowledgment writes timestamp and canonical origin atomically.
+  Consent for remote A never authorizes remote B. The row remembers one most-
+  recently acknowledged remote origin: A -> B without acknowledging B remains
+  blocked; returning to A reuses A until B is acknowledged; acknowledging B
+  replaces A. A POST while the effective provider is loopback/private neither
+  overwrites the remembered pair nor emits a consent event.
+- Public state keeps its existing shape. For a remote provider,
+  `acknowledged_at` is non-null only when the stored timestamp and stored origin
+  match the exact current canonical origin. Loopback/private remains ungated
+  and may continue displaying the remembered timestamp for compatibility; its
+  `endpoint_host` remains null. The stored origin is never returned.
+- Durable consent is bound to an origin, not to a model or credential revision.
+  Runtime revision is instead the time-of-check/time-of-use authority: every
+  ordinary chat or retrieval transport captures one immutable
+  `RuntimeSettingsSnapshot`, authorizes a credential-free projection containing
+  that snapshot's revision and canonical origin, and obtains the SDK client for
+  that same snapshot. No second Settings read may retarget the authorized
+  payload.
+- Plan 005's credential-origin binding remains authoritative. The consent
+  policy may inspect only the credential-free origin/revision projection; it
+  must not persist, return, compare, or log credential material.
+- Durable ingestion preserves Plan 036's one-session-per-job contract. Session
+  creation authorizes the exact captured snapshot against the stored origin,
+  records the exact host, and constructs the existing operation-scoped
+  executor. It does not re-read live Settings per batch and does not replace
+  `createEmbeddingSession` with a direct `dependencies.embed(...)` API.
+- Embedding migration preserves Plan 035's qualification snapshot, provider-
+  revision admission check, immutable manifest, target executor, index identity
+  markers/receipts, and journaled swap. Every affected account must acknowledge
+  the exact migration provider origin, with a bounded fail-fast manifest check
+  at start/retry and a check for the accounts represented in each batch
+  immediately before transport. Qualification is evidence of capability, never
+  consent.
+- Early request and automation gates remain. A scheduled connector refresh with
+  missing or stale consent records a bounded generic skipped outcome before
+  connector reservation, download, or provider work. A refresh already queued
+  across a Settings change still relies on the exact durable ingestion session
+  before any extracted, tabular, or OCR-derived content reaches embeddings.
+- Content-free audit attribution uses the host from the exact authorized target
+  or persisted acknowledgment. No audit helper may re-read live Settings and
+  attribute an A-authorized operation to B.
 
 ## Commands you will need
 
-| Purpose | Command | Expected on success |
-|---|---|---|
-| Migration | `pnpm --filter borealis-server exec vitest run --config vitest.integration.config.ts src/tests/sqliteFoundation.test.ts` | exit 0; all historical fixtures reach v12 |
-| Consent store/policy | `pnpm --filter borealis-server exec vitest run src/tests/egressConsent.test.ts` | exit 0; a v11 timestamp without an origin is unacknowledged |
-| Route regression | `pnpm --filter borealis-server exec vitest run src/tests/modelRoutes.test.ts src/tests/sourceManagementRoutes.test.ts src/tests/connectorRoutes.test.ts` | exit 0 |
-| Agent/ingestion regression | `pnpm --filter borealis-server exec vitest run src/tests/agentModel.test.ts src/tests/ingestionEngine.test.ts src/tests/llm.test.ts src/tests/retrieve.test.ts src/tests/thinkSplitter.test.ts` | exit 0; mismatched origin makes no outbound call |
-| Full server tests | `pnpm --filter borealis-server test && pnpm --filter borealis-server test:integration` | exit 0 |
-| Static gates | `pnpm --filter borealis-server typecheck && pnpm --filter borealis-server lint && pnpm --filter borealis-server format:check` | exit 0 |
+| Purpose                     | Command                                                                                                                                                                                                | Expected on success                                                       |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------- |
+| Migration                   | `pnpm --filter borealis-server exec vitest run --config vitest.integration.config.ts src/tests/sqliteFoundation.test.ts`                                                                               | exit 0; all v1-v12 starts reach v13                                       |
+| Consent store/policy        | `pnpm --filter borealis-server exec vitest run src/tests/egressConsent.test.ts`                                                                                                                        | exit 0; a v12 timestamp without origin is unacknowledged                  |
+| Chat/retrieval boundary     | `pnpm --filter borealis-server exec vitest run src/tests/llm.test.ts src/tests/agentModel.test.ts src/tests/retrieve.test.ts src/tests/thinkSplitter.test.ts`                                          | exit 0; no unacknowledged destination receives a request                  |
+| Ingestion/migration         | `pnpm --filter borealis-server exec vitest run src/tests/ingestionEmbedding.test.ts src/tests/ingestionEngine.test.ts src/tests/embeddingMigration.test.ts src/tests/embeddingMigrationRoutes.test.ts` | exit 0; existing immutable sessions and migration snapshots remain intact |
+| Route/automation regression | `pnpm --filter borealis-server exec vitest run src/tests/modelRoutes.test.ts src/tests/sourceManagementRoutes.test.ts src/tests/connectorRoutes.test.ts src/tests/automations.test.ts`                 | exit 0; stale consent mutates nothing                                     |
+| Full server tests           | `pnpm --filter borealis-server test && pnpm --filter borealis-server test:integration`                                                                                                                 | exit 0                                                                    |
+| Static gates                | `pnpm --filter borealis-server typecheck && pnpm --filter borealis-server lint && pnpm --filter borealis-server format:check`                                                                          | exit 0                                                                    |
 
-Do not install, build, format, call a live provider, or inspect real credentials.
+Do not install dependencies, call a live provider, inspect real credentials, or
+run a broad formatter. Use generated loopback test providers only.
 
 ## Scope
 
@@ -168,37 +155,45 @@ Do not install, build, format, call a live provider, or inspect real credentials
 
 - `server/src/db/migrations.ts`
 - `server/src/db/stores/chatStore.ts`
-- `server/src/settingsStore.ts`
+- `server/src/settingsStore.ts` only if Plan 005's canonical, credential-free
+  origin helper needs to be exported
+- `server/src/runtimeSettings.ts`
 - `server/src/egressPolicy.ts`
+- `server/src/egressAudit.ts`
 - `server/src/routes/consent.ts`
+- `server/src/routes/chats.ts`
+- `server/src/routes/connectors.ts`
+- `server/src/routes/embeddingMigration.ts`
 - `server/src/llm.ts`
 - `server/src/agent.ts`
 - `server/src/retrieve.ts`
-- `server/src/ingestionEngine.ts`
-- `server/src/ingest.ts`
+- `server/src/ingestionEmbedding.ts`
+- `server/src/embeddingMigration.ts`
 - `server/src/automationRunner.ts`
-- `server/src/tests/fixtures/sqlite/v012.sql` (create)
-- `server/src/tests/sqliteFoundation.test.ts`
-- `server/src/tests/egressConsent.test.ts`
-- `server/src/tests/modelRoutes.test.ts`
-- `server/src/tests/sourceManagementRoutes.test.ts`
-- `server/src/tests/agentModel.test.ts`
-- `server/src/tests/ingestionEngine.test.ts`
-- `server/src/tests/llm.test.ts`
-- `server/src/tests/retrieve.test.ts`
-- `server/src/tests/thinkSplitter.test.ts`
-- `server/src/tests/connectorRoutes.test.ts`
+- `server/src/tests/fixtures/sqlite/v013.sql` (create)
+- the focused server tests named in the commands table
 - `README.md`
 - `docs/API.md`
+- `AGENTS.md`
 
 **Out of scope**:
 
-- Schema v13 or later, and any unrelated migration.
-- A consent history table, multi-provider credential vault, roles/admin UI, or
-  new public consent fields.
-- Changing which payload classes require consent.
+- Schema v14 or later, or any unrelated migration.
+- Replacing the single remembered origin with a consent history/set, adding a
+  revoke API, multi-provider credentials, roles/admin UI, or public consent
+  fields.
+- Changing which classes of workspace content require remote-provider consent.
 - Gating body-free model discovery/health probes.
-- Egress audit event payload expansion; events stay content-free.
+- Changing Plan 034's fixed synthetic qualification probes, request-local draft
+  acknowledgment, streamed tool-call validation, or vector checks.
+- Changing Plan 035's model-pair qualification, provider snapshot, embedding-
+  identity marker/receipt, staged-index, swap, or recovery contracts.
+- Changing OCR classification, helper execution, recognized-text budgets, or
+  packaging. OCR text inherits the ingestion session exactly like parsed text.
+- Replacing `IngestionExecutorDependencies.createEmbeddingSession`, adding a
+  direct per-batch production embed dependency, or re-reading live Settings for
+  every durable ingestion batch.
+- Expanding egress audit payloads; they remain content-free and best effort.
 
 ## Git workflow
 
@@ -207,237 +202,326 @@ Do not install, build, format, call a live provider, or inspect real credentials
   1. `feat(db): bind egress consent to provider origin`
   2. `fix(security): authorize exact provider snapshots`
   3. `test(server): cover provider consent races`
-- Do not push, open a PR, edit the plan index, or include endpoints/credentials
-  from a real environment.
+- Do not push, open a PR, edit the plan index, or include real endpoint or
+  credential values in commits.
 
 ## Steps
 
-### Step 1: Add schema v12 and its historical fixture
+### Step 1: Add schema v13 and its immutable historical fixture
 
-Set `LATEST_SQLITE_SCHEMA_VERSION` to 12. Add `SCHEMA_V12` with one nullable,
-bounded text column named `remote_egress_ack_origin` on `users`, and append it as
-version 12 to the ordered migration array. Do not backfill from the timestamp:
-there is no trustworthy historical origin, so null is the fail-closed migration.
+Require the starting `LATEST_SQLITE_SCHEMA_VERSION` to be exactly 12, with v12
+containing only Plan 031's catalog indexes. Add `SCHEMA_V13` with one nullable
+`users.remote_egress_ack_origin` column. Apply the same endpoint-length ceiling
+used by Settings with a column CHECK, and append exactly `{version: 13, ...}` to
+the ordered migration list. Do not backfill the column: the old timestamp does
+not identify a trustworthy destination.
 
-Add `server/src/tests/fixtures/sqlite/v012.sql` using Plan 003's exact immutable
-delta format. Extend the foundation assertions for the new column and confirm a
-v11 fixture user with a non-null old timestamp and null origin is not treated as
-acknowledged by policy after opening through v12.
+Add `server/src/tests/fixtures/sqlite/v013.sql` through Plan 003's immutable
+delta contract. Extend the foundation assertions for the column and prove that
+a v12 fixture user with a non-null timestamp upgrades with a null origin, while
+seeded historical data and foreign keys remain intact.
 
 **Verify**:
 `pnpm --filter borealis-server exec vitest run --config vitest.integration.config.ts src/tests/sqliteFoundation.test.ts`
-→ exit 0; starts v1-v11 reach v12, fixture inventory is contiguous, and foreign
-key checks are empty.
+-> exit 0; fixture inventory is exactly v001-v013 and every v1-v12 start reaches
+v13.
 
-### Step 2: Make acknowledgment a paired store record
+### Step 2: Store one atomic timestamp/origin acknowledgment
 
-In `server/src/settingsStore.ts`, export one credential-free helper that parses
-and returns the canonical bare model endpoint origin using the exact validation
-already applied to `llm_base_url`. Do not duplicate URL rules in the store or
-egress policy, and do not expose the helper through an HTTP response.
+Replace the scalar ChatStore methods with a typed internal record containing
+`acknowledgedAt` and `origin`. Read both columns in one scoped query and write
+both in one UPDATE. The writer must accept only the canonical bare origin
+returned by the Settings endpoint parser, enforce its bound, and preserve the
+account-not-found behavior. A malformed/null stored origin is never a match;
+fail closed without exposing it.
 
-In `ChatStore`, replace scalar timestamp methods with a typed record such as:
-
-```ts
-interface RemoteEgressAcknowledgment {
-  readonly acknowledgedAt: string | null;
-  readonly origin: string | null;
-}
-```
-
-Read both columns in one query. Write timestamp and validated canonical origin
-in one UPDATE. Bound the stored origin length, reject credentials/path/query/
-fragment through the same origin parser used by settings, and preserve
-account-not-found behavior. Do not expose this internal origin in chat/user DTOs.
-
-Update direct SQL test setup to set both columns when it intends an acknowledged
-remote provider.
+Use Plan 005's canonical origin parser/equivalence primitive rather than adding
+a second URL policy. Update every direct SQL fixture that means "acknowledged"
+to write both fields. Timestamp-only fixtures remain intentional only where a
+test proves the v13 fail-closed migration.
 
 **Verify**:
 `pnpm --filter borealis-server exec vitest run src/tests/egressConsent.test.ts`
-→ exit 0 with store round-trip and old-timestamp/null-origin cases.
+-> exit 0 with paired round-trip, malformed stored origin, legacy timestamp,
+and account-not-found coverage.
 
-### Step 3: Compare consent with one current settings snapshot
+### Step 3: Make consent policy operate on credential-free exact targets
 
-Refactor `egressPolicy.ts` so state calculation receives one
-`RuntimeSettingsSnapshot`, classifies its origin, and compares the stored origin
-with that same canonical origin. `acknowledgeRemoteEgress` must snapshot current
-settings once, write that origin with the timestamp, then re-read state; if the
-origin changed concurrently, the returned state must remain unacknowledged.
+Introduce one immutable internal authorization target derived from a runtime
+snapshot, containing only its revision, canonical provider origin, locality,
+and bounded host. It must contain no API key, models, prompt, or content. Add a
+policy primitive that accepts an account plus this already-captured target,
+compares the stored pair with that exact origin, and returns the target unchanged
+or throws `RemoteEgressConsentRequiredError`. It must never fetch Settings.
 
-Add an internal authorization function that accepts an already-captured runtime
-snapshot and either returns it unchanged or throws
-`RemoteEgressConsentRequiredError`. This is the primitive the LLM boundary uses;
-it must not fetch settings a second time. Keep the public state shape and stable
-403 envelope unchanged.
+Refactor `remoteEgressState` and the early route adapter to capture one runtime
+snapshot, derive the target, and evaluate the pair. Preserve the public shape and
+stable 403. Let internal callers receive the authorized target so any associated
+audit records its host rather than asking `auditRemoteEgress` to resolve live
+Settings again.
 
-Test remote A → acknowledge → remote B (blocked/null timestamp) → remote A
-(allowed because A remains the last acknowledgment); then acknowledge B and
-prove a return to A is blocked because B replaced the single stored origin. Also
-cover loopback/private (never gated and does not overwrite) and a settings change
-during acknowledgment (fail closed). Never log the origin.
+Acknowledgment is the one intentional multi-snapshot operation:
 
-Make the acknowledgment operation return an internal result containing the
-public state plus the host of the origin that was actually persisted (or null
-when no remote acknowledgment was written). `routes/consent.ts` must send only
-the public state and record `consent_acknowledged` against that persisted host,
-never `state.endpoint_host` from a later settings reread. If settings race from
-A to B after A is stored, the response is correctly unacknowledged for B while
-the content-free audit event names A. A POST while the current provider is
-loopback/private must not overwrite the remembered remote pair and must not
-record a new consent event.
+1. capture current effective Settings;
+2. if it is local/private, do not write or audit anything;
+3. if it is remote, atomically persist its timestamp/origin pair;
+4. re-read public state so a concurrent switch is visible; and
+5. return an internal result containing the public state plus only the host
+   actually persisted for audit.
 
-In `egressConsent.test.ts`, deterministically wrap the paired store write so it
-switches settings to B after persisting A but before policy rereads state. Assert
-the response describes unacknowledged B, the stored pair remains A, and the
-single new audit row names A. Also POST while local/private and assert the prior
-pair and audit-row count are unchanged. Do not add an endpoint to the public
-response or log either host.
+If Settings race from A to B after A is stored, the response describes
+unacknowledged B, the durable pair remains A, and the one content-free audit row
+names A. A local/private POST preserves the old pair and audit count.
+
+Test A -> acknowledge -> B blocked/null public timestamp -> A allowed; then
+acknowledge B and prove A is blocked. Cover canonicalization, local/private
+bypass, the acknowledgment race, and exact audit attribution.
 
 **Verify**:
 `pnpm --filter borealis-server exec vitest run src/tests/egressConsent.test.ts`
-→ exit 0.
+-> exit 0.
 
-### Step 4: Authorize and use the exact snapshot at each LLM boundary
+### Step 4: Authorize the exact runtime revision for chat and retrieval
 
-Refactor account-payload LLM APIs so account identity is mandatory with one
-low-churn options shape:
+Refactor the revision-scoped LLM runtime resolver so it can build/reuse a client
+from an explicitly supplied `RuntimeSettingsSnapshot`; it must not call
+`getRuntimeSettings()` again after authorization. Add a narrow helper for
+ordinary account-owned model traffic that:
 
-- `ChatOptions`/`StreamingChatOptions` carry required `accountId` alongside the
-  existing model, signal, timeout-relevant fields, and tool options;
-- embeddings keep `texts` as the first argument and take a required options
-  object such as `{ accountId, signal? }` as the second argument; and
-- the runtime/client resolver can accept a captured snapshot.
+1. captures `getRuntimeSettings()` exactly once;
+2. derives and authorizes its credential-free target for the required account;
+3. obtains the SDK runtime for that same captured revision; and
+4. returns no credential-bearing value outside the LLM module.
 
-For each chat completion or embedding:
+Require `accountId` in `ChatOptions`/`StreamingChatOptions`. Require an options
+object such as `{accountId, signal?}` for the ordinary `embed(texts, options)`
+API. Pass the owning account from `runAgent`, `retrieve`, and every production
+caller. Preserve aliases, chat model selection, streamed tool-call accumulation,
+timeouts, finite float32 vector validation, and error sanitization.
 
-1. call `getRuntimeSettings()` exactly once;
-2. authorize that exact snapshot through the policy function from Step 3; and
-3. obtain/use the cached client corresponding to that snapshot revision.
+Keep the specialized `qualifyModelPair(settings, ...)` and
+`createEmbeddingExecutor(settings, model)` paths settings-explicit. They are
+used only after their own exact draft/migration/session authorization and must
+not re-resolve live Settings. Model discovery remains body-free and ungated.
 
-Do not change body-free discovery/health behavior. Update `runAgent`,
-`retrieve`, all production embedding composition, and every direct unit-test or
-mock caller to pass the owner account. In particular, update
-`llm.test.ts`, `thinkSplitter.test.ts`, `retrieve.test.ts`, and the LLM mocks in
-`agentModel.test.ts`. Preserve model aliasing, base64/float embedding behavior,
-timeouts, and error sanitization.
+Add deterministic races proving:
+
+- a switch to unacknowledged B before snapshot capture yields zero B requests;
+- a switch after authorized A is captured cannot retarget the call: A may
+  complete and B records zero requests; and
+- the next agent round/retrieval call captures B and is rejected until B is
+  acknowledged.
+
+Do not include payload text in failure assertions or snapshots.
 
 **Verify**:
 `pnpm --filter borealis-server exec vitest run src/tests/llm.test.ts src/tests/agentModel.test.ts src/tests/retrieve.test.ts src/tests/thinkSplitter.test.ts`
-→ exit 0. Add a controlled race test where settings changes from acknowledged A
-to unacknowledged B before the outbound call; the B fixture must record zero
-requests and no payload may appear in assertion output.
+-> exit 0.
 
-### Step 5: Carry account authorization through background ingestion
+### Step 5: Extend, do not replace, Plan 036's ingestion session
 
-Change `IngestionExecutorDependencies.embed` to use the same second-argument
-options object and pass `input.accountId` for every batch. Wire production
-`embed` accordingly in `server/src/ingest.ts`. A stale/missing remote acknowledgment must fail before
-the embedding transport sees chunk text; map the error to the existing safe
-ingestion failure envelope without placing provider origin or content in durable
-error detail.
+In `createAuthorizedIngestionEmbeddingSession(accountId)`, keep the existing
+order and lifetime: capture one runtime snapshot after extraction/staging and
+immediately before the first embedding call, authorize that exact target, audit
+its exact host, and create one embedding executor from the same settings object.
+Return the existing `IngestionEmbeddingSession`; all later batches remain bound
+to it even if live Settings changes.
 
-Keep the route-level upload/reingest/connector gate: it prevents body processing
-when already known to be blocked. The worker-bound gate is additional and covers
-queued work after settings changes.
+Do not change `IngestionExecutorDependencies.createEmbeddingSession`, restore a
+direct `dependencies.embed(...)` callback, or add per-batch Settings reads.
+Preserve the worker's mapping of authorization failure to the stable
+`REMOTE_EGRESS_CONSENT_REQUIRED` ingestion detail. Text extracted by PDFKit,
+Vision OCR, DOCX, CSV, JSON, or XLSX all reaches the same boundary.
 
-**Verify**:
-`pnpm --filter borealis-server exec vitest run src/tests/ingestionEngine.test.ts src/tests/llm.test.ts`
-→ exit 0; tests prove account ID reaches each batch and a mismatched current
-origin makes zero embedding HTTP requests.
-
-### Step 6: Retain early gates and update route regressions
-
-Keep `enforceRemoteEgressConsent` before chat acceptance and before upload,
-reingest, connector create/sync/schedule processing. Keep the automation check
-before turn acceptance; the agent's immediate LLM check is the second line.
-
-Update route tests so an acknowledgment for A cannot send a chat, create a
-connector schedule, upload, or reingest after switching to B. Assert no turn,
-run, source reservation, connector mutation, or provider request occurs before
-the stable 403. Use in-memory/loopback fixtures only.
+Extend `ingestionEmbedding.test.ts` to prove an A timestamp paired with B origin
+is denied with zero executor/transport work, an authorized A session never
+retargets to later B, each owning account is checked independently, the audit
+host is A, and the runtime snapshot is read exactly once. Keep the ingestion
+engine tests focused on session acquisition and durable safe failure rather than
+mocking a superseded per-batch API.
 
 **Verify**:
-`pnpm --filter borealis-server exec vitest run src/tests/modelRoutes.test.ts src/tests/sourceManagementRoutes.test.ts src/tests/connectorRoutes.test.ts`
-→ exit 0.
+`pnpm --filter borealis-server exec vitest run src/tests/ingestionEmbedding.test.ts src/tests/ingestionEngine.test.ts`
+-> exit 0.
 
-### Step 7: Document origin-scoped re-consent
+### Step 6: Apply origin consent inside Plan 035's immutable migration
 
-Update README privacy guidance and `docs/API.md` to state that acknowledgment is
-per account and canonical remote provider origin; changing remote origins
-requires consent again, old pre-v12 timestamps are intentionally unacknowledged,
-and background ingestion rechecks immediately before embedding. Do not expose
-the stored origin column as a new public response.
+Keep migration admission, qualification, target Settings construction,
+provider-revision hashing, immutable snapshot manifest, target executor,
+identity markers/receipts, and swap recovery unchanged. Update only its remote-
+consent checks:
+
+- bounded manifest-account prechecks at start and retry must read timestamp and
+  origin and compare every affected account with the exact canonical origin in
+  the already-validated migration Settings;
+- immediately before each provider embedding batch, check the unique account
+  IDs represented by that batch against the same target origin; and
+- remote-ingest audit rows use the target Settings host already held by the
+  migration, never a live runtime read.
+
+A replacement acknowledgment or mismatch during a build stops before the next
+transport and persists only the existing stable aggregate failure code. It must
+not store an origin, credential, passage, provider body, or affected account ID
+in migration state. A local/private target remains ungated.
+
+Qualification success must not satisfy this check: Plan 034's explicit draft
+acknowledgment authorizes only its synthetic probes. Preserve the route's
+qualified baseline/target handoff and the coordinator's exact admission reread.
 
 **Verify**:
-`pnpm --filter borealis-server format:check` → exit 0.
+`pnpm --filter borealis-server exec vitest run src/tests/embeddingMigration.test.ts src/tests/embeddingMigrationRoutes.test.ts`
+-> exit 0 with two-account mismatch, A/B replacement during build, zero next-
+batch transport, exact audit host, and unchanged provider/identity recovery
+coverage.
 
-### Step 8: Run the complete server gates
+### Step 7: Close scheduled connector and route races
+
+Retain the early origin-aware gate before chat acceptance, upload, reingest,
+manual connector create/sync/schedule, and embedding-migration start. Add the
+same check at the start of a due `connector_sync` automation, before connector
+lookup, refresh reservation, download, or mutation. On denial, record only the
+bounded generic skipped automation/history outcome and make no provider call.
+
+Keep the agent-turn automation's early check; the account-scoped streaming LLM
+boundary from Step 4 remains the final race check. Keep the durable connector
+ingestion session from Step 5 as the final model-transport boundary for a job
+that was already queued before Settings changed.
+
+Route tests must prove that consent for A cannot accept a chat turn, reserve an
+upload/reingest, create or sync a connector, create a schedule, or start a
+migration after switching to B. Automation tests must prove a stale scheduled
+connector makes no `syncConnector` call and an agent race sends nothing to B.
+
+**Verify**:
+`pnpm --filter borealis-server exec vitest run src/tests/modelRoutes.test.ts src/tests/sourceManagementRoutes.test.ts src/tests/connectorRoutes.test.ts src/tests/automations.test.ts`
+-> exit 0.
+
+### Step 8: Document origin-scoped consent and run every server gate
+
+Update README privacy guidance, `docs/API.md`, and the repository invariants in
+`AGENTS.md` to state:
+
+- consent is per account and canonical remote provider origin;
+- changing remote origins requires consent again;
+- pre-v13 timestamp-only rows are intentionally unacknowledged;
+- qualification's request-local synthetic-probe acknowledgment is not durable
+  workspace consent;
+- chat and retrieval authorize one exact runtime revision per call;
+- queued ingestion, including OCR text, uses one exact session before transport;
+  and
+- managed migration checks every affected account without weakening its
+  qualification/provider/index-identity contracts.
+
+Do not expose `remote_egress_ack_origin` as a public field or document raw
+provider URLs, credentials, or payload-bearing audit data.
 
 **Verify**:
 
-- `pnpm --filter borealis-server test` → exit 0.
-- `pnpm --filter borealis-server test:integration` → exit 0.
+- `pnpm --filter borealis-server test` -> exit 0.
+- `pnpm --filter borealis-server test:integration` -> exit 0.
 - `pnpm --filter borealis-server typecheck && pnpm --filter borealis-server lint && pnpm --filter borealis-server format:check`
-  → exit 0.
-- `rg -n 'remote_egress_ack_at' server/src --glob '*.ts'` → every direct write
-  either belongs to the migration/store or also sets the v12 origin column.
+  -> exit 0.
+- `rg -n 'remote_egress_ack_at' server/src --glob '*.ts'` -> every direct read
+  used as authorization also reads/compares the v13 origin; timestamp-only
+  references are migration/legacy characterization only.
+- `rg -n 'getRuntimeSettings\(|getEffectiveLlmSettings\(' server/src/llm.ts server/src/egressAudit.ts server/src/ingestionEmbedding.ts`
+  -> ordinary authorized call/session paths have exactly one intentional
+  snapshot read and no live audit reread.
 
 ## Test plan
 
-- Migration: v11 timestamp migrates with null origin; v1-v11 fixtures upgrade to
-  v12; new installs contain both columns.
-- Store/policy: paired atomic write, malformed origin rejection, A/B mismatch,
-  same-origin match, replacement semantics for the single remembered origin,
-  concurrent switch, audit attribution to the origin actually persisted, and
-  local/private bypass without overwriting it or recording consent.
-- Route: stale consent returns the unchanged 403 before turn/source/connector
-  mutation.
-- Agent/LLM: same immutable snapshot authorizes and supplies the client; an
-  intervening settings change produces zero remote-B requests.
-- Retrieval/ingestion: account ID reaches embedding boundary; stale queued work
-  cannot send query or chunk text after an origin change.
-- Automation: early skip remains, and a later race is stopped by the agent LLM
-  boundary.
+- Migration: v12 timestamp upgrades with null origin; every v1-v12 fixture
+  reaches v13; fresh installs have the bounded pair.
+- Store/policy: atomic pair, malformed/null origin fail closed, A/B mismatch,
+  A/B replacement semantics, canonical same-origin match, local/private bypass,
+  concurrent acknowledgment switch, and exact audit attribution.
+- Chat/LLM: account identity is mandatory; an authorized runtime revision owns
+  both consent and client; pre-capture B is denied and post-capture B cannot
+  retarget A.
+- Retrieval: the query-embedding boundary receives the owning account and makes
+  zero calls to an unacknowledged origin.
+- Ingestion/OCR: existing one-session lifetime remains; queued stale work fails
+  before transport and an authorized session never changes provider mid-job.
+- Migration: all manifest accounts match the exact target origin at admission,
+  retry, and per-batch transport while the qualified provider and index identity
+  invariants remain unchanged.
+- Connectors/automations: manual paths reject before mutation; due scheduled
+  sync rejects before reservation/download; already-queued work is stopped by
+  the ingestion session.
+- Compatibility: public consent shape/error code, model qualification, model
+  aliases, float32 validation, OCR, migration recovery, and content-free audit
+  schemas do not change.
 
 ## Done criteria
 
-- [ ] Schema version is exactly 12, and this plan adds immutable `v012.sql`
-      through Plan 003's fixture contract.
-- [ ] Old timestamp-only rows are unacknowledged until re-consent.
-- [ ] Consent for remote A never authorizes remote B.
-- [ ] A concurrent A→B switch cannot misattribute the acknowledgment audit to B,
-      and a local/private POST records no remote consent event.
-- [ ] Route gates still reject before payload processing.
-- [ ] Chat, retrieval, and ingestion model calls authorize/use one exact snapshot.
-- [ ] Race tests prove zero outbound calls to an unacknowledged new origin.
-- [ ] Public consent shape and stable error code are unchanged.
-- [ ] No endpoint URL, credential, prompt, chunk, or provider body is logged.
-- [ ] Unit, integration, typecheck, lint, and format gates pass.
-- [ ] Only in-scope files are modified.
+- [ ] Schema version is exactly 13 and `v013.sql` is the immutable consent-
+      origin delta after Plan 031's v12 indexes.
+- [ ] Old timestamp-only rows are unacknowledged for every remote origin until
+      re-consent.
+- [ ] Consent for A never authorizes or audits B.
+- [ ] A concurrent A -> B switch cannot retarget chat, retrieval, ingestion, or
+      migration payloads.
+- [ ] Ordinary chat and retrieval calls authorize/use one exact runtime
+      revision and require the owning account.
+- [ ] Plan 036's one-session durable ingestion contract remains intact; no
+      direct per-batch production embed dependency is reintroduced.
+- [ ] Plan 035's qualification/provider/index-identity contracts remain intact,
+      and every affected migration account matches the exact target origin.
+- [ ] Plan 034 qualification remains synthetic, request-local, and non-
+      persistent.
+- [ ] Early route and scheduled-automation gates reject stale consent before
+      payload processing or durable mutation.
+- [ ] Public consent shape and stable error/failure codes are unchanged.
+- [ ] No URL, credential, prompt, source/OCR text, provider output, or raw tool
+      payload is logged or persisted in new state.
+- [ ] Focused, full server, integration, typecheck, lint, and format gates pass.
+- [ ] Only in-scope implementation, test, fixture, and documentation files are
+      modified.
 
 ## STOP conditions
 
 Stop and report if:
 
 - Plan 003 or Plan 005 is incomplete;
-- `LATEST_SQLITE_SCHEMA_VERSION` is not 11 plus only the declared dependency
-  changes when this plan starts (this plan owns v12; do not renumber around an
-  unrelated migration);
-- another planned/landed change already owns schema version 12;
-- same-snapshot authorization would require passing credentials into policy,
-  stores, logs, or durable run rows;
-- a production payload-bearing LLM call cannot be associated with an account;
-- a background ingest can reach transport without the account-scoped boundary;
-- public consent response compatibility would have to break; or
+- `LATEST_SQLITE_SCHEMA_VERSION` is not exactly 12 with v12 exclusively owned by
+  Plan 031's catalog indexes when this plan starts, or another change owns v13;
+- Plan 034 no longer uses fixed synthetic probes plus exact request-local draft
+  acknowledgment, or its qualification result is being treated as durable
+  consent;
+- Plan 035 no longer retains an exact qualified provider snapshot, immutable
+  migration manifest, target-only executor, and model/dimension identity
+  markers/receipts through recovery;
+- Plan 036 no longer provides
+  `IngestionExecutorDependencies.createEmbeddingSession(accountId)` with one
+  immutable provider snapshot per durable job;
+- a production workspace-content model call cannot be associated with an exact
+  owning account (multi-account migration batches may use their bounded exact
+  account set);
+- authorization would require placing credentials, URLs, content, or account
+  lists into the consent row, audit log, migration state, run detail, or public
+  error;
+- a background ingestion or migration batch can reach provider transport
+  without the exact origin check described above;
+- public consent response compatibility or the stable failure codes would have
+  to break; or
 - any verification fails twice after one reasonable correction.
 
 ## Maintenance notes
 
-- Every future payload-bearing model call must use the account-scoped,
-  same-snapshot boundary. Direct use of a raw OpenAI client is not acceptable.
-- If the product later supports multiple simultaneous provider origins, replace
-  the single stored origin with an explicit consent set/mapping via a new
-  migration; do not overload the timestamp.
-- Schema v13 is reserved for later work. Coordinate migration numbers before
-  merging concurrent plans.
+- Every future ordinary workspace-content model call must use the account-
+  scoped exact-snapshot boundary. Direct use of a raw OpenAI client is allowed
+  only for body-free discovery or a settings-explicit, fixed synthetic
+  qualification path with its own authorization.
+- Durable consent follows the canonical destination origin. Runtime revision is
+  deliberately operation authority rather than a persisted consent field, so a
+  same-origin model/key change does not demand new privacy consent while still
+  being unable to retarget an in-flight payload.
+- Future durable multi-batch jobs should follow the ingestion-session pattern:
+  authorize once immediately before first transport, then retain the immutable
+  client/settings snapshot. Do not authorize live Settings and construct a
+  client later.
+- If simultaneous provider origins are added later, replace the single stored
+  origin through a new schema migration; do not overload the timestamp or place
+  a serialized set in v13.
+- Schema v14 remains reserved for Plan 012 automation target ownership and v15
+  for Plan 020 typed connector-refresh state. Do not reuse or reorder them.

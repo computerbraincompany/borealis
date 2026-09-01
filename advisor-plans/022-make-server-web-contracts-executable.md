@@ -4,6 +4,12 @@
 >
 > **Drift check (run first)**: `git diff --stat f1b9293..HEAD -- package.json server/package.json pnpm-lock.yaml server/src/auth.ts server/src/routes.ts server/src/routes server/src/openapiContract.ts server/scripts/export-openapi.mjs scripts/generate-api-contracts.mjs server/src/tests/apiContracts.test.ts server/src/tests/authRoutes.test.ts server/src/tests/agentRoutes.test.ts server/src/tests/automations.test.ts server/src/tests/connectorRoutes.test.ts server/src/tests/contained.test.ts server/src/tests/egressAudit.test.ts server/src/tests/egressConsent.test.ts server/src/tests/libraryRoutes.test.ts server/src/tests/modelRoutes.test.ts server/src/tests/preferencesRoutes.test.ts server/src/tests/reportChartRoutes.test.ts server/src/tests/settingsRoutes.test.ts server/src/tests/sourceManagementRoutes.test.ts server/src/tests/workspaceStatus.test.ts web/package.json web/.prettierrc.json web/.prettierignore web/src/lib/api.ts web/src/lib/apiContracts.generated.ts web/src/lib/api.test.ts web/src/pages/ReportsView.tsx web/src/components/ChatMessage.tsx`
 > Plans 007, 010, 014, and 018 intentionally change authentication, route composition, report authorization, contained/source DTOs, and auth responses after the planned commit. Read their completed plans and compare the final live contracts before editing; generate only from that repaired behavior.
+> Plans 025, 026, 028, 030, 031, 034, and 035 subsequently changed automation
+> outcomes, route hooks/body budgets, chart lineage, browser request ownership,
+> every resource list envelope, model qualification, Settings guards, and the
+> embedding-migration route family. All are required input to this plan, not
+> drift STOPs. Generate contracts from the live routes and preserve their exact
+> status/error/pagination/nullable semantics; never reshape them for OpenAPI.
 > **Read-only dependency check**: inspect `server/src/tests/vitestTestPartitions.ts` from plan 001; both contract suites remain in its calculated default partition. Only `apiContracts.test.ts` must remain source/document-pure and native-free; `modelRoutes.test.ts` retains its existing disposable SQLite/LanceDB lifecycle. Also confirm `web/package.json` still pins Prettier 3.4.2 and the generated target is not ignored by `web/.prettierignore`. These files/configs are not editable here.
 
 ## Status
@@ -11,7 +17,8 @@
 - **Priority**: P3
 - **Effort**: L
 - **Risk**: MED
-- **Depends on**: `advisor-plans/007-restrict-contained-engine-control.md`, `advisor-plans/010-authorize-shared-report-artifacts.md`, `advisor-plans/014-create-owned-application-runtime.md`, `advisor-plans/018-throttle-public-authentication.md`
+- **Depends on**: `advisor-plans/007-restrict-contained-engine-control.md`, `advisor-plans/010-authorize-shared-report-artifacts.md`, `advisor-plans/014-create-owned-application-runtime.md`, `advisor-plans/018-throttle-public-authentication.md`, `advisor-plans/031-paginate-resource-catalogs.md`, `advisor-plans/034-qualify-model-pairs.md`, `advisor-plans/035-manage-embedding-reindex.md`
+- **Preserve completed baseline**: Plans 025, 026, 028, 030, 031, 034, and 035
 - **Category**: dx
 - **Planned at**: commit `f1b9293`, 2026-08-30
 
@@ -30,7 +37,10 @@ Fastify runtime validation, the authenticated OpenAPI document, and the React cl
       "Exact union: {source_mode:'all'} or {source_mode:'selected',source_ids:[up to 100 UUIDs]}. Runtime validation rejects every other shape.",
     properties: {
       source_mode: { description: "Either all or selected." },
-      source_ids: { description: "Required only for selected; an empty array intentionally means no sources." },
+      source_ids: {
+        description:
+          "Required only for selected; an empty array intentionally means no sources.",
+      },
     },
   } as const;
   ```
@@ -41,7 +51,10 @@ Fastify runtime validation, the authenticated OpenAPI document, and the React cl
 - `web/src/lib/api.ts:177-199` accepts any caller-selected type:
 
   ```ts
-  export async function api<T>(path: string, opts: RequestInit = {}): Promise<T> {
+  export async function api<T>(
+    path: string,
+    opts: RequestInit = {},
+  ): Promise<T> {
     // authentication and fetch
     if (res.status === 204) return undefined as T;
     const ct = res.headers.get("content-type") || "";
@@ -58,17 +71,17 @@ Fastify runtime validation, the authenticated OpenAPI document, and the React cl
 
 ## Commands you will need
 
-| Purpose | Command | Expected on success |
-|---|---|---|
-| Add generator | `pnpm add --save-dev --workspace-root --save-exact openapi-typescript@7.13.0` | exit 0; root manifest and lockfile change, no runtime workspace dependency added |
-| Generate | `pnpm contracts:generate` | exit 0; atomically writes only `web/src/lib/apiContracts.generated.ts` |
-| Stale check | `pnpm contracts:check` | exit 0 with the committed generated file byte-identical; does not write repository files |
-| Generated format | `pnpm --filter borealis-web exec prettier --check src/lib/apiContracts.generated.ts` | exit 0 under web's pinned Prettier/config; generated output is not ignored |
-| Server contracts | `pnpm --filter borealis-server exec vitest run src/tests/apiContracts.test.ts src/tests/modelRoutes.test.ts` | exit 0 in plan 001’s default/unit partition; schema/security/operation coverage passes |
+| Purpose                 | Command                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | Expected on success                                                                                                      |
+| ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| Add generator           | `pnpm add --save-dev --workspace-root --save-exact openapi-typescript@7.13.0`                                                                                                                                                                                                                                                                                                                                                                                                                                          | exit 0; root manifest and lockfile change, no runtime workspace dependency added                                         |
+| Generate                | `pnpm contracts:generate`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | exit 0; atomically writes only `web/src/lib/apiContracts.generated.ts`                                                   |
+| Stale check             | `pnpm contracts:check`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | exit 0 with the committed generated file byte-identical; does not write repository files                                 |
+| Generated format        | `pnpm --filter borealis-web exec prettier --check src/lib/apiContracts.generated.ts`                                                                                                                                                                                                                                                                                                                                                                                                                                   | exit 0 under web's pinned Prettier/config; generated output is not ignored                                               |
+| Server contracts        | `pnpm --filter borealis-server exec vitest run src/tests/apiContracts.test.ts src/tests/modelRoutes.test.ts`                                                                                                                                                                                                                                                                                                                                                                                                           | exit 0 in plan 001’s default/unit partition; schema/security/operation coverage passes                                   |
 | Route response equality | `pnpm --filter borealis-server exec vitest run src/tests/authRoutes.test.ts src/tests/agentRoutes.test.ts src/tests/automations.test.ts src/tests/connectorRoutes.test.ts src/tests/contained.test.ts src/tests/egressAudit.test.ts src/tests/egressConsent.test.ts src/tests/libraryRoutes.test.ts src/tests/modelRoutes.test.ts src/tests/preferencesRoutes.test.ts src/tests/reportChartRoutes.test.ts src/tests/settingsRoutes.test.ts src/tests/sourceManagementRoutes.test.ts src/tests/workspaceStatus.test.ts` | exit 0; complete pre-schema status/content-type/JSON assertions remain byte-for-byte equivalent after serializers attach |
-| Web tests | `pnpm --filter borealis-web typecheck && pnpm --filter borealis-web test` | exit 0; generated aliases and runtime parsers pass |
-| Style | `pnpm --filter borealis-server lint && pnpm --filter borealis-server format:check && pnpm --filter borealis-web lint && pnpm --filter borealis-web format:check` | exit 0 |
-| Repository gate | `pnpm verify` | exit 0, contract check runs, and output ends with `ALL GATES GREEN` |
+| Web tests               | `pnpm --filter borealis-web typecheck && pnpm --filter borealis-web test`                                                                                                                                                                                                                                                                                                                                                                                                                                              | exit 0; generated aliases and runtime parsers pass                                                                       |
+| Style                   | `pnpm --filter borealis-server lint && pnpm --filter borealis-server format:check && pnpm --filter borealis-web lint && pnpm --filter borealis-web format:check`                                                                                                                                                                                                                                                                                                                                                       | exit 0                                                                                                                   |
+| Repository gate         | `pnpm verify`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          | exit 0, contract check runs, and output ends with `ALL GATES GREEN`                                                      |
 
 ## Scope
 
@@ -140,11 +153,41 @@ Fastify runtime validation, the authenticated OpenAPI document, and the React cl
 
 ## Steps
 
-### Step 1: Inventory the final operation matrix after plan 010
+### Step 1: Inventory the final operation matrix after every dependency
 
-Confirm plans 007, 010, 014, and 018 are all `DONE`. Run their focused authorization/runtime/auth tests before documenting anything. From live route registrations and `web/src/lib/api.ts`, build a temporary review checklist (do not commit a second contract manifest) containing method, normalized OpenAPI path, authentication, request schema, success statuses/content types, expected safe errors, and stable `operationId` for every operation.
+Confirm plans 007, 010, 014, 018, 025, 026, 028, 030, 031, 034, and 035 are
+all `DONE`. Run their focused authorization, runtime, route, and browser tests
+before documenting anything. From live route registrations and
+`web/src/lib/api.ts`, build a temporary review checklist (do not commit a second
+contract manifest) containing method, normalized OpenAPI path, authentication,
+request schema, success statuses/content types, expected safe errors, and stable
+`operationId` for every operation.
 
 The matrix must include all JSON operations consumed by web plus `/health`, `/api/openapi.json`’s security invariant, the chat SSE operation, and report HTML/PDF artifact operations repaired by plan 010. Every operation ID must be unique, lower camel case, and describe the action (for example `listChats`, `getReportPdf`, `streamChatMessage`).
+
+Inventory the completed second-wave contracts explicitly:
+
+- Plan 026: all protected operations retain `onRequest` authentication and
+  route-derived body ceilings; document the emitted 401/413 envelopes without
+  moving hooks or inventing a larger shared limit.
+- Plan 031: `GET /api/{sources,connectors,chats,reports,reports/shared,agents,libraries,automations}`
+  accepts bounded `limit`/opaque `cursor` and returns
+  `{ items, next_cursor }`; include `POST /api/sources/status` and
+  `POST /api/connectors/status` with their bounded exact-ID request/response
+  shapes.
+- Plan 034: include `POST /api/models/qualify`, the complete draft Settings
+  body, per-role qualification result/reason enums, draft-origin
+  acknowledgment, and stable 400/403/409 failures.
+- Plan 035: include `GET /api/models/embedding-migration`,
+  `POST /api/models/embedding-migration/start`, and the `retry`, `cancel`, and
+  `apply` mutations with exact 202/status/phase/capability fields and stable
+  400/403/404/409/413/507 failures. Include Settings'
+  `embedding_dimension` and `EMBEDDING_REINDEX_REQUIRED` response.
+- Plan 028: chart registry/detail schemas preserve nullable owning `run_id` and
+  `chat_id` without exposing spec/PNG bytes in registry JSON.
+- Plan 025: automation history status includes the existing `skipped` outcome;
+  cancellation's fixed detail remains ordinary emitted data, not a new public
+  error type.
 
 **Verify**:
 `rg -n '\b(api(?:<|\()|apiText\(|apiBlob\(|openProtected\(|streamAgentChat\(|fetch\()' web/src --glob '*.ts' --glob '*.tsx'`
@@ -168,6 +211,15 @@ postprocessor-only component copy. Add document assertions for the exact fixed
 component-key set and require every `$ref` to resolve.
 
 Give every route a stable `operationId` and declare every actual JSON success/error response. Use required/nullable semantics matching emitted payloads — never mark a field optional merely to make existing fixtures compile. Keep global bearer security and the exact public overrides. Include plan 018’s 429 body/header semantics, plan 007’s redacted contained/source/library responses and binary-digest config request, and plan 010’s owner/shared report artifact access. The desktop-operator JWT claim is internal authorization state, not part of register/login response schemas.
+
+For the Plan 031 catalogs, register one generic page shape only if generated
+item types remain exact per operation; `next_cursor` is required and nullable,
+never optional, and cursor contents remain opaque strings. Do not restore array
+responses or expose decoded ordering tuples. For Plans 034/035, reuse the live
+qualification/migration schemas and exact reason/phase enums rather than
+maintaining a second approximation. For Plan 026, preserve route-level
+`bodyLimit` and `onRequest` configuration while adding schemas; OpenAPI metadata
+does not authorize moving those runtime controls into validation.
 
 Fastify response schemas can serialize away undeclared fields. Before attaching
 each response schema, add an exact expected status, content type, and complete
@@ -200,10 +252,12 @@ Add exact root dev dependency `openapi-typescript@7.13.0`. Create
 `server/scripts/export-openapi.mjs`, run through the server workspace’s existing
 `tsx` loader. It must instantiate Fastify without listening and compile against
 Plan 014's exported route-options type. Construct the exact final equivalent of
-`const options = { desktop: false, automationRunner: { isRunning: () => false } }
-satisfies RoutesOptions` (use Plan 014's final property name), then call
-`routes(app, options)`. No option may be omitted/defaulted and no
-`ApplicationRuntime` or global runner may be constructed. Await readiness,
+an explicit browser-mode/stopped-scheduler options object plus inert injected
+Plan 034/035 Settings, qualification, and embedding-migration capabilities,
+using `satisfies RoutesOptions`, then call `routes(app, options)`. Use the final
+property names from Plan 014. No option may be omitted/defaulted and no
+`ApplicationRuntime`, global runner, provider client, migration coordinator, or
+storage/settings singleton may be constructed. Await readiness,
 obtain and postprocess `app.swagger()`, write only canonical JSON to stdout, and
 close in `finally`. It must not open SQLite/LanceDB/DuckDB, load operator
 settings/provider state, construct the model client, start schedulers/workers,
@@ -261,6 +315,15 @@ A small local type helper may map an `operations` entry to JSON request/response
 
 Keep explicit non-JSON helpers for chat SSE and report artifact fetches. Their operation metadata must derive from the generated operation while their bodies remain stream/text/blob handling.
 
+Keep Plan 031 page requests/results operation-bound: exported list clients take
+generated `limit`/`cursor` query types and return generated
+`{ items, next_cursor }`, while the existing defensive parsers/merge helpers
+retain deduplication and cursor validation. Keep Plan 030 request ownership:
+API helpers continue accepting `AbortSignal`, and migrating report/share or
+other secondary-dialog call sites may not remove their request token,
+target-capture, close invalidation, or abort behavior just because generated
+types now exist.
+
 Keep upload's runtime adapter local and explicit: accept a browser `File`, build
 `FormData`, and append under a literal key that
 `"file" satisfies keyof` the generated `uploadSource` multipart body type.
@@ -295,8 +358,16 @@ Cover:
 - every non-hidden route has a unique operation ID;
 - all web-consumed JSON operations have executable request and success-response schemas;
 - expected 4xx/429 responses remain represented where handlers emit them;
+- every protected route still reports an `onRequest` auth hook and its exact
+  route-owned body limit where applicable; representative unauthenticated
+  oversized requests remain 401-before-parse and authenticated oversized
+  requests remain the stable 413 envelope in the existing Plan 026 suite;
 - public operations are exactly `/health`, register, and login; `/api/openapi.json` remains authenticated and hidden;
 - plan-010 shared report detail/HTML/PDF access is documented correctly;
+- all eight Plan 031 paged catalogs and two bulk status operations have exact
+  query/body/page contracts; qualification and every embedding-migration
+  operation are present with their live errors and enums; chart lineage and
+  automation `skipped` history fields are present;
 - non-JSON content types are present without a response serializer;
 - exact registered component keys and resolvable `$ref` values, plus the
   document-only multipart upload request body with no live body serializer;
@@ -335,6 +406,12 @@ Run formatting/linting before the full repository gate. The contract check must 
 ## Done criteria
 
 - [ ] Every web-consumed JSON operation has one unique operation ID plus exact request and success/error response schemas.
+- [ ] Plans 026/031/034/035 are complete in the generated contract: early-auth
+      runtime tests/body budgets stay intact; all catalog/status, qualification,
+      and embedding-migration operations and errors are represented exactly.
+- [ ] Plan 028 chart lineage and Plan 025 automation terminal outcomes remain in
+      generated response types, while Plan 030 abort/token ownership remains in
+      the browser call sites.
 - [ ] Reusable schemas have fixed `$id` component keys, are registered once in
       Fastify before routes, and every published `$ref` resolves to that same
       registry rather than a duplicate postprocessor copy.
@@ -362,6 +439,10 @@ Run formatting/linting before the full repository gate. The contract check must 
 Stop and report if:
 
 - Any predecessor (007, 010, 014, or 018) is not `DONE`, or its final capability/redaction/runtime/report/auth-throttle contract differs.
+- Any completed baseline plan (025, 026, 028, 030, 031, 034, or 035) is absent
+  from the live routes/client, or representing it would require reverting its
+  pagination, hook/body-limit, request-ownership, qualification, migration, or
+  lineage contract.
 - A response schema strips/adds fields, changes bytes/headers/status, or requires changing a handler/client contract.
 - An accepted request cannot be represented exactly in JSON Schema without changing validation behavior.
 - Generating the document requires opening a socket, opening any storage engine, loading operator settings/provider state, constructing application runtime, reading environment-managed credentials, or contacting a provider; the only allowed initialization is `config.ts`'s disposable-root setup already specified in Step 3.

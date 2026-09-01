@@ -3,8 +3,15 @@
 > **Executor instructions**: Follow this plan step by step. Run each verification command and confirm the expected result before continuing. If a “STOP condition” occurs, stop and report — do not improvise. When done, update this plan’s row in `advisor-plans/README.md` unless a reviewer told you they own the index.
 >
 > **Drift check (run first)**: `git diff --stat f1b9293..HEAD -- package.json pnpm-lock.yaml server/package.json desktop/package.json server/src/data/xlsx.ts server/src/data/exceljsBoundary.ts server/src/tests/xlsx.test.ts server/src/tests/exceljsBoundary.test.ts server/src/tests/xlsxSpillProbe.ts scripts/policy-check.mjs`
-> If an in-scope file changed, compare it with the excerpts below. STOP on a material parser, package, or desktop-copy mismatch.
-> **Read-only dependency check**: inspect `desktop/scripts/copy-runtime.mjs`; its exact installed-version equality check is not editable in this plan.
+> Plans 032, 033, 036, and 037 intentionally changed package scripts,
+> dependencies, runtime assets, policy checks, and the lockfile. Preserve the
+> fuse/entitlement/package smokes, lazy bundle budget/manifest, unpacked local
+> OCR helper, and workspace-archive commands while pinning only ExcelJS. These
+> changes are expected baseline, not drift; STOP only on an unrelated parser or
+> exact-version mismatch.
+> **Read-only dependency check**: inspect `desktop/scripts/copy-runtime.mjs` and
+> its lazy-entry, OCR-asset, and exact installed-version checks. It is not
+> editable in this plan.
 
 ## Status
 
@@ -12,6 +19,7 @@
 - **Effort**: L
 - **Risk**: MED
 - **Depends on**: none
+- **Preserve completed baseline**: Plans 032, 033, 036, and 037
 - **Category**: tech-debt
 - **Planned at**: commit `f1b9293`, 2026-08-30
 
@@ -37,7 +45,9 @@ The bounded XLSX reader deliberately uses private ExcelJS `WorkbookReader` field
 - `server/src/data/xlsx.ts:246-292` casts the reader and overwrites private fields before the metadata pass:
 
   ```ts
-  function readerInternals(workbook: ExcelJS.stream.xlsx.WorkbookReader): WorkbookReaderInternals {
+  function readerInternals(
+    workbook: ExcelJS.stream.xlsx.WorkbookReader,
+  ): WorkbookReaderInternals {
     return workbook as unknown as WorkbookReaderInternals;
   }
 
@@ -59,14 +69,14 @@ The bounded XLSX reader deliberately uses private ExcelJS `WorkbookReader` field
 
 ## Commands you will need
 
-| Purpose | Command | Expected on success |
-|---|---|---|
-| Lock update | `pnpm install --lockfile-only` | exit 0; only the intended manifest snapshots/lock metadata change and ExcelJS resolves exactly 4.4.0 |
-| Focused tests | `pnpm --filter borealis-server exec vitest run src/tests/exceljsBoundary.test.ts src/tests/xlsx.test.ts` | exit 0; adapter and parser compatibility cases pass |
-| Server checks | `pnpm --filter borealis-server typecheck && pnpm --filter borealis-server lint && pnpm --filter borealis-server format:check` | exit 0 |
-| Desktop checks | `pnpm --filter borealis-desktop verify` | exit 0; duplicated runtime still copies and loads |
-| Policy | `pnpm policy` | exit 0 |
-| Repository gate | `pnpm verify` | exit 0 and prints `ALL GATES GREEN` |
+| Purpose         | Command                                                                                                                       | Expected on success                                                                                  |
+| --------------- | ----------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| Lock update     | `pnpm install --lockfile-only`                                                                                                | exit 0; only the intended manifest snapshots/lock metadata change and ExcelJS resolves exactly 4.4.0 |
+| Focused tests   | `pnpm --filter borealis-server exec vitest run src/tests/exceljsBoundary.test.ts src/tests/xlsx.test.ts`                      | exit 0; adapter and parser compatibility cases pass                                                  |
+| Server checks   | `pnpm --filter borealis-server typecheck && pnpm --filter borealis-server lint && pnpm --filter borealis-server format:check` | exit 0                                                                                               |
+| Desktop checks  | `pnpm --filter borealis-desktop verify`                                                                                       | exit 0; duplicated runtime still copies and loads                                                    |
+| Policy          | `pnpm policy`                                                                                                                 | exit 0                                                                                               |
+| Repository gate | `pnpm verify`                                                                                                                 | exit 0 and prints `ALL GATES GREEN`                                                                  |
 
 ## Scope
 

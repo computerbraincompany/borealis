@@ -8,8 +8,12 @@
 >
 > **Drift check (run first)**:
 > `git diff --stat f1b9293..HEAD -- server/src/tests/vitestTestPartitions.ts server/src/tests/agentVerticalIntegration.test.ts server/src/tests/scriptedOpenAiServer.ts server/src/routes/chats.ts server/src/agent.ts server/src/tools.ts server/src/llm.ts`
-> Production files are reference-only in this plan. If their relevant contracts
-> differ from the excerpts below, STOP and report.
+> Production files are reference-only in this plan. Plans 026, 027, 029, 034,
+> and 035 intentionally changed protected-route parsing, streamed tool-call
+> assembly, query deadlines, model qualification, and embedding-index startup.
+> Those completed contracts are the baseline, not drift: update stale line
+> references to the live code, preserve them, and STOP only for an unrelated
+> material mismatch.
 
 ## Status
 
@@ -17,6 +21,7 @@
 - **Effort**: L
 - **Risk**: LOW
 - **Depends on**: `advisor-plans/001-partition-server-test-suites.md`
+- **Preserve completed baseline**: Plans 026, 027, 029, 034, and 035
 - **Category**: tests
 - **Planned at**: commit `f1b9293`, 2026-08-30
 
@@ -71,13 +76,13 @@ without a live model or external network.
 
 ## Commands you will need
 
-| Purpose | Command | Expected on success |
-|---|---|---|
-| Focused test | `pnpm --filter borealis-server exec vitest run --config vitest.integration.config.ts src/tests/agentVerticalIntegration.test.ts` | exit 0; two scripted provider calls |
-| Integration suite | `pnpm --filter borealis-server test:integration` | exit 0 |
-| Unit suite | `pnpm --filter borealis-server test` | exit 0; vertical file is absent |
-| Typecheck | `pnpm --filter borealis-server typecheck` | exit 0 |
-| Lint/format | `pnpm --filter borealis-server lint && pnpm --filter borealis-server format:check` | exit 0 |
+| Purpose           | Command                                                                                                                          | Expected on success                 |
+| ----------------- | -------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------- |
+| Focused test      | `pnpm --filter borealis-server exec vitest run --config vitest.integration.config.ts src/tests/agentVerticalIntegration.test.ts` | exit 0; two scripted provider calls |
+| Integration suite | `pnpm --filter borealis-server test:integration`                                                                                 | exit 0                              |
+| Unit suite        | `pnpm --filter borealis-server test`                                                                                             | exit 0; vertical file is absent     |
+| Typecheck         | `pnpm --filter borealis-server typecheck`                                                                                        | exit 0                              |
+| Lint/format       | `pnpm --filter borealis-server lint && pnpm --filter borealis-server format:check`                                               | exit 0                              |
 
 Do not install packages, start LM Studio, use external network, build, or format.
 

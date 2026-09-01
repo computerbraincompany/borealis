@@ -2,6 +2,7 @@
 
 ## Status
 
+- **State**: DONE (2026-09-01)
 - **Priority**: P2
 - **Effort**: M
 - **Risk**: MED
@@ -26,11 +27,14 @@ minimum executable model-pair requirements.
   bound to the canonical draft origin; the acknowledgment is not persisted as
   workspace consent. The route emits only content-free egress audit categories.
 - Chat qualification sends one fixed synthetic prompt and one fixed synthetic
-  function definition, then requires the exact tool name and bounded JSON
-  arguments. No uploaded, account, chat, or source content is used.
+  function definition through bounded streaming SSE, then uses the production
+  stream accumulator and requires one 1–256-character call ID, the exact tool
+  name, and bounded JSON arguments. No uploaded, account, chat, or source
+  content is used.
 - Embedding qualification sends one fixed synthetic string with
-  `encoding_format: "float"`, then validates count, finite values, nonzero norm,
-  and exact dimension.
+  `encoding_format: "float"`, then validates count, exact dimension, and a
+  finite positive squared norm after float32 coordinate, square, and
+  accumulation rounding—the same numeric boundary Lance cosine search uses.
 - Provider response bodies, reasoning, exceptions, URLs, keys, raw arguments,
   and model output are discarded. The public result contains per-role
   `qualified`, stable reason code, dimension, and bounded latency only.
@@ -51,10 +55,10 @@ minimum executable model-pair requirements.
    with independent abort deadlines and zero retries.
 3. Define stable result codes such as unreachable, tool-call-missing,
    tool-call-invalid, embedding-invalid, and dimension-mismatch.
-4. Add the authenticated route with early auth, a small body limit, explicit
-   canonical-draft-origin acknowledgment for remote calls, content-free audit,
-   and no provider-body propagation. Never treat a stored acknowledgment for a
-   different configured origin as permission for the draft.
+4. Add the authenticated route with early auth, a schema-derived body limit,
+   explicit canonical-draft-origin acknowledgment for remote calls,
+   content-free audit, and no provider-body propagation. Never treat a stored
+   acknowledgment for a different configured origin as permission for the draft.
 5. Add a Settings “Qualify pair” action and accessible result card; invalidate a
    displayed result when any draft endpoint/key/model/dimension field changes.
 6. Test successful and malformed provider variants, timeout, reasoning/content
@@ -68,9 +72,28 @@ minimum executable model-pair requirements.
 
 ## Done criteria
 
-- [ ] Operators can prove both roles before saving or reindexing.
-- [ ] Qualification uses no user content and exposes no provider payload.
-- [ ] Dimension mismatch is explicit and consumed by plan 035.
+- [x] Operators can prove both roles before saving or reindexing.
+- [x] Qualification uses no user content and exposes no provider payload.
+- [x] Dimension mismatch is explicit and consumed by plan 035.
+
+## Completion record
+
+- `POST /api/models/qualify` resolves a bounded unsaved Settings draft, applies
+  canonical draft-origin acknowledgment for remote calls, and returns only
+  stable per-role reason/dimension/latency fields.
+- Model qualification, model/settings route, egress, API-client, hook, and
+  Settings UI tests cover success, malformed calls/vectors, mismatch, timeout,
+  environment overrides, redaction, acknowledgment, and draft invalidation.
+- Qualification and production chat share the streamed tool-call accumulator,
+  including incremental/cumulative name fragments and call-ID limits.
+  Qualification, ingestion, migration, upsert, and search reject float32
+  coordinate or norm underflow/overflow before LanceDB can return non-finite or
+  silently incorrect cosine distances.
+- The one-tool probe uses the portable `tool_choice: "required"` form and a
+  bounded 128-token allowance, then still requires the exact tool name and
+  arguments. A 2026-09-01 live loopback LM Studio check qualified both
+  `qwen3.8-27b-obliterated` and the 768-dimensional
+  `text-embedding-nomic-embed-text-v1.5` role without workspace content.
 
 ## STOP conditions
 

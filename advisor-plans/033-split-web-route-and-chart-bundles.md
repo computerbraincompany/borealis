@@ -2,6 +2,7 @@
 
 ## Status
 
+- **State**: DONE (2026-09-01)
 - **Priority**: P2
 - **Effort**: M
 - **Risk**: MED
@@ -52,10 +53,22 @@ and desktop launch parses features the user has not opened.
 
 ## Done criteria
 
-- [ ] Initial JS is below the committed measured budget.
-- [ ] ECharts is absent from the initial dependency graph.
-- [ ] Every route works by direct hash navigation and in the packaged app.
-- [ ] CI fails a future accidental eager import.
+- [x] Initial JS is below the committed measured budget.
+- [x] ECharts is absent from the initial dependency graph.
+- [x] Every route works by direct hash navigation; the complete lazy graph is
+      copied into the packaged offline runtime.
+- [x] CI fails a future accidental eager import.
+
+## Completion record
+
+- Noninitial routes, `ChartCard`, ECharts, and zrender are dynamic entries with
+  localized accessible loading boundaries and content-hashed production assets.
+- The manifest budget check enforces 240 KiB initial gzip, 130 KiB maximum lazy
+  gzip, required route/chart entries, and no ECharts in the initial graph;
+  direct-hash web tests exercise every route, and runtime-copy/static-host tests
+  prove the packaged offline origin contains and serves the full graph. A full
+  installed-app first-launch lifecycle remains owned by plan 019 rather than
+  being inferred from bundle-copy evidence.
 
 ## STOP conditions
 

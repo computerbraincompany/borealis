@@ -11,16 +11,16 @@ to LM Studio or another OpenAI-compatible endpoint.
 
 ## Documentation
 
-| Guide                                        | Contents                                                                   |
-| -------------------------------------------- | -------------------------------------------------------------------------- |
-| [This README](#desktop-app)                  | Setup, model configuration, daily use, verification, and backups           |
-| [Product vision](docs/VISION.md)             | What Borealis is becoming: local data intelligence as a desktop platform   |
-| [API reference](docs/API.md)                 | REST endpoints, SSE events, lifecycle, errors, and resource limits         |
-| [Desktop guide](desktop/README.md)           | Development profiles, native modules, packaging, signing, and smoke checks |
-| [Contributor instructions](AGENTS.md)        | Architecture, commands, and security invariants                            |
-| [Configuration example](server/.env.example) | Optional environment overrides, defaults, and valid ranges                 |
-| [Milestones](milestones/README.md)           | Active implementation ledger toward the product vision                     |
-| [Advisor plans](advisor-plans/README.md)      | Active engineering-remediation ledger from the 2026-08-30 audit             |
+| Guide                                        | Contents                                                                    |
+| -------------------------------------------- | --------------------------------------------------------------------------- |
+| [This README](#desktop-app)                  | Setup, model configuration, daily use, verification, and workspace archives |
+| [Product vision](docs/VISION.md)             | What Borealis is becoming: local data intelligence as a desktop platform    |
+| [API reference](docs/API.md)                 | REST endpoints, SSE events, lifecycle, errors, and resource limits          |
+| [Desktop guide](desktop/README.md)           | Development profiles, native modules, packaging, signing, and smoke checks  |
+| [Contributor instructions](AGENTS.md)        | Architecture, commands, and security invariants                             |
+| [Configuration example](server/.env.example) | Optional environment overrides, defaults, and valid ranges                  |
+| [Milestones](milestones/README.md)           | Active implementation ledger toward the product vision                      |
+| [Advisor plans](advisor-plans/README.md)     | Active engineering-remediation ledger from the 2026-08-30 audit             |
 
 [Milestones](milestones/README.md) are the active product implementation ledger
 toward the vision. [Advisor plans](advisor-plans/README.md) track the separate
@@ -82,6 +82,8 @@ Durable files live under:
   uploads/
   reports/
   models/
+  .lancedb-migrations/
+  embedding-migration.json
   settings.json
   contained.json
   jwt.secret
@@ -141,6 +143,7 @@ Local defaults are:
 - endpoint: `http://127.0.0.1:1234`
 - chat model: `qwen-chat`
 - embedding model: `nomic-embed`
+- embedding dimension: `768`
 
 The contained-mode backend is an authenticated, API-driven local path beside
 those options. Point Borealis at a `llama-server` binary and model file (which
@@ -171,9 +174,18 @@ model supports tool calling. A chat keeps its saved model when the default chang
 Enter a bare origin such as `http://127.0.0.1:1234`, without `/v1`, other paths,
 credentials, query parameters, or fragments. Borealis adds `/v1` itself.
 **Test connection** checks HTTP success from `/v1/models` without saving the
-draft, reading the response body, or running chat/embedding inference. Use
-**Save changes** to apply changes to subsequent model operations without a
-restart.
+draft, reading the response body, or running chat/embedding inference.
+**Qualify pair** goes further: it sends fixed synthetic, content-free chat/tool
+and embedding requests. The chat check uses bounded streaming SSE and the same
+tool-call accumulator as a real turn, requiring one bounded call ID, the exact
+tool name, and valid JSON arguments. The embedding check requires the configured
+dimension and a finite positive norm after float32 coordinate, square, and
+accumulation rounding—the numeric contract LanceDB cosine search actually uses.
+Qualification does not save the draft or authorize later work. A remote draft
+requires a separate acknowledgment bound to that draft's canonical origin.
+Editing any endpoint, key, model, or dimension field invalidates the displayed
+result. Use **Save changes** to apply compatible changes to subsequent model
+operations without a restart.
 
 The workspace sidebar always shows where inference runs — **On this Mac**,
 **Private network**, or **Remote provider** — together with endpoint
@@ -195,6 +207,13 @@ not use those automations with a remote provider until the issue described in
 the [API reference](docs/API.md#workspace-audit-shares-and-automations) is
 fixed.
 
+Ingestion is durable, so the worker also checks consent immediately before its
+first embedding call. It captures one provider/model snapshot for the whole
+job: a job queued while local but resumed after an unacknowledged remote switch
+makes no provider request and ends with
+`REMOTE_EGRESS_CONSENT_REQUIRED`, while a permitted job cannot be redirected to
+a different provider between embedding batches by a concurrent Settings edit.
+
 Provider settings are shared by all accounts using the same server. A saved API
 key is stored in `settings.json` with mode `0600`, not encrypted or held in the
 macOS Keychain. Responses expose only whether a key is configured; they never
@@ -207,16 +226,43 @@ Canonical overrides are `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_CHAT_MODEL`, and
 `LLM_EMBED_MODEL`. Retained `LITELLM_*` names are lower-precedence compatibility
 aliases only; Borealis no longer starts or requires a LiteLLM process.
 
-Saving a different embedding model does not rewrite existing vectors. For a
-model with the same output dimension, reingest every source before relying on
-retrieval. The UI's **Retry** action appears only for failed sources; ready
-sources can be reingested with authenticated `POST /api/sources/:id/reingest`
-(see [Sources](docs/API.md#sources)). `EMBEDDING_DIM` defaults to 768 and must
-match the model's output.
-Changing it against an existing LanceDB table prevents startup; reingestion
-alone cannot resize that table. A dimension change needs a new, separate data
-directory and fresh ingestion, or an explicit storage migration. Preserve the
-old SQLite/LanceDB pair and never delete only the vector directory as a reset.
+Once the live fixed-schema vector index exists, a normal Settings save cannot
+change the embedding model or dimension: the API returns `409
+EMBEDDING_REINDEX_REQUIRED`, even when the workspace has no sources. Use the
+managed embedding migration in **Settings → Models** instead. Borealis qualifies
+the target pair against the persisted provider, credential, and chat model
+settings and rechecks that exact baseline/target snapshot when start is
+admitted. It then freezes one source/generation snapshot, builds and verifies a
+separate LanceDB index, and keeps retrieval on the old model/index while the
+build runs.
+Every LanceDB directory carries a private
+`lancedb/.borealis-embedding-index.json` marker containing the resolved outbound
+model ID and dimension, plus an independent private binding receipt that records
+that first publication. Startup therefore rejects a different same-dimension
+model as well as a dimension mismatch. If marker publication was interrupted or
+the marker is later missing, only the exact matching binding receipt can repair
+it; corrupt or mismatched identity files fail closed and cannot reopen adoption.
+Aliases that resolve to the same physical model remain equivalent. New and empty
+indexes bind automatically. A populated pre-marker
+index has a one-release trust-on-first-upgrade path only when the identity comes
+from loaded persisted Settings, or the pinned legacy defaults, with no embedding
+environment override; ambiguous legacy identities fail closed and must not be
+guessed.
+Save compatible provider-draft changes before starting; the migration never
+mixes an unsaved endpoint, key, or chat model into its target. The same path
+creates and verifies an empty target index for a zero-source workspace. Source
+uploads, reingestion, connector changes, and scheduled connector refreshes pause
+for the operation. Applying the verified index enters `apply_pending`; restart
+Borealis to perform the journaled swap. Startup revalidates the persisted
+provider identity and rejects embedding environment overrides before accepting
+the installed target, then reopens both stores, verifies dimension and row
+counts, and runs a scoped retrieval smoke for a nonempty snapshot before the
+old index can be retired. Status remains content-free, exposing the target
+identity, phase, aggregate counts, stable failure code, and available actions;
+failed builds can be retried or cancelled before apply. `EMBEDDING_DIM` remains
+a higher-precedence operator override; an environment-managed model or
+dimension cannot be migrated in the UI. Never delete only the vector directory
+as a reset.
 
 When a remote provider is configured, source text sent for embeddings during
 ingestion, retrieval queries, prompts, chat history, and selected source/tool
@@ -235,8 +281,7 @@ pnpm install
 pnpm dev
 ```
 
-Turborepo starts the API at `http://127.0.0.1:3000` and Vite normally on port
-5173. Open Vite's printed local URL (normally `http://localhost:5173`). Ctrl-C
+Turborepo starts the API at `http://127.0.0.1:3000` and Vite normally on port 5173. Open Vite's printed local URL (normally `http://localhost:5173`). Ctrl-C
 stops both processes. Embedded data is stored in `.borealis/`.
 
 Install Chromium after installing dependencies, before using browser
@@ -287,8 +332,15 @@ Upload through **Sources** or the chat source picker. Supported file extensions
 are `.csv`, `.tsv`, `.xlsx`, `.parquet`, `.json`, `.jsonl`, `.pdf`, `.docx`,
 `.txt`, `.md`, `.markdown`, `.text`, and `.log`. Legacy `.xls` and `.doc` files
 are rejected; XLSX imports only the first worksheet. PDF ingestion extracts
-existing text, not OCR. Uploads default to 25 MiB; parsing and output have
-additional bounds documented in the [API reference](docs/API.md).
+existing text first. On macOS, pages without meaningful embedded text can then
+use local Vision/PDFKit OCR through a fixed, network-free helper. The bounded
+classifier considers page size, text geometry, interior glyphs, words, and
+density so a sparse footer or watermark does not hide scanned content; genuine
+text pages are not re-OCRed. OCR is bounded by page, raster, observation,
+character, and time budgets, and other server platforms report a stable
+unavailable result for a fully image-only PDF. Uploads default to 25 MiB;
+parsing and output have additional bounds documented in the [API
+reference](docs/API.md).
 
 New UI chats start with no sources. Select particular sources or choose **All
 sources** to include current and future sources for each new turn. An empty
@@ -366,13 +418,23 @@ repository gate:
 pnpm verify
 ```
 
-It runs the policy/fixture gate, then server, web, and desktop typecheck, lint,
-format, tests, and builds, plus embedded-storage integration tests. Desktop
+It runs the policy/fixture gate, then each workspace package's available
+typecheck, lint, format, test, integration, build, and native-smoke tasks. The web
+build also validates its Vite manifest, lazy route/chart split, and committed
+gzip budgets. Desktop
 `native:smoke` resolves isolated addon production dependencies under Node, opens
 SQLite/LanceDB/DuckDB through Electron's ABI, and loads the same addons from an
 Electron utility process. Root `pnpm verify` does not run the GUI renderer
-smoke. CI additionally packages the unsigned arm64 DMG and ZIP on an Apple
-Silicon runner.
+smoke or the packaged fuse/ASAR check. CI additionally packages the unsigned
+arm64 DMG and ZIP on an Apple Silicon runner; run
+`pnpm --filter borealis-desktop package:native:smoke` against that package to
+inspect fuses/ASAR integrity, exercise native addons through the packaged
+executable, and recognize a generated one-page PDF through the physically
+unpacked JXA helper and macOS PDFKit/Vision.
+For a disposable ad-hoc hardened-runtime matrix over that packaged app, run
+`pnpm --filter borealis-desktop package:entitlements:smoke`; the retained
+`allow-jit`/`disable-library-validation` pair must pass, and removing either one
+must fail the same packaged native/OCR smoke.
 
 The gate uses fixtures and provider mocks; it does not run live-model analysis,
 desktop first-launch interaction, or a signed release check. Perform the manual
@@ -385,32 +447,110 @@ desktop shell or packaging inputs:
 pnpm --filter borealis-desktop verify
 pnpm package:unsigned
 pnpm --filter borealis-desktop package:native:smoke
+pnpm --filter borealis-desktop package:entitlements:smoke
 ```
 
-## Backups
+## Workspace archives and restore
 
-Quit Borealis before copying its data directory. The SQLite ledger and LanceDB
-vector directory are one logical store and must be backed up and restored
-together; restoring only one side can produce missing or orphaned retrieval
-entries. Copying the entire `Borealis/` application-data directory also preserves
-uploads, reports, contained-model configuration and downloaded model files,
-provider settings, and the JWT secret.
+Quit Borealis before archiving, verifying, restoring, or removing a workspace
+backup. The workspace-touching operator commands take explicit absolute paths
+and acquire the same instance lock as the server, so they refuse a live
+workspace. The lock path is a persistent private mode-`0700` namespace;
+acquisitions atomically publish never-reused mode-`0600` owner records inside
+it, so crash recovery and release never unlink a shared lock pathname. Server
+configuration import is path-only, and neither normal Electron startup nor the
+backend creates durable directories or creates/repairs `jwt.secret` before that
+lock is held; a losing process returns `WORKSPACE_LOCKED` without touching the
+live workspace.
+`inspect` reads only the archive and needs no workspace lock:
 
-For browser development, stop both development processes and copy all of
-`.borealis/` (or the configured `BOREALIS_DATA_DIR`). Include any files relocated
-by individual path overrides. Keep any SQLite `-wal`/`-shm` files with the ledger.
-To restore, keep Borealis stopped and restore the matching directory together.
-Protect backups as sensitive data: they include source content, reports, any
-saved provider key, and the signing secret. Losing or replacing that secret
-invalidates existing sessions.
-Preserve and reapply environment-managed configuration separately, especially
-an explicit `JWT_SECRET` and `EMBEDDING_DIM`; those values are not saved in the
-settings file or generated-secret file.
+```bash
+# Prompts for and confirms an archive passphrase on an interactive TTY.
+pnpm workspace:archive -- create \
+  --workspace '/absolute/path/to/Borealis' \
+  --output '/absolute/path/to/backup.borealis-workspace'
+
+pnpm workspace:archive -- inspect \
+  --archive '/absolute/path/to/backup.borealis-workspace'
+
+pnpm workspace:archive -- restore \
+  --archive '/absolute/path/to/backup.borealis-workspace' \
+  --target '/absolute/path/to/Restored Borealis'
+```
+
+Archives are versioned, gzip-compressed, and encrypted/authenticated by default
+with AES-256-GCM and an scrypt-derived key. Passphrases may also come from
+`BOREALIS_ARCHIVE_PASSPHRASE` or `--passphrase-fd <number>`; never put one in an
+argument or committed file. They must encode to 12–4,096 bytes without NUL.
+There is no passphrase recovery. Plaintext creation and reading require the
+explicit `--unsafe-plaintext` flag.
+
+The manifest hashes every file and preserves the complete stopped workspace,
+including SQLite WAL state, LanceDB, uploads, reports, default model files,
+settings, contained configuration, and the signing secret. Add an explicitly
+relocated file or directory as `--include name=/absolute/path`. The reserved
+names `borealis.sqlite`, `lancedb`, `uploads`, `reports`, `models`,
+`settings.json`, `contained.json`, and `jwt.secret` restore to those portable
+paths at the target root; `borealis.sqlite` also captures its adjacent WAL,
+SHM, and rollback-journal sidecars, while `lancedb` captures an adjacent active
+`.<external-name>-migrations/` directory and restores it as canonical
+`.lancedb-migrations/`. Other names restore below `relocated/<name>/`. Wrong
+kinds, overlaps, mixed SQLite roots, and collisions with an existing canonical
+`.lancedb-migrations/` are rejected. Restore rebases supported durable paths, creates
+private `0700` directories, and restores non-executable files as `0600` and
+owner-executable files as `0700`.
+
+After restoring, point `BOREALIS_DATA_DIR` at the new target and remove or
+update old `SQLITE_PATH`, `LANCEDB_DIR`, `UPLOAD_DIR`, `REPORT_DIR`,
+`CONTAINED_DIR`, `SETTINGS_FILE`, legacy `SETTINGS_PATH`, and `JWT_SECRET_FILE`
+overrides so the server opens the portable root. Preserve environment-managed
+values such as an explicit `JWT_SECRET` separately.
+
+Restore extracts into a private sibling staging directory, rejects unsafe or
+oversized members, caps decompressed bytes to the manifest-derived tar shape,
+and applies one deadline across read, decrypt, gunzip, and extraction. It then
+checks free space and every hash, opens SQLite/LanceDB and ready tabular
+datasets offline, and swaps the exact target atomically. An existing target
+remains as a verified hidden sibling backup named
+`.<target>.backup.<uuid>`; it is never deleted automatically. After validating
+the restored workspace, remove that exact backup with:
+
+```bash
+pnpm workspace:archive -- remove-backup \
+  --target '/absolute/path/to/Restored Borealis' \
+  --backup '/absolute/path/to/.Restored Borealis.backup.<uuid>'
+```
+
+Backup removal is itself crash-resumable. It first renames the verified backup
+to the deterministic hidden sibling
+`.<target>.backup-remove.<uuid>` and retains the provenance marker until both
+recursive deletion and marker cleanup finish. Repeating the same command resumes
+that exact marker-authorized tombstone; a replacement that appears at the old
+backup pathname is never touched.
+
+Use `pnpm workspace:archive -- verify --workspace <absolute-path>` for an
+offline store check. The verifier opens an existing Lance table without creating
+one and validates the embedding marker/first-binding receipt. A valid
+dimension-matching receipt-only crash state is accepted read-only; normal
+startup still requires the exact model identity and republishes only its matching
+marker. An existing index with neither identity file is rejected. Version-2
+`settings.json` supplies the embedding dimension;
+pass the exact live value as `--dimension` to `restore`, `verify`, and
+`remove-backup` for a legacy workspace without it or when an
+environment-managed dimension differs from the stored value. An explicit CLI
+value wins; the CLI does not infer `EMBEDDING_DIM`. Protect archives as highly
+sensitive: they can contain all source content, reports, provider credentials,
+model weights, and the JWT signing secret. See the [API
+reference](docs/API.md#storage-and-workspace-archives) for limits, relocation,
+restore, and forward-version behavior.
 
 ## Features and invariants
 
 - One bounded streaming tool loop with cancellation, durable run ownership, and
   sanitized activity summaries.
+- Cursor-paginated catalogs with explicit “load more” controls; no older
+  sources, chats, connectors, agents, libraries, automations, or reports are
+  silently hidden by a newest-only cap.
 - Dynamic all-source scope, a stable selected allowlist, or deliberately no
   stored sources. Each accepted turn keeps one immutable ready-source snapshot.
 - Account- and source-prefiltered LanceDB retrieval joined fail-closed to SQLite
@@ -429,6 +569,9 @@ settings file or generated-secret file.
   API-managed loopback `llama-server` lifecycle for contained models; current
   disclosure, automation, and Settings-control gaps are recorded in the
   milestone ledger.
+- Synthetic model-pair qualification, managed crash-recoverable embedding-index
+  migration, bounded local macOS PDF OCR, and encrypted verified workspace
+  archives.
 - Self-contained report HTML with restrictive CSP and renderer policies that
   deny network and local-file requests.
 - JWT/bcrypt authentication, exact-origin browser CORS, same-origin desktop UI,

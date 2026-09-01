@@ -3,7 +3,12 @@
 > **Executor instructions**: Execute the steps in order and run every verification command. If a STOP condition occurs, stop and report; do not improvise. When complete, update this plan's row in `advisor-plans/README.md` unless a reviewer owns index maintenance.
 >
 > **Drift check (run first)**: `git diff --stat f1b9293..HEAD -- server/src/sourceCleanup.ts server/src/tests/sourceCleanup.test.ts server/src/tests/sourceManagementRoutes.test.ts server/src/tests/ingestionWorker.test.ts server/src/tests/ingestRestore.test.ts`
-> Compare every changed in-scope file with the excerpts below before proceeding. Any changed cleanup-result contract is a STOP condition.
+> Plans 024, 035, and 037 intentionally added exact-location connector cleanup
+> tombstones, embedding-index identity/migration phases, and an exact workspace
+> lock/archive boundary around the same durable tree. Preserve those authorities:
+> source cleanup must not clear connector tombstones, delete staged/live/backup
+> indexes by inference, or run outside the owned workspace lifecycle. Reconcile
+> expected live changes first; STOP only for another cleanup-result mismatch.
 
 ## Status
 
@@ -11,6 +16,7 @@
 - **Effort**: S
 - **Risk**: LOW
 - **Depends on**: none
+- **Preserve completed baseline**: Plans 024, 035, and 037
 - **Category**: bug
 - **Planned at**: commit `f1b9293`, 2026-08-30
 
@@ -24,12 +30,16 @@ Source deletion is deliberately two-phase: SQLite records a durable intent befor
 
   ```ts
   try {
-    for (const intent of intents) await dependencies.deleteVectors(intent.sourceId);
-    for (const intent of intents) await cleanupExternalArtifacts(intent, dependencies);
+    for (const intent of intents)
+      await dependencies.deleteVectors(intent.sourceId);
+    for (const intent of intents)
+      await cleanupExternalArtifacts(intent, dependencies);
     for (const intent of intents) await dependencies.clearIntent(intent);
     return Object.freeze({ completed: true, intents: intents.length });
   } catch {
-    await Promise.allSettled(intents.map((intent) => dependencies.markFailure(intent)));
+    await Promise.allSettled(
+      intents.map((intent) => dependencies.markFailure(intent)),
+    );
     return Object.freeze({ completed: false, intents: intents.length });
   }
   ```
@@ -38,7 +48,11 @@ Source deletion is deliberately two-phase: SQLite records a durable intent befor
 
   ```ts
   if (!intent.filePath) return;
-  await dependencies.deactivateDatasetLocation(intent.accountId, intent.name, intent.filePath);
+  await dependencies.deactivateDatasetLocation(
+    intent.accountId,
+    intent.name,
+    intent.filePath,
+  );
   await dependencies.removeUploadArtifact(intent);
   ```
 
@@ -69,14 +83,14 @@ Source deletion is deliberately two-phase: SQLite records a durable intent befor
 
 ## Commands you will need
 
-| Purpose | Command | Expected on success |
-|---|---|---|
-| Focused tests | `pnpm --filter borealis-server exec vitest run src/tests/sourceCleanup.test.ts src/tests/sourceManagementRoutes.test.ts src/tests/ingestionWorker.test.ts src/tests/ingestRestore.test.ts` | all four files pass |
-| Artifact ownership tests | `pnpm --filter borealis-server exec vitest run src/tests/storageArtifacts.test.ts src/tests/reportCleanup.test.ts` | existing exact-path and cleanup tests pass |
-| Server typecheck | `pnpm --filter borealis-server typecheck` | exit 0, no errors |
-| Server lint/format | `pnpm --filter borealis-server lint && pnpm --filter borealis-server format:check` | exit 0, no warnings |
-| Full server tests | `pnpm --filter borealis-server test` | all tests pass |
-| Final repository gate | `pnpm verify` | exit 0 and prints `ALL GATES GREEN` on a provisioned supported host |
+| Purpose                  | Command                                                                                                                                                                                    | Expected on success                                                 |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------- |
+| Focused tests            | `pnpm --filter borealis-server exec vitest run src/tests/sourceCleanup.test.ts src/tests/sourceManagementRoutes.test.ts src/tests/ingestionWorker.test.ts src/tests/ingestRestore.test.ts` | all four files pass                                                 |
+| Artifact ownership tests | `pnpm --filter borealis-server exec vitest run src/tests/storageArtifacts.test.ts src/tests/reportCleanup.test.ts`                                                                         | existing exact-path and cleanup tests pass                          |
+| Server typecheck         | `pnpm --filter borealis-server typecheck`                                                                                                                                                  | exit 0, no errors                                                   |
+| Server lint/format       | `pnpm --filter borealis-server lint && pnpm --filter borealis-server format:check`                                                                                                         | exit 0, no warnings                                                 |
+| Full server tests        | `pnpm --filter borealis-server test`                                                                                                                                                       | all tests pass                                                      |
+| Final repository gate    | `pnpm verify`                                                                                                                                                                              | exit 0 and prints `ALL GATES GREEN` on a provisioned supported host |
 
 ## Scope
 

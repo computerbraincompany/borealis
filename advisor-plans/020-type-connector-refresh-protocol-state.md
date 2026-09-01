@@ -2,8 +2,15 @@
 
 > **Executor instructions**: Follow this plan step by step. Run every verification command and confirm the expected result before continuing. If a “STOP condition” occurs, stop and report — do not renumber, combine migrations, dual-write indefinitely, or improvise. When done, update this plan’s row in `advisor-plans/README.md` unless a reviewer told you they own the index.
 >
-> **Drift check (run first)**: `git diff --stat f1b9293..HEAD -- server/src/db/migrations.ts server/src/db/stores/connectorRefreshStore.ts server/src/db/stores/sourceIngestionTransitions.ts server/src/db/stores/ingestionStore.ts server/src/db/stores/sourceStore.ts server/src/storageRuntime.ts server/src/dataService.ts server/src/ingest.ts server/src/ingestionEngine.ts server/src/tests/vitestTestPartitions.ts server/src/tests/fixtures/sqlite/v014.sql server/src/tests/sqliteFoundation.test.ts server/src/tests/connectorRefreshStore.test.ts server/src/tests/sourceIngestionTransitions.test.ts server/src/tests/sqliteSourceStore.test.ts server/src/tests/dataService.test.ts server/src/tests/ingestionWorker.test.ts server/src/tests/ingestRestore.test.ts server/src/tests/ingestionEngine.test.ts`
-> Plans 003, 006, 012, 014, 015, and 016 intentionally change several paths after the planned commit. Read their completed plans and compare their resulting live contracts before editing. The schema precondition is exact: v12 belongs to plan 006, v13 belongs to plan 012, and this plan alone adds v14. Use plan 015’s final promotion boundary and plan 016’s final bounded-reconciliation owner; do not restore their predecessor designs.
+> **Drift check (run first)**: `git diff --stat f1b9293..HEAD -- server/src/db/migrations.ts server/src/db/stores/connectorRefreshStore.ts server/src/db/stores/sourceIngestionTransitions.ts server/src/db/stores/ingestionStore.ts server/src/db/stores/sourceStore.ts server/src/storageRuntime.ts server/src/dataService.ts server/src/ingest.ts server/src/ingestionEngine.ts server/src/tests/vitestTestPartitions.ts server/src/tests/fixtures/sqlite/v015.sql server/src/tests/sqliteFoundation.test.ts server/src/tests/connectorRefreshStore.test.ts server/src/tests/sourceIngestionTransitions.test.ts server/src/tests/sqliteSourceStore.test.ts server/src/tests/dataService.test.ts server/src/tests/ingestionWorker.test.ts server/src/tests/ingestRestore.test.ts server/src/tests/ingestionEngine.test.ts`
+> Plans 003, 006, 012, 014, 015, 016, and 031 intentionally change several paths after the planned commit. Read their completed plans and compare their resulting live contracts before editing. The schema precondition is exact: v12 belongs to plan 031, v13 belongs to plan 006, v14 belongs to plan 012, and this plan alone adds v15. Use plan 015’s final promotion boundary and plan 016’s final bounded-reconciliation owner; do not restore their predecessor designs.
+> Plans 024, 025, 026, 035, and 037 are additional completed baseline. The new
+> typed row must coexist with exact-location cache-cleanup tombstones and their
+> prepare/activate/delete serialization, preserve authoritative automation
+> terminal history and early route auth/body limits, obey embedding-migration
+> mutation gates/identity phases, and run under the exact workspace lock. Do not
+> dual-own or clear any of those records; their expected live drift is not a
+> STOP condition.
 > **Read-only dependency check**: verify `server/src/tests/sqliteMigrationFixture.ts` still matches plan 003. It is not editable here.
 
 ## Status
@@ -11,13 +18,14 @@
 - **Priority**: P2
 - **Effort**: L
 - **Risk**: HIGH
-- **Depends on**: `advisor-plans/003-add-historical-migration-fixtures.md`, `advisor-plans/006-bind-egress-consent-to-provider-revision.md`, `advisor-plans/012-enforce-automation-target-ownership.md`, `advisor-plans/014-create-owned-application-runtime.md`, `advisor-plans/015-shorten-vector-promotion-transaction.md`, `advisor-plans/016-bound-periodic-storage-reconciliation.md`
+- **Depends on**: `advisor-plans/003-add-historical-migration-fixtures.md`, `advisor-plans/006-bind-egress-consent-to-provider-revision.md`, `advisor-plans/012-enforce-automation-target-ownership.md`, `advisor-plans/014-create-owned-application-runtime.md`, `advisor-plans/015-shorten-vector-promotion-transaction.md`, `advisor-plans/016-bound-periodic-storage-reconciliation.md`, `advisor-plans/031-paginate-resource-catalogs.md`
+- **Preserve completed baseline**: Plans 024–026, 031, 035, and 037
 - **Category**: migration
 - **Planned at**: commit `f1b9293`, 2026-08-30
 
 ## Why this matters
 
-Connector refresh is a cross-engine prepare → activate → promote → cleanup protocol, but its durable phase and compare-and-swap identities are currently untyped keys inside general-purpose `sources.meta`. A crash around DuckDB activation is represented only by an in-memory boolean, so startup cannot distinguish “not activated” from “activated but not promoted” without reconstructing state from loosely related fields. Schema v14 must give the protocol one constrained durable row, migrate every valid legacy combination transactionally, and let recovery reconcile the exact immutable cache location rather than guess.
+Connector refresh is a cross-engine prepare → activate → promote → cleanup protocol, but its durable phase and compare-and-swap identities are currently untyped keys inside general-purpose `sources.meta`. A crash around DuckDB activation is represented only by an in-memory boolean, so startup cannot distinguish “not activated” from “activated but not promoted” without reconstructing state from loosely related fields. Schema v15 must give the protocol one constrained durable row, migrate every valid legacy combination transactionally, and let recovery reconcile the exact immutable cache location rather than guess.
 
 ## Current state
 
@@ -27,9 +35,10 @@ Connector refresh is a cross-engine prepare → activate → promote → cleanup
   export const LATEST_SQLITE_SCHEMA_VERSION = 11;
   ```
 
-  Plans 006 and 012 must make the live value exactly 13 and add contiguous v12/v13 migrations before this plan starts.
+  Plan 031 already owns v12. Plans 006 and 012 must make the live value exactly
+  14 and add contiguous v13/v14 migrations before this plan starts.
 
-- `server/src/db/migrations.ts:492-518` applies each migration in one `BEGIN IMMEDIATE` transaction, sets `user_version`, commits, and rolls back on error. Plan 003 adds the required historical fixture contract: helper `server/src/tests/sqliteMigrationFixture.ts`, immutable deltas under `server/src/tests/fixtures/sqlite/vNNN.sql`, and assertions in `server/src/tests/sqliteFoundation.test.ts`. Add `v014.sql`; do not invent another fixture mechanism.
+- `server/src/db/migrations.ts:492-518` applies each migration in one `BEGIN IMMEDIATE` transaction, sets `user_version`, commits, and rolls back on error. Plan 003 adds the required historical fixture contract: helper `server/src/tests/sqliteMigrationFixture.ts`, immutable deltas under `server/src/tests/fixtures/sqlite/vNNN.sql`, and assertions in `server/src/tests/sqliteFoundation.test.ts`. Add `v015.sql`; do not invent another fixture mechanism.
 - `server/src/db/stores/sourceIngestionTransitions.ts:317-353` starts a refresh by mutating untyped metadata:
 
   ```ts
@@ -44,11 +53,10 @@ Connector refresh is a cross-engine prepare → activate → promote → cleanup
     "connector_activation_previous_location",
   ]);
   meta.connector_refresh_version = refreshVersion;
-  transaction.run(`UPDATE sources SET status='index',meta=? WHERE account_id=? AND id=?`, [
-    encodeJson(meta, "source meta"),
-    accountId,
-    source.id,
-  ]);
+  transaction.run(
+    `UPDATE sources SET status='index',meta=? WHERE account_id=? AND id=?`,
+    [encodeJson(meta, "source meta"), accountId, source.id],
+  );
   ```
 
 - `sourceIngestionTransitions.ts:357-425` then writes `connector_candidate_location`, `connector_activation_previous_location`, and optionally `connector_previous_location` into the same JSON while changing the job from `preparing` to `pending`.
@@ -59,13 +67,23 @@ Connector refresh is a cross-engine prepare → activate → promote → cleanup
   if (refreshVersion && candidateLocation && input.connector && input.url) {
     activationStarted = true;
     const activated = await data.activateDatasetRefresh(/* exact identity */);
-    if (activated.version !== refreshVersion || activated.location !== candidateLocation) {
+    if (
+      activated.version !== refreshVersion ||
+      activated.location !== candidateLocation
+    ) {
       throw new Error("connector refresh activation mismatch");
     }
-    await store.assertLease(input.accountId, input.sourceId, input.generation, input.leaseToken);
+    await store.assertLease(
+      input.accountId,
+      input.sourceId,
+      input.generation,
+      input.leaseToken,
+    );
   }
 
-  await lifecycle.promote({ /* generation and promotedFilePath */ });
+  await lifecycle.promote({
+    /* generation and promotedFilePath */
+  });
   ```
 
   A process crash loses `activationStarted`.
@@ -81,23 +99,23 @@ Connector refresh is a cross-engine prepare → activate → promote → cleanup
 
 ## Commands you will need
 
-| Purpose | Command | Expected on success |
-|---|---|---|
-| Migration preflight | `rg -n -e "LATEST_SQLITE_SCHEMA_VERSION = 13" -e "version: 12" -e "version: 13" server/src/db/migrations.ts` | exactly the v13 latest declaration and contiguous v12/v13 registrations are present |
-| Migration/store tests | `pnpm --filter borealis-server exec vitest run --config vitest.integration.config.ts src/tests/sqliteFoundation.test.ts src/tests/connectorRefreshStore.test.ts src/tests/sqliteSourceStore.test.ts` | exit 0; v13→v14, serialized legacy state, ownership/index plans, repair pages, and deletion snapshots pass |
-| Protocol integration tests | `pnpm --filter borealis-server exec vitest run --config vitest.integration.config.ts src/tests/sourceIngestionTransitions.test.ts src/tests/connectorRefreshStore.test.ts` | exit 0; serialized SQLite transitions and retry-touch CAS cases pass |
-| Protocol unit tests | `pnpm --filter borealis-server exec vitest run src/tests/dataService.test.ts src/tests/ingestionWorker.test.ts src/tests/ingestRestore.test.ts src/tests/ingestionEngine.test.ts` | exit 0 in the default partition; bounded current-location facade, orchestration, and crash recovery pass |
-| Server checks | `pnpm --filter borealis-server typecheck && pnpm --filter borealis-server lint && pnpm --filter borealis-server format:check` | exit 0 |
-| Server gate | `pnpm --filter borealis-server test && pnpm --filter borealis-server test:integration` | exit 0 |
-| Policy | `pnpm policy` | exit 0 |
-| Repository gate | `pnpm verify` | exit 0 and prints `ALL GATES GREEN` |
+| Purpose                    | Command                                                                                                                                                                                              | Expected on success                                                                                        |
+| -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| Migration preflight        | `rg -n -e "LATEST_SQLITE_SCHEMA_VERSION = 14" -e "version: 12" -e "version: 13" -e "version: 14" server/src/db/migrations.ts`                                                                        | exactly the v14 latest declaration and contiguous v12/v13/v14 registrations are present                    |
+| Migration/store tests      | `pnpm --filter borealis-server exec vitest run --config vitest.integration.config.ts src/tests/sqliteFoundation.test.ts src/tests/connectorRefreshStore.test.ts src/tests/sqliteSourceStore.test.ts` | exit 0; v14→v15, serialized legacy state, ownership/index plans, repair pages, and deletion snapshots pass |
+| Protocol integration tests | `pnpm --filter borealis-server exec vitest run --config vitest.integration.config.ts src/tests/sourceIngestionTransitions.test.ts src/tests/connectorRefreshStore.test.ts`                           | exit 0; serialized SQLite transitions and retry-touch CAS cases pass                                       |
+| Protocol unit tests        | `pnpm --filter borealis-server exec vitest run src/tests/dataService.test.ts src/tests/ingestionWorker.test.ts src/tests/ingestRestore.test.ts src/tests/ingestionEngine.test.ts`                    | exit 0 in the default partition; bounded current-location facade, orchestration, and crash recovery pass   |
+| Server checks              | `pnpm --filter borealis-server typecheck && pnpm --filter borealis-server lint && pnpm --filter borealis-server format:check`                                                                        | exit 0                                                                                                     |
+| Server gate                | `pnpm --filter borealis-server test && pnpm --filter borealis-server test:integration`                                                                                                               | exit 0                                                                                                     |
+| Policy                     | `pnpm policy`                                                                                                                                                                                        | exit 0                                                                                                     |
+| Repository gate            | `pnpm verify`                                                                                                                                                                                        | exit 0 and prints `ALL GATES GREEN`                                                                        |
 
 ## Scope
 
 **In scope** (the only files you should modify):
 
 - `server/src/db/migrations.ts`
-- `server/src/tests/fixtures/sqlite/v014.sql` (create)
+- `server/src/tests/fixtures/sqlite/v015.sql` (create)
 - `server/src/tests/sqliteFoundation.test.ts`
 - `server/src/db/stores/connectorRefreshStore.ts` (create)
 - `server/src/db/stores/sourceIngestionTransitions.ts`
@@ -116,11 +134,11 @@ Connector refresh is a cross-engine prepare → activate → promote → cleanup
 - `server/src/tests/ingestionEngine.test.ts`
 - `server/src/tests/vitestTestPartitions.ts` (add `connectorRefreshStore.test.ts` to plan 001’s serialized integration manifest)
 
-`server/src/tests/sqliteMigrationFixture.ts` is a read-only plan-003 helper unless v14 exposes a generic helper defect; STOP before modifying it. The v12/v13 fixture files are immutable and out of scope.
+`server/src/tests/sqliteMigrationFixture.ts` is a read-only plan-003 helper unless v15 exposes a generic helper defect; STOP before modifying it. The v12/v13/v14 fixture files are immutable and out of scope.
 
 **Out of scope**:
 
-- Renumbering, rewriting, squashing, or combining schema versions 1–13.
+- Renumbering, rewriting, squashing, or combining schema versions 1–14.
 - Changing connector HTTP fetch/SSRF policy, URL configuration, public route shapes, schedule behavior, or DuckDB’s immutable-cache CAS.
 - Changing SQLite/LanceDB generation visibility, Plan 011's proven-removal
   semantics, or vector promotion boundaries (plan 015). Snapshotting typed
@@ -145,9 +163,10 @@ Connector refresh is a cross-engine prepare → activate → promote → cleanup
 Read the completed plans 003, 006, 012, 014, 015, and 016. Confirm:
 
 - plan 003’s helper and immutable fixture deltas are present and its tests pass;
-- schema v12 is exclusively the provider-bound-consent migration from plan 006;
-- schema v13 is exclusively the automation-target-ownership migration from plan 012;
-- `LATEST_SQLITE_SCHEMA_VERSION` is exactly 13 and registrations are contiguous;
+- schema v12 is exclusively the catalog-index migration from plan 031;
+- schema v13 is exclusively the provider-bound-consent migration from plan 006;
+- schema v14 is exclusively the automation-target-ownership migration from plan 012;
+- `LATEST_SQLITE_SCHEMA_VERSION` is exactly 14 and registrations are contiguous;
 - plan 014 exposes one owned application runtime and one authoritative storage composition/close path.
 - plan 015’s shortened vector-promotion transaction and characterization coverage are live;
 - plan 016’s bounded periodic reconciliation plus full startup repair owner are live;
@@ -155,9 +174,9 @@ Read the completed plans 003, 006, 012, 014, 015, and 016. Confirm:
 
 Do not edit until all eight facts hold.
 
-**Verify**: `rg -n "LATEST_SQLITE_SCHEMA_VERSION = 13|version: 12|version: 13" server/src/db/migrations.ts && pnpm --filter borealis-server exec vitest run --config vitest.integration.config.ts src/tests/sqliteFoundation.test.ts` → the three expected declarations are present and all migration fixtures through v13 pass in the serialized integration partition.
+**Verify**: `rg -n "LATEST_SQLITE_SCHEMA_VERSION = 14|version: 12|version: 13|version: 14" server/src/db/migrations.ts && pnpm --filter borealis-server exec vitest run --config vitest.integration.config.ts src/tests/sqliteFoundation.test.ts` → the four expected declarations are present and all migration fixtures through v14 pass in the serialized integration partition.
 
-### Step 2: Add schema v14 and migrate valid legacy states atomically
+### Step 2: Add schema v15 and migrate valid legacy states atomically
 
 Add a strict table named `connector_refresh_states`, with one row per connector-backed source. Use these columns and constraints (adapt only identifier-length constants to the store’s existing codec limits):
 
@@ -171,7 +190,7 @@ Add a strict table named `connector_refresh_states`, with one row per connector-
 - `candidate_location TEXT`, `activation_previous_location TEXT`, and `cleanup_previous_location TEXT`, each bounded when non-null;
 - `attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0)`;
 - `created_at` and `updated_at` ISO timestamps;
-- a v14 unique parent index on `sources(id, connector, account_id)`, then a
+- a v15 unique parent index on `sources(id, connector, account_id)`, then a
   composite foreign key
   `(source_id, connector_id, account_id) → sources(id, connector, account_id)`
   plus `(connector_id, account_id) → connectors(id, account_id)`, both
@@ -188,7 +207,7 @@ identity in every transition predicate; `phase` remains part of each transition
 CAS, not the leading page-order key. Every successful phase-changing CAS resets
 `attempts` to zero; a failed/no-progress exact touch increments it.
 
-Complete Plan 016's explicit index handoff in this same serialized v14
+Complete Plan 016's explicit index handoff in this same serialized v15
 migration. Add exactly these persistent indexes, matching the live query order
 including all deterministic tie-breakers:
 
@@ -202,19 +221,19 @@ prove each attempts-first periodic selector uses its matching order index
 without a temporary sort. Do not change Plan 016's limits or ordering to fit an
 index.
 
-Within the same v14 migration transaction, validate and convert legacy protocol keys from `sources.meta`:
+Within the same v15 migration transaction, validate and convert legacy protocol keys from `sources.meta`:
 
 - `connector_refresh_version` with no candidate is `preparing` only when a matching connector source and `ingestion_jobs.status='preparing'` row exists.
 - A version plus candidate (with nullable activation-previous and optional cleanup-previous locations) is `activating`, not `prepared`: after a legacy crash, external activation is ambiguous and startup repair must query the exact current DuckDB location.
 - A ready connector source with only `connector_previous_location` becomes `cleanup_pending`; use a deterministic internal legacy refresh identity and the ready generation/candidate file path. This identity is for cleanup only and must never be passed to connector download/activation.
 - No protocol keys means no state row.
-- Any other key combination, wrong JSON type, missing connector/job/generation, candidate mismatch, or phase-incompatible source/job status aborts and rolls back v14. Implement a transactional SQL guard rather than ignoring rows.
+- Any other key combination, wrong JSON type, missing connector/job/generation, candidate mismatch, or phase-incompatible source/job status aborts and rolls back v15. Implement a transactional SQL guard rather than ignoring rows.
 
 After inserts succeed, use `json_remove` to remove only `connector_refresh_version`, `connector_candidate_location`, `connector_activation_previous_location`, and `connector_previous_location`. Preserve every other key, especially `error`, `error_code`, `error_detail`, `error_stage`, and display metadata.
 
-Add the exact v14 delta to `server/src/tests/fixtures/sqlite/v014.sql` under plan 003’s fixture rules. Raise `LATEST_SQLITE_SCHEMA_VERSION` to 14 and register only `{ version: 14, sql: SCHEMA_V14 }` after v13.
+Add the exact v15 delta to `server/src/tests/fixtures/sqlite/v015.sql` under plan 003’s fixture rules. Raise `LATEST_SQLITE_SCHEMA_VERSION` to 15 and register only `{ version: 15, sql: SCHEMA_V15 }` after v14.
 
-**Verify**: `pnpm --filter borealis-server exec vitest run --config vitest.integration.config.ts src/tests/sqliteFoundation.test.ts` → fresh schema is v14; every historical fixture reaches v14; valid preparing/ambiguous-active/cleanup states migrate; unrelated metadata survives byte-for-byte at the decoded-object level; malformed legacy state rolls back with `user_version` still 13.
+**Verify**: `pnpm --filter borealis-server exec vitest run --config vitest.integration.config.ts src/tests/sqliteFoundation.test.ts` → fresh schema is v15; every historical fixture reaches v15; valid preparing/ambiguous-active/cleanup states migrate; unrelated metadata survives byte-for-byte at the decoded-object level; malformed legacy state rolls back with `user_version` still 14.
 
 In the same fixture suite, create two connector-backed sources for one account
 and use direct SQL to try pairing source A with connector B in
@@ -270,8 +289,7 @@ connector. Build `dataset_locations` as a stable de-duplicated union of
 `cleanup_previous_location`, omitting nulls. Do not read the removed protocol
 keys from `sources.meta`. Both `deleteSource` and bulk `deleteConnector` must
 reserve these locations for every source before the typed row cascades away;
-the durable pending intent then remains the sole cleanup authority under Plan
-011. Keep all path values internal/content-free and preserve the existing
+the durable pending intent then remains the sole cleanup authority under Plan 011. Keep all path values internal/content-free and preserve the existing
 idempotent already-pending behavior.
 
 In `sqliteSourceStore.test.ts`, delete sources/connectors from every legal typed
@@ -391,7 +409,7 @@ sleeps, and assert logs contain only aggregate codes/counts.
 
 ### Step 6: Run structural and complete gates
 
-Search production runtime code for the removed protocol keys. Matches are permitted only in v14 migration/backfill and migration tests/fixtures.
+Search production runtime code for the removed protocol keys. Matches are permitted only in v15 migration/backfill and migration tests/fixtures.
 
 **Verify**: `rg -n "connector_(refresh_version|candidate_location|activation_previous_location|previous_location)" server/src --glob '!server/src/db/migrations.ts' --glob '!server/src/tests/**'` → no matches.
 
@@ -401,12 +419,12 @@ Then run all gates.
 
 ## Test plan
 
-- `sqliteFoundation.test.ts` via plan-003 fixtures: fresh v14, every old schema
-  to v14, exact v13 predecessor, valid legacy preparing/candidate/cleanup
+- `sqliteFoundation.test.ts` via plan-003 fixtures: fresh v15, every old schema
+  to v15, exact v14 predecessor, valid legacy preparing/candidate/cleanup
   mappings, immutable/non-reused repair ordinals, attempts defaults, preserved
   unrelated/error metadata, idempotence, malformed-state rollback,
   source/connector/account cross-pair rejection, and query-plan use of all four
-  v14 repair indexes without temporary sorts.
+  v15 repair indexes without temporary sorts.
 - New `connectorRefreshStore.test.ts`: strict decoding, composite tenancy, legal
   phase graph, stale CAS rejection, cascades, global
   `attempts, updated_at, source_id` periodic-page ordering, immutable-ordinal
@@ -429,13 +447,13 @@ Then run all gates.
 
 ## Done criteria
 
-- [ ] Schema version is exactly 14, with v12/v13 untouched and one immutable `v014.sql` fixture.
+- [ ] Schema version is exactly 15, with v12/v13/v14 untouched and one immutable `v015.sql` fixture.
 - [ ] `connector_refresh_states` has strict phase/location/composite-ownership
       constraints, immutable AUTOINCREMENT startup ordinals, nonnegative
       attempts, and an `(attempts, updated_at, source_id)` periodic repair index.
 - [ ] The three-column source/connector/account foreign key rejects a source
       paired with another connector in the same account, including direct SQL.
-- [ ] The three Plan 016 attempts-first selectors use their exact v14 indexes
+- [ ] The three Plan 016 attempts-first selectors use their exact v15 indexes
       with no temporary sort, completing the earlier bounded-work/index handoff.
 - [ ] Every valid legacy protocol-key combination migrates transactionally; malformed combinations roll back; display/error metadata remains.
 - [ ] Runtime prepare, activate, promote, cleanup, and startup repair use only the typed durable table.
@@ -462,10 +480,12 @@ Then run all gates.
 Stop and report if:
 
 - Any dependency plan (003, 006, 012, 014, 015, or 016) is not `DONE`.
-- `LATEST_SQLITE_SCHEMA_VERSION` is not exactly 13, v12 is not provider-bound consent, v13 is not automation-target ownership, or either migration/fixture has been renumbered.
+- `LATEST_SQLITE_SCHEMA_VERSION` is not exactly 14, v12 is not the catalog-index
+  migration, v13 is not provider-bound consent, v14 is not automation-target
+  ownership, or any predecessor migration/fixture has been renumbered.
 - Plan 003’s helper/fixture contract or plan 014’s single runtime owner is absent.
 - Plan 001’s test partitions cannot place the new native store suite in serialized integration, or plan 015/016’s final promotion/reconciliation contracts are absent.
-- A legacy key combination cannot be mapped without guessing whether a location is active; preserve the database at v13 and report the exact structural combination without exposing path values.
+- A legacy key combination cannot be mapped without guessing whether a location is active; preserve the database at v14 and report the exact structural combination without exposing path values.
 - DuckDB cannot return an exact current location for `activating` repair or cannot enforce exact-location cleanup.
 - The typed store cannot periodically page by
   `attempts, updated_at, source_id`, cannot increment a failed exact row's
@@ -474,11 +494,11 @@ Stop and report if:
   ownership checks.
 - Startup cannot guarantee the ready DuckDB registry is rebuilt before ambiguous typed refresh states are reconciled, or shutdown cannot await that startup pass.
 - The solution requires permanent dual-write, table-name-only cleanup, a weakened CAS, a remote refetch during startup, or a change to SQLite/LanceDB visibility semantics.
-- The v14 migration cannot preserve unrelated/error metadata or roll back atomically on invalid state.
-- The v14 schema cannot enforce exact source/connector/account pairing, or a
+- The v15 migration cannot preserve unrelated/error metadata or roll back atomically on invalid state.
+- The v15 schema cannot enforce exact source/connector/account pairing, or a
   typed row can cascade before source deletion atomically preserves all of its
   cleanup locations in the existing durable intent.
-- Any Plan 016 attempts-first query shape cannot use the exact v14 index without
+- Any Plan 016 attempts-first query shape cannot use the exact v15 index without
   a full scan/temporary sort; do not silently claim backlog-independent
   selection cost.
 - A required fix is outside scope or any verification fails twice after one reasonable correction.
@@ -487,5 +507,5 @@ Stop and report if:
 
 - Future connector-refresh phases belong in this table and its discriminated union, never in `sources.meta`.
 - Treat `activating` as an explicit uncertainty state. Recovery must query the authoritative external catalog and compare exact locations before changing it.
-- Keep schema migrations contiguous and immutable. Plan 003’s fixture for v14 must change in the same review as `SCHEMA_V14`, then never be edited after release.
-- Plan 023 must document schema v14, typed crash recovery, and that `sources.meta` retains display/error metadata only; it must not expose filesystem locations.
+- Keep schema migrations contiguous and immutable. Plan 003’s fixture for v15 must change in the same review as `SCHEMA_V15`, then never be edited after release.
+- Plan 023 must document schema v15, typed crash recovery, and that `sources.meta` retains display/error metadata only; it must not expose filesystem locations.

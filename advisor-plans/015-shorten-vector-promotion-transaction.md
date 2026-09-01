@@ -3,7 +3,11 @@
 > **Executor instructions**: Do not start until plan 004 is DONE and its vertical agent test is green. Follow every step and verification gate. If a STOP condition occurs, stop and report; do not weaken the two-store protocol. When complete, update this plan's row in `advisor-plans/README.md` unless the reviewer owns index maintenance.
 >
 > **Drift check (run first, after dependency)**: `git diff --stat f1b9293..HEAD -- server/src/db/stores/ingestionStore.ts server/src/tests/ingestionVectorLifecycle.test.ts`
-> Compare `promoteGeneration`, its input type, and the lifecycle tests with Current state. Any changed promotion protocol is a STOP condition.
+> Plans 035 and 036 intentionally added embedding-index identity/migration
+> validation and OCR-derived chunks to the same ingestion lifecycle. Keep the
+> immutable generation snapshot, resolved model/dimension marker and receipt,
+> migration gates, and ordinary OCR chunk promotion intact. These are expected
+> baseline changes; STOP only for an unrelated promotion-protocol mismatch.
 
 ## Status
 
@@ -11,6 +15,7 @@
 - **Effort**: M
 - **Risk**: MED
 - **Depends on**: `advisor-plans/004-add-vertical-agent-integration-test.md`
+- **Preserve completed baseline**: Plans 035 and 036
 - **Category**: perf
 - **Planned at**: commit `f1b9293`, 2026-08-30
 
@@ -50,7 +55,8 @@ Promotion opens SQLite's only in-process writer gate and a `BEGIN IMMEDIATE` tra
   ```ts
   const result = await this.store.promoteGeneration({
     ...input,
-    verifyVectors: (chunkIds) => this.vectors.hasAll(chunkIds, input.sourceId, input.generation),
+    verifyVectors: (chunkIds) =>
+      this.vectors.hasAll(chunkIds, input.sourceId, input.generation),
   });
   ```
 
@@ -62,15 +68,15 @@ Promotion opens SQLite's only in-process writer gate and a `BEGIN IMMEDIATE` tra
 
 ## Commands you will need
 
-| Purpose | Command | Expected on success |
-|---|---|---|
-| Focused lifecycle tests | `pnpm --filter borealis-server exec vitest run --config vitest.integration.config.ts src/tests/ingestionVectorLifecycle.test.ts` | all two-store lifecycle tests pass |
-| SQLite concurrency tests | `pnpm --filter borealis-server exec vitest run --config vitest.integration.config.ts src/tests/sqliteFoundation.test.ts` | all ledger gate/transaction tests pass |
-| Dependency regression | `pnpm --filter borealis-server exec vitest run --config vitest.integration.config.ts src/tests/agentVerticalIntegration.test.ts` | exit 0; the complete agent turn passes with two scripted provider calls |
-| Server typecheck | `pnpm --filter borealis-server typecheck` | exit 0, no errors |
-| Server lint/format | `pnpm --filter borealis-server lint && pnpm --filter borealis-server format:check` | exit 0, no warnings |
-| Full server tests | `pnpm --filter borealis-server test` | all tests pass |
-| Final repository gate | `pnpm verify` | exit 0 and prints `ALL GATES GREEN` on a provisioned supported host |
+| Purpose                  | Command                                                                                                                          | Expected on success                                                     |
+| ------------------------ | -------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| Focused lifecycle tests  | `pnpm --filter borealis-server exec vitest run --config vitest.integration.config.ts src/tests/ingestionVectorLifecycle.test.ts` | all two-store lifecycle tests pass                                      |
+| SQLite concurrency tests | `pnpm --filter borealis-server exec vitest run --config vitest.integration.config.ts src/tests/sqliteFoundation.test.ts`         | all ledger gate/transaction tests pass                                  |
+| Dependency regression    | `pnpm --filter borealis-server exec vitest run --config vitest.integration.config.ts src/tests/agentVerticalIntegration.test.ts` | exit 0; the complete agent turn passes with two scripted provider calls |
+| Server typecheck         | `pnpm --filter borealis-server typecheck`                                                                                        | exit 0, no errors                                                       |
+| Server lint/format       | `pnpm --filter borealis-server lint && pnpm --filter borealis-server format:check`                                               | exit 0, no warnings                                                     |
+| Full server tests        | `pnpm --filter borealis-server test`                                                                                             | all tests pass                                                          |
+| Final repository gate    | `pnpm verify`                                                                                                                    | exit 0 and prints `ALL GATES GREEN` on a provisioned supported host     |
 
 ## Scope
 

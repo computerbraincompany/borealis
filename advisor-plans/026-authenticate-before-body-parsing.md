@@ -2,6 +2,7 @@
 
 ## Status
 
+- **State**: DONE (2026-09-01)
 - **Priority**: P1
 - **Effort**: M
 - **Risk**: MED
@@ -20,8 +21,8 @@ server returns 401.
 
 - Every protected route authenticates in `onRequest`, before content parsing.
 - Public registration, login, and health behavior remains explicit.
-- The global JSON ceiling is a small fail-safe; every intentionally larger
-  payload route declares its own derived limit.
+- The global request-body parser ceiling is a small fail-safe; every
+  intentionally larger payload route declares its own derived limit.
 - Agent, automation, library, report-share, contained, consent, preferences,
   settings, connector, chat, and source mutations have limits derived from
   their schema/resource contract.
@@ -58,10 +59,21 @@ or the desktop bootstrap boundary.
 
 ## Done criteria
 
-- [ ] All protected routes authenticate before parsing.
-- [ ] Every body-bearing route has a documented effective limit.
-- [ ] Large legitimate message/upload flows remain functional.
-- [ ] No public route accidentally becomes protected or vice versa.
+- [x] All protected routes authenticate before parsing.
+- [x] Every body-bearing route has a documented effective limit.
+- [x] Large legitimate message/upload flows remain functional.
+- [x] No public route accidentally becomes protected or vice versa.
+
+## Completion record
+
+- Protected routes use `onRequest` authentication, the global fallback is 8
+  KiB, and every larger JSON/upload contract declares an explicit schema-derived
+  limit, including 3,424-byte Preferences, 29,962-byte connector, 32 KiB chat
+  create/scope, 8 KiB chat patch, and 157,696-byte Settings draft ceilings.
+- `routeSecurityPolicy`, HTTP-boundary, server composition, upload, and message
+  tests cover 401-before-parser precedence, worst-case escaped legal payloads,
+  and authenticated 413 behavior; the complete server unit and integration
+  suites pass.
 
 ## STOP conditions
 

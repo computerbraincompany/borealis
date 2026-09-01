@@ -2,6 +2,7 @@
 
 ## Status
 
+- **State**: DONE (2026-09-01)
 - **Priority**: P1
 - **Effort**: S
 - **Risk**: LOW
@@ -50,9 +51,16 @@ the backward-compatible representation for operator cancellation.
 
 ## Done criteria
 
-- [ ] No cancelled chat run is recorded as automation success.
-- [ ] Cancellation never resets failure accounting.
-- [ ] Exactly one bounded history record is written per claimed execution.
+- [x] No cancelled chat run is recorded as automation success.
+- [x] Cancellation never resets failure accounting.
+- [x] Exactly one bounded history record is written per claimed execution.
+
+## Completion record
+
+- The automation runner consumes chat persistence's authoritative terminal
+  result and shares one content-free cancellation recorder across both races.
+- Automation and run-store tests assert the single `skipped` row, fixed detail,
+  unchanged failure counter, and retained success/failure behavior.
 
 ## STOP conditions
 

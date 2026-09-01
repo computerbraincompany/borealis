@@ -3,7 +3,12 @@
 > **Executor instructions**: Do not start until plan 006 is DONE. Follow the plan in order and run every verification gate. If a STOP condition occurs, stop and report; do not improvise. When complete, update this plan's row in `advisor-plans/README.md` unless a reviewer owns index maintenance.
 >
 > **Drift check (run first)**: `git diff --stat f1b9293..HEAD -- server/src/automationRunner.ts server/src/serverApp.ts server/src/tests/automations.test.ts server/src/tests/serverApp.test.ts`
-> Compare live scheduler and shutdown ordering with the Current state excerpts. A changed lifecycle API is a STOP condition.
+> Plan 025 intentionally made persisted chat terminal state authoritative for
+> automation outcomes, including cancellation as one content-free `skipped`
+> history row. Plans 035, 036, and 037 added migration quiescence, an OCR child
+> lifecycle, and the exact server workspace lock. Preserve all four while making
+> scheduler stop awaitable; their lifecycle changes are expected baseline, not
+> a STOP condition. STOP only for unrelated ownership/order drift.
 
 ## Status
 
@@ -11,6 +16,7 @@
 - **Effort**: M
 - **Risk**: MED
 - **Depends on**: `advisor-plans/006-bind-egress-consent-to-provider-revision.md`
+- **Preserve completed baseline**: Plans 025, 035, 036, and 037
 - **Category**: bug
 - **Planned at**: commit `f1b9293`, 2026-08-30
 
@@ -89,13 +95,13 @@ Stopping the scheduler currently clears only its interval. An already-running ti
 
 ## Commands you will need
 
-| Purpose | Command | Expected on success |
-|---|---|---|
-| Focused lifecycle tests | `pnpm --filter borealis-server exec vitest run src/tests/automations.test.ts src/tests/serverApp.test.ts` | all scheduler/server lifecycle tests pass |
-| Server typecheck | `pnpm --filter borealis-server typecheck` | exit 0, no errors |
-| Server lint/format | `pnpm --filter borealis-server lint && pnpm --filter borealis-server format:check` | exit 0, no warnings |
-| Full server tests | `pnpm --filter borealis-server test` | all tests pass |
-| Final repository gate | `pnpm verify` | exit 0 and prints `ALL GATES GREEN` on a provisioned supported host |
+| Purpose                 | Command                                                                                                   | Expected on success                                                 |
+| ----------------------- | --------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
+| Focused lifecycle tests | `pnpm --filter borealis-server exec vitest run src/tests/automations.test.ts src/tests/serverApp.test.ts` | all scheduler/server lifecycle tests pass                           |
+| Server typecheck        | `pnpm --filter borealis-server typecheck`                                                                 | exit 0, no errors                                                   |
+| Server lint/format      | `pnpm --filter borealis-server lint && pnpm --filter borealis-server format:check`                        | exit 0, no warnings                                                 |
+| Full server tests       | `pnpm --filter borealis-server test`                                                                      | all tests pass                                                      |
+| Final repository gate   | `pnpm verify`                                                                                             | exit 0 and prints `ALL GATES GREEN` on a provisioned supported host |
 
 ## Scope
 

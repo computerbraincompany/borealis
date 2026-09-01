@@ -6,6 +6,7 @@
 
 ## Status
 
+- **State**: DONE (2026-09-01)
 - **Priority**: P1
 - **Effort**: M
 - **Risk**: MED
@@ -30,8 +31,14 @@ after Borealis reports or records cleanup as complete.
   and `ENOTEMPTY`; other errors propagate.
 - Stale URL locations are inserted into `dataset_cache_cleanup_jobs` before
   DuckDB deactivation. The durable worker owns both deactivation and deletion.
+- A pending cleanup row is a durable exact-location tombstone. Connector
+  candidate adoption and final source promotion reject the same
+  `(account, name, location)`, while the data worker serializes preparation,
+  activation, and inactive cleanup for that location.
 - A job is resolved only after deletion or proven exact absence. Failures retain
   the row and increment attempts without logging paths, IDs, or errors.
+  Successful resolution atomically removes the row and only an exactly matching
+  prior-location marker.
 
 ## Scope
 
@@ -64,10 +71,30 @@ the connector prepare/activate CAS protocol.
 
 ## Done criteria
 
-- [ ] Fulfilled cleanup means deletion or proven `ENOENT`, never merely no throw.
-- [ ] Stale URL cleanup has durable identity before DuckDB forgets it.
-- [ ] Crash/retry and non-`ENOENT` regressions pass.
-- [ ] Documentation and the advisor index reflect completion.
+- [x] Fulfilled cleanup means deletion or proven `ENOENT`, never merely no throw.
+- [x] Stale URL cleanup has durable identity before DuckDB forgets it.
+- [x] Crash/retry and non-`ENOENT` regressions pass.
+- [x] Documentation and the advisor index reflect completion.
+
+## Completion record
+
+- `cleanupConnectorVersion` now treats only exact `ENOENT` as absence and
+  preserves all other filesystem failures for retry.
+- Stale connector locations enter `dataset_cache_cleanup_jobs` before DuckDB
+  deactivation; focused connector-fetch, restore, and ingestion lifecycle tests
+  cover unlink races, symlinks, restart retry, and directory error classes.
+- Reconciliation revalidates current `file_path` and prepared-candidate
+  ownership in the same SQLite transaction that reserves cleanup. The cleanup
+  row then remains a durable tombstone: candidate activation and generation
+  promotion cannot reuse its exact location, and DuckDB refuses cleanup while
+  the location is active, preparing, or activating. Same-file refresh fallback,
+  raced promotion, failed deletion, later refresh, and restart regressions keep
+  the last-good cache available without losing retry authority.
+- Cleanup also enumerates and removes only the exact version's
+  `.staged-<uuid>` candidate and manifest remnants. Candidate publication and
+  manifest-claim finalizers propagate non-`ENOENT` failures, so a crash before
+  or after either hard-link boundary leaves the durable tombstone available for
+  an exact retry rather than reporting false completion.
 
 ## STOP conditions
 

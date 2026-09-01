@@ -60,14 +60,14 @@ state, task progress, hardware presence, file-and-page citations, consent
 cards before anything left the device, and receipts when work returned.
 
 Portable Computer launched as Linux software for NVIDIA DGX Spark. It is a
-consumer-grade local *computer*: files, code, research, connectors, sandboxed
+consumer-grade local _computer_: files, code, research, connectors, sandboxed
 actions. It is not a data-intelligence platform. It does not make tabular
 truth, citation-grade retrieval, and board-ready artifacts the center of the
 product. That absence is our opening.
 
 Borealis takes North’s job and Portable Computer’s presence, then refuses
 both vendors’ locks: no Kubernetes tax to get started, no subscription to
-think, no requirement that the laptop *be* the GPU.
+think, no requirement that the laptop _be_ the GPU.
 
 ---
 
@@ -84,15 +84,16 @@ the happy path is register-free.
 
 The durable core is deliberately split by job:
 
-| Store | Job |
-|---|---|
-| SQLite | Relational ledger and chunk text |
-| LanceDB | Account- and source-scoped embedding vectors |
-| DuckDB | Bounded analytical SQL over user tabular files |
+| Store      | Job                                                                        |
+| ---------- | -------------------------------------------------------------------------- |
+| SQLite     | Relational ledger and chunk text                                           |
+| LanceDB    | Account- and source-scoped embedding vectors                               |
+| DuckDB     | Bounded analytical SQL over user tabular files                             |
 | Filesystem | Uploads, reports, provider/contained settings, model files, signing secret |
 
 People upload CSV, TSV, XLSX, Parquet, JSON, JSONL, PDF, DOCX, and plain
-text, or pull public CSV/JSON URLs through connectors. They attach a
+text, or pull public CSV/JSON URLs through connectors. Image-only PDF pages
+can use bounded local macOS Vision OCR without a network fallback. They attach a
 deliberate source scope to a chat. The agent can retrieve passages, list
 sources, query and describe tables, render charts, create HTML/PDF reports,
 and fetch a public URL the user wrote in the current turn. Answers can carry
@@ -103,7 +104,9 @@ deny-by-default.
 
 Model calls already go to an OpenAI-compatible endpoint. The default is
 loopback LM Studio. Settings persist the origin, optional key, and chat /
-embedding model IDs, while each account may choose a personal default chat
+embedding model IDs and dimension, qualify a draft pair with fixed synthetic
+tool/embedding calls, and manage a separate-index embedding migration without
+mixing retrieval identities. Each account may choose a personal default chat
 model. Contained mode can download and SHA-256-verify a model file, manage an
 operator-supplied `llama-server` on loopback, switch the live provider to it,
 and restore the previous origin on stop. The app still does not bundle an
@@ -129,6 +132,12 @@ connector-sync gate defect remains documented in M07. Settings exposes a
 best-effort, content-free activity log for selected remote-capable attempts,
 not proof of completed network egress.
 
+Operators can also create encrypted, integrity-verified portable workspace
+archives while Borealis is stopped. Restore is an offline, recoverable operation
+that verifies SQLite, LanceDB, and ready tabular sources together and preserves
+the old target until the operator explicitly removes it. This remains an
+instance-wide operator surface, never an account API.
+
 That is already a local data platform in miniature, not merely a document-chat
 prototype. The remaining distance is depth: standalone artifact kinds beyond
 reports and charts, plus promotion of query receipts beyond chat metadata;
@@ -144,19 +153,19 @@ code execution, and other desktop targets remain outside the shipping surface.
 Borealis is a **local data-intelligence platform** you run as a desktop
 application.
 
-*Local* means the control plane, the data plane, and the default compute
+_Local_ means the control plane, the data plane, and the default compute
 plane are machines the operator owns. The Mac on the table is the product.
 The Spark under the desk, or the rack down the hall, is optional muscle.
 A public API is an escape hatch with a visible cost, never the assumed
 home of the corpus.
 
-*Data intelligence* means the unit of value is not a clever reply. It is
-a cited answer over *this* library, a SQL-backed number over *these*
+_Data intelligence_ means the unit of value is not a clever reply. It is
+a cited answer over _this_ library, a SQL-backed number over _these_
 tables, a chart that can be regenerated, and a report a human can send.
 Conversation is the way in. The durable objects — sources, generations,
 queries, charts, documents — are the product.
 
-*Platform* means the same workspace can grow from a single analyst’s
+_Platform_ means the same workspace can grow from a single analyst’s
 laptop to a small team’s shared brain without changing genre: still an
 app, still private, still inspectable. Agents, libraries, and automations
 are layers on that substrate, not a second company.
@@ -207,7 +216,7 @@ In every case the loop is the same:
 ### The intelligence it grows
 
 Today the agent is one streaming tool loop. The destination is a platform
-of *reusable intelligence* over the same local stores:
+of _reusable intelligence_ over the same local stores:
 
 - **Personal agent** — the default workspace brain: model, source habits,
   and capabilities that belong to you.
@@ -290,9 +299,9 @@ Three rules will not move:
    scope, filesystem, and egress are server policy, not model authority.
 2. **Chat and embedding stay distinct.** Mixing them is how retrieval
    rots.
-3. **Changing the embedding model is a data event.** Reingestion is
-   required even when the dimension is unchanged; a dimension change is
-   a new store, not a toggle.
+3. **Changing the embedding model is a data event.** Same- or
+   different-dimension changes build and verify a separate index, then perform
+   a journaled restart swap; they are never an in-place Settings toggle.
 
 ---
 
@@ -364,7 +373,7 @@ the wedge.
 ## What we will not become
 
 - **A model company.** We will not win by shipping a better 27B. We win
-  by making whoever’s 27B — or 70B on the Spark — useful over *your*
+  by making whoever’s 27B — or 70B on the Spark — useful over _your_
   data.
 - **A Kubernetes North.** Private deployment matters. The first form of
   private is an app and a directory of files, not a Helm chart.
@@ -392,7 +401,8 @@ Computer archives remain dated research.
 
 Keep the current contract sharp: scoped sources, two-store retrieval,
 bounded DuckDB, canonical charts, self-contained reports, loopback
-desktop, visible provider settings. A vision that cannot run the
+desktop, visible and executable model compatibility, local OCR, and recoverable
+workspace archives. A vision that cannot run the
 personal-finance fixture end to end is fiction.
 
 ### Horizon 1 — the object on the desk
@@ -435,16 +445,16 @@ minute — that this is the private North they were told did not exist.
 
 ## Relationship to other documents
 
-| Document | Role |
-|---|---|
-| [README](../README.md) | What the product does *now*, how to run it, and how to verify it |
-| [API reference](API.md) | Current HTTP, SSE, and resource contracts |
-| [Desktop guide](../desktop/README.md) | Electron packaging, profiles, and native checks |
-| [Contributor instructions](../AGENTS.md) | Architecture and security invariants for people who change the code |
-| [Milestone ledger](../milestones/README.md) | Active implementation ledger and completed slices toward this vision |
-| [Advisor remediation](../advisor-plans/README.md) | Active engineering-remediation ledger from the 2026-08-30 audit, not product direction |
-| [North research archive](cohere-north/README.md) | Dated external research (2026-08-22). Comparative evidence, not a Borealis spec or roadmap |
-| [Completed plans](../plans/README.md) | Historical implementation, not an active backlog |
+| Document                                          | Role                                                                                       |
+| ------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| [README](../README.md)                            | What the product does _now_, how to run it, and how to verify it                           |
+| [API reference](API.md)                           | Current HTTP, SSE, and resource contracts                                                  |
+| [Desktop guide](../desktop/README.md)             | Electron packaging, profiles, and native checks                                            |
+| [Contributor instructions](../AGENTS.md)          | Architecture and security invariants for people who change the code                        |
+| [Milestone ledger](../milestones/README.md)       | Active implementation ledger and completed slices toward this vision                       |
+| [Advisor remediation](../advisor-plans/README.md) | Active engineering-remediation ledger from the 2026-08-30 audit, not product direction     |
+| [North research archive](cohere-north/README.md)  | Dated external research (2026-08-22). Comparative evidence, not a Borealis spec or roadmap |
+| [Completed plans](../plans/README.md)             | Historical implementation, not an active backlog                                           |
 
 This file is the product we are aiming at. When vision and
 implementation disagree, change the code on purpose or change this

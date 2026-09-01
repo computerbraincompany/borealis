@@ -14,6 +14,13 @@
 > desktop-operator route option, plan 008's synchronous download quiesce/drain,
 > plan 009's direct/fallback shell CSP, plan 013's awaitable stop contract, or
 > plan 001's test-partition manifest contract is absent, STOP.
+> Plans 024–026 and 031–037 subsequently added durable connector cleanup,
+> authoritative automation outcomes, early authentication/body limits, paged
+> catalogs, Electron/runtime hardening, lazy offline chunks, model
+> qualification, embedding migration, OCR child work, and the exact workspace
+> lock/archive boundary. Compose those live owners into the application runtime;
+> do not recreate globals, bypass their quiescence, or treat their expected
+> route/startup/shutdown changes as STOP drift.
 
 ## Status
 
@@ -21,6 +28,7 @@
 - **Effort**: L
 - **Risk**: MED
 - **Depends on**: `advisor-plans/004-add-vertical-agent-integration-test.md`, `advisor-plans/007-restrict-contained-engine-control.md`, `advisor-plans/008-harden-contained-download-transport.md`, `advisor-plans/009-eliminate-unsolicited-ui-egress.md`, `advisor-plans/013-drain-automation-scheduler-on-shutdown.md`
+- **Preserve completed baseline**: Plans 024–026 and 031–037
 - **Category**: tech-debt
 - **Planned at**: commit `f1b9293`, 2026-08-30
 
@@ -57,14 +65,20 @@ then start, quiesce, drain, and dispose those resources exactly once.
 - `server/src/automationRuntime.ts:12-30` has a second cache with no reset and constructs two store facade objects over the first active ledger:
 
   ```ts
-  let runtime: { store: AutomationStore; runner: ReturnType<typeof createAutomationRunner> } | undefined;
+  let runtime:
+    | {
+        store: AutomationStore;
+        runner: ReturnType<typeof createAutomationRunner>;
+      }
+    | undefined;
 
   function automationRuntime() {
     runtime ??= {
       store: new AutomationStore(storageRuntime().ledger),
       runner: createAutomationRunner({
         store: new AutomationStore(storageRuntime().ledger),
-        syncConnector: (accountId, connectorId) => syncConnector(accountId, undefined, connectorId),
+        syncConnector: (accountId, connectorId) =>
+          syncConnector(accountId, undefined, connectorId),
       }),
     };
     return runtime;
@@ -95,9 +109,13 @@ then start, quiesce, drain, and dispose those resources exactly once.
 - `server/src/routes/automations.ts:151-155` reads scheduler status through the hidden global accessor:
 
   ```ts
-  app.get("/api/automations/_scheduler", { preHandler: requireAuth }, async (_req, reply) => {
-    return reply.send({ running: automationRunner().isRunning() });
-  });
+  app.get(
+    "/api/automations/_scheduler",
+    { preHandler: requireAuth },
+    async (_req, reply) => {
+      return reply.send({ running: automationRunner().isRunning() });
+    },
+  );
   ```
 
   `server/src/routes.ts:24-58` composes route plugins without dependencies, so the route cannot identify the runner belonging to the server instance.
@@ -123,17 +141,17 @@ then start, quiesce, drain, and dispose those resources exactly once.
 
 ## Commands you will need
 
-| Purpose | Command | Expected on success |
-|---|---|---|
-| Actual-storage runtime test | `pnpm --filter borealis-server exec vitest run --config vitest.integration.config.ts src/tests/applicationRuntime.test.ts` | all restart/ownership cases pass |
-| Mocked lifecycle tests | `pnpm --filter borealis-server exec vitest run src/tests/serverApp.test.ts src/tests/automations.test.ts` | all server/route lifecycle cases pass |
-| Partition contract test | `pnpm --filter borealis-server exec vitest run src/tests/vitestPartitions.test.ts` | runtime test is integration-only and every tracked test is classified once |
-| Download lifecycle regression | `pnpm --filter borealis-server exec vitest run src/tests/contained.test.ts` | plan 008's atomic reservation and quiesce/drain contract passes unchanged |
-| Vertical agent regression | `pnpm --filter borealis-server exec vitest run --config vitest.integration.config.ts src/tests/agentVerticalIntegration.test.ts` | the dependency's complete chat-turn test passes unchanged |
-| Server typecheck | `pnpm --filter borealis-server typecheck` | exit 0, no errors |
-| Server lint/format | `pnpm --filter borealis-server lint && pnpm --filter borealis-server format:check` | exit 0, no warnings |
-| Server integration | `pnpm --filter borealis-server test:integration` | all integration tests pass |
-| Full repository gate | `pnpm verify` | exit 0 and prints `ALL GATES GREEN` on a provisioned supported host |
+| Purpose                       | Command                                                                                                                          | Expected on success                                                        |
+| ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| Actual-storage runtime test   | `pnpm --filter borealis-server exec vitest run --config vitest.integration.config.ts src/tests/applicationRuntime.test.ts`       | all restart/ownership cases pass                                           |
+| Mocked lifecycle tests        | `pnpm --filter borealis-server exec vitest run src/tests/serverApp.test.ts src/tests/automations.test.ts`                        | all server/route lifecycle cases pass                                      |
+| Partition contract test       | `pnpm --filter borealis-server exec vitest run src/tests/vitestPartitions.test.ts`                                               | runtime test is integration-only and every tracked test is classified once |
+| Download lifecycle regression | `pnpm --filter borealis-server exec vitest run src/tests/contained.test.ts`                                                      | plan 008's atomic reservation and quiesce/drain contract passes unchanged  |
+| Vertical agent regression     | `pnpm --filter borealis-server exec vitest run --config vitest.integration.config.ts src/tests/agentVerticalIntegration.test.ts` | the dependency's complete chat-turn test passes unchanged                  |
+| Server typecheck              | `pnpm --filter borealis-server typecheck`                                                                                        | exit 0, no errors                                                          |
+| Server lint/format            | `pnpm --filter borealis-server lint && pnpm --filter borealis-server format:check`                                               | exit 0, no warnings                                                        |
+| Server integration            | `pnpm --filter borealis-server test:integration`                                                                                 | all integration tests pass                                                 |
+| Full repository gate          | `pnpm verify`                                                                                                                    | exit 0 and prints `ALL GATES GREEN` on a provisioned supported host        |
 
 ## Scope
 
@@ -205,17 +223,22 @@ its `close()` finalizer; never clear another token.
 
 After acquiring the lease, call plan 008's `downloadManager.beginLifecycle()`
 before resource construction. Production defaults then initialize runtime
-settings, initialize storage from `config.sqlitePath`, `config.lanceDir`, and
-`config.embeddingDim`, and construct the runner with the existing
-`syncConnector(accountId, undefined, connectorId)` adapter. The options seam may
-accept explicit storage paths, sync adapter, download lifecycle, and
-settings/storage/engine lifecycle functions for tests, but must not be exposed
-through HTTP.
+settings and execute Plan 035's exact startup sequence: construct the owned
+embedding-migration coordinator, recover any journaled swap before storage
+opens, initialize SQLite/Lance from the effective resolved embedding model and
+dimension with marker/receipt validation, then finalize or roll back the swap
+through the existing fail-closed paths. Only then construct the runner with the
+existing `syncConnector(accountId, undefined, connectorId)` adapter. Never
+replace that sequence with the old raw `config.embeddingDim` open. The options
+seam may accept explicit storage paths, sync adapter, download/migration
+lifecycle, and settings/storage/engine lifecycle functions for tests, but must
+not be exposed through HTTP.
 
 `close(proof)` must synchronously enter `closing`, capture/cache its one close
 promise, quiesce/drain the owned runner and download manager, stop the contained
-engine, close the paired storage runtime, and close runtime settings. The
-download drain must settle before engine/settings/storage closure completes.
+engine, close the embedding-migration coordinator and paired storage runtime,
+and close runtime settings. The download and migration drains must settle before
+engine/settings/storage closure completes.
 Attempt every later cleanup phase that is independent and safe even when an
 earlier phase rejects; collect only stable/content-free failures and reject with
 the first or an aggregate afterward. Never close settings/storage while a
@@ -224,9 +247,10 @@ proven drained; record those prerequisite closures as deliberately skipped and
 therefore still owned. Track which exact resources this attempt acquired and
 mark each released only after its drain/stop/close reports success.
 
-Treat cleanup as an explicit dependency graph. Scheduler, download, and engine
-drains are independent owned phases and use all-settled/attempt-all semantics.
-Settings and storage may close only when all three owned phases succeeded **and**
+Treat cleanup as an explicit dependency graph. Scheduler, download, migration,
+and engine drains are independent owned phases and use all-settled/attempt-all
+semantics. Settings and storage may close only when all four owned phases
+succeeded **and**
 the caller supplied `externalStorageConsumersDrained: true`. If that proof is
 false, still attempt every independent owned drain, deliberately skip
 settings/storage, reject close, and poison/retain the lease. A failed storage
@@ -242,8 +266,8 @@ failure. Retain the resolved/rejected close promise on the returned runtime so
 repeated or stale calls perform no new work and cannot close a later runtime.
 Release the exact lease only when **every acquired resource is positively proven
 drained/stopped/closed**. Merely reaching a `finally` or observing rejected
-cleanup promises is not proof. If any scheduler, download, engine, storage, or
-settings ownership remains uncertain, transition the exact lease to terminal
+cleanup promises is not proof. If any scheduler, download, migration, engine,
+storage, or settings ownership remains uncertain, transition the exact lease to terminal
 `poisoned`, retain it for the process lifetime, reject close/unwind, and make all
 future factories fail before side effects. This deliberately sacrifices
 same-process restart rather than overlap a possibly live child, handle, or
@@ -293,7 +317,8 @@ settings, and engine seams. Test:
    positively acquired resources, releases its token, and permits a later clean
    factory;
 10. inject a rejection independently from scheduler drain, download drain,
-    engine stop, storage close, and settings close. Prove that independent later
+    embedding-migration drain, engine stop, storage close, and settings close.
+    Prove that independent later
     phases are still attempted while prerequisite-owned
     settings/storage closure is skipped when unsafe; close/unwind rejects without
     a graceful stopped signal, the lease remains `poisoned`, and every later
@@ -304,7 +329,11 @@ settings, and engine seams. Test:
     no-acquisition/full-unwind proof; assert independent download/settings
     cleanup is attempted only where safe, the lease poisons, and a later factory
     fails before side effects. Cover the analogous opaque settings-init seam or
-    document its typed positive proof.
+    document its typed positive proof; and
+13. exercise Plan 035's pending-swap recovery/finalization/rollback order and
+    prove no store opens before migration recovery, no later runtime inherits
+    the prior coordinator, and marker/receipt/model/dimension validation is not
+    bypassed.
 
 The overlap and stale-owner identity cases are load-bearing. If current
 `closeStorageRuntime()` cannot guarantee them once the exact lease serializes
@@ -330,6 +359,14 @@ global accessor. Plan 022's source-only exporter compiles an explicit object
 with `satisfies RoutesOptions`, so keep this type free of runtime-owner
 construction.
 
+Preserve Plan 026's `onRequest` authentication and route-owned body limits,
+Plan 031's paged catalog registrations, and Plans 034/035's qualification and
+embedding-migration route factories. If route composition needs dependencies
+for source-only tests, expose only narrow typed Settings, qualification, and
+migration-status capabilities through `RoutesOptions`; production passes the
+owned runtime's exact instances, and no default may construct another provider,
+coordinator, store, or worker during route registration.
+
 Update every in-scope direct `routes(...)` registration, including Plan 004's
 vertical integration test, to supply both explicit capabilities. The vertical
 test remains browser mode with a stopped scheduler stub; its end-to-end turn
@@ -345,6 +382,11 @@ Delete `server/src/automationRuntime.ts` once `rg` shows no imports remain.
 
 Refactor `startBorealisServer` to create one local `ApplicationRuntime` after
 desktop binding/static-directory validation and before building resource routes.
+Acquire Plan 037's exact cross-process workspace lock before runtime
+construction and retain it outside the in-process runtime lease; release it only
+after every runtime/external consumer is positively closed, or after a complete
+construction unwind. Never release it on a poisoned or uncertain close. The two
+locks solve different scopes and neither replaces the other.
 Pass it into `buildBorealisApp`/`routes` alongside plan 007's desktop-operator
 route option, recover state and start workers against its activated storage, and
 call `runtime.startAutomationScheduler()` exactly once. A rejected overlapping
@@ -352,6 +394,8 @@ factory is a startup failure for only that attempted server and must not invoke
 cleanup against the already-running owner. Preserve plan 009's single
 production-shell CSP on both direct static HTML and SPA fallback paths;
 ownership refactoring must not move, omit, or weaken either attachment.
+It must also keep Plan 033's copied hashed lazy/chart assets and manifest check
+served from that exact origin.
 
 On normal close, invoke both `runtime.stopAutomationScheduler()` and
 `runtime.quiesceDownloads()` synchronously before the close path's first await,
@@ -368,8 +412,9 @@ Move the contained-engine stop and settings/storage close responsibilities out o
 Implement that prose with proof-carrying orchestration rather than a
 short-circuiting promise chain. After synchronously closing scheduler/download
 admission, use `Promise.allSettled`/`try`-`finally` to record positive drain
-results for HTTP plus active chat runs, ingestion workers, startup dataset
-reconciliation, and the DuckDB/dataset worker. Attempt every independent stop
+results for HTTP plus active chat runs, ingestion workers (including any exact
+Plan 036 OCR helper child), startup dataset reconciliation, and the
+DuckDB/dataset worker. Attempt every independent stop
 even when a peer rejects. Always invoke
 `runtime.close({ externalStorageConsumersDrained })` after those attempts, with
 the flag true only if **every** external storage consumer positively stopped.
@@ -395,6 +440,11 @@ In `serverApp.test.ts`, extend the lifecycle mocks/factory so two sequential `st
 - a mocked download held active during A close keeps close unresolved and keeps
   settings/storage closure plus the stopped acknowledgement uncalled until its
   exact drain releases;
+- an OCR-backed ingestion held in the local helper keeps close unresolved until
+  the exact helper exits or is killed by its owned abort path;
+- a migration build/apply held active keeps close unresolved, retains the
+  workspace lock, and prevents storage/settings closure until the coordinator
+  drains;
 - partial startup failure closes only the runtime created for that attempt.
 
 Add separate ingestion-drain and DuckDB/dataset-worker-drain rejection cases.
@@ -430,6 +480,9 @@ the deleted wrappers and duplicate store construction.
 - Partition regression proves that actual-storage test is included only by `test:integration`; server/automation mocks continue running in the default suite.
 - Route test for injected scheduler status with no hidden runtime construction.
 - Server orchestration test for two sequential starts and cleanup of only the local runtime.
+- Startup/shutdown regression for the cross-process workspace lock, managed
+  embedding migration recovery/coordinator ownership, lazy static runtime, and
+  an OCR-backed ingestion drain.
 - Preserve plan 013's active tick drain and partial-listen-failure tests.
 - Preserve plan 008's atomic filename reservation and manager quiesce/drain tests.
 - Preserve plan 007's desktop-operator route tests and plan 009's direct/fallback CSP/static-host tests.
@@ -450,6 +503,11 @@ the deleted wrappers and duplicate store construction.
       stopped acknowledgement.
 - [ ] Runtime close is idempotent, and a stale owner cannot close or release a
       later runtime.
+- [ ] Plan 035's migration coordinator/recovery and model/dimension identity are
+      owned and drained exactly once; Plan 037's workspace lock encloses the
+      whole runtime and is released last only after proven closure.
+- [ ] Plan 036 OCR children remain owned by ingestion cancellation/drain, and
+      Plan 033 lazy/chart assets remain served offline from the exact origin.
 - [ ] Cleanup attempts all safe phases and releases the lease only after every
       acquired resource proves closure; any uncertain failure retains a poisoned
       lease and prevents same-process restart/graceful-stopped success.

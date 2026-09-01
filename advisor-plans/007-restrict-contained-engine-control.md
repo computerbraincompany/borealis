@@ -16,6 +16,11 @@
 > last-mile authorization, `modelRoutes.test.ts`,
 > `sourceManagementRoutes.test.ts`, and current docs; preserve those completed
 > provider-revision and response contracts while editing the overlapping files.
+> Plans 026, 031, 034, 035, and 037 are also completed baseline: keep
+> authentication in `onRequest` with route-owned body limits, preserve paged
+> catalog envelopes, retain qualification and embedding-migration routes, and
+> compose through the exact workspace lock. Their expected changes are not a
+> drift STOP; reconcile stale excerpts before implementing this plan.
 
 ## Status
 
@@ -23,6 +28,7 @@
 - **Effort**: L
 - **Risk**: HIGH
 - **Depends on**: `advisor-plans/004-add-vertical-agent-integration-test.md`, `advisor-plans/005-bind-provider-credentials-to-origin.md`, `advisor-plans/006-bind-egress-consent-to-provider-revision.md`
+- **Preserve completed baseline**: Plans 026, 031, 034, 035, and 037
 - **Category**: security
 - **Planned at**: commit `f1b9293`, 2026-08-30
 
@@ -69,8 +75,16 @@ remove local paths from all authenticated DTOs.
   ```ts
   const config = await requireEnabledConfig();
   await Promise.all([
-    fs.access(config.binary_path).catch(() => Promise.reject(new ContainedConfigError("binary_path does not exist"))),
-    fs.access(config.model_path).catch(() => Promise.reject(new ContainedConfigError("model_path does not exist"))),
+    fs
+      .access(config.binary_path)
+      .catch(() =>
+        Promise.reject(new ContainedConfigError("binary_path does not exist")),
+      ),
+    fs
+      .access(config.model_path)
+      .catch(() =>
+        Promise.reject(new ContainedConfigError("model_path does not exist")),
+      ),
   ]);
   ```
 
@@ -78,7 +92,15 @@ remove local paths from all authenticated DTOs.
   (`server/src/contained/engineManager.ts:116-118`):
 
   ```ts
-  const args = ["-m", config.model_path, "--host", "127.0.0.1", "--port", String(port), ...config.extra_args];
+  const args = [
+    "-m",
+    config.model_path,
+    "--host",
+    "127.0.0.1",
+    "--port",
+    String(port),
+    ...config.extra_args,
+  ];
   // Engine output is never read or logged; health is the only signal.
   child = spawn(config.binary_path, args, { stdio: "ignore" });
   ```
@@ -130,13 +152,13 @@ remove local paths from all authenticated DTOs.
 
 ## Commands you will need
 
-| Purpose | Command | Expected on success |
-|---|---|---|
-| Auth/routes | `pnpm --filter borealis-server exec vitest run src/tests/desktopBootstrap.test.ts src/tests/modelRoutes.test.ts src/tests/contained.test.ts src/tests/serverApp.test.ts` | exit 0; normal tokens get 403 and `/api/me` is capability-free |
-| File/spawn policy | `pnpm --filter borealis-server exec vitest run src/tests/containedEngine.test.ts` | exit 0; symlink/hash/arg cases fail before spawn |
-| DTO regressions | `pnpm --filter borealis-server exec vitest run src/tests/sourceManagementRoutes.test.ts src/tests/libraryRoutes.test.ts` | exit 0; no `file_path` |
-| Server tests | `pnpm --filter borealis-server test && pnpm --filter borealis-server test:integration` | exit 0 |
-| Static gates | `pnpm --filter borealis-server typecheck && pnpm --filter borealis-server lint && pnpm --filter borealis-server format:check` | exit 0 |
+| Purpose           | Command                                                                                                                                                                  | Expected on success                                            |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------- |
+| Auth/routes       | `pnpm --filter borealis-server exec vitest run src/tests/desktopBootstrap.test.ts src/tests/modelRoutes.test.ts src/tests/contained.test.ts src/tests/serverApp.test.ts` | exit 0; normal tokens get 403 and `/api/me` is capability-free |
+| File/spawn policy | `pnpm --filter borealis-server exec vitest run src/tests/containedEngine.test.ts`                                                                                        | exit 0; symlink/hash/arg cases fail before spawn               |
+| DTO regressions   | `pnpm --filter borealis-server exec vitest run src/tests/sourceManagementRoutes.test.ts src/tests/libraryRoutes.test.ts`                                                 | exit 0; no `file_path`                                         |
+| Server tests      | `pnpm --filter borealis-server test && pnpm --filter borealis-server test:integration`                                                                                   | exit 0                                                         |
+| Static gates      | `pnpm --filter borealis-server typecheck && pnpm --filter borealis-server lint && pnpm --filter borealis-server format:check`                                            | exit 0                                                         |
 
 Do not install, build, format, launch a real engine, or inspect real local model
 or executable contents. Tests create disposable fixtures.

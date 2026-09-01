@@ -74,6 +74,7 @@ pnpm --filter borealis-desktop verify
 pnpm dev:desktop
 pnpm package:unsigned
 pnpm --filter borealis-desktop package:native:smoke
+pnpm --filter borealis-desktop package:entitlements:smoke
 
 # Policy / fixture gate only
 pnpm policy
@@ -96,7 +97,10 @@ SQLite/LanceDB/DuckDB through Electron's ABI, and loads the same addons from an
 Electron utility process. `ELECTRON_RUN_AS_NODE` alone is not enough: that path
 can still see the pnpm virtual store after isolation. Root `pnpm verify` does
 not run `render:smoke`, packaging, signed-release checks, or live-model
-analysis. `desktop`'s `verify` adds the GUI PNG/PDF smoke.
+analysis. `desktop`'s `verify` adds the GUI PNG/PDF smoke. After packaging,
+`package:native:smoke` checks the packaged fuse/ASAR/native/OCR path and
+`package:entitlements:smoke` ad-hoc signs disposable hardened-runtime variants,
+requiring the exact retained entitlement pair and both negative removals.
 
 Desktop development rebuilds before launch and uses the installed app's default
 data directory. Use an absolute `--user-data-dir` argument for an isolated
@@ -110,10 +114,14 @@ Browser development defaults to `<repo>/.borealis/`. Electron passes exact paths
 below `~/Library/Application Support/Borealis/`:
 
 - `borealis.sqlite` — relational ledger and chunk text;
-- `lancedb/` — embedding vectors;
+- `lancedb/` — embedding vectors plus the private mode-`0600`
+  `.borealis-embedding-index.json` resolved-model/dimension marker and its
+  independent first-binding receipt;
 - `uploads/` — account/source-scoped input and connector files;
 - `reports/` — HTML/PDF artifacts;
 - `models/` — verified contained-model downloads;
+- `.lancedb-migrations/` and `embedding-migration.json` — private staging and
+  aggregate state while a managed embedding migration is active;
 - `settings.json` — provider settings, atomically written with mode `0600`;
 - `contained.json` — contained-engine configuration, initially created with mode
   `0600` (M06 tracks atomic-update and mode-repair gaps);
@@ -122,11 +130,28 @@ below `~/Library/Application Support/Borealis/`:
 Environment overrides are documented in `server/.env.example`. A configured
 `JWT_SECRET` wins and must be strong. Without one, `config.ts` opens or creates
 the secret file without following symlinks and repairs its mode to `0600`.
+Configuration import is path-only: server startup must acquire the exact
+workspace lock before it creates or canonicalizes any durable directory, opens,
+creates, or repairs `jwt.secret`, or initializes Settings/stores. The normal
+Electron main process must not pre-create those workspace paths before starting
+the backend.
 
-SQLite and LanceDB are one logical store. Back them up and restore them together,
-with Borealis stopped. Prefer copying the complete application-data directory so
-SQLite WAL state, uploads, reports, contained-model state, settings, and the
-signing secret stay with the matching vector index.
+SQLite and LanceDB are one logical store and must be archived/restored together
+with Borealis stopped. Prefer the supported offline
+`pnpm workspace:archive -- <command>` flow: workspace-touching commands acquire
+the exact server instance lock and refuse a live workspace. That lock uses a
+persistent private mode-`0700` namespace with atomically published,
+never-reused mode-`0600` owner records; preserve its fail-closed identity and
+process-liveness checks. Encrypted archives hash and verify the complete pair
+plus ready tabular artifacts. The manual fallback is a complete
+stopped-directory copy, including SQLite WAL state, uploads, reports,
+contained-model state, settings, migration state, and the signing secret;
+include any intentionally relocated paths explicitly. Never present either
+method as a live backup.
+Offline archive verification must open the existing Lance table without
+creating one. It may accept a valid dimension-matching first-binding receipt
+when marker publication was interrupted, but must remain read-only; exact-model
+runtime startup alone republishes that matching marker.
 
 ## Data flow
 
@@ -153,7 +178,7 @@ signing secret stay with the matching vector index.
 5. The agent assembles markdown sections, tables, and chart IDs. The server
    builds self-contained ECharts HTML and a static PDF, then stores both below
    the report directory. Reports carry per-chat lineage: creation assigns
-   `version` = newest *published* report for that chat plus 1 and records
+   `version` = newest _published_ report for that chat plus 1 and records
    `supersedes`; pending artifacts from failed runs never join the chain, and
    superseded reports are never auto-deleted. The normalized report payload is
    stored with the row (dropped oversize, never fatal) and is exposed only on
@@ -183,6 +208,11 @@ signing secret stay with the matching vector index.
   `/api/health`, and `/api/openapi.json` routes use `requireAuth`. Electron creates
   one local user and sends a fresh bootstrap session exactly once through the
   context-isolated preload. The desktop happy path is register-free.
+- Protected-route authentication belongs in Fastify's `onRequest` phase before
+  JSON or multipart parsing. The global 8 KiB fail-safe and every larger
+  schema-derived route body ceiling are security boundaries; unauthenticated
+  malformed or oversized bodies must still return `401` without parser, store,
+  or handler work.
 - The desktop backend binds exactly `127.0.0.1` on an OS-assigned port. Fastify
   serves the production UI from that origin, so it needs no cross-origin
   headers. Vite development keeps the exact `CORS_ORIGINS` allowlist. Never
@@ -211,10 +241,19 @@ signing secret stay with the matching vector index.
   and must never widen to all sources.
 - SQL is exactly one read-only SELECT/WITH/VALUES statement. Query and extraction
   time, rows, columns, cells, and returned characters are bounded at the worker
-  boundary.
+  boundary. The query deadline begins before scoped-catalog acquisition and
+  trusted-file loading, covers lexical/native preflight and result
+  materialization, and cancellation interrupts the active DuckDB connection;
+  every exit must release prepared statements, mutexes, leases, readers, and
+  timers.
 - XLSX ingestion is offline and bounded: ZIP member and expansion checks precede
   the streaming ExcelJS first-sheet reader. Legacy `.xls` and `.doc` inputs are
   unsupported. Never add npm `xlsx` or enable DuckDB extension auto-install.
+- PDF OCR is local macOS PDFKit/Vision fallback only for pages without embedded
+  text. Keep page/raster/observation/character/time/output limits at the helper
+  boundary, preserve partial text-PDF success, and copy the fixed JXA helper as
+  a physically unpacked packaged runtime asset. It must never gain network or
+  renderer privileges.
 - Connector refresh is prepare → extract → activate/abort. Downloads use the
   shared SSRF policy, DNS pinning, identity encoding, bounded redirects/time,
   and immutable version-cache files. Activation is exact-location
@@ -234,6 +273,20 @@ signing secret stay with the matching vector index.
   chat-creation contract; never add a server-side dynamic chat↔library
   resolution path without speccing it against the scope semantics above.
   Library deletion cascades membership only — never sources or their data.
+- Schema v12 owns the current keyset-catalog indexes. The active remediation
+  ledger reserves contiguous v13, v14, and v15 for provider-bound consent,
+  automation target ownership, and typed connector-refresh/repair state; do not
+  reuse or reorder those versions. Account catalogs use opaque endpoint-bound
+  keyset cursors, while source/connector transition polling uses only bounded
+  exact-ID status batches with non-starving round-robin reconciliation.
+- Web asynchronous surfaces must give each load/mutation an exact target plus
+  request generation and, where supported, an `AbortController`; stale success,
+  error, loading, navigation, and finalizer effects cannot mutate a newer or
+  closed target. Unexpected React `act` warnings fail the shared test harness.
+- Noninitial routes and ECharts stay lazy. The Vite manifest/bundle gate enforces
+  the committed 240 KiB initial-gzip and 130 KiB maximum-lazy-gzip budgets plus
+  separate route/chart entries; packaged static hosting must copy and serve the
+  complete content-hashed lazy graph from the exact loopback origin.
 - Small-team surfaces (schema v7–v9) stay inside the local trust boundary:
   report shares link sibling accounts of one instance and grant exactly
   read-only detail/HTML/PDF access with owner-only revoke; egress audit events
@@ -265,6 +318,12 @@ signing secret stay with the matching vector index.
 - The OpenAI Node client defaults embeddings to base64 and decodes responses.
   Compatible local runtimes return float arrays, so `server/src/llm.ts` must
   continue sending `encoding_format: "float"` explicitly.
+- Model qualification must exercise bounded streaming SSE through the same
+  tool-call accumulator and call-ID/name validation as real turns, with its
+  stricter one-call and 256-character synthetic-argument budgets.
+  Qualification, ingestion, migration, Lance upsert, and Lance search must all
+  normalize vectors at the finite-positive float32 accumulated squared-norm
+  boundary; a finite JavaScript number alone is not a usable cosine vector.
 - Agent tools are wired through `TOOL_DEFS` in one streaming loop. Never expose
   provider reasoning, raw tool payloads, or exceptions in SSE. The UI receives
   only stable server-defined summaries.
@@ -280,11 +339,37 @@ signing secret stay with the matching vector index.
 - `makeReportPayload` keeps its 12-character chart-ID prefix fallback because
   models can garble long UUIDs. Report normalization strips inline
   `chart:`/`:::` tokens.
-- Changing the embedding model after ingestion requires reingesting all sources
-  even when its dimension is unchanged. The LanceDB table dimension is fixed at
-  creation; a different `EMBEDDING_DIM` makes reopening it fail. A dimension
-  change needs a fresh complete data directory or an explicit migration, not
-  reingestion alone or deletion of just the vector index.
+- Once the live fixed-schema vector index exists, changing the embedding model
+  or dimension is always a managed workspace migration, not a Settings toggle
+  or per-source reingest. Generic `PATCH /api/settings` must reject an embedding-
+  identity change with `EMBEDDING_REINDEX_REQUIRED`, including in an empty
+  workspace. Qualify the target pair, build and verify a separate LanceDB index
+  from one immutable SQLite generation snapshot, request apply, then restart so
+  startup can revalidate provider identity and environment precedence, perform
+  the journaled swap, verify row/dimension counts, and run a scoped retrieval
+  smoke when the snapshot is nonempty. A zero-source workspace uses the same
+  managed path with a verified zero-row target index; never delete only the
+  vector index or expose mixed embedding identities. Migration start
+  uses the persisted provider, credential, and chat-model settings; the UI must
+  gate mixed unsaved drafts rather than qualify one provider revision and build
+  against another. Migration admission must reread and match the exact qualified
+  baseline/target snapshot before it writes durable state.
+  Each Lance directory records the resolved outbound model ID and dimension in
+  `.borealis-embedding-index.json`; startup and every staged/live/backup
+  migration phase must validate it, including for same-dimension model changes.
+  An independent binding receipt makes first publication durable: only that
+  exact receipt may repair a missing marker, while corruption, disagreement,
+  or identity drift fails closed and cannot reopen adoption. Model-less offline
+  verification may accept a valid dimension-matching receipt-only publication
+  crash read-only; exact-model startup performs the repair.
+  A populated staged migration index is never eligible for legacy adoption;
+  build resume and every startup swap phase require its marker or exact receipt.
+  A populated pre-marker index may be adopted only by the explicit one-release
+  legacy policy (persisted Settings or pinned defaults, no embedding environment
+  override); ambiguous identity fails closed. Offline verification must never
+  create a missing Lance table.
+  `LLM_EMBED_MODEL` and `EMBEDDING_DIM` remain higher-precedence operator
+  overrides and disable the corresponding Settings-managed migration.
 
 ## Model endpoint and Settings
 
@@ -338,6 +423,11 @@ private providers never gate; acknowledgment unblocks without a restart. The
 consent response may name the configured `endpoint_host` to the authenticated
 account, but `endpoint_host` must never be logged. Consent-card, sidebar, and
 Settings payload-class wording must stay identical.
+Durable ingestion must also recheck the exact account immediately before its
+first embedding transport and bind every batch to that one authorized immutable
+runtime-settings snapshot. A queued local job resumed under an unacknowledged
+remote provider makes no transport call and records
+`REMOTE_EGRESS_CONSENT_REQUIRED`; a mid-job Settings edit must not redirect it.
 The current three surfaces are not yet identical; treat that as an outstanding
 consent-disclosure defect rather than precedent for further divergence.
 
@@ -374,6 +464,12 @@ distinct.
   main applies a bounded kill timeout.
 - `RENDER_BACKEND=electron` sends bounded self-contained documents to the hidden
   renderer. Browser development and headless server CI use Playwright.
+- Production fuses must keep `RunAsNode`, `NODE_OPTIONS`, inspector arguments,
+  browser-process V8 snapshots, and extra `file:` privileges disabled while
+  requiring cookie encryption, embedded-ASAR integrity, ASAR-only loading, and
+  WebAssembly trap handlers. The utility process receives only the positive
+  environment allowlist plus shell-owned exact runtime paths; packaged smoke
+  must fail closed on any unreviewed fuse.
 - Rebuild `better-sqlite3`, `@lancedb/lancedb`, and `@duckdb/node-api` for
   Electron's ABI. `desktop/scripts/isolate-native-addons.mjs` copies those
   packages out of the pnpm store and nests each copy's production dependencies
@@ -390,7 +486,10 @@ distinct.
   notarization when credentials are absent; verify artifacts before distribution.
 - `desktop/build/entitlements.mac*.plist` are tracked packaging inputs. Keep the
   root `.gitignore` exceptions for that directory; a clean checkout must be able
-  to package without locally generated entitlement files.
+  to package without locally generated entitlement files. The current exact
+  retained pair is `allow-jit` plus `disable-library-validation`; the tracked
+  entitlement matrix must prove the positive pair and fail when either key is
+  removed.
 - Never copy Playwright's downloaded browser into the packaged application.
 
 ## Resource budgets

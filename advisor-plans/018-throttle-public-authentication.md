@@ -10,6 +10,11 @@
 > and Plan 014's explicit owned scheduler route capability are expected drift
 > and must be preserved. STOP on any other material route, proxy-trust, or
 > authentication change.
+> Plan 026 is also a completed prerequisite. Keep the public auth routes'
+> explicit small body limits, keep every protected route authenticated in
+> `onRequest` before parsing, and install throttling before bcrypt without
+> moving either boundary later. Those hook/body-limit changes are expected
+> baseline, not drift.
 > **Read-only dependency check**: inspect `server/src/desktopBootstrap.ts`, `server/src/routes.ts`, `server/src/serverApp.ts`, `server/src/httpErrors.ts`, and `server/src/tests/desktopBootstrap.test.ts`; these establish capability, route, proxy, error, and regression contracts but are not editable in this plan.
 
 ## Status
@@ -18,6 +23,7 @@
 - **Effort**: M
 - **Risk**: MED
 - **Depends on**: `advisor-plans/007-restrict-contained-engine-control.md`, `advisor-plans/014-create-owned-application-runtime.md`
+- **Preserve completed baseline**: Plan 026
 - **Category**: security
 - **Planned at**: commit `f1b9293`, 2026-08-30
 
@@ -69,14 +75,14 @@ Both public authentication routes permit unlimited bcrypt work. An unauthenticat
 
 ## Commands you will need
 
-| Purpose | Command | Expected on success |
-|---|---|---|
-| Focused tests | `pnpm --filter borealis-server exec vitest run src/tests/authThrottle.test.ts src/tests/authRoutes.test.ts src/tests/modelRoutes.test.ts src/tests/desktopBootstrap.test.ts` | exit 0; auth, capability, and OpenAPI cases pass |
-| Typecheck | `pnpm --filter borealis-server typecheck` | exit 0, no errors |
-| Lint | `pnpm --filter borealis-server lint` | exit 0, no warnings |
-| Format | `pnpm --filter borealis-server format:check` | exit 0 |
-| Server gate | `pnpm --filter borealis-server test && pnpm --filter borealis-server test:integration` | exit 0 |
-| Repository gate | `pnpm verify` | exit 0 and prints `ALL GATES GREEN` |
+| Purpose         | Command                                                                                                                                                                      | Expected on success                              |
+| --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------ |
+| Focused tests   | `pnpm --filter borealis-server exec vitest run src/tests/authThrottle.test.ts src/tests/authRoutes.test.ts src/tests/modelRoutes.test.ts src/tests/desktopBootstrap.test.ts` | exit 0; auth, capability, and OpenAPI cases pass |
+| Typecheck       | `pnpm --filter borealis-server typecheck`                                                                                                                                    | exit 0, no errors                                |
+| Lint            | `pnpm --filter borealis-server lint`                                                                                                                                         | exit 0, no warnings                              |
+| Format          | `pnpm --filter borealis-server format:check`                                                                                                                                 | exit 0                                           |
+| Server gate     | `pnpm --filter borealis-server test && pnpm --filter borealis-server test:integration`                                                                                       | exit 0                                           |
+| Repository gate | `pnpm verify`                                                                                                                                                                | exit 0 and prints `ALL GATES GREEN`              |
 
 ## Scope
 
@@ -144,7 +150,11 @@ denied.
 On denial, return status 429, integer `Retry-After`, and exactly the stable safe envelope:
 
 ```json
-{"error":"too many authentication attempts","code":"AUTH_RATE_LIMITED","request_id":"<request-id>"}
+{
+  "error": "too many authentication attempts",
+  "code": "AUTH_RATE_LIMITED",
+  "request_id": "<request-id>"
+}
 ```
 
 Do not vary the response by whether the email exists or which bucket fired. Add documented 429 responses to both route schemas while preserving `security: []`.

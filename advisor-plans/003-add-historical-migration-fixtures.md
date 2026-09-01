@@ -15,7 +15,7 @@
 - **Priority**: P1
 - **Effort**: M
 - **Risk**: LOW
-- **Depends on**: none
+- **Depends on**: `advisor-plans/031-paginate-resource-catalogs.md`
 - **Category**: migration
 - **Planned at**: commit `f1b9293`, 2026-08-30
 
@@ -23,14 +23,15 @@
 
 Borealis opens durable user databases by applying every migration newer than
 `PRAGMA user_version`, but tests create only the newest schema and reopen it.
-That does not prove a real v1-v10 installation can traverse the later ALTERs,
+That does not prove a real v1-v11 installation can traverse the later ALTERs,
 tables, indexes, and foreign keys without losing data. Checked-in historical SQL
 fixtures make every supported upgrade path executable and force future schema
 work to supply the next historical checkpoint.
 
 ## Current state
 
-- `server/src/db/migrations.ts:469-480` defines the complete ordered history:
+- At the planned commit, `server/src/db/migrations.ts:469-480` defined the
+  then-complete ordered history:
 
   ```ts
   const migrations = [
@@ -71,15 +72,16 @@ work to supply the next historical checkpoint.
   ```ts
   const resource = await temporaryLedger();
   const accountId = randomUUID();
-  await resource.ledger.run("INSERT INTO users (id,email,password_hash) VALUES (?,?,?)", [
-    accountId,
-    "persisted@example.test",
-    "hash",
-  ]);
+  await resource.ledger.run(
+    "INSERT INTO users (id,email,password_hash) VALUES (?,?,?)",
+    [accountId, "persisted@example.test", "hash"],
+  );
   await resource.ledger.close();
 
   const reopened = await openSqliteLedger({ path: resource.filename });
-  await expect(reopened.get("SELECT id FROM users WHERE id=?", [accountId])).resolves.toMatchObject({
+  await expect(
+    reopened.get("SELECT id FROM users WHERE id=?", [accountId]),
+  ).resolves.toMatchObject({
     id: accountId,
   });
   await reopened.close();
@@ -87,27 +89,32 @@ work to supply the next historical checkpoint.
   const future = new Database(resource.filename);
   future.pragma(`user_version = ${LATEST_SQLITE_SCHEMA_VERSION + 1}`);
   future.close();
-  await expect(openSqliteLedger({ path: resource.filename })).rejects.toBeInstanceOf(SqliteMigrationError);
+  await expect(
+    openSqliteLedger({ path: resource.filename }),
+  ).rejects.toBeInstanceOf(SqliteMigrationError);
   ```
 
 - `server/src/tests/sqliteTestHarness.ts:14-18` always calls
   `openSqliteLedger` immediately, so it cannot create an old schema.
-- At the planned commit, `LATEST_SQLITE_SCHEMA_VERSION` is `11`. Versions 3-11
+- At the planned commit, `LATEST_SQLITE_SCHEMA_VERSION` was `11`. Completed
+  plan 031 subsequently added the immutable catalog-index migration as v12.
+  Versions 3-11
   add report lineage, remote-egress acknowledgment, libraries, agents, egress
   events, report shares, automations, connector history, and personal model
-  defaults. Preserve the order and exact SQL semantics.
+  defaults; v12 adds only the account/order catalog indexes characterized by
+  plan 031. Preserve the order and exact SQL semantics.
 - Tests use `better-sqlite3` only to prepare raw on-disk state, then exercise the
   asynchronous ledger API. Match `sqliteFoundation.test.ts:1-26`.
 
 ## Commands you will need
 
-| Purpose | Command | Expected on success |
-|---|---|---|
+| Purpose                | Command                                                                                                                  | Expected on success                   |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------ | ------------------------------------- |
 | Focused migration test | `pnpm --filter borealis-server exec vitest run --config vitest.integration.config.ts src/tests/sqliteFoundation.test.ts` | exit 0; all historical starts upgrade |
-| Integration suite | `pnpm --filter borealis-server test:integration` | exit 0 |
-| Typecheck | `pnpm --filter borealis-server typecheck` | exit 0 |
-| Lint | `pnpm --filter borealis-server lint` | exit 0, no warnings |
-| Format check | `pnpm --filter borealis-server format:check` | exit 0 |
+| Integration suite      | `pnpm --filter borealis-server test:integration`                                                                         | exit 0                                |
+| Typecheck              | `pnpm --filter borealis-server typecheck`                                                                                | exit 0                                |
+| Lint                   | `pnpm --filter borealis-server lint`                                                                                     | exit 0, no warnings                   |
+| Format check           | `pnpm --filter borealis-server format:check`                                                                             | exit 0                                |
 
 Do not install, build, format, or generate binary database files.
 
@@ -118,7 +125,7 @@ Do not install, build, format, or generate binary database files.
 - `server/src/tests/sqliteFoundation.test.ts`
 - `server/src/tests/sqliteMigrationFixture.ts` (create)
 - `server/src/tests/fixtures/sqlite/v001.sql` through
-  `server/src/tests/fixtures/sqlite/v011.sql` (create)
+  `server/src/tests/fixtures/sqlite/v012.sql` (create)
 
 **Out of scope**:
 
@@ -138,10 +145,11 @@ Do not install, build, format, or generate binary database files.
 
 ### Step 1: Capture each shipped migration as an immutable SQL delta
 
-Create `server/src/tests/fixtures/sqlite/v001.sql` through `v011.sql`. After one
+Create `server/src/tests/fixtures/sqlite/v001.sql` through `v012.sql`. After one
 short header comment naming the version and declaring the fixture immutable,
 each file must contain the exact SQL body of the matching `SCHEMA_Vn` constant
-at commit `f1b9293`, in the same statement order. Do not add `BEGIN`, `COMMIT`,
+in the live tree (v1-v11 remain the planned-at SQL; v12 is plan 031's shipped
+catalog-index delta), in the same statement order. Do not add `BEGIN`, `COMMIT`,
 or `PRAGMA user_version`; the fixture loader owns those mechanics.
 
 Review the long v1/v2 files carefully; do not derive old schemas by deleting
@@ -149,7 +157,7 @@ columns from the latest schema.
 
 **Verify**:
 `find server/src/tests/fixtures/sqlite -maxdepth 1 -type f -name 'v*.sql' | sort`
-→ exactly eleven paths, `v001.sql` through `v011.sql`, with no database artifacts.
+→ exactly twelve paths, `v001.sql` through `v012.sql`, with no database artifacts.
 
 ### Step 2: Build a raw historical-ledger helper
 
@@ -186,7 +194,7 @@ start versions `1` through `LATEST_SQLITE_SCHEMA_VERSION - 1`. For each start:
 - assert `PRAGMA foreign_key_check` returns no rows;
 - assert representative latest objects/columns exist, including
   `report_shares`, `automations`, `connector_syncs`, and
-  `users.default_chat_model`; and
+  `users.default_chat_model`, and assert plan 031's catalog indexes exist; and
 - close and clean up in `finally`, including when an assertion fails.
 
 Add a separate fixture-inventory assertion so the next production schema bump
@@ -208,7 +216,7 @@ idempotent-reopen, and future-version tests.
 ## Test plan
 
 - Add one inventory test covering contiguous fixture versions and no extras.
-- Add a parameterized v1-v10 upgrade test using real `openSqliteLedger`.
+- Add a parameterized v1-v11 upgrade test using real `openSqliteLedger`.
 - For each start, cover final version, preserved base rows, newest tables and
   columns, and foreign-key integrity.
 - Retain the existing newest-schema idempotence and future-version rejection as
@@ -216,8 +224,8 @@ idempotent-reopen, and future-version tests.
 
 ## Done criteria
 
-- [ ] Eleven textual fixtures exactly represent shipped schema deltas v1-v11.
-- [ ] Every historical start v1-v10 upgrades to v11 through production code.
+- [ ] Twelve textual fixtures exactly represent shipped schema deltas v1-v12.
+- [ ] Every historical start v1-v11 upgrades to v12 through production code.
 - [ ] Seeded data survives and `PRAGMA foreign_key_check` is empty for each case.
 - [ ] Fixture inventory is mechanically tied to `LATEST_SQLITE_SCHEMA_VERSION`.
 - [ ] Integration, typecheck, lint, and format gates pass.
@@ -227,7 +235,8 @@ idempotent-reopen, and future-version tests.
 
 Stop and report if:
 
-- `LATEST_SQLITE_SCHEMA_VERSION` is no longer `11` before this plan starts;
+- `LATEST_SQLITE_SCHEMA_VERSION` is not exactly `12`, or v12 is not exclusively
+  the catalog-index migration completed by plan 031, before this plan starts;
 - a historical fixture exposes an actual migration failure or foreign-key
   violation; do not repair production SQL under this plan;
 - reconstructing any shipped version requires guessing beyond the checked-in

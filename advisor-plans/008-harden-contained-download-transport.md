@@ -9,7 +9,11 @@
 > **Drift check (run first)**:
 > `git diff --stat f1b9293..HEAD -- server/src/contained/downloadManager.ts server/src/contained/filePolicy.ts server/src/networkPolicy.ts server/src/tests/contained.test.ts server/src/tests/networkPolicy.test.ts server/.env.example README.md docs/API.md`
 > Plan 007 changes contained authorization/config but should not replace the
-> download transport. Other material drift is a STOP condition.
+> download transport. Plan 026's `onRequest` authentication and derived
+> contained-download body limit are already shipped and must remain ahead of
+> parsing; transport work begins only after that boundary. This expected drift
+> is not a STOP condition. Reconcile the live route tests first and STOP only on
+> other material transport or file-authority drift.
 
 ## Status
 
@@ -17,6 +21,7 @@
 - **Effort**: L
 - **Risk**: MED
 - **Depends on**: `advisor-plans/007-restrict-contained-engine-control.md`
+- **Preserve completed baseline**: Plan 026
 - **Category**: security
 - **Planned at**: commit `f1b9293`, 2026-08-30
 
@@ -48,8 +53,13 @@ before the existing SHA-256 publication boundary.
 
   ```ts
   const headers = { Accept: "application/octet-stream" };
-  if (state.bytes_received > 0) headers.Range = `bytes=${state.bytes_received}-`;
-  const response = await fetch(url, { headers, redirect: "error", signal: abort.signal });
+  if (state.bytes_received > 0)
+    headers.Range = `bytes=${state.bytes_received}-`;
+  const response = await fetch(url, {
+    headers,
+    redirect: "error",
+    signal: abort.signal,
+  });
   // accepts 200 or 206; parses only the total after '/'
   ```
 
@@ -129,12 +139,12 @@ before the existing SHA-256 publication boundary.
 
 ## Commands you will need
 
-| Purpose | Command | Expected on success |
-|---|---|---|
-| Download tests | `pnpm --filter borealis-server exec vitest run src/tests/contained.test.ts` | exit 0; transport, artifact ownership, case-alias reservation, publication/cancel linearization, and manager-drain cases pass |
-| Shared network policy | `pnpm --filter borealis-server exec vitest run src/tests/networkPolicy.test.ts` | exit 0; existing public fetch remains fail-closed |
-| Server tests | `pnpm --filter borealis-server test && pnpm --filter borealis-server test:integration` | exit 0 |
-| Static gates | `pnpm --filter borealis-server typecheck && pnpm --filter borealis-server lint && pnpm --filter borealis-server format:check` | exit 0 |
+| Purpose               | Command                                                                                                                       | Expected on success                                                                                                           |
+| --------------------- | ----------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| Download tests        | `pnpm --filter borealis-server exec vitest run src/tests/contained.test.ts`                                                   | exit 0; transport, artifact ownership, case-alias reservation, publication/cancel linearization, and manager-drain cases pass |
+| Shared network policy | `pnpm --filter borealis-server exec vitest run src/tests/networkPolicy.test.ts`                                               | exit 0; existing public fetch remains fail-closed                                                                             |
+| Server tests          | `pnpm --filter borealis-server test && pnpm --filter borealis-server test:integration`                                        | exit 0                                                                                                                        |
+| Static gates          | `pnpm --filter borealis-server typecheck && pnpm --filter borealis-server lint && pnpm --filter borealis-server format:check` | exit 0                                                                                                                        |
 
 Do not install, build, format, access the public internet, or download a real
 model. All transport tests use injected responses or loopback fixtures.
@@ -202,8 +212,12 @@ Define a contained download transport interface matching the repository pattern:
 ```ts
 interface ContainedDownloadTransport {
   resolve(url: URL, signal: AbortSignal): Promise<ResolvedAddress[]>;
-  request(url: URL, addresses: ResolvedAddress[], signal: AbortSignal,
-          headers: Record<string, string>): Promise<IncomingMessage>;
+  request(
+    url: URL,
+    addresses: ResolvedAddress[],
+    signal: AbortSignal,
+    headers: Record<string, string>,
+  ): Promise<IncomingMessage>;
 }
 ```
 

@@ -7,7 +7,12 @@
 >
 > **Drift check (run first)**:
 > `git diff --stat f1b9293..HEAD -- server/src/settingsStore.ts server/src/runtimeSettings.ts server/src/llm.ts server/src/contained/runtime.ts server/src/tests/settingsStore.test.ts server/src/tests/settingsRoutes.test.ts server/src/tests/runtimeSettings.test.ts server/src/tests/llm.test.ts server/src/tests/containedRuntime.test.ts server/.env.example README.md docs/API.md`
-> A mismatch with the current-state excerpts is a STOP condition.
+> Plans 026, 034, and 035 intentionally changed Settings route parsing, draft
+> provider qualification, persisted embedding dimension, and the managed
+> migration guard. Treat those live contracts as required baseline behavior;
+> this plan may bind credentials to origins but must not bypass qualification,
+> reopen generic embedding-identity edits, or overwrite migration state. STOP
+> only for other material mismatches.
 
 ## Status
 
@@ -15,6 +20,7 @@
 - **Effort**: M
 - **Risk**: MED
 - **Depends on**: none
+- **Preserve completed baseline**: Plans 026, 034, and 035
 - **Category**: security
 - **Planned at**: commit `f1b9293`, 2026-08-30
 
@@ -48,7 +54,12 @@ the user's non-secret model configuration.
   ```ts
   return validateCompleteSettings({
     llmBaseUrl: patch.llmBaseUrl ?? current.llmBaseUrl,
-    apiKey: patch.apiKey === undefined ? current.apiKey : patch.apiKey === null ? undefined : patch.apiKey,
+    apiKey:
+      patch.apiKey === undefined
+        ? current.apiKey
+        : patch.apiKey === null
+          ? undefined
+          : patch.apiKey,
     lmStudioBaseUrl:
       patch.lmStudioBaseUrl === undefined
         ? current.lmStudioBaseUrl
@@ -120,13 +131,13 @@ the user's non-secret model configuration.
 
 ## Commands you will need
 
-| Purpose | Command | Expected on success |
-|---|---|---|
-| Store tests | `pnpm --filter borealis-server exec vitest run src/tests/settingsStore.test.ts src/tests/runtimeSettings.test.ts` | exit 0 |
-| Route/wire tests | `pnpm --filter borealis-server exec vitest run src/tests/settingsRoutes.test.ts src/tests/llm.test.ts` | exit 0; no cross-origin Authorization |
-| Contained restore tests | `pnpm --filter borealis-server exec vitest run src/tests/containedRuntime.test.ts` | exit 0 |
-| Server suite | `pnpm --filter borealis-server test` | exit 0 |
-| Static gates | `pnpm --filter borealis-server typecheck && pnpm --filter borealis-server lint && pnpm --filter borealis-server format:check` | exit 0 |
+| Purpose                 | Command                                                                                                                       | Expected on success                   |
+| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------- | ------------------------------------- |
+| Store tests             | `pnpm --filter borealis-server exec vitest run src/tests/settingsStore.test.ts src/tests/runtimeSettings.test.ts`             | exit 0                                |
+| Route/wire tests        | `pnpm --filter borealis-server exec vitest run src/tests/settingsRoutes.test.ts src/tests/llm.test.ts`                        | exit 0; no cross-origin Authorization |
+| Contained restore tests | `pnpm --filter borealis-server exec vitest run src/tests/containedRuntime.test.ts`                                            | exit 0                                |
+| Server suite            | `pnpm --filter borealis-server test`                                                                                          | exit 0                                |
+| Static gates            | `pnpm --filter borealis-server typecheck && pnpm --filter borealis-server lint && pnpm --filter borealis-server format:check` | exit 0                                |
 
 Do not install dependencies, build, run a formatter, or inspect real settings or
 environment files. Use generated test-only values in memory.

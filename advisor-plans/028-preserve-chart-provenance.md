@@ -2,6 +2,7 @@
 
 ## Status
 
+- **State**: DONE (2026-09-01)
 - **Priority**: P2
 - **Effort**: S
 - **Risk**: MED
@@ -51,9 +52,16 @@ cleanup or deletion invariant.
 
 ## Done criteria
 
-- [ ] Normal generated charts expose a working source-chat link.
-- [ ] Chat deletion safely severs, rather than deletes or leaks, provenance.
-- [ ] Cleanup and tenant-boundary tests remain green.
+- [x] Normal generated charts expose a working source-chat link.
+- [x] Chat deletion safely severs, rather than deletes or leaks, provenance.
+- [x] Cleanup and tenant-boundary tests remain green.
+
+## Completion record
+
+- Chart staging derives run/chat provenance from the durable owned run rather
+  than accepting caller-supplied identity, and report assembly remains same-run.
+- Report/chart route and run-store tests cover publication, source-chat links,
+  chat deletion, pending artifacts, cleanup, and cross-account isolation.
 
 ## STOP conditions
 

@@ -2,6 +2,7 @@
 
 ## Status
 
+- **State**: DONE (2026-09-01)
 - **Priority**: P1
 - **Effort**: S
 - **Risk**: MED
@@ -45,9 +46,16 @@ therefore corrupt a supported tool name.
 
 ## Done criteria
 
-- [ ] Standard arbitrary deltas reconstruct every supported tool name.
-- [ ] Repeated full and cumulative provider chunks do not duplicate names.
-- [ ] Unknown or oversized names still fail through bounded safe behavior.
+- [x] Standard arbitrary deltas reconstruct every supported tool name.
+- [x] Repeated full and cumulative provider chunks do not duplicate names.
+- [x] Unknown or oversized names still fail through bounded safe behavior.
+
+## Completion record
+
+- Tool calls now merge function names by stream index for delta, cumulative,
+  and repeated-full-name provider conventions while retaining all stream caps.
+- Focused LLM tests cover arbitrary fragments, duplicate/cumulative chunks,
+  missing identities, invalid indexes/types, and oversized names/arguments.
 
 ## STOP conditions
 

@@ -3,14 +3,25 @@
 > **Executor instructions**: Follow this plan step by step. Run every verification command and confirm its expected result before proceeding. If a “STOP condition” occurs, stop and report — do not improvise. When complete, update this plan’s row in `advisor-plans/README.md` unless a reviewer told you they maintain the index.
 >
 > **Drift check (run first)**: `git diff --stat f1b9293..HEAD -- desktop/src/main.ts desktop/src/packagedLifecycleProbe.ts desktop/src/packagedLifecycleProbe.test.ts desktop/scripts/packaged-lifecycle-smoke.mjs desktop/package.json .github/workflows/ci.yml`
-> Plans 002 and 014 intentionally change command/runtime ownership after the planned commit. Read both completed plans, compare the final live files with this plan, and STOP if their resulting contracts are not present.
+> Plans 002, 014, 032, 033, 036, and 037 intentionally changed command/runtime
+> ownership, Electron fuses and utility environment, copied lazy assets, the
+> packaged native OCR smoke, and server workspace locking. Read those completed
+> plans and the live implementations first. They are required baseline, not a
+> drift STOP: add lifecycle observation beside the existing packaged fuse/
+> ASAR/native/OCR/entitlement gates without replacing or weakening any of them.
+> **Read-only dependency check**: inspect `desktop/scripts/after-pack.cjs`,
+> `desktop/scripts/fuse-policy.mjs`, `desktop/scripts/inspect-fuses.mjs`,
+> `desktop/scripts/copy-runtime.mjs`,
+> `desktop/scripts/packaged-native-smoke.mjs`, and
+> `desktop/scripts/entitlement-matrix.mjs`. They are not editable here.
 
 ## Status
 
 - **Priority**: P2
 - **Effort**: L
 - **Risk**: MED
-- **Depends on**: `advisor-plans/002-make-desktop-verification-source-current.md`, `advisor-plans/014-create-owned-application-runtime.md`
+- **Depends on**: `advisor-plans/002-make-desktop-verification-source-current.md`, `advisor-plans/014-create-owned-application-runtime.md`, `advisor-plans/032-harden-electron-fuses.md`, `advisor-plans/033-split-web-route-and-chart-bundles.md`, `advisor-plans/036-add-bounded-local-ocr.md`
+- **Preserve completed baseline**: Plans 032, 033, 035, 036, and 037
 - **Category**: tests
 - **Planned at**: commit `f1b9293`, 2026-08-30
 
@@ -53,13 +64,14 @@ CI proves compiled desktop units, renderer isolation, native addon ABI loading, 
 
 ## Commands you will need
 
-| Purpose | Command | Expected on success |
-|---|---|---|
-| Desktop unit gate | `pnpm --filter borealis-desktop verify` | exit 0; unit, format, native, and render checks pass |
-| Package | `pnpm package:unsigned` | exit 0; arm64 app exists at the package script’s documented output |
-| Lifecycle acceptance | `pnpm --filter borealis-desktop package:lifecycle:smoke` | exit 0 after two packaged launches and graceful stops |
-| Existing package smoke | `pnpm --filter borealis-desktop package:native:smoke` | exit 0 |
-| Repository gate | `pnpm verify` | exit 0 and prints `ALL GATES GREEN` |
+| Purpose                | Command                                                     | Expected on success                                                       |
+| ---------------------- | ----------------------------------------------------------- | ------------------------------------------------------------------------- |
+| Desktop unit gate      | `pnpm --filter borealis-desktop verify`                     | exit 0; unit, format, native, and render checks pass                      |
+| Package                | `pnpm package:unsigned`                                     | exit 0; arm64 app exists at the package script’s documented output        |
+| Lifecycle acceptance   | `pnpm --filter borealis-desktop package:lifecycle:smoke`    | exit 0 after two packaged launches and graceful stops                     |
+| Existing package smoke | `pnpm --filter borealis-desktop package:native:smoke`       | exit 0; fuse/ASAR/native/raster-OCR checks remain intact                  |
+| Entitlement matrix     | `pnpm --filter borealis-desktop package:entitlements:smoke` | exit 0 for the reviewed exact entitlement allowlist and negative variants |
+| Repository gate        | `pnpm verify`                                               | exit 0 and prints `ALL GATES GREEN`                                       |
 
 Run packaging commands only on the supported Apple Silicon macOS 13+ host with a graphical session.
 
@@ -95,7 +107,14 @@ If plan 014 moved the main-process lifecycle to a new owner module, that exact m
 
 ### Step 1: Confirm predecessor contracts and define a pure probe state machine
 
-Confirm plans 002 and 014 are `DONE`. Record the final supported packaging output path and the single owner that starts/stops the backend. Do not reintroduce commands removed by plan 002 or bypass the runtime abstraction created by plan 014.
+Confirm plans 002, 014, 032, 033, and 036 are `DONE`. Record the final
+supported packaging output path and the single owner that starts/stops the
+backend. Confirm the production fuses, positive utility environment allowlist,
+ASAR-only loading/integrity, required lazy-entry manifest check, build budget,
+unpacked JXA helper, real raster-only Vision smoke, and entitlement matrix all
+pass before adding lifecycle coverage. Do not reintroduce commands removed by
+plan 002, bypass the runtime abstraction created by plan 014, or duplicate any
+existing package smoke.
 
 Create `desktop/src/packagedLifecycleProbe.ts` with no Electron imports. It should accept only boolean lifecycle facts/events and return fixed actions. A successful run requires all of these, in either safe order:
 
@@ -112,7 +131,14 @@ Expose the fixed marker constants `BOREALIS_LIFECYCLE_READY` and `BOREALIS_LIFEC
 
 ### Step 2: Add a narrowly gated packaged-main acceptance mode
 
-Integrate the pure probe with the final main-process lifecycle owner. Activate it only when `app.isPackaged` is true and one dedicated environment flag equals an exact constant. Normal development and packaged launches must take the existing path byte-for-byte except for inert event observations.
+Integrate the pure probe with the final main-process lifecycle owner. Activate
+it only when `app.isPackaged` is true and Electron's command line contains one
+dedicated exact switch, following the existing packaged-native-smoke pattern.
+Do not add an environment escape hatch: Plan 032's positive utility environment
+allowlist remains authoritative, and neither the lifecycle switch nor any
+inherited debug/Node variable may reach the utility process. Normal development
+and packaged launches must take the existing path byte-for-byte except for inert
+event observations.
 
 Observe the real window’s successful initial load and the existing trusted
 bootstrap handler’s successful non-null consume. In acceptance mode only,
@@ -152,8 +178,8 @@ tokenized result to be exactly `arm64`. Do not fall back to a directory search,
 Make one absolute temporary root with mode 0700 and distinct mode-0700
 `profile/`, `home/`, and `tmp/` children. Build the child environment as an
 allowlist: preserve only `PATH`, `USER`, `LOGNAME`, `SHELL`, `LANG`, `LC_ALL`,
-and `CI` when present; set `HOME` and `TMPDIR` to those isolated children; then
-add the one exact lifecycle-smoke flag. Do not inherit `BOREALIS_*`, `LLM_*`,
+and `CI` when present; set `HOME` and `TMPDIR` to those isolated children. Do
+not inherit `BOREALIS_*`, `LLM_*`,
 `LITELLM_*`, `JWT_*`, `HOST`, `PORT`, `STATIC_WEB_DIR`, `RENDER_BACKEND`,
 signing/notarization variables, Electron logging/debug flags, `NODE_OPTIONS`, or
 `DYLD_*`.
@@ -161,7 +187,8 @@ signing/notarization variables, Electron logging/debug flags, `NODE_OPTIONS`, or
 Declare exact script constants `LAUNCH_TIMEOUT_MS = 60_000`,
 `TERMINATION_GRACE_MS = 5_000`, `KILL_SETTLE_MS = 5_000`, and
 `MAX_CAPTURED_OUTPUT_BYTES = 64 * 1024` (combined stdout/stderr per launch).
-Spawn the exact binary with exactly one application argument,
+Spawn the exact binary with exactly two application arguments: the dedicated
+`--borealis-packaged-lifecycle-smoke` switch and
 `--user-data-dir=<absolute profile path>`, so both launches exercise only the
 disposable profile and never the installed app's default data. Make each launch
 the leader of its own POSIX process group/session (`detached: true` on this
@@ -191,15 +218,25 @@ After launch one, read the signing-secret file only into memory. Launch again wi
 
 Add `package:lifecycle:smoke` to `desktop/package.json`. It must consume an already built unsigned app and must not silently package, sign, or install dependencies.
 
-**Verify**: `pnpm package:unsigned && pnpm --filter borealis-desktop package:lifecycle:smoke` → packaging exits 0; the script launches and gracefully stops the same packaged app twice, then exits 0 without dynamic output.
+**Verify**:
+`pnpm package:unsigned && pnpm --filter borealis-desktop package:native:smoke && pnpm --filter borealis-desktop package:entitlements:smoke && pnpm --filter borealis-desktop package:lifecycle:smoke`
+→ packaging exits 0; the existing fuse/ASAR/native/raster-OCR and entitlement
+checks pass unchanged, then the lifecycle script launches and gracefully stops
+the same packaged app twice without dynamic output.
 
 ### Step 4: Put the acceptance check in the macOS package job
 
-In `.github/workflows/ci.yml`, run the lifecycle smoke immediately after unsigned packaging and before the existing packaged-native smoke/upload. Keep it on the supported Apple Silicon macOS job and give the CI step a bounded timeout. Do not add signing/notarization credentials or upload the temporary profile.
+In `.github/workflows/ci.yml`, run the lifecycle smoke after unsigned packaging
+and alongside, not instead of, the existing packaged-native and entitlement
+matrix checks before artifact upload. Keep all three on the supported Apple
+Silicon macOS job and give the lifecycle step a bounded timeout. Do not add
+signing/notarization credentials or upload the temporary profile.
 
 Run the desktop and repository gates after editing the workflow.
 
-**Verify**: `pnpm --filter borealis-desktop verify && pnpm package:unsigned && pnpm --filter borealis-desktop package:lifecycle:smoke && pnpm --filter borealis-desktop package:native:smoke && pnpm verify` → every command exits 0; repository output ends with `ALL GATES GREEN`.
+**Verify**:
+`pnpm --filter borealis-desktop verify && pnpm package:unsigned && pnpm --filter borealis-desktop package:native:smoke && pnpm --filter borealis-desktop package:entitlements:smoke && pnpm --filter borealis-desktop package:lifecycle:smoke && pnpm verify`
+→ every command exits 0; repository output ends with `ALL GATES GREEN`.
 
 ## Test plan
 
@@ -209,7 +246,9 @@ Run the desktop and repository gates after editing the workflow.
   normal quit request; graceful acknowledgment;
   duplicate events; premature exit; timeout; and forced-kill rejection.
 - `packaged-lifecycle-smoke.mjs`: real packaged first launch, one-shot bootstrap, same-origin UI load, graceful runtime stop, same-profile relaunch, signing-secret continuity checked only in memory, single-instance lock release, exact process-group cleanup, and no surviving utility descendant after success/failure/timeout.
-- Existing `contracts.test.ts`, `policies.test.ts`, `runtime.test.ts`, renderer smoke, and native smokes remain green.
+- Existing `contracts.test.ts`, `policies.test.ts`, `runtime.test.ts`, renderer
+  smoke, fuse inspection, lazy-manifest/build-budget checks, packaged native
+  raster-OCR smoke, and entitlement matrix remain green.
 - CI executes the package lifecycle test before artifact upload so a failed normal launch blocks distribution.
 
 ## Done criteria
@@ -225,6 +264,10 @@ Run the desktop and repository gates after editing the workflow.
 - [ ] No test IPC/debug surface or renderer hardening exception was added.
 - [ ] No secret, token, endpoint, port, path, child output, or persisted content is printed or stored in artifacts.
 - [ ] Plan-002 command semantics and plan-014 runtime ownership remain intact.
+- [ ] Plans 032/033/036 remain intact: production fuses and the positive utility
+      environment allowlist are unchanged; all hashed lazy/chart assets remain
+      copied and budgeted offline; the unpacked helper and real raster-only
+      packaged OCR smoke still pass before lifecycle acceptance.
 - [ ] Desktop/package checks and `pnpm verify` pass with `ALL GATES GREEN`.
 - [ ] Only in-scope files plus the optional index status row are modified.
 - [ ] Plan 019 is marked `DONE` unless the reviewer owns the index.
@@ -233,13 +276,19 @@ Run the desktop and repository gates after editing the workflow.
 
 Stop and report if:
 
-- Plans 002 or 014 are not `DONE`, or their final command/runtime contracts differ from their plans.
+- Plans 002, 014, 032, 033, or 036 are not `DONE`, or their final command,
+  runtime, fuse/environment, lazy-asset, or OCR contracts differ from their
+  completion records.
 - The real packaged lifecycle can only be observed by adding privileged IPC, a debug port, Node integration, a navigation exception, or an unauthenticated HTTP endpoint.
 - The smoke cannot distinguish an orderly stopped acknowledgment from utility exit or the eight-second kill fallback.
 - The packaged launch cannot own an exact POSIX process group, or the script cannot bound TERM→KILL cleanup and await the tracked child before profile removal without broad process matching.
 - `safeStorage` is unavailable in the supported CI graphical session, or the packaged app cannot launch there after one evidence-based correction.
 - The test would need to print/read out bootstrap session values, settings, account rows, service URLs, or secret material. In-memory equality of the signing-secret bytes is the only permitted content access.
 - The packaged output path is ambiguous after plan 002, or lifecycle ownership is split after plan 014.
+- Adding the lifecycle mode would require weakening a fuse, passing an extra
+  utility-process environment variable, changing ASAR/unpacked policy, skipping
+  a lazy asset, or replacing the existing packaged native/OCR or entitlement
+  gate.
 - A required fix is out of scope or a verification fails twice.
 
 ## Maintenance notes

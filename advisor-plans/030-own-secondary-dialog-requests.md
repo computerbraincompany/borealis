@@ -2,6 +2,7 @@
 
 ## Status
 
+- **State**: DONE (2026-09-01)
 - **Priority**: P2
 - **Effort**: M
 - **Risk**: LOW
@@ -45,7 +46,9 @@ dialog. Report sharing can show A's state while buttons operate on B.
    completion/finalizer by exact ownership.
 4. Add deferred-promise tests for close-before-response, A→B with A last,
    overlapping mutations, failure after target change, and unmount.
-5. Make the focused test suite fail on unexpected React `act` warnings.
+5. Make the web test harness fail on unexpected React `act` warnings while
+   allowing focused tests to suppress only their expected error-boundary
+   diagnostics.
 
 ## Verification
 
@@ -54,9 +57,28 @@ dialog. Report sharing can show A's state while buttons operate on B.
 
 ## Done criteria
 
-- [ ] Stale requests cannot alter the visible target or its actions.
-- [ ] Loading/error state is owned by the active request.
-- [ ] Deferred-response tests and warning-free web tests pass.
+- [x] Stale requests cannot alter the visible target or its actions.
+- [x] Loading/error state is owned by the active request.
+- [x] Deferred-response tests and warning-free web tests pass.
+
+## Completion record
+
+- The scoped automation-history, report-sharing, and library-detail/member
+  dialogs own every load and mutation by an exact target plus abort/sequence
+  token. Closing, switching, overlapping, or unmounting invalidates stale
+  success, error, loading, and navigation effects.
+- Related chart, audit, provider-settings, chat, and catalog helpers use the
+  same ownership pattern where they share these surfaces. Deferred tests cover
+  the three scoped dialogs and those shared helpers. Successful report,
+  automation, and library mutations invalidate older catalog generations so a
+  deferred refresh cannot resurrect deleted rows or overwrite a rename/toggle;
+  automation target pagination is separately aborted and invalidated on kind
+  changes and dialog close. Source/connector CRUD ownership remains outside this
+  plan's declared scope.
+- The shared web test console policy turns unwrapped asynchronous React updates
+  into deterministic failures; tests that intentionally exercise rejected lazy
+  imports or safe error handling still pass those messages through the same act-
+  warning check before suppressing expected diagnostics.
 
 ## STOP conditions
 
