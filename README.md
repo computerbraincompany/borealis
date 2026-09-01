@@ -202,11 +202,10 @@ upload or reingest, or connector creation, manual sync, or schedule change
 against a remote provider, Borealis stops with a consent card naming the
 current destination host and payload classes. The acknowledgment is per
 account, not per host, and remains stored across provider changes; switching to
-a local provider makes the gate inapplicable immediately. A known gap in
-generic and scheduled `connector_sync` automations can bypass this gate, so do
-not use those automations with a remote provider until the issue described in
-the [API reference](docs/API.md#workspace-audit-shares-and-automations) is
-fixed.
+a local provider makes the gate inapplicable immediately. `connector_sync`
+automations are part of the same fail-closed boundary: creating or changing one
+requires the same acknowledgment, and a scheduled run without it is recorded as
+skipped rather than executed against the provider.
 
 Ingestion is durable, so the worker also checks consent immediately before its
 first embedding call. It captures one provider/model snapshot for the whole
