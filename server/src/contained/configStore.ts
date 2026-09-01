@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { config } from "../config.js";
@@ -72,6 +73,46 @@ export async function readContainedConfig(): Promise<ContainedConfig | null> {
   }
 }
 
+/** Same-directory fsync hardening, matching the settings-store writer. */
+async function syncDirectory(directory: string): Promise<void> {
+  let handle: Awaited<ReturnType<typeof fs.open>> | undefined;
+  try {
+    handle = await fs.open(directory, "r");
+    await handle.sync();
+  } catch {
+    // The file itself was fsynced; directory fsync is a best-effort portability hardening.
+  } finally {
+    await handle?.close().catch(() => undefined);
+  }
+}
+
+/**
+ * Same-directory atomic replacement modeled on the settings-store writer: the
+ * payload lands in a uniquely named temp file created with mode 0600 and is
+ * then renamed over the target, so readers only ever see a complete file and a
+ * pre-existing widened mode is repaired by the fresh 0600 inode.
+ */
+async function writeContainedConfigFileAtomically(filename: string, payload: string): Promise<void> {
+  const directory = path.dirname(filename);
+  await fs.mkdir(directory, { recursive: true, mode: 0o700 });
+  const temporary = path.join(directory, `.${path.basename(filename)}.${process.pid}.${randomUUID()}.tmp`);
+  let handle: Awaited<ReturnType<typeof fs.open>> | undefined;
+  try {
+    handle = await fs.open(temporary, "wx", 0o600);
+    await handle.writeFile(payload, "utf8");
+    await handle.sync();
+    await handle.close();
+    handle = undefined;
+    await fs.rename(temporary, filename);
+    await fs.chmod(filename, 0o600);
+    await syncDirectory(directory);
+  } catch (error) {
+    if (handle) await handle.close().catch(() => undefined);
+    await fs.unlink(temporary).catch(() => undefined);
+    throw error;
+  }
+}
+
 export async function writeContainedConfig(input: {
   enabled: boolean;
   binaryPath?: string;
@@ -87,9 +128,7 @@ export async function writeContainedConfig(input: {
     extra_args: input.extraArgs ?? [],
   });
   if (!normalized) throw new ContainedConfigError("an enabled config needs binary and model paths");
-  const file = containedConfigFile();
-  await fs.mkdir(path.dirname(file), { mode: 0o700, recursive: true });
-  await fs.writeFile(file, `${JSON.stringify(normalized, null, 2)}\n`, { encoding: "utf8", mode: 0o600, flag: "w" });
+  await writeContainedConfigFileAtomically(containedConfigFile(), `${JSON.stringify(normalized, null, 2)}\n`);
   return normalized;
 }
 

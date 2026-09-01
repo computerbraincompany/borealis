@@ -95,10 +95,18 @@ export function createContainedEngineManager(dependencies: ContainedEngineDepend
       throw new ContainedConfigError("the contained engine is already running");
     }
     const config = await requireEnabledConfig();
-    await Promise.all([
-      fs.access(config.binary_path).catch(() => Promise.reject(new ContainedConfigError("binary_path does not exist"))),
-      fs.access(config.model_path).catch(() => Promise.reject(new ContainedConfigError("model_path does not exist"))),
-    ]);
+    // Sequential checks so the diagnostic is deterministic when both paths are
+    // absent: binary_path always wins over model_path.
+    try {
+      await fs.access(config.binary_path);
+    } catch {
+      throw new ContainedConfigError("binary_path does not exist");
+    }
+    try {
+      await fs.access(config.model_path);
+    } catch {
+      throw new ContainedConfigError("model_path does not exist");
+    }
 
     stopRequested = false;
     port = await freePort();
@@ -121,6 +129,14 @@ export function createContainedEngineManager(dependencies: ContainedEngineDepend
         setState({ state: "crashed", error: "the engine process exited unexpectedly", pid: null });
         child = null;
       }
+    });
+    // Spawn failures (for example a non-executable or raced-away binary) are
+    // emitted on the child's "error" event; leaving it unhandled would crash
+    // the server instead of moving the engine into a bounded state.
+    child.once("error", () => {
+      if (stopRequested || (status.state !== "starting" && status.state !== "healthy")) return;
+      setState({ state: "crashed", error: "the engine process could not be started", pid: null });
+      child = null;
     });
 
     void waitUntilHealthy();

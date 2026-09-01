@@ -197,6 +197,40 @@ describe("contained engine manager", () => {
     expect(manager.snapshot().error).toContain("exited unexpectedly");
   });
 
+  it("marks the engine crashed when the binary cannot be spawned", async () => {
+    const modelPath = await writeModelFile();
+    const blockedBinary = path.join(tempDataDir, "not-executable-binary");
+    // A regular file without execute permission: spawn emits EACCES on the
+    // child's "error" event instead of ever starting a process.
+    await fs.writeFile(blockedBinary, "#!/bin/sh\nexit 0\n", { mode: 0o644 });
+    await writeContainedConfig({ enabled: true, binaryPath: blockedBinary, modelPath });
+
+    // The error listener must be attached even for a custom spawn dependency.
+    const manager = createContainedEngineManager({
+      spawn: ((file: string, args: readonly string[], options?: unknown) =>
+        spawn(file, args, { ...(options as object) })) as never,
+      probe: (async () => false) as never,
+      healthTimeoutMs: 10_000,
+      pollIntervalMs: 50,
+    });
+    await manager.start();
+    await waitForState(() => manager.snapshot(), "crashed", 100);
+    const crashed = manager.snapshot();
+    expect(crashed.error).toBe("the engine process could not be started");
+    expect(crashed.pid).toBeNull();
+  });
+
+  it("reports binary_path first when both configured paths are missing", async () => {
+    await writeContainedConfig({
+      enabled: true,
+      binaryPath: path.join(tempDataDir, "missing-binary"),
+      modelPath: path.join(tempDataDir, "missing-model.gguf"),
+    });
+
+    const manager = createContainedEngineManager();
+    await expect(manager.start()).rejects.toMatchObject({ message: "binary_path does not exist" });
+  });
+
   it("reads back a disabled config as present but inert", async () => {
     await writeContainedConfig({ enabled: false });
     const stored = await readContainedConfig();

@@ -177,9 +177,10 @@ provider switching. All routes require authentication.
 | `POST /api/contained/engine/start`          | `202` with the engine state; health is polled in the background.                                                           |
 | `POST /api/contained/engine/stop`           | Engine state after an orderly SIGTERM (bounded SIGKILL).                                                                   |
 
-Configuration is stored at `<BOREALIS_DATA_DIR>/contained.json`. The file is
-created with mode `0600`, but updates currently overwrite it directly rather
-than using an atomic replacement and do not repair an externally changed mode.
+Configuration is stored at `<BOREALIS_DATA_DIR>/contained.json`. Writes replace
+the file atomically within the same directory with mode `0600` — a pre-existing
+widened mode is repaired, and a failed write leaves the previous configuration
+intact with no temporary artifacts.
 Disabling needs only `{enabled:false}` and normalizes the path/argument fields
 to empty values. Enabling requires absolute `binary_path` and `model_path`
 values (no `~` or NUL); existence is checked when the engine starts.
@@ -213,12 +214,11 @@ stop; an environment-managed endpoint is reported via
 is never read or logged, and orderly shutdown stops the engine before the
 embedded stores close.
 
-Known engine-start gap: the manager checks that both paths exist, but it does
-not currently subscribe to the spawned child's `error` event. A binary that is
-non-executable or disappears after preflight can therefore surface as an
-unhandled process error instead of a bounded `crashed` state. The binary/model
-existence checks also run concurrently, so when both paths are absent the
-reported field is nondeterministic.
+Engine start checks the configured paths deterministically (binary before
+model, so an absent binary always wins the diagnostic) and subscribes to the
+spawned child's `error` event, so a non-executable or raced-away binary enters
+the bounded `crashed` state instead of surfacing as an unhandled process
+error.
 
 `GET /api/status` carries the ambient `contained` section
 (`{state,model,endpoint_host,endpoint_managed_by_env}` or `null`) so the

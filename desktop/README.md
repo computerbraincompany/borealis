@@ -251,7 +251,7 @@ absolute `--user-data-dir` override):
 | `models/`                  | Checksum-verified contained-model downloads and resumable `.part` files.                                             |
 | `.lancedb-migrations/`     | Private staged/backup indexes for an active managed embedding migration.                                             |
 | `embedding-migration.json` | Mode-`0600` aggregate migration state; absent when no operation remains.                                             |
-| `contained.json`           | Contained-engine paths/arguments; created mode `0600`, currently updated by direct write.                            |
+| `contained.json`           | Contained-engine paths/arguments; atomically replaced with mode `0600`.                                              |
 | `settings.json`            | Provider settings, written atomically with mode `0600`.                                                              |
 | `jwt.secret`               | Generated signing secret, created once with mode `0600` unless `JWT_SECRET` is supplied.                             |
 

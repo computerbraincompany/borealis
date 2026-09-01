@@ -123,8 +123,8 @@ below `~/Library/Application Support/Borealis/`:
 - `.lancedb-migrations/` and `embedding-migration.json` — private staging and
   aggregate state while a managed embedding migration is active;
 - `settings.json` — provider settings, atomically written with mode `0600`;
-- `contained.json` — contained-engine configuration, initially created with mode
-  `0600` (M06 tracks atomic-update and mode-repair gaps);
+- `contained.json` — contained-engine configuration, atomically replaced in the
+  same directory with mode `0600` (a pre-existing widened mode is repaired);
 - `jwt.secret` — generated once with mode `0600`.
 
 Environment overrides are documented in `server/.env.example`. A configured
@@ -396,11 +396,11 @@ live settings store, never when `LLM_BASE_URL` is environment-managed, and
 always restores the prior origin on stop. Downloads require SHA-256
 verification before atomic rename; `.part` artifacts never count as model
 files. Engine stop is part of the orderly shutdown path (`closeDb`).
-The current `contained.json` writer is a direct mode-`0600` overwrite rather
-than an atomic replacement, and the web app exposes ambient state but no
-contained-management panel. The engine manager also lacks a child-process
-`error` listener and has nondeterministic diagnostics when both configured
-paths are missing. M06 remains partial until those gaps are closed.
+`contained.json` is replaced by a same-directory atomic rename that keeps mode
+`0600` and repairs a pre-existing widened mode; spawn failures reach the
+child-process `error` listener and land in the bounded `crashed` state, and
+missing-path diagnostics are deterministic (binary before model). The web app
+exposes ambient state but no contained-management panel yet.
 
 The ambient chrome strip is fed by `GET /api/status`
 (`server/src/workspaceStatus.ts`). Keep its probe body-free, bounded, and

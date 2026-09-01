@@ -4,7 +4,7 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import Fastify, { type FastifyInstance } from "fastify";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { signToken } from "../auth.js";
 import {
   clearContainedConfig,
@@ -117,6 +117,70 @@ describe("contained config store", () => {
     expect(read).toEqual(saved);
     const stat = await fs.stat(path.join(config.storageDir, "contained.json"));
     expect(stat.mode & 0o777).toBe(0o600);
+  });
+
+  it("replaces an existing file atomically and repairs a widened mode", async () => {
+    const file = path.join(config.storageDir, "contained.json");
+    await fs.writeFile(file, "{}\n", { mode: 0o644 });
+    await fs.chmod(file, 0o644);
+    expect((await fs.stat(file)).mode & 0o777).toBe(0o644);
+
+    const saved = await writeContainedConfig({
+      enabled: true,
+      binaryPath: "/opt/homebrew/bin/llama-server",
+      modelPath: path.join(tempDataDir, "models", "model.gguf"),
+      extraArgs: ["-ngl", "99"],
+    });
+    expect(await readContainedConfig()).toEqual(saved);
+    expect((await fs.stat(file)).mode & 0o777).toBe(0o600);
+  });
+
+  it("leaves no temporary artifacts behind after repeated writes", async () => {
+    await writeContainedConfig({
+      enabled: true,
+      binaryPath: "/opt/homebrew/bin/llama-server",
+      modelPath: path.join(tempDataDir, "models", "model.gguf"),
+    });
+    await writeContainedConfig({ enabled: false });
+    await writeContainedConfig({
+      enabled: true,
+      binaryPath: "/usr/local/bin/llama-server",
+      modelPath: path.join(tempDataDir, "models", "model.gguf"),
+    });
+
+    const entries = await fs.readdir(config.storageDir);
+    expect(entries.filter((name) => name !== "contained.json")).toEqual([]);
+  });
+
+  it("keeps the previous configuration when a write fails", async () => {
+    const file = path.join(config.storageDir, "contained.json");
+    await writeContainedConfig({
+      enabled: true,
+      binaryPath: "/opt/homebrew/bin/llama-server",
+      modelPath: path.join(tempDataDir, "models", "model.gguf"),
+    });
+    const before = await readContainedConfig();
+
+    const originalRename = fs.rename.bind(fs);
+    const rename = vi.spyOn(fs, "rename").mockImplementation(async (from, to) => {
+      if (String(to) === file) throw Object.assign(new Error("rename blocked"), { code: "EACCES" });
+      await originalRename(from, to);
+    });
+    try {
+      await expect(
+        writeContainedConfig({
+          enabled: true,
+          binaryPath: "/usr/local/bin/llama-server",
+          modelPath: path.join(tempDataDir, "models", "model.gguf"),
+        })
+      ).rejects.toMatchObject({ code: "EACCES" });
+    } finally {
+      rename.mockRestore();
+    }
+
+    expect(await readContainedConfig()).toEqual(before);
+    const entries = await fs.readdir(config.storageDir);
+    expect(entries.filter((name) => name !== "contained.json")).toEqual([]);
   });
 
   it("fails closed on malformed files and disabled configs carry no paths", async () => {
