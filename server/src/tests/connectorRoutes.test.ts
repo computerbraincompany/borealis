@@ -33,6 +33,7 @@ import { encodeJson } from "../db/codecs.js";
 import type { CreateConnectorInput } from "../db/stores/sourceStore.js";
 import { LATEST_SQLITE_SCHEMA_VERSION } from "../db/migrations.js";
 import { DataServiceError, dataService } from "../dataService.js";
+import { closeEmbeddingMigrationCoordinator } from "../embeddingMigration.js";
 import { wakeConnectorPrepareWorkers, wakeIngestionWorkers } from "../ingest.js";
 import { closeRuntimeSettings, initializeRuntimeSettings, runtimeSettingsStore } from "../runtimeSettings.js";
 import { routes } from "../routes.js";
@@ -98,6 +99,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   await Promise.all(apps.splice(0).map((app) => app.close()));
+  await closeEmbeddingMigrationCoordinator();
   closeRuntimeSettings();
   await closeStorageRuntime();
   if (runtimeDirectory) await fs.rm(runtimeDirectory, { recursive: true, force: true });
@@ -105,6 +107,63 @@ afterEach(async () => {
 });
 
 describe("connector synchronization", () => {
+  it("returns an exact connector-status batch scoped to the authenticated account", async () => {
+    await storageRuntime().sources.createConnector(ACCOUNT, connectorStoreInput("ledger", "syncing"));
+    const foreignId = await insertConnectorRow(FOREIGN);
+    const missingId = randomUUID();
+    const app = await buildApp();
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/connectors/status",
+      headers: auth,
+      payload: { ids: [CONNECTOR, foreignId, missingId] },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      items: [expect.objectContaining({ id: CONNECTOR, sync_status: "syncing", schedule: null })],
+      missing_ids: [foreignId, missingId],
+    });
+  });
+
+  it("rejects connector creation before external preparation while an embedding migration is active", async () => {
+    await writeActiveMigrationState();
+    const app = await buildApp();
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/connectors",
+      headers: auth,
+      payload: connectorPayload("ledger"),
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toEqual({
+      error: "source changes are paused during embedding migration",
+      code: "SOURCE_MUTATION_BLOCKED",
+    });
+    expect(prepareMock).not.toHaveBeenCalled();
+    await expect(storageRuntime().sources.listConnectors(ACCOUNT)).resolves.toEqual({ items: [], next: null });
+  });
+
+  it("blocks manual sync and deletion without changing an existing connector identity", async () => {
+    await storageRuntime().sources.createConnector(ACCOUNT, connectorStoreInput("ledger", "idle"));
+    await writeActiveMigrationState();
+    const app = await buildApp();
+
+    for (const request of [
+      { method: "POST" as const, url: `/api/connectors/${CONNECTOR}/sync` },
+      { method: "DELETE" as const, url: `/api/connectors/${CONNECTOR}` },
+    ]) {
+      const response = await app.inject({ ...request, headers: auth });
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toMatchObject({ code: "SOURCE_MUTATION_BLOCKED" });
+    }
+    expect(prepareMock).not.toHaveBeenCalled();
+    await expect(storageRuntime().sources.getConnector(ACCOUNT, CONNECTOR)).resolves.toMatchObject({ id: CONNECTOR });
+  });
+
   it.each(["", "2026_ledger", "bad-name", "x".repeat(64)])(
     "rejects invalid explicit target table %j before reserving identity",
     async (targetTable) => {
@@ -117,7 +176,7 @@ describe("connector synchronization", () => {
       });
       expect(response.statusCode).toBe(400);
       expect(prepareMock).not.toHaveBeenCalled();
-      await expect(storageRuntime().sources.listConnectors(ACCOUNT)).resolves.toEqual([]);
+      await expect(storageRuntime().sources.listConnectors(ACCOUNT)).resolves.toEqual({ items: [], next: null });
     }
   );
 
@@ -139,7 +198,7 @@ describe("connector synchronization", () => {
 
     expect(response.statusCode).toBe(409);
     expect(prepareMock).not.toHaveBeenCalled();
-    await expect(storageRuntime().sources.listConnectors(ACCOUNT)).resolves.toEqual([]);
+    await expect(storageRuntime().sources.listConnectors(ACCOUNT)).resolves.toEqual({ items: [], next: null });
   });
 
   it.each([
@@ -226,8 +285,8 @@ describe("connector synchronization", () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({ target_table: "events_feed", sync_status: "indexing" });
-    const connectors = await storageRuntime().sources.listConnectors(ACCOUNT);
-    const source = (await storageRuntime().sources.listSources(ACCOUNT))[0];
+    const connectors = (await storageRuntime().sources.listConnectors(ACCOUNT)).items;
+    const source = (await storageRuntime().sources.listSources(ACCOUNT)).items[0];
     expect(connectors).toHaveLength(1);
     expect(source).toMatchObject({ name: "events_feed", status: "index", connectorId: connectors[0].id });
     await expect(storageRuntime().ingestion.getJob(ACCOUNT, source.id)).resolves.toMatchObject({
@@ -490,7 +549,7 @@ describe("connector schedule and sync history", () => {
     expect(automationRows[0]).toMatchObject({ name: "Connector: Feed", schedule_minutes: 60 });
 
     const listed = await app.inject({ method: "GET", url: "/api/connectors", headers: auth });
-    expect(listed.json()[0].schedule).toMatchObject({ schedule_minutes: 60 });
+    expect(listed.json().items[0].schedule).toMatchObject({ schedule_minutes: 60 });
 
     const updated = await app.inject({
       method: "PUT",
@@ -587,7 +646,7 @@ describe("connector schedule and sync history", () => {
       error: "multiple connector_sync automations target this connector; clean up in Automations",
     });
     const listed = await app.inject({ method: "GET", url: "/api/connectors", headers: auth });
-    expect(listed.json()[0].schedule).toBeNull();
+    expect(listed.json().items[0].schedule).toBeNull();
   });
 
   it("suffixes the derived automation name when it collides with an unrelated automation", async () => {
@@ -737,6 +796,30 @@ function connectorStoreInput(
       ...sourceOverrides,
     },
   };
+}
+
+async function writeActiveMigrationState(): Promise<void> {
+  await fs.writeFile(
+    path.join(runtimeDirectory, "embedding-migration.json"),
+    `${JSON.stringify({
+      version: 1,
+      id: "44444444-4444-4444-8444-444444444444",
+      phase: "building",
+      target_model: "new-embed",
+      target_dimension: 5,
+      old_model: "old-embed",
+      old_dimension: 3,
+      provider_revision: "a".repeat(64),
+      snapshot_hash: null,
+      source_count: 0,
+      chunk_count: 0,
+      indexed_count: 0,
+      error_code: null,
+      created_at: "2026-08-31T00:00:00.000Z",
+      updated_at: "2026-08-31T00:00:00.000Z",
+    })}\n`,
+    { mode: 0o600 }
+  );
 }
 
 function randomUUIDLike(): string {

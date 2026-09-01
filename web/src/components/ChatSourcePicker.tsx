@@ -44,6 +44,8 @@ interface ChatSourcePickerProps {
   attachedSources: AttachedSource[];
   sources: Source[];
   sourcesLoading: boolean;
+  sourcesHasMore?: boolean;
+  sourcesLoadingMore?: boolean;
   sourcesError: string | null;
   disabled: boolean;
   saving: boolean;
@@ -51,10 +53,14 @@ interface ChatSourcePickerProps {
   onApply: (scope: SourceScopeInput) => Promise<void>;
   onUpload: (file: File) => Promise<Source>;
   onRetrySources: () => Promise<void>;
+  onLoadMoreSources?: () => void | Promise<void>;
   libraries?: LibrarySummary[] | null;
   librariesLoading?: boolean;
+  librariesHasMore?: boolean;
+  librariesLoadingMore?: boolean;
   librariesError?: string | null;
   onRetryLibraries?: () => void;
+  onLoadMoreLibraries?: () => void | Promise<void>;
 }
 
 export function ChatSourcePicker({
@@ -62,6 +68,8 @@ export function ChatSourcePicker({
   attachedSources,
   sources,
   sourcesLoading,
+  sourcesHasMore = false,
+  sourcesLoadingMore = false,
   sourcesError,
   disabled,
   saving,
@@ -69,10 +77,14 @@ export function ChatSourcePicker({
   onApply,
   onUpload,
   onRetrySources,
+  onLoadMoreSources,
   libraries = null,
   librariesLoading = false,
+  librariesHasMore = false,
+  librariesLoadingMore = false,
   librariesError = null,
   onRetryLibraries,
+  onLoadMoreLibraries,
 }: ChatSourcePickerProps) {
   const searchId = useId();
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -256,7 +268,9 @@ export function ChatSourcePicker({
           sideOffset={8}
           collisionPadding={12}
           sticky="always"
-          aria-busy={saving || pending || isUploading || isAttachingLibrary}
+          aria-busy={
+            saving || pending || isUploading || isAttachingLibrary || sourcesLoadingMore || librariesLoadingMore
+          }
           className="flex max-h-[calc(100vh-1.5rem)] w-[min(24rem,calc(100vw-1.5rem))] flex-col overflow-hidden rounded-lg p-0 shadow-lg"
         >
           <div className="flex items-center gap-3 px-3 py-3">
@@ -331,7 +345,7 @@ export function ChatSourcePicker({
             </DropdownMenuItem>
           </DropdownMenuGroup>
 
-          {(hasLibraries || librariesError) && (
+          {(hasLibraries || librariesLoading || librariesHasMore || librariesError) && (
             <>
               <DropdownMenuSeparator className="mx-0 my-0" />
               <DropdownMenuGroup className="p-1.5">
@@ -381,6 +395,19 @@ export function ChatSourcePicker({
                     )}
                   </DropdownMenuItem>
                 ))}
+                {librariesHasMore && (
+                  <DropdownMenuItem
+                    disabled={busy || librariesLoading || librariesLoadingMore}
+                    onSelect={(event) => {
+                      event.preventDefault();
+                      void onLoadMoreLibraries?.();
+                    }}
+                    className="justify-center text-xs text-muted-foreground"
+                  >
+                    {librariesLoadingMore && <LoaderCircle className="animate-spin" aria-hidden="true" />}
+                    {librariesLoadingMore ? "Loading more libraries…" : "Load more libraries"}
+                  </DropdownMenuItem>
+                )}
               </DropdownMenuGroup>
             </>
           )}
@@ -459,6 +486,19 @@ export function ChatSourcePicker({
                 <p className="px-3 py-5 text-center text-xs text-muted-foreground">
                   No sources match “{search.trim()}”.
                 </p>
+              )}
+              {sourcesHasMore && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  disabled={busy || sourcesLoading || sourcesLoadingMore}
+                  onClick={() => void onLoadMoreSources?.()}
+                  className="mt-1 w-full justify-center text-xs text-muted-foreground"
+                >
+                  {sourcesLoadingMore && <LoaderCircle data-icon="inline-start" className="animate-spin" />}
+                  {sourcesLoadingMore ? "Loading more sources…" : "Load more sources"}
+                </Button>
               )}
             </div>
           </div>

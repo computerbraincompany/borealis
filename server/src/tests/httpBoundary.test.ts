@@ -2,7 +2,7 @@ import Fastify from "fastify";
 import { describe, expect, it, vi } from "vitest";
 import { installHttpBoundary } from "../httpErrors.js";
 import { currentRequestId } from "../requestContext.js";
-import { requireAuth } from "../auth.js";
+import { requireAuth, signToken } from "../auth.js";
 
 describe("Fastify request boundary", () => {
   it("installs its hooks only once per Fastify instance", () => {
@@ -91,7 +91,7 @@ describe("Fastify request boundary", () => {
   it("returns an opaque direct 401 from auth without sentinel error matching", async () => {
     const app = Fastify();
     installHttpBoundary(app);
-    app.get("/protected", { preHandler: requireAuth }, async () => ({ ok: true }));
+    app.get("/protected", { onRequest: requireAuth }, async () => ({ ok: true }));
     await app.ready();
     try {
       const response = await app.inject({
@@ -101,6 +101,89 @@ describe("Fastify request boundary", () => {
       });
       expect(response.statusCode).toBe(401);
       expect(response.json()).toEqual({ error: "unauthorized", request_id: "auth.denied" });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("authenticates before parsing and does not enter handlers for rejected bodies", async () => {
+    const app = Fastify();
+    installHttpBoundary(app);
+    const parser = vi.fn((_req, body, done) => done(null, { value: body }));
+    const store = vi.fn(async (_body: unknown) => undefined);
+    app.addContentTypeParser("application/x-borealis-test", { parseAs: "string" }, parser);
+    app.post("/protected", { onRequest: requireAuth, bodyLimit: 16 }, async (req) => {
+      await store(req.body);
+      return { ok: true };
+    });
+    app.post("/protected-json", { onRequest: requireAuth, bodyLimit: 16 }, async (req) => {
+      await store(req.body);
+      return { ok: true };
+    });
+    await app.ready();
+    const authorization = `Bearer ${signToken({
+      userId: "11111111-1111-4111-8111-111111111111",
+      email: "owner@example.test",
+    })}`;
+    try {
+      const unauthorizedOversize = await app.inject({
+        method: "POST",
+        url: "/protected",
+        headers: { "content-type": "application/x-borealis-test", "x-request-id": "auth.before-size" },
+        payload: "x".repeat(64),
+      });
+      expect(unauthorizedOversize.statusCode).toBe(401);
+      expect(unauthorizedOversize.json()).toEqual({ error: "unauthorized", request_id: "auth.before-size" });
+      expect(parser).not.toHaveBeenCalled();
+      expect(store).not.toHaveBeenCalled();
+
+      const unauthorizedMalformed = await app.inject({
+        method: "POST",
+        url: "/protected-json",
+        headers: { "content-type": "application/json", "x-request-id": "auth.before-json" },
+        payload: '{"broken":',
+      });
+      expect(unauthorizedMalformed.statusCode).toBe(401);
+      expect(unauthorizedMalformed.json()).toEqual({ error: "unauthorized", request_id: "auth.before-json" });
+      expect(store).not.toHaveBeenCalled();
+
+      const authorizedOversize = await app.inject({
+        method: "POST",
+        url: "/protected",
+        headers: {
+          authorization,
+          "content-type": "application/x-borealis-test",
+          "x-request-id": "body.too-large",
+        },
+        payload: "x".repeat(64),
+      });
+      expect(authorizedOversize.statusCode).toBe(413);
+      expect(authorizedOversize.json()).toEqual({
+        error: "request payload is too large",
+        request_id: "body.too-large",
+      });
+      expect(parser).not.toHaveBeenCalled();
+      expect(store).not.toHaveBeenCalled();
+
+      const authorizedMalformed = await app.inject({
+        method: "POST",
+        url: "/protected-json",
+        headers: { authorization, "content-type": "application/json", "x-request-id": "json.after-auth" },
+        payload: '{"broken":',
+      });
+      expect(authorizedMalformed.statusCode).toBe(400);
+      expect(authorizedMalformed.json()).toEqual({ error: "invalid request", request_id: "json.after-auth" });
+      expect(store).not.toHaveBeenCalled();
+
+      const accepted = await app.inject({
+        method: "POST",
+        url: "/protected",
+        headers: { authorization, "content-type": "application/x-borealis-test" },
+        payload: "valid",
+      });
+      expect(accepted.statusCode).toBe(200);
+      expect(parser).toHaveBeenCalledOnce();
+      expect(store).toHaveBeenCalledOnce();
     } finally {
       await app.close();
     }

@@ -6,6 +6,9 @@ vi.mock("@/components/Shell", () => ({
 vi.mock("@/pages/AuthPage", () => ({ AuthPage: () => <div>Auth page</div> }));
 vi.mock("@/pages/ChatView", () => ({ ChatView: () => <div>Chat page</div> }));
 vi.mock("@/pages/SourcesView", () => ({ SourcesView: () => <div>Sources page</div> }));
+vi.mock("@/pages/LibrariesView", () => ({ LibrariesView: () => <div>Libraries page</div> }));
+vi.mock("@/pages/AgentsView", () => ({ AgentsView: () => <div>Agents page</div> }));
+vi.mock("@/pages/AutomationsView", () => ({ AutomationsView: () => <div>Automations page</div> }));
 vi.mock("@/pages/ConnectorsView", () => ({ ConnectorsView: () => <div>Connectors page</div> }));
 vi.mock("@/pages/ReportsView", () => ({ ReportsView: () => <div>Reports page</div> }));
 vi.mock("@/pages/SettingsView", () => ({
@@ -29,20 +32,20 @@ describe("App routing", () => {
     window.scrollTo = vi.fn();
   });
 
-  it("renders direct Settings links as a modal over the chat workspace", () => {
+  it("renders direct Settings links as a modal over the chat workspace", async () => {
     window.location.hash = "/settings";
     render(<App />);
 
     expect(screen.getByTestId("shell")).toContainElement(screen.getByText("Chat page"));
-    expect(screen.getByText("Settings modal")).toBeInTheDocument();
+    expect(await screen.findByText("Settings modal")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Close settings" }));
     expect(window.location.hash).toBe("#/chat");
   });
 
-  it("preserves the originating workspace behind Settings and restores it on close", () => {
+  it("preserves the originating workspace behind Settings and restores it on close", async () => {
     window.location.hash = "/sources";
     render(<App />);
-    expect(screen.getByText("Sources page")).toBeInTheDocument();
+    expect(await screen.findByText("Sources page")).toBeInTheDocument();
 
     act(() => {
       window.location.hash = "/settings";
@@ -50,7 +53,7 @@ describe("App routing", () => {
     });
 
     expect(screen.getByText("Sources page")).toBeInTheDocument();
-    expect(screen.getByText("Settings modal")).toBeInTheDocument();
+    expect(await screen.findByText("Settings modal")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Close settings" }));
     expect(window.location.hash).toBe("#/sources");
   });
@@ -95,5 +98,19 @@ describe("App routing", () => {
     render(<App />);
 
     expect(screen.getByText("Chat page")).toBeInTheDocument();
+  });
+
+  it.each([
+    ["/sources", "Sources page"],
+    ["/libraries", "Libraries page"],
+    ["/agents", "Agents page"],
+    ["/automations", "Automations page"],
+    ["/connectors", "Connectors page"],
+    ["/reports", "Reports page"],
+  ])("lazy-loads a direct %s route", async (route, label) => {
+    window.location.hash = route;
+    render(<App />);
+
+    expect(await screen.findByText(label)).toBeInTheDocument();
   });
 });

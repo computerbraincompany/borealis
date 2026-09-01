@@ -5,7 +5,10 @@ import path from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("../llm.js", () => ({ embed: vi.fn() }));
+vi.mock("../llm.js", () => {
+  const embed = vi.fn();
+  return { embed, createEmbeddingExecutor: vi.fn(() => embed) };
+});
 vi.mock("../dataService.js", () => ({
   DataServiceError: class DataServiceError extends Error {},
   dataService: {
@@ -27,7 +30,7 @@ vi.mock("../storageArtifacts.js", () => ({
 }));
 
 import { dataService } from "../dataService.js";
-import { restoreDatasets, stopIngestionWorkers } from "../ingest.js";
+import { processDatasetCacheCleanup, restoreDatasets, stopIngestionWorkers } from "../ingest.js";
 import { resolveSourceArtifact } from "../storageArtifacts.js";
 import { closeStorageRuntime, initializeStorageRuntime, storageRuntime } from "../storageRuntime.js";
 
@@ -158,18 +161,10 @@ describe("dataset restoration", () => {
       filePath: "/safe/active.csv",
       status: "index",
     });
-    await storageRuntime().sources.createSource(UPLOAD_ACCOUNT, {
-      id: randomUUID(),
-      name: "failed_table",
-      kind: "tabular",
-      displayName: "Failed.csv",
-      filePath: "/safe/failed.csv",
-      status: "error",
-    });
     listMock.mockImplementation(async (accountId) =>
       accountId === UPLOAD_ACCOUNT
         ? [
-            { table: "failed_table", location: "/safe/failed.csv", kind: "url", exists: true },
+            { table: "orphaned_table", location: "/safe/orphaned.csv", kind: "url", exists: true },
             { table: "active_table", location: "/safe/active.csv", exists: true },
           ]
         : []
@@ -180,9 +175,45 @@ describe("dataset restoration", () => {
       removed: 1,
       remove_failed: 0,
     });
-    expect(deactivateMock).toHaveBeenCalledWith(UPLOAD_ACCOUNT, "failed_table", "/safe/failed.csv");
-    expect(cleanupMock).toHaveBeenCalledWith(UPLOAD_ACCOUNT, "failed_table", "/safe/failed.csv");
+    expect(deactivateMock).toHaveBeenCalledWith(UPLOAD_ACCOUNT, "orphaned_table", "/safe/orphaned.csv");
+    expect(cleanupMock).toHaveBeenCalledWith(UPLOAD_ACCOUNT, "orphaned_table", "/safe/orphaned.csv");
     expect(deactivateMock).not.toHaveBeenCalledWith(UPLOAD_ACCOUNT, "active_table", expect.anything());
+  });
+
+  it("persists stale URL cleanup before deactivation and repairs a failed deletion after restart", async () => {
+    const location = "/safe/cache/orphaned-feed.csv";
+    listMock.mockImplementation(async (accountId) =>
+      accountId === UPLOAD_ACCOUNT ? [{ table: "orphaned_feed", location, kind: "url", exists: true }] : []
+    );
+    deactivateMock.mockImplementationOnce(async (accountId, name, exactLocation) => {
+      await expect(storageRuntime().ingestion.listDatasetCleanupJobs({ accountId, name })).resolves.toEqual([
+        { accountId, name, location: exactLocation, attempts: 0 },
+      ]);
+      return { status: "dropped" };
+    });
+    cleanupMock.mockRejectedValueOnce(new Error("simulated cache removal failure"));
+
+    await expect(restoreDatasets()).resolves.toMatchObject({
+      stale_attempted: 1,
+      removed: 0,
+      remove_failed: 1,
+    });
+    await expect(
+      storageRuntime().ingestion.listDatasetCleanupJobs({ accountId: UPLOAD_ACCOUNT, name: "orphaned_feed" })
+    ).resolves.toEqual([{ accountId: UPLOAD_ACCOUNT, name: "orphaned_feed", location, attempts: 1 }]);
+
+    await closeStorageRuntime();
+    await initializeStorageRuntime({
+      sqlitePath: path.join(directory, "ledger.sqlite"),
+      lanceDirectory: path.join(directory, "lancedb"),
+      embeddingDimension: 3,
+    });
+    await expect(processDatasetCacheCleanup(UPLOAD_ACCOUNT, "orphaned_feed")).resolves.toBe(1);
+    await expect(
+      storageRuntime().ingestion.listDatasetCleanupJobs({ accountId: UPLOAD_ACCOUNT, name: "orphaned_feed" })
+    ).resolves.toEqual([]);
+    expect(deactivateMock).toHaveBeenCalledTimes(2);
+    expect(cleanupMock).toHaveBeenCalledTimes(2);
   });
 
   it("undoes a stale registration if the durable source identity changes during external I/O", async () => {
@@ -207,4 +238,197 @@ describe("dataset restoration", () => {
     await expect(restoreDatasets()).resolves.toMatchObject({ attempted: 1, restored: 0, failed: 0 });
     expect(deactivateMock).toHaveBeenCalledWith(UPLOAD_ACCOUNT, "ledger", "/safe/old.csv");
   });
+
+  it("preserves the last-good connector cache when a refresh begins during reconciliation and then fails", async () => {
+    const connectorId = randomUUID();
+    const sourceId = randomUUID();
+    const oldLocation = "/safe/cache/last-good.csv";
+    await storageRuntime().sources.createConnector(CONNECTOR_ACCOUNT, {
+      id: connectorId,
+      name: "Feed",
+      type: "url_csv",
+      config: { url: "https://example.invalid/feed.csv" },
+      targetTable: "feed",
+      syncStatus: "idle",
+      source: {
+        id: sourceId,
+        displayName: "Feed",
+        url: "https://example.invalid/feed.csv",
+        mime: "text/csv",
+        filePath: oldLocation,
+        status: "ready",
+        readyGeneration: 1,
+      },
+    });
+    await storageRuntime().ledger.run(
+      `INSERT INTO chunks (id,account_id,source_id,generation,seq,source_name,content,meta)
+       VALUES (?,?,?,?,?,?,?,?)`,
+      [randomUUID(), CONNECTOR_ACCOUNT, sourceId, 1, 0, "Feed", "last good", "{}"]
+    );
+    const registration = deferred<Record<string, unknown>>();
+    registerMock.mockReturnValueOnce(registration.promise);
+
+    const restoring = restoreDatasets();
+    await vi.waitFor(() => expect(registerMock).toHaveBeenCalledTimes(1));
+    const refreshVersion = randomUUID();
+    const prepareLeaseToken = randomUUID();
+    const refresh = await storageRuntime().sourceIngestion.beginConnectorRefresh({
+      accountId: CONNECTOR_ACCOUNT,
+      connectorId,
+      refreshVersion,
+      leaseToken: prepareLeaseToken,
+    });
+    registration.resolve({});
+
+    await expect(restoring).resolves.toMatchObject({ attempted: 1, restored: 0, failed: 0 });
+    expect(registerMock).toHaveBeenCalledWith(CONNECTOR_ACCOUNT, "feed", {
+      location: oldLocation,
+      kind: "url",
+      url: "https://example.invalid/feed.csv",
+      originalName: "Feed",
+      expectedFormat: "csv",
+    });
+    expect(deactivateMock).not.toHaveBeenCalled();
+    expect(cleanupMock).not.toHaveBeenCalled();
+    await expect(
+      storageRuntime().ingestion.listDatasetCleanupJobs({ accountId: CONNECTOR_ACCOUNT, name: "feed" })
+    ).resolves.toEqual([]);
+
+    await expect(
+      storageRuntime().sourceIngestion.failConnectorPrepare({
+        accountId: CONNECTOR_ACCOUNT,
+        connectorId,
+        sourceId,
+        generation: refresh.generation,
+        leaseToken: prepareLeaseToken,
+        errorCode: "PREPARE_FAILED",
+      })
+    ).resolves.toBe(true);
+    await expect(storageRuntime().sources.getSource(CONNECTOR_ACCOUNT, sourceId)).resolves.toMatchObject({
+      status: "ready",
+      filePath: oldLocation,
+      readyGeneration: 1,
+    });
+  });
+
+  it("reserves exact stale connector cleanup after a raced promotion and retries it after restart", async () => {
+    const connectorId = randomUUID();
+    const sourceId = randomUUID();
+    const oldLocation = "/safe/cache/old-version.csv";
+    const newLocation = "/safe/cache/new-version.csv";
+    await storageRuntime().sources.createConnector(CONNECTOR_ACCOUNT, {
+      id: connectorId,
+      name: "Feed",
+      type: "url_csv",
+      config: { url: "https://example.invalid/feed.csv" },
+      targetTable: "feed",
+      syncStatus: "idle",
+      source: {
+        id: sourceId,
+        displayName: "Feed",
+        url: "https://example.invalid/feed.csv",
+        mime: "text/csv",
+        filePath: oldLocation,
+        status: "ready",
+        readyGeneration: 1,
+      },
+    });
+    const timestamp = new Date(0).toISOString();
+    await storageRuntime().ledger.run(
+      `INSERT INTO ingestion_jobs
+         (source_id,account_id,generation,status,attempts,available_at,created_at,updated_at)
+       VALUES (?,?,1,'done',1,?,?,?)`,
+      [sourceId, CONNECTOR_ACCOUNT, timestamp, timestamp, timestamp]
+    );
+    const registration = deferred<Record<string, unknown>>();
+    registerMock.mockReturnValueOnce(registration.promise);
+
+    const restoring = restoreDatasets();
+    await vi.waitFor(() => expect(registerMock).toHaveBeenCalledTimes(1));
+    const refreshVersion = randomUUID();
+    const prepareLeaseToken = randomUUID();
+    const refresh = await storageRuntime().sourceIngestion.beginConnectorRefresh({
+      accountId: CONNECTOR_ACCOUNT,
+      connectorId,
+      refreshVersion,
+      leaseToken: prepareLeaseToken,
+    });
+    await storageRuntime().sourceIngestion.activatePreparedConnector({
+      accountId: CONNECTOR_ACCOUNT,
+      connectorId,
+      sourceId,
+      generation: refresh.generation,
+      leaseToken: prepareLeaseToken,
+      refreshVersion,
+      url: "https://example.invalid/feed.csv",
+      displayName: "Feed",
+      mime: "text/csv",
+      candidateLocation: newLocation,
+      activationPreviousLocation: oldLocation,
+      cleanupPreviousLocation: oldLocation,
+    });
+    const job = await storageRuntime().ingestion.claimNext("pending");
+    if (!job?.leaseToken) throw new Error("test ingestion job was not leased");
+    await storageRuntime().ingestion.stageChunks({
+      accountId: CONNECTOR_ACCOUNT,
+      sourceId,
+      generation: job.generation,
+      leaseToken: job.leaseToken,
+      sourceName: "Feed",
+      chunks: [{ content: "new version", meta: {} }],
+    });
+    await storageRuntime().ingestion.promoteGeneration({
+      accountId: CONNECTOR_ACCOUNT,
+      sourceId,
+      generation: job.generation,
+      leaseToken: job.leaseToken,
+      sizeBytes: 11,
+      promotedFilePath: newLocation,
+      verifyVectors: async () => true,
+    });
+    deactivateMock.mockImplementationOnce(async (accountId, name, exactLocation) => {
+      await expect(storageRuntime().ingestion.listDatasetCleanupJobs({ accountId, name })).resolves.toEqual([
+        { accountId, name, location: exactLocation, attempts: 0 },
+      ]);
+      return { status: "dropped" };
+    });
+    cleanupMock.mockRejectedValueOnce(new Error("simulated first delete failure"));
+    registration.resolve({});
+
+    await expect(restoring).resolves.toMatchObject({ attempted: 1, restored: 0, failed: 1 });
+    await expect(
+      storageRuntime().ingestion.listDatasetCleanupJobs({ accountId: CONNECTOR_ACCOUNT, name: "feed" })
+    ).resolves.toEqual([{ accountId: CONNECTOR_ACCOUNT, name: "feed", location: oldLocation, attempts: 1 }]);
+    await expect(storageRuntime().sources.getSource(CONNECTOR_ACCOUNT, sourceId)).resolves.toMatchObject({
+      status: "ready",
+      filePath: newLocation,
+      meta: { connector_previous_location: oldLocation },
+    });
+
+    await closeStorageRuntime();
+    await initializeStorageRuntime({
+      sqlitePath: path.join(directory, "ledger.sqlite"),
+      lanceDirectory: path.join(directory, "lancedb"),
+      embeddingDimension: 3,
+    });
+    await expect(processDatasetCacheCleanup(CONNECTOR_ACCOUNT, "feed")).resolves.toBe(1);
+    await expect(
+      storageRuntime().ingestion.listDatasetCleanupJobs({ accountId: CONNECTOR_ACCOUNT, name: "feed" })
+    ).resolves.toEqual([]);
+    await expect(storageRuntime().sources.getSource(CONNECTOR_ACCOUNT, sourceId)).resolves.toMatchObject({
+      status: "ready",
+      filePath: newLocation,
+      meta: {},
+    });
+    expect(deactivateMock).toHaveBeenCalledTimes(2);
+    expect(cleanupMock).toHaveBeenCalledTimes(2);
+  });
 });
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((fulfill) => {
+    resolve = fulfill;
+  });
+  return { promise, resolve };
+}

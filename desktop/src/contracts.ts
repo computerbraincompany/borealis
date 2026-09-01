@@ -28,6 +28,11 @@ export interface BackendStoppedMessage {
   readonly type: "stopped";
 }
 
+export interface BackendNativeSmokeMessage {
+  readonly type: "native-smoke";
+  readonly ok: true;
+}
+
 export interface BackendFatalMessage {
   readonly type: "fatal";
   readonly error_code?: string;
@@ -37,6 +42,7 @@ export type BackendMessage =
   | BackendReadyMessage
   | BackendRenderRequest
   | BackendStoppedMessage
+  | BackendNativeSmokeMessage
   | BackendFatalMessage;
 
 export interface ShutdownMessage {
@@ -141,6 +147,8 @@ export function parseBackendMessage(
       };
     case "stopped":
       return { type: "stopped" };
+    case "native-smoke":
+      return value.ok === true ? { type: "native-smoke", ok: true } : undefined;
     case "fatal":
       return {
         type: "fatal",

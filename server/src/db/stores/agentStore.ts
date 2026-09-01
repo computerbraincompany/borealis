@@ -1,4 +1,11 @@
 import { randomUUID } from "node:crypto";
+import {
+  catalogStorePage,
+  defaultCatalogPageRequest,
+  validateCatalogPageRequest,
+  type CatalogPageRequest,
+  type CatalogStorePage,
+} from "../../catalogPagination.js";
 import { SqliteConstraintError, type SqliteLedger } from "../types.js";
 
 export const MAX_AGENT_NAME_CHARS = 80;
@@ -105,16 +112,28 @@ function decodeSummary(row: AgentRow): AgentSummary {
 export class AgentStore {
   constructor(private readonly ledger: SqliteLedger) {}
 
-  async listAgents(accountIdValue: string): Promise<AgentSummary[]> {
+  async listAgents(
+    accountIdValue: string,
+    pageValue: CatalogPageRequest = defaultCatalogPageRequest()
+  ): Promise<CatalogStorePage<AgentSummary>> {
+    const page = validateCatalogPageRequest(pageValue);
+    const parameters: Array<string | number> = [requiredId(accountIdValue, "account id")];
+    const after = page.after ? " AND (a.created_at,a.id) < (?,?)" : "";
+    if (page.after) parameters.push(page.after.timestamp, page.after.id);
+    parameters.push(page.limit + 1);
     const rows = await this.ledger.all<AgentRow>(
-      `SELECT a.id,a.name,a.current_version,a.created_at,a.updated_at,r.instructions
+      `SELECT a.id,a.name,a.current_version,a.created_at,a.updated_at,
+              (SELECT r.instructions FROM agent_revisions r
+               WHERE r.agent_id=a.id AND r.version=a.current_version AND r.account_id=a.account_id) AS instructions
        FROM agents a
-       JOIN agent_revisions r ON r.agent_id=a.id AND r.version=a.current_version AND r.account_id=a.account_id
-       WHERE a.account_id=?
-       ORDER BY a.created_at DESC,a.id DESC`,
-      [requiredId(accountIdValue, "account id")]
+       WHERE a.account_id=?${after}
+       ORDER BY a.created_at DESC,a.id DESC LIMIT ?`,
+      parameters
     );
-    return rows.map(decodeSummary);
+    return catalogStorePage(rows.map(decodeSummary), page, (agent) => ({
+      timestamp: agent.created_at,
+      id: agent.id,
+    }));
   }
 
   async createAgent(accountIdValue: string, nameValue: string, instructionsValue: string): Promise<AgentSummary> {

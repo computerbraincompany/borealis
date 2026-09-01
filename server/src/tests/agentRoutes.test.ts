@@ -109,12 +109,12 @@ describe("agent schema and routes", () => {
     expect(duplicate.statusCode).toBe(409);
 
     const list = await app.inject({ method: "GET", url: "/api/agents", headers: ownerAuth });
-    expect(list.json()).toHaveLength(1);
+    expect(list.json()).toMatchObject({ items: [expect.objectContaining({ id: agent.id })], next_cursor: null });
 
     const deleted = await app.inject({ method: "DELETE", url: `/api/agents/${agent.id}`, headers: ownerAuth });
     expect(deleted.statusCode).toBe(200);
     const empty = await app.inject({ method: "GET", url: "/api/agents", headers: ownerAuth });
-    expect(empty.json()).toEqual([]);
+    expect(empty.json()).toEqual({ items: [], next_cursor: null });
   });
 
   it("keeps agents tenant-scoped and validates bodies", async () => {
@@ -173,5 +173,39 @@ describe("agent schema and routes", () => {
       body: { instructions: "No such agent" },
     });
     expect(missing.statusCode).toBe(404);
+  });
+
+  it("continues the bounded list through opaque cursors", async () => {
+    const app = await buildApp();
+    const createdIds: string[] = [];
+    for (const name of ["First", "Second", "Third"]) {
+      const created = await app.inject({
+        method: "POST",
+        url: "/api/agents",
+        headers: ownerAuth,
+        body: { name, instructions: `${name} instructions` },
+      });
+      createdIds.push(created.json().id as string);
+    }
+
+    const traversed: string[] = [];
+    let cursor: string | null = null;
+    for (let pageIndex = 0; pageIndex < 3; pageIndex += 1) {
+      const response = await app.inject({
+        method: "GET",
+        url: `/api/agents?limit=1${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`,
+        headers: ownerAuth,
+      });
+      expect(response.statusCode).toBe(200);
+      const page = response.json() as { items: Array<{ id: string }>; next_cursor: string | null };
+      expect(page.items).toHaveLength(1);
+      traversed.push(page.items[0].id);
+      cursor = page.next_cursor;
+    }
+    expect(cursor).toBeNull();
+    expect(new Set(traversed)).toEqual(new Set(createdIds));
+
+    const excessive = await app.inject({ method: "GET", url: "/api/agents?limit=101", headers: ownerAuth });
+    expect(excessive.statusCode).toBe(400);
   });
 });

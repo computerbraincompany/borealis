@@ -107,6 +107,7 @@ function sameEffectiveSettings(left: EffectiveLlmSettings, right: EffectiveLlmSe
     left.apiKey === right.apiKey &&
     left.lmStudioBaseUrl === right.lmStudioBaseUrl &&
     left.chatModel === right.chatModel &&
-    left.embedModel === right.embedModel
+    left.embedModel === right.embedModel &&
+    left.embeddingDimension === right.embeddingDimension
   );
 }

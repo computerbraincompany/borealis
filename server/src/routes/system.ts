@@ -19,7 +19,7 @@ export async function systemRoutes(app: FastifyInstance, options: SystemRouteOpt
   app.get(
     "/api/health",
     {
-      preHandler: requireAuth,
+      onRequest: requireAuth,
       schema: {
         tags: ["health"],
         summary: "Check application dependency readiness",
@@ -31,7 +31,7 @@ export async function systemRoutes(app: FastifyInstance, options: SystemRouteOpt
   app.get(
     "/api/status",
     {
-      preHandler: requireAuth,
+      onRequest: requireAuth,
       schema: {
         tags: ["health"],
         summary: "Ambient provider locality, model presence, and reachability",

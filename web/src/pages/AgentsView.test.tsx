@@ -43,7 +43,7 @@ const agent = {
 describe("AgentsView", () => {
   beforeEach(() => {
     Object.values(apiMocks).forEach((mock) => mock.mockReset());
-    apiMocks.list.mockResolvedValue([agent]);
+    apiMocks.list.mockResolvedValue({ items: [agent], next_cursor: null });
     apiMocks.get.mockResolvedValue({
       ...agent,
       revisions: [
@@ -59,6 +59,56 @@ describe("AgentsView", () => {
     expect(await screen.findByText("Finance analyst")).toBeInTheDocument();
     expect(screen.getByText("v2")).toBeInTheDocument();
     expect(screen.getByText(/Reconcile totals first/)).toBeInTheDocument();
+  });
+
+  it("loads agents beyond the first bounded page", async () => {
+    const older = { ...agent, id: "agent-older", name: "Archive analyst" };
+    apiMocks.list.mockImplementation((options?: { cursor?: string }) =>
+      options?.cursor === "agents-page-2"
+        ? Promise.resolve({ items: [older], next_cursor: null })
+        : Promise.resolve({ items: [agent], next_cursor: "agents-page-2" }),
+    );
+    render(<AgentsView />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Load older agents" }));
+
+    expect(await screen.findByText("Archive analyst")).toBeInTheDocument();
+    expect(apiMocks.list).toHaveBeenCalledWith({ cursor: "agents-page-2" });
+  });
+
+  it("restarts traversal after a completed list is refreshed by a mutation", async () => {
+    const older = { ...agent, id: "agent-older", name: "Archive analyst" };
+    const created = { ...agent, id: "agent-created", name: "Diligence" };
+    const inserted = { ...agent, id: "agent-inserted", name: "Researcher" };
+    let headRequests = 0;
+    apiMocks.list.mockImplementation((options?: { cursor?: string }) => {
+      if (options?.cursor === "old-page-2") return Promise.resolve({ items: [older], next_cursor: null });
+      if (options?.cursor === "fresh-page-2") {
+        return Promise.resolve({ items: [inserted, older], next_cursor: null });
+      }
+      headRequests += 1;
+      return Promise.resolve(
+        headRequests === 1
+          ? { items: [agent], next_cursor: "old-page-2" }
+          : { items: [created, agent], next_cursor: "fresh-page-2" },
+      );
+    });
+    apiMocks.create.mockResolvedValue(created);
+    render(<AgentsView />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Load older agents" }));
+    expect(await screen.findByText("Archive analyst")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /New agent/i }));
+    fireEvent.change(screen.getByLabelText("Agent name"), { target: { value: "Diligence" } });
+    fireEvent.change(screen.getByLabelText("Agent instructions"), { target: { value: "Review every source." } });
+    fireEvent.click(screen.getByRole("button", { name: "Create" }));
+
+    fireEvent.click(await screen.findByRole("button", { name: "Load older agents" }));
+    expect(await screen.findByText("Researcher")).toBeInTheDocument();
+    expect(screen.getByText("Diligence")).toBeInTheDocument();
+    expect(screen.getAllByText("Archive analyst")).toHaveLength(1);
+    expect(apiMocks.list).toHaveBeenCalledWith({ cursor: "fresh-page-2" });
   });
 
   it("creates an agent with name and instructions", async () => {

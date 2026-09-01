@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import fs, { mkdtemp, readFile, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import type { IncomingMessage } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -59,9 +59,18 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   config.uploadDir = originalUploadDir;
   await rm(testRoot, { recursive: true, force: true });
 });
+
+function errno(code: string): NodeJS.ErrnoException {
+  return Object.assign(new Error(`filesystem operation failed with ${code}`), { code });
+}
+
+function cacheManifest(location: string): string {
+  return path.join(path.dirname(location), `${path.basename(location, path.extname(location))}.meta`);
+}
 
 describe("in-process connector cache", () => {
   it("publishes one immutable version with pinned headers and re-inspects the winner", async () => {
@@ -248,6 +257,197 @@ describe("in-process connector cache", () => {
 
     await expect(cleanupConnectorVersion({ accountId: ACCOUNT_ID, name: "feed", location })).resolves.toBe(true);
     await expect(cleanupConnectorVersion({ accountId: ACCOUNT_ID, name: "feed", location })).resolves.toBe(false);
+  });
+
+  it("propagates non-ENOENT inspection failures without deleting the cache version", async () => {
+    const location = await connectorVersionPath({
+      accountId: ACCOUNT_ID,
+      name: "feed",
+      version: VERSION,
+      expectedFormat: "csv",
+    });
+    await writeFile(location, "value\n1\n", "utf8");
+    const originalLstat = fs.lstat.bind(fs);
+    const inspection = vi.spyOn(fs, "lstat").mockImplementation(async (file) => {
+      if (path.resolve(String(file)) === location) throw errno("EACCES");
+      return originalLstat(file);
+    });
+
+    await expect(cleanupConnectorVersion({ accountId: ACCOUNT_ID, name: "feed", location })).rejects.toMatchObject({
+      code: "EACCES",
+    });
+    inspection.mockRestore();
+    await expect(readFile(location, "utf8")).resolves.toBe("value\n1\n");
+  });
+
+  it("removes exact staged download and manifest remnants before resolving cleanup", async () => {
+    const location = await connectorVersionPath({
+      accountId: ACCOUNT_ID,
+      name: "feed",
+      version: VERSION,
+      expectedFormat: "csv",
+    });
+    const manifest = cacheManifest(location);
+    const stagedVersion = path.join(
+      path.dirname(location),
+      `.${path.basename(location)}.staged-aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee`
+    );
+    const stagedManifest = path.join(
+      path.dirname(location),
+      `.${path.basename(manifest)}.staged-11111111-aaaa-4bbb-8ccc-222222222222`
+    );
+    await writeFile(stagedVersion, "value\nprivate\n", { mode: 0o600 });
+    await fs.link(stagedVersion, location);
+    await writeFile(stagedManifest, "digest", { mode: 0o600 });
+    await fs.link(stagedManifest, manifest);
+
+    await expect(cleanupConnectorVersion({ accountId: ACCOUNT_ID, name: "feed", location })).resolves.toBe(true);
+    for (const file of [stagedVersion, location, stagedManifest, manifest]) {
+      await expect(fs.lstat(file)).rejects.toMatchObject({ code: "ENOENT" });
+    }
+  });
+
+  it("retains cleanup failure when an exact staged remnant cannot be unlinked", async () => {
+    const location = await connectorVersionPath({
+      accountId: ACCOUNT_ID,
+      name: "feed",
+      version: VERSION,
+      expectedFormat: "csv",
+    });
+    const staged = path.join(
+      path.dirname(location),
+      `.${path.basename(location)}.staged-aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee`
+    );
+    await writeFile(staged, "value\nprivate\n", { mode: 0o600 });
+    const originalUnlink = fs.unlink.bind(fs);
+    const removal = vi.spyOn(fs, "unlink").mockImplementation(async (file) => {
+      if (path.resolve(String(file)) === staged) throw errno("EACCES");
+      return originalUnlink(file);
+    });
+
+    await expect(cleanupConnectorVersion({ accountId: ACCOUNT_ID, name: "feed", location })).rejects.toMatchObject({
+      code: "EACCES",
+    });
+    removal.mockRestore();
+    await expect(readFile(staged, "utf8")).resolves.toContain("private");
+    await expect(cleanupConnectorVersion({ accountId: ACCOUNT_ID, name: "feed", location })).resolves.toBe(true);
+  });
+
+  it("does not report a claimed manifest while its private staged link cannot be removed", async () => {
+    const originalUnlink = fs.unlink.bind(fs);
+    let blockedStaged = "";
+    const removal = vi.spyOn(fs, "unlink").mockImplementation(async (file) => {
+      const filename = String(file);
+      if (filename.includes(".meta.staged-")) {
+        blockedStaged = path.resolve(filename);
+        throw errno("EACCES");
+      }
+      return originalUnlink(file);
+    });
+
+    await expect(
+      claimConnectorVersion({
+        accountId: ACCOUNT_ID,
+        name: "feed",
+        version: VERSION,
+        expectedFormat: "csv",
+        url: "https://example.test/feed.csv",
+      })
+    ).rejects.toMatchObject({ code: "EACCES" });
+    removal.mockRestore();
+    expect(blockedStaged).not.toBe("");
+    await expect(fs.lstat(blockedStaged)).resolves.toMatchObject({ isFile: expect.any(Function) });
+
+    const location = await connectorVersionPath({
+      accountId: ACCOUNT_ID,
+      name: "feed",
+      version: VERSION,
+      expectedFormat: "csv",
+    });
+    await expect(cleanupConnectorVersion({ accountId: ACCOUNT_ID, name: "feed", location })).resolves.toBe(true);
+    await expect(fs.lstat(blockedStaged)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("treats an unlink ENOENT race as successful exact cleanup", async () => {
+    const location = await connectorVersionPath({
+      accountId: ACCOUNT_ID,
+      name: "feed",
+      version: VERSION,
+      expectedFormat: "csv",
+    });
+    await writeFile(location, "value\n1\n", "utf8");
+    await claimConnectorVersion({
+      accountId: ACCOUNT_ID,
+      name: "feed",
+      version: VERSION,
+      expectedFormat: "csv",
+      url: "https://example.test/feed.csv",
+    });
+    const originalUnlink = fs.unlink.bind(fs);
+    let raced = false;
+    const removal = vi.spyOn(fs, "unlink").mockImplementation(async (file) => {
+      if (!raced && path.resolve(String(file)) === location) {
+        raced = true;
+        await originalUnlink(file);
+        throw errno("ENOENT");
+      }
+      return originalUnlink(file);
+    });
+
+    await expect(cleanupConnectorVersion({ accountId: ACCOUNT_ID, name: "feed", location })).resolves.toBe(true);
+    removal.mockRestore();
+    await expect(readFile(location)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(readFile(cacheManifest(location))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("rejects an exact symlinked version without following or deleting its target", async () => {
+    const location = await connectorVersionPath({
+      accountId: ACCOUNT_ID,
+      name: "feed",
+      version: VERSION,
+      expectedFormat: "csv",
+    });
+    const outside = path.join(testRoot, "outside-target.csv");
+    await writeFile(outside, "value\nsafe\n", "utf8");
+    await symlink(outside, location);
+
+    await expect(cleanupConnectorVersion({ accountId: ACCOUNT_ID, name: "feed", location })).rejects.toMatchObject({
+      status: 400,
+    });
+    await expect(readFile(outside, "utf8")).resolves.toBe("value\nsafe\n");
+  });
+
+  it("ignores ENOTEMPTY but propagates other cache-directory removal failures", async () => {
+    const location = await connectorVersionPath({
+      accountId: ACCOUNT_ID,
+      name: "feed",
+      version: VERSION,
+      expectedFormat: "csv",
+    });
+    await writeFile(location, "value\n1\n", "utf8");
+    await claimConnectorVersion({
+      accountId: ACCOUNT_ID,
+      name: "feed",
+      version: VERSION,
+      expectedFormat: "csv",
+      url: "https://example.test/feed.csv",
+    });
+    const sentinel = path.join(path.dirname(location), "another-version");
+    await writeFile(sentinel, "keep", "utf8");
+    await expect(cleanupConnectorVersion({ accountId: ACCOUNT_ID, name: "feed", location })).resolves.toBe(true);
+    await expect(readFile(sentinel, "utf8")).resolves.toBe("keep");
+
+    await unlink(sentinel);
+    await writeFile(location, "value\n2\n", "utf8");
+    const originalRmdir = fs.rmdir.bind(fs);
+    const directoryRemoval = vi.spyOn(fs, "rmdir").mockImplementation(async (directory) => {
+      if (path.resolve(String(directory)) === path.dirname(location)) throw errno("EACCES");
+      return originalRmdir(directory);
+    });
+    await expect(cleanupConnectorVersion({ accountId: ACCOUNT_ID, name: "feed", location })).rejects.toMatchObject({
+      code: "EACCES",
+    });
+    directoryRemoval.mockRestore();
   });
 
   it("rejects symlinked cache namespace components", async () => {

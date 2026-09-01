@@ -4,6 +4,10 @@ import os from "node:os";
 import path from "node:path";
 import Fastify, { type FastifyInstance } from "fastify";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("../agent.js", () => ({ runAgent: vi.fn() }));
+
+import { runAgent, type AgentCompletion } from "../agent.js";
 import { signToken } from "../auth.js";
 import { createAutomationRunner } from "../automationRunner.js";
 import { installHttpBoundary } from "../httpErrors.js";
@@ -17,11 +21,13 @@ const FOREIGN = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const ownerAuth = {
   authorization: `Bearer ${signToken({ userId: OWNER, email: "owner@example.test" })}`,
 };
+const runAgentMock = vi.mocked(runAgent);
 
 const apps: FastifyInstance[] = [];
 let runtimeDirectory = "";
 
 beforeEach(async () => {
+  runAgentMock.mockReset();
   runtimeDirectory = await fs.mkdtemp(path.join(os.tmpdir(), "borealis-automations-"));
   const runtime = await initializeStorageRuntime({
     sqlitePath: path.join(runtimeDirectory, "ledger.sqlite"),
@@ -69,6 +75,22 @@ async function insertChat(accountId: string): Promise<string> {
     [id, accountId, "Automation chat"]
   );
   return id;
+}
+
+function agentCompletion(): AgentCompletion {
+  return {
+    content: "Durable scheduled answer",
+    meta: {
+      charts: [],
+      report: null,
+      model: "chat-model",
+      source_mode: "selected",
+      source_ids: [],
+      citations: [],
+      evidence: [],
+      query_results: [],
+    },
+  };
 }
 
 describe("automation store and schema", () => {
@@ -291,7 +313,7 @@ describe("automation runner", () => {
     expect(JSON.stringify(runs.json())).not.toContain("provider.example");
 
     const listed = await app.inject({ method: "GET", url: "/api/automations", headers: ownerAuth });
-    expect(listed.json()[0]).toMatchObject({ state: "paused", consecutive_failures: 5 });
+    expect(listed.json().items[0]).toMatchObject({ state: "paused", consecutive_failures: 5 });
 
     // A paused automation is not claimed again.
     await runner.tick();
@@ -422,6 +444,103 @@ describe("automation runner", () => {
     const runs = await app.inject({ method: "GET", url: `/api/automations/${automationId}/runs`, headers: ownerAuth });
     expect(runs.json()[0]).toMatchObject({ outcome: "skipped" });
     const listed = await app.inject({ method: "GET", url: "/api/automations", headers: ownerAuth });
-    expect(listed.json()[0]).toMatchObject({ state: "active", consecutive_failures: 0 });
+    expect(listed.json().items[0]).toMatchObject({ state: "active", consecutive_failures: 0 });
+  });
+
+  it("records skipped when cancellation wins immediately before assistant persistence", async () => {
+    const app = await buildApp();
+    const chatId = await insertChat(OWNER);
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/automations",
+      headers: ownerAuth,
+      body: {
+        name: "Cancellable digest",
+        kind: "agent_turn",
+        target_id: chatId,
+        prompt: "Summarize the attached sources for the team.",
+        schedule_minutes: 15,
+      },
+    });
+    expect(created.statusCode).toBe(201);
+    const automationId = created.json().id as string;
+    await storageRuntime().ledger.run("UPDATE automations SET consecutive_failures=3 WHERE id=?", [automationId]);
+
+    runAgentMock.mockImplementationOnce(async () => {
+      const run = await storageRuntime().ledger.get<{ id: string }>(
+        "SELECT id FROM chat_runs WHERE account_id=? AND chat_id=? AND status='running'",
+        [OWNER, chatId]
+      );
+      expect(run).toBeDefined();
+      await expect(storageRuntime().runs.requestCancel(OWNER, chatId, run!.id)).resolves.toBe("cancelling");
+      return agentCompletion();
+    });
+    const runner = createAutomationRunner({
+      store: storageRuntime().automations,
+      syncConnector: vi.fn(),
+      tickIntervalMs: 10_000,
+      now: () => new Date(Date.now() + 60 * 60 * 1000),
+    });
+
+    await runner.tick();
+
+    await expect(
+      storageRuntime().ledger.get("SELECT status,cancel_requested,error_code FROM chat_runs WHERE chat_id=?", [chatId])
+    ).resolves.toEqual({ status: "cancelled", cancel_requested: 1n, error_code: "CANCELLED" });
+    await expect(
+      storageRuntime().ledger.all("SELECT 1 FROM messages WHERE chat_id=? AND role='assistant'", [chatId])
+    ).resolves.toEqual([]);
+    const runs = await app.inject({ method: "GET", url: `/api/automations/${automationId}/runs`, headers: ownerAuth });
+    expect(runs.json()).toHaveLength(1);
+    expect(runs.json()[0]).toMatchObject({ outcome: "skipped", detail: "the run was cancelled" });
+    const automation = await storageRuntime().automations.get(OWNER, automationId);
+    expect(automation).toMatchObject({ state: "active", consecutive_failures: 3 });
+    expect(runAgentMock).toHaveBeenCalledOnce();
+  });
+
+  it("records one skipped outcome when durable cancellation wins over a generic agent error", async () => {
+    const chatId = await insertChat(OWNER);
+    const automation = await storageRuntime().automations.create({
+      accountId: OWNER,
+      name: "Cancelled failing digest",
+      kind: "agent_turn",
+      targetId: chatId,
+      prompt: "Summarize the attached sources for the team.",
+      scheduleMinutes: 15,
+    });
+    await storageRuntime().ledger.run("UPDATE automations SET consecutive_failures=3 WHERE id=?", [automation.id]);
+
+    runAgentMock.mockImplementationOnce(async () => {
+      const run = await storageRuntime().ledger.get<{ id: string }>(
+        "SELECT id FROM chat_runs WHERE account_id=? AND chat_id=? AND status='running'",
+        [OWNER, chatId]
+      );
+      expect(run).toBeDefined();
+      await expect(storageRuntime().runs.requestCancel(OWNER, chatId, run!.id)).resolves.toBe("cancelling");
+      throw new Error("the provider failed after cancellation was requested");
+    });
+    const runner = createAutomationRunner({
+      store: storageRuntime().automations,
+      syncConnector: vi.fn(),
+      tickIntervalMs: 10_000,
+      now: () => new Date(Date.now() + 60 * 60 * 1000),
+    });
+
+    await runner.tick();
+
+    await expect(
+      storageRuntime().ledger.get("SELECT status,cancel_requested,error_code FROM chat_runs WHERE chat_id=?", [chatId])
+    ).resolves.toEqual({ status: "cancelled", cancel_requested: 1n, error_code: "CANCELLED" });
+    await expect(
+      storageRuntime().ledger.all(
+        "SELECT outcome,detail FROM automation_runs WHERE automation_id=? AND account_id=? ORDER BY id",
+        [automation.id, OWNER]
+      )
+    ).resolves.toEqual([{ outcome: "skipped", detail: "the run was cancelled" }]);
+    await expect(storageRuntime().automations.get(OWNER, automation.id)).resolves.toMatchObject({
+      state: "active",
+      consecutive_failures: 3,
+    });
+    expect(runAgentMock).toHaveBeenCalledOnce();
   });
 });

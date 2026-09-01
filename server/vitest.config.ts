@@ -4,7 +4,8 @@ export default defineConfig({
   test: {
     environment: "node",
     include: ["src/tests/**/*.test.ts"],
-    // config.ts throws at import when JWT_SECRET is missing/short — set before modules load.
+    // Keep direct app-construction tests on an environment-owned secret; file-
+    // backed secrets are intentionally initialized only after the workspace lock.
     env: {
       JWT_SECRET: "vitest-secret-that-is-longer-than-32-chars-123456",
       LITELLM_API_KEY: "vitest-model-token-that-is-longer-than-32-chars",

@@ -51,6 +51,7 @@ describe("runtime settings singleton", () => {
       apiKey: "runtime-secret",
       chatModel: "runtime-chat",
       embedModel: "runtime-embed",
+      embeddingDimension: 768,
     });
     await expect(getEffectiveLlmSettings()).resolves.toEqual(updated.settings);
 

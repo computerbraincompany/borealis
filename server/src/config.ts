@@ -272,16 +272,21 @@ export function validateModelIds(input: ModelIds): ModelIds {
   return { chatModel, embedModel };
 }
 
-const storageDir = canonicalStorageDirectory(process.env.BOREALIS_DATA_DIR || path.join(root, ".borealis"));
+const storageDir = path.resolve(process.env.BOREALIS_DATA_DIR || path.join(root, ".borealis"));
 const sqlitePath = path.resolve(process.env.SQLITE_PATH || path.join(storageDir, "borealis.sqlite"));
-fs.mkdirSync(path.dirname(sqlitePath), { recursive: true });
 const settingsFile = resolveSettingsFile({
   settingsFile: process.env.SETTINGS_FILE,
   legacySettingsPath: process.env.SETTINGS_PATH,
   storageDir,
 });
 const jwtSecretFile = path.resolve(process.env.JWT_SECRET_FILE || path.join(storageDir, "jwt.secret"));
-const jwtSecret = resolveJwtSecret({ envSecret: process.env.JWT_SECRET, filename: jwtSecretFile });
+// File-backed configuration is initialized only after the exact workspace lock
+// is held. An environment-owned secret can be validated eagerly because that
+// path performs no filesystem access.
+const jwtSecret =
+  process.env.JWT_SECRET === undefined
+    ? ""
+    : resolveJwtSecret({ envSecret: process.env.JWT_SECRET, filename: jwtSecretFile });
 
 const maxMessageChars = boundedPositiveInteger(process.env.MAX_MESSAGE_CHARS, 32_000, "MAX_MESSAGE_CHARS", 100_000);
 const maxHistoryChars = boundedPositiveInteger(process.env.MAX_HISTORY_CHARS, 120_000, "MAX_HISTORY_CHARS", 500_000);
@@ -300,7 +305,7 @@ export const config = {
   storageDir,
   settingsFile,
   sqlitePath,
-  lanceDir: canonicalStorageDirectory(process.env.LANCEDB_DIR || path.join(storageDir, "lancedb")),
+  lanceDir: path.resolve(process.env.LANCEDB_DIR || path.join(storageDir, "lancedb")),
   corsOrigins: parseCorsOrigins(process.env.CORS_ORIGINS),
 
   embeddingDim: boundedPositiveInteger(process.env.EMBEDDING_DIM, 768, "EMBEDDING_DIM", 16_384),
@@ -322,7 +327,34 @@ export const config = {
   ),
   maxIngestChunks: boundedPositiveInteger(process.env.MAX_INGEST_CHUNKS, 2_500, "MAX_INGEST_CHUNKS", 10_000),
 
-  uploadDir: canonicalStorageDirectory(process.env.UPLOAD_DIR || path.join(storageDir, "uploads")),
-  reportDir: canonicalStorageDirectory(process.env.REPORT_DIR || path.join(storageDir, "reports")),
-  containedDir: canonicalStorageDirectory(process.env.CONTAINED_DIR || path.join(storageDir, "models")),
+  ocrMaxPages: boundedPositiveInteger(process.env.OCR_MAX_PAGES, 12, "OCR_MAX_PAGES", 100),
+  ocrMaxRasterPixels: boundedPositiveInteger(
+    process.env.OCR_MAX_RASTER_PIXELS,
+    4_000_000,
+    "OCR_MAX_RASTER_PIXELS",
+    16_000_000
+  ),
+  ocrPageTimeoutMs: boundedPositiveInteger(process.env.OCR_PAGE_TIMEOUT_MS, 10_000, "OCR_PAGE_TIMEOUT_MS", 60_000),
+  ocrTotalTimeoutMs: boundedPositiveInteger(process.env.OCR_TOTAL_TIMEOUT_MS, 60_000, "OCR_TOTAL_TIMEOUT_MS", 300_000),
+  ocrMaxObservations: boundedPositiveInteger(process.env.OCR_MAX_OBSERVATIONS, 1_000, "OCR_MAX_OBSERVATIONS", 5_000),
+  ocrMaxPageChars: boundedPositiveInteger(process.env.OCR_MAX_PAGE_CHARS, 20_000, "OCR_MAX_PAGE_CHARS", 100_000),
+
+  uploadDir: path.resolve(process.env.UPLOAD_DIR || path.join(storageDir, "uploads")),
+  reportDir: path.resolve(process.env.REPORT_DIR || path.join(storageDir, "reports")),
+  containedDir: path.resolve(process.env.CONTAINED_DIR || path.join(storageDir, "models")),
 };
+
+/**
+ * Create and canonicalize durable paths only after the caller owns the exact
+ * workspace lock. Keeping module evaluation path-only ensures a losing server
+ * process cannot mutate a live workspace before returning WORKSPACE_LOCKED.
+ */
+export function initializeConfigStorage(): void {
+  config.storageDir = canonicalStorageDirectory(config.storageDir);
+  fs.mkdirSync(path.dirname(config.sqlitePath), { recursive: true });
+  config.lanceDir = canonicalStorageDirectory(config.lanceDir);
+  config.uploadDir = canonicalStorageDirectory(config.uploadDir);
+  config.reportDir = canonicalStorageDirectory(config.reportDir);
+  config.containedDir = canonicalStorageDirectory(config.containedDir);
+  config.jwtSecret = resolveJwtSecret({ envSecret: process.env.JWT_SECRET, filename: config.jwtSecretFile });
+}

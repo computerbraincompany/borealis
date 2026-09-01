@@ -375,6 +375,14 @@ export class SourceIngestionTransitions {
       ) {
         prepareSuperseded();
       }
+      // Cleanup reservation and candidate adoption serialize in SQLite. A
+      // version can be prepared again only after its exact cleanup resolves.
+      const cleanupReserved = transaction.get(
+        `SELECT 1 FROM dataset_cache_cleanup_jobs
+         WHERE account_id=? AND name=? AND location=?`,
+        [values.accountId, source.name, values.candidateLocation]
+      );
+      if (cleanupReserved) prepareSuperseded();
       removeKeys(sourceMeta, [
         "error",
         "error_code",

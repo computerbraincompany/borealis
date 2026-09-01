@@ -49,24 +49,27 @@ describe("persisted LLM settings", () => {
       lm_studio_base_url: "http://localhost:1234",
       default_chat_model: "chat-model",
       default_embed_model: "embed-model",
+      embedding_dimension: 768,
       managed_by_env: {
         llm_base_url: false,
         llm_api_key: false,
         lm_studio_base_url: false,
         default_chat_model: false,
         default_embed_model: false,
+        embedding_dimension: false,
       },
     });
     expect(JSON.stringify(toPublicLlmSettings(snapshot))).not.toContain("provider-secret-value");
 
     const raw = JSON.parse(await fs.readFile(filename, "utf8"));
     expect(raw).toEqual({
-      version: 1,
+      version: 2,
       llm_base_url: "https://models.example.test",
       llm_api_key: "provider-secret-value",
       lm_studio_base_url: "http://localhost:1234",
       default_chat_model: "chat-model",
       default_embed_model: "embed-model",
+      embedding_dimension: 768,
     });
     expect((await fs.stat(filename)).mode & 0o777).toBe(0o600);
     expect(await fs.readdir(path.dirname(filename))).toEqual(["settings.json"]);
@@ -140,6 +143,7 @@ describe("persisted LLM settings", () => {
         LITELLM_CHAT_MODEL: "ignored-legacy-chat",
         LLM_EMBED_MODEL: "environment-embed",
         LITELLM_EMBED_MODEL: "ignored-legacy-embed",
+        EMBEDDING_DIM: "1024",
       },
     });
     const snapshot = await store.read();
@@ -150,6 +154,7 @@ describe("persisted LLM settings", () => {
       lmStudioBaseUrl: "http://localhost:1234",
       chatModel: "environment-chat",
       embedModel: "environment-embed",
+      embeddingDimension: 1024,
     });
     expect(toPublicLlmSettings(snapshot).managed_by_env).toEqual({
       llm_base_url: true,
@@ -157,9 +162,11 @@ describe("persisted LLM settings", () => {
       lm_studio_base_url: true,
       default_chat_model: true,
       default_embed_model: true,
+      embedding_dimension: true,
     });
     expect(JSON.stringify(toPublicLlmSettings(snapshot))).not.toContain("environment-secret");
     await expect(store.patch({ apiKey: null })).rejects.toBeInstanceOf(SettingsEnvironmentOverrideError);
+    await expect(store.patch({ embeddingDimension: 512 })).rejects.toBeInstanceOf(SettingsEnvironmentOverrideError);
     expect((await persisted.read()).settings.apiKey).toBe("stored-secret");
   });
 
@@ -181,6 +188,31 @@ describe("persisted LLM settings", () => {
         chatModel: "legacy-chat",
         embedModel: "legacy-embed",
       },
+    });
+  });
+
+  it("reads v1 files with the legacy dimension and upgrades them on the next patch", async () => {
+    const filename = await temporarySettingsPath();
+    await fs.writeFile(
+      filename,
+      `${JSON.stringify({
+        version: 1,
+        llm_base_url: "http://127.0.0.1:1234",
+        default_chat_model: "legacy-chat",
+        default_embed_model: "legacy-embed",
+      })}\n`,
+      { mode: 0o600 }
+    );
+    const store = createSettingsStore({ path: filename, env: {} });
+
+    await expect(store.read()).resolves.toMatchObject({
+      fileStatus: "loaded",
+      settings: { embeddingDimension: 768 },
+    });
+    await store.patch({ embeddingDimension: 384 });
+    expect(JSON.parse(await fs.readFile(filename, "utf8"))).toMatchObject({
+      version: 2,
+      embedding_dimension: 384,
     });
   });
 
@@ -249,6 +281,8 @@ describe("persisted LLM settings", () => {
     await expect(store.patch({ chatModel: "nomic-embed" })).rejects.toBeInstanceOf(SettingsValidationError);
     await expect(store.patch({ chatModel: "x".repeat(257) })).rejects.toBeInstanceOf(SettingsValidationError);
     await expect(store.patch({ apiKey: "line-one\nline-two" })).rejects.toBeInstanceOf(SettingsValidationError);
+    await expect(store.patch({ embeddingDimension: 0 })).rejects.toBeInstanceOf(SettingsValidationError);
+    await expect(store.patch({ embeddingDimension: 16_385 })).rejects.toBeInstanceOf(SettingsValidationError);
 
     expect(() =>
       createSettingsStore({

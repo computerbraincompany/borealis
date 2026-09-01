@@ -140,7 +140,7 @@ describe("preferences routes", () => {
     await expect(storageRuntime().chats.getDefaultChatModel(accountId)).resolves.toBeNull();
   });
 
-  it("rejects an oversize preference body before validation", async () => {
+  it("rejects an over-schema preference without misclassifying it as a parser overflow", async () => {
     const app = await buildApp();
 
     const response = await app.inject({
@@ -150,7 +150,7 @@ describe("preferences routes", () => {
       payload: { default_chat_model: "x".repeat(1024) },
     });
 
-    expect(response.statusCode).toBe(413);
+    expect(response.statusCode).toBe(400);
     await expect(storageRuntime().chats.getDefaultChatModel(accountId)).resolves.toBeNull();
   });
 

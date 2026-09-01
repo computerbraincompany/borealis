@@ -3,9 +3,10 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { chatOnce, embed, getLlmClient, streamingChat } from "../llm.js";
+import { chatOnce, embed, getLlmClient, mergeStreamedToolName, streamingChat } from "../llm.js";
 import { resolveLlmModelId } from "../llmAliases.js";
 import { closeRuntimeSettings, initializeRuntimeSettings, runtimeSettingsStore } from "../runtimeSettings.js";
+import { TOOL_DEFS } from "../tools.js";
 
 let temporaryDirectory = "";
 
@@ -86,6 +87,7 @@ describe("explicit model routing", () => {
   it.each([
     ["sparse tool index", { tool_calls: [{ index: 1_000_000_000, function: { name: "query_data" } }] }],
     ["oversized content", { content: "x".repeat(32_001) }],
+    ["oversized tool name", { tool_calls: [{ index: 0, function: { name: "x".repeat(101) } }] }],
     ["oversized tool arguments", { tool_calls: [{ index: 0, function: { arguments: "x".repeat(20_001) } }] }],
   ])("aborts a provider stream with %s at the accumulation boundary", async (_label, delta) => {
     const client = await getLlmClient();
@@ -137,5 +139,86 @@ describe("explicit model routing", () => {
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
+  });
+});
+
+describe("streamed tool-name merging", () => {
+  const toolNames = TOOL_DEFS.map((tool) => tool.function.name);
+
+  it.each(toolNames)("reconstructs every delta split and character stream for %s", (name) => {
+    for (let split = 0; split <= name.length; split += 1) {
+      const chunks = [name.slice(0, split), name.slice(split)].filter(Boolean);
+      expect(chunks.reduce(mergeStreamedToolName, "")).toBe(name);
+    }
+    expect([...name].reduce(mergeStreamedToolName, "")).toBe(name);
+  });
+
+  it.each(toolNames)("accepts repeated-full and every cumulative prefix form for %s", (name) => {
+    expect(mergeStreamedToolName(name, name)).toBe(name);
+    for (let length = 1; length <= name.length; length += 1) {
+      expect(mergeStreamedToolName(name.slice(0, length), name)).toBe(name);
+    }
+  });
+
+  it("appends non-cumulative substring deltas instead of dropping them", () => {
+    expect(mergeStreamedToolName("create_re", "re")).toBe("create_rere");
+    expect(["r", "e", "n", "d", "e", "r", "_", "c", "h", "a", "r", "t"].reduce(mergeStreamedToolName, "")).toBe(
+      "render_chart"
+    );
+  });
+
+  it("merges cumulative, repeated, sparse, and simultaneous provider calls", async () => {
+    const client = await getLlmClient();
+    async function* chunks() {
+      yield {
+        choices: [
+          {
+            delta: {
+              tool_calls: [
+                { index: 7, id: "call-chart", function: { name: "render", arguments: '{"spec":' } },
+                { index: 2, id: "call-query", function: { name: "query_", arguments: '{"sql":"' } },
+              ],
+            },
+          },
+        ],
+      };
+      yield {
+        choices: [
+          {
+            delta: {
+              tool_calls: [
+                { index: 2, function: { name: "data", arguments: 'SELECT 1"}' } },
+                { index: 7, function: { name: "render_chart", arguments: "{}}" } },
+              ],
+            },
+          },
+        ],
+      };
+      yield {
+        choices: [
+          {
+            delta: {
+              tool_calls: [{ index: 7, function: { name: "render_chart" } }],
+            },
+          },
+        ],
+      };
+    }
+    vi.spyOn(client.chat.completions, "create").mockReturnValue(chunks() as any);
+
+    const result = await streamingChat([], { model: "selected-chat-b" }, () => {});
+
+    expect(result.choices[0].message.tool_calls).toEqual([
+      {
+        id: "call-query",
+        type: "function",
+        function: { name: "query_data", arguments: '{"sql":"SELECT 1"}' },
+      },
+      {
+        id: "call-chart",
+        type: "function",
+        function: { name: "render_chart", arguments: '{"spec":{}}' },
+      },
+    ]);
   });
 });

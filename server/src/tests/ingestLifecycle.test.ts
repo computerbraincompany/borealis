@@ -3,9 +3,10 @@ import os from "node:os";
 import path from "node:path";
 import { deflateRawSync } from "node:zlib";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { extractText, preflightDocxArchive } from "../ingestSupport.js";
+import { extractPdfText, extractText, preflightDocxArchive } from "../ingestSupport.js";
+import { LocalOcrUnavailableError } from "../localPdfOcr.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -14,6 +15,43 @@ afterEach(async () => {
 });
 
 describe("bounded document extraction", () => {
+  it("bypasses OCR when a PDF page already has meaningful embedded text", async () => {
+    const recognize = vi.fn();
+    const text = await extractPdfText("/owned/text.pdf", minimalPdf("Borealis readable text"), recognize);
+    expect(text).toContain("Borealis readable text");
+    expect(recognize).not.toHaveBeenCalled();
+  });
+
+  it("OCRs only a text-empty page and adds deterministic page metadata", async () => {
+    const controller = new AbortController();
+    const recognize = vi.fn(async (_path: string, pages: readonly number[]) => [
+      { page: pages[0]!, text: "Recognized statement total" },
+    ]);
+    await expect(extractPdfText("/owned/scan.pdf", minimalPdf(""), recognize, controller.signal)).resolves.toBe(
+      "[Page 1 — OCR]\nRecognized statement total"
+    );
+    expect(recognize).toHaveBeenCalledWith("/owned/scan.pdf", [1], controller.signal);
+  });
+
+  it("OCRs an imaged page whose embedded text layer is only a sparse footer", async () => {
+    const recognize = vi.fn(async (_path: string, pages: readonly number[]) => [
+      { page: pages[0]!, text: "Recognized contract body" },
+    ]);
+
+    await expect(extractPdfText("/owned/sparse-overlay.pdf", minimalPdf("Page 1 of 10", 24), recognize)).resolves.toBe(
+      "[Page 1 — OCR]\nRecognized contract body"
+    );
+    expect(recognize).toHaveBeenCalledWith("/owned/sparse-overlay.pdf", [1], undefined);
+  });
+
+  it("distinguishes unavailable local OCR from an ordinary empty extraction", async () => {
+    await expect(
+      extractPdfText("/owned/scan.pdf", minimalPdf(""), async () => {
+        throw new LocalOcrUnavailableError();
+      })
+    ).rejects.toBeInstanceOf(LocalOcrUnavailableError);
+  });
+
   it("rejects legacy .doc instead of claiming DOCX parser support", async () => {
     await expect(extractText("/does/not/need/to/exist.doc", "application/msword")).rejects.toThrow(
       "legacy .doc files are not supported"
@@ -95,3 +133,29 @@ describe("bounded document extraction", () => {
     expect(() => preflightDocxArchive(Buffer.concat([localBytes, centralBytes, eocd]))).toThrow("safe limits");
   });
 });
+
+function minimalPdf(text: string, y = 720): Buffer {
+  const escaped = text.replaceAll("\\", "\\\\").replaceAll("(", "\\(").replaceAll(")", "\\)");
+  const content = escaped ? `BT /F1 12 Tf 72 ${y} Td (${escaped}) Tj ET` : "";
+  const objects = [
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    `<< /Length ${Buffer.byteLength(content)} >>\nstream\n${content}\nendstream`,
+  ];
+  let body = "%PDF-1.4\n%\xFF\xFF\xFF\xFF\n";
+  const offsets = [0];
+  objects.forEach((object, index) => {
+    offsets.push(Buffer.byteLength(body, "binary"));
+    body += `${index + 1} 0 obj\n${object}\nendobj\n`;
+  });
+  const xref = Buffer.byteLength(body, "binary");
+  body += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
+  body += offsets
+    .slice(1)
+    .map((offset) => `${String(offset).padStart(10, "0")} 00000 n \n`)
+    .join("");
+  body += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+  return Buffer.from(body, "binary");
+}

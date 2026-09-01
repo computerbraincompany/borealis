@@ -1,4 +1,5 @@
 import { ActiveChatRunError, type AcceptChatTurnTestHooks } from "./db/stores/chatStore.js";
+import { embeddingMigrationCoordinator, EmbeddingMigrationError } from "./embeddingMigration.js";
 import { publicSourceScopeError, SourceScopeError, type ResolvedSourceScope } from "./sourceScope.js";
 import { storageRuntime } from "./storageRuntime.js";
 
@@ -35,9 +36,14 @@ export async function acceptChatTurn(
   testHooks: AcceptChatTurnTestHooks = {}
 ): Promise<AcceptedChatTurn> {
   try {
-    return await storageRuntime().chats.acceptChatTurn(accountId, chatId, content, testHooks);
+    return await embeddingMigrationCoordinator().runChatTurnAdmission(() =>
+      storageRuntime().chats.acceptChatTurn(accountId, chatId, content, testHooks)
+    );
   } catch (error) {
     if (error instanceof ActiveChatRunError) throw new SourceScopeError(409, error.message);
+    if (error instanceof EmbeddingMigrationError) {
+      throw new SourceScopeError(409, "chat turns are paused while an embedding migration is applying");
+    }
     throw publicSourceScopeError(error, "accept");
   }
 }

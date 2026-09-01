@@ -5,6 +5,7 @@ import {
   Cloud,
   Cpu,
   FlaskConical,
+  HardDrive,
   LoaderCircle,
   LogOut,
   Monitor,
@@ -21,6 +22,7 @@ import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/compone
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useModelCatalog } from "@/hooks/useModelCatalog";
+import { embeddingMigrationErrorMessage, useEmbeddingMigration } from "@/hooks/useEmbeddingMigration";
 import { useProviderSettings } from "@/hooks/useProviderSettings";
 import { useSystemHealth } from "@/hooks/useSystemHealth";
 import { useEgressAudit } from "@/hooks/useEgressAudit";
@@ -65,25 +67,106 @@ function ManagedByEnvironment() {
   );
 }
 
+function qualificationReason(reason: string): string {
+  const labels: Record<string, string> = {
+    qualified: "Qualified",
+    unreachable: "Provider unavailable",
+    "tool-call-missing": "No tool call returned",
+    "tool-call-invalid": "Invalid tool call returned",
+    "embedding-invalid": "Invalid embedding returned",
+    "dimension-mismatch": "Dimension mismatch",
+  };
+  return labels[reason] ?? "Check failed";
+}
+
+function migrationPhaseLabel(phase: string): string {
+  const labels: Record<string, string> = {
+    idle: "No migration active",
+    snapshotting: "Capturing source snapshot",
+    building: "Building replacement index",
+    ready_to_apply: "Ready to apply",
+    apply_pending: "Restart required",
+    failed: "Migration stopped",
+  };
+  return labels[phase] ?? "Status unavailable";
+}
+
 export function SettingsView({ onClose }: SettingsViewProps) {
   const [section, setSection] = useState<SettingsSection>("system");
+  const [personalDefault, setPersonalDefault] = useState<string | null>(null);
+  const [personalDefaultLoading, setPersonalDefaultLoading] = useState(true);
+  const [personalDefaultLoadError, setPersonalDefaultLoadError] = useState<string | null>(null);
+  const [personalDefaultSaving, setPersonalDefaultSaving] = useState(false);
+  const [personalDefaultFeedback, setPersonalDefaultFeedback] = useState<PersonalDefaultFeedback | null>(null);
+  const personalDefaultMountedRef = useRef(false);
+  const personalDefaultActiveRef = useRef(false);
+  const personalDefaultLoadRequestRef = useRef(0);
+  const personalDefaultLoadAbortRef = useRef<AbortController | null>(null);
+  const personalDefaultSaveRequestRef = useRef(0);
+  const personalDefaultSaveAbortRef = useRef<AbortController | null>(null);
+  const personalDefaultSavingRef = useRef(false);
   const { catalog, loading, error, refresh } = useModelCatalog();
   const provider = useProviderSettings();
+  const migration = useEmbeddingMigration(section === "models");
   const systemHealth = useSystemHealth();
   const egressAudit = useEgressAudit();
   const { theme, resolvedTheme, setTheme } = useTheme();
   const user = getUser();
   const desktopWorkspace = hasDesktopBridge();
   const discoveryLive = catalog?.discovery === "live";
+  const embeddingDimension = Number(provider.form.embedding_dimension);
+  const migrationActive = Boolean(migration.status && migration.status.phase !== "idle");
+  const embeddingTargetChanged = Boolean(
+    provider.settings &&
+      (provider.form.default_embed_model.trim() !== provider.settings.default_embed_model ||
+        embeddingDimension !== provider.settings.embedding_dimension),
+  );
+  const embeddingIdentityManaged = Boolean(
+    provider.settings?.managed_by_env.default_embed_model || provider.settings?.managed_by_env.embedding_dimension,
+  );
+  const canStartMigration = Boolean(
+    migration.status?.phase === "idle" &&
+      embeddingTargetChanged &&
+      provider.qualificationReady &&
+      !provider.hasNonEmbeddingChanges &&
+      !embeddingIdentityManaged &&
+      provider.action === null &&
+      migration.action === null,
+  );
+  const migrationProgress = migration.status?.chunk_count
+    ? Math.min(100, Math.round((migration.status.indexed_count / migration.status.chunk_count) * 100))
+    : 0;
+
+  const invalidatePersonalDefaultRequests = useCallback(() => {
+    personalDefaultLoadRequestRef.current += 1;
+    personalDefaultLoadAbortRef.current?.abort();
+    personalDefaultLoadAbortRef.current = null;
+    personalDefaultSaveRequestRef.current += 1;
+    personalDefaultSaveAbortRef.current?.abort();
+    personalDefaultSaveAbortRef.current = null;
+    personalDefaultSavingRef.current = false;
+  }, []);
 
   const closeSettings = () => {
+    personalDefaultActiveRef.current = false;
+    invalidatePersonalDefaultRequests();
     if (onClose) onClose();
     else window.location.hash = "/chat";
   };
 
   const signOut = () => {
+    personalDefaultActiveRef.current = false;
+    invalidatePersonalDefaultRequests();
     clearSession();
     window.location.hash = "/login";
+  };
+
+  const changeSection = (next: SettingsSection) => {
+    if (personalDefaultActiveRef.current && next !== "account") {
+      personalDefaultActiveRef.current = false;
+      invalidatePersonalDefaultRequests();
+    }
+    setSection(next);
   };
 
   const saveProviderSettings = async () => {
@@ -94,63 +177,127 @@ export function SettingsView({ onClose }: SettingsViewProps) {
     if (await provider.clearApiKey()) void refresh(true);
   };
 
-  const [personalDefault, setPersonalDefault] = useState<string | null>(null);
-  const [personalDefaultLoading, setPersonalDefaultLoading] = useState(true);
-  const [personalDefaultLoadError, setPersonalDefaultLoadError] = useState<string | null>(null);
-  const [personalDefaultSaving, setPersonalDefaultSaving] = useState(false);
-  const [personalDefaultFeedback, setPersonalDefaultFeedback] = useState<PersonalDefaultFeedback | null>(null);
-  const personalDefaultOpenedRef = useRef(false);
-  const personalDefaultSavingRef = useRef(false);
-
   const loadPersonalDefault = useCallback(async () => {
+    if (!personalDefaultMountedRef.current || !personalDefaultActiveRef.current) return;
+    const requestId = ++personalDefaultLoadRequestRef.current;
+    personalDefaultLoadAbortRef.current?.abort();
+    personalDefaultSaveRequestRef.current += 1;
+    personalDefaultSaveAbortRef.current?.abort();
+    personalDefaultSaveAbortRef.current = null;
+    personalDefaultSavingRef.current = false;
+    const abort = new AbortController();
+    personalDefaultLoadAbortRef.current = abort;
     setPersonalDefaultLoading(true);
+    setPersonalDefaultSaving(false);
     setPersonalDefaultLoadError(null);
+    setPersonalDefaultFeedback(null);
     try {
-      const next = await preferencesApi.get();
+      const next = await preferencesApi.get(abort.signal);
+      if (
+        !personalDefaultMountedRef.current ||
+        !personalDefaultActiveRef.current ||
+        requestId !== personalDefaultLoadRequestRef.current ||
+        abort.signal.aborted
+      )
+        return;
       setPersonalDefault(typeof next.default_chat_model === "string" ? next.default_chat_model : null);
-      setPersonalDefaultLoading(false);
     } catch (failure: unknown) {
-      setPersonalDefaultLoading(false);
-      setPersonalDefaultLoadError(formatApiError(failure, "The personal default model could not be loaded."));
+      if (
+        personalDefaultMountedRef.current &&
+        personalDefaultActiveRef.current &&
+        requestId === personalDefaultLoadRequestRef.current &&
+        !abort.signal.aborted
+      ) {
+        setPersonalDefaultLoadError(formatApiError(failure, "The personal default model could not be loaded."));
+      }
+    } finally {
+      if (
+        personalDefaultMountedRef.current &&
+        personalDefaultActiveRef.current &&
+        requestId === personalDefaultLoadRequestRef.current &&
+        !abort.signal.aborted
+      ) {
+        personalDefaultLoadAbortRef.current = null;
+        setPersonalDefaultLoading(false);
+      }
     }
   }, []);
 
   useEffect(() => {
-    if (section !== "account" || personalDefaultOpenedRef.current) return;
-    personalDefaultOpenedRef.current = true;
+    personalDefaultMountedRef.current = true;
+    return () => {
+      personalDefaultMountedRef.current = false;
+      personalDefaultActiveRef.current = false;
+      invalidatePersonalDefaultRequests();
+    };
+  }, [invalidatePersonalDefaultRequests]);
+
+  useEffect(() => {
+    if (section !== "account") return;
+    personalDefaultActiveRef.current = true;
     void loadPersonalDefault();
-  }, [section, loadPersonalDefault]);
+    return () => {
+      personalDefaultActiveRef.current = false;
+      invalidatePersonalDefaultRequests();
+    };
+  }, [section, loadPersonalDefault, invalidatePersonalDefaultRequests]);
 
   const retryPersonalDefaultLoad = () => {
     void loadPersonalDefault();
   };
 
   const savePersonalDefault = async (value: string | null) => {
-    if (personalDefaultSavingRef.current) return;
+    if (!personalDefaultMountedRef.current || !personalDefaultActiveRef.current || personalDefaultSavingRef.current)
+      return;
+    const requestId = ++personalDefaultSaveRequestRef.current;
+    personalDefaultSaveAbortRef.current?.abort();
+    personalDefaultLoadRequestRef.current += 1;
+    personalDefaultLoadAbortRef.current?.abort();
+    personalDefaultLoadAbortRef.current = null;
+    const abort = new AbortController();
+    personalDefaultSaveAbortRef.current = abort;
     personalDefaultSavingRef.current = true;
     const previous = personalDefault;
+    const targetValue = value;
     setPersonalDefault(value);
     setPersonalDefaultSaving(true);
     setPersonalDefaultFeedback(null);
     try {
-      const next = await preferencesApi.set(value);
-      setPersonalDefault(typeof next.default_chat_model === "string" ? next.default_chat_model : value);
+      const next = await preferencesApi.set(targetValue, abort.signal);
+      if (
+        !personalDefaultMountedRef.current ||
+        !personalDefaultActiveRef.current ||
+        requestId !== personalDefaultSaveRequestRef.current ||
+        abort.signal.aborted
+      )
+        return;
+      setPersonalDefault(typeof next.default_chat_model === "string" ? next.default_chat_model : targetValue);
       setPersonalDefaultFeedback({
         kind: "success",
         message:
-          value === null
+          targetValue === null
             ? "Personal default cleared. New chats will use the workspace default."
             : "Personal default model saved. New chats will start with it.",
       });
     } catch (failure: unknown) {
-      setPersonalDefault(previous);
-      setPersonalDefaultFeedback({
-        kind: "error",
-        message: formatApiError(failure, "The personal default model could not be saved."),
-      });
+      if (
+        personalDefaultMountedRef.current &&
+        personalDefaultActiveRef.current &&
+        requestId === personalDefaultSaveRequestRef.current &&
+        !abort.signal.aborted
+      ) {
+        setPersonalDefault(previous);
+        setPersonalDefaultFeedback({
+          kind: "error",
+          message: formatApiError(failure, "The personal default model could not be saved."),
+        });
+      }
     } finally {
-      personalDefaultSavingRef.current = false;
-      setPersonalDefaultSaving(false);
+      if (requestId === personalDefaultSaveRequestRef.current && !abort.signal.aborted) {
+        personalDefaultSaveAbortRef.current = null;
+        personalDefaultSavingRef.current = false;
+        if (personalDefaultMountedRef.current && personalDefaultActiveRef.current) setPersonalDefaultSaving(false);
+      }
     }
   };
 
@@ -182,7 +329,7 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                     key={item.value}
                     type="button"
                     aria-current={selected ? "page" : undefined}
-                    onClick={() => setSection(item.value)}
+                    onClick={() => changeSection(item.value)}
                     className={cn(
                       "flex h-10 items-center gap-2 rounded-lg px-3 text-left text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                       selected
@@ -366,7 +513,11 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                             className="mt-2 font-mono"
                             value={provider.form.llm_base_url}
                             onChange={(event) => provider.setField("llm_base_url", event.target.value)}
-                            disabled={provider.settings.managed_by_env.llm_base_url || provider.action !== null}
+                            disabled={
+                              provider.settings.managed_by_env.llm_base_url ||
+                              provider.action !== null ||
+                              migrationActive
+                            }
                             aria-describedby="settings-llm-base-url-help"
                           />
                           <p id="settings-llm-base-url-help" className="mt-1.5 text-xs leading-5 text-muted-foreground">
@@ -392,7 +543,11 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                                 : "Optional for providers that do not require a key"
                             }
                             onChange={(event) => provider.setField("llm_api_key", event.target.value)}
-                            disabled={provider.settings.managed_by_env.llm_api_key || provider.action !== null}
+                            disabled={
+                              provider.settings.managed_by_env.llm_api_key ||
+                              provider.action !== null ||
+                              migrationActive
+                            }
                             aria-describedby="settings-llm-api-key-help"
                           />
                           <div className="mt-1.5 flex flex-wrap items-start justify-between gap-x-4 gap-y-1">
@@ -412,7 +567,7 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                                   size="sm"
                                   className="h-5 shrink-0 px-0 py-0 text-xs text-destructive hover:text-destructive"
                                   onClick={() => void clearProviderApiKey()}
-                                  disabled={provider.action !== null}
+                                  disabled={provider.action !== null || migrationActive}
                                   aria-describedby="settings-llm-api-key-help"
                                 >
                                   {provider.action === "clearing-key" && <LoaderCircle className="animate-spin" />}
@@ -463,7 +618,11 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                             className="mt-2 font-mono"
                             value={provider.form.default_chat_model}
                             onChange={(event) => provider.setField("default_chat_model", event.target.value)}
-                            disabled={provider.settings.managed_by_env.default_chat_model || provider.action !== null}
+                            disabled={
+                              provider.settings.managed_by_env.default_chat_model ||
+                              provider.action !== null ||
+                              migrationActive
+                            }
                           />
                         </div>
 
@@ -480,8 +639,43 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                             className="mt-2 font-mono"
                             value={provider.form.default_embed_model}
                             onChange={(event) => provider.setField("default_embed_model", event.target.value)}
-                            disabled={provider.settings.managed_by_env.default_embed_model || provider.action !== null}
+                            disabled={
+                              provider.settings.managed_by_env.default_embed_model ||
+                              provider.action !== null ||
+                              migrationActive
+                            }
                           />
+                        </div>
+
+                        <div>
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <Label htmlFor="settings-embedding-dimension">Embedding dimension</Label>
+                            {provider.settings.managed_by_env.embedding_dimension && <ManagedByEnvironment />}
+                          </div>
+                          <Input
+                            id="settings-embedding-dimension"
+                            type="number"
+                            inputMode="numeric"
+                            required
+                            min={1}
+                            max={16_384}
+                            step={1}
+                            className="mt-2 font-mono"
+                            value={provider.form.embedding_dimension}
+                            onChange={(event) => provider.setField("embedding_dimension", event.target.value)}
+                            disabled={
+                              provider.settings.managed_by_env.embedding_dimension ||
+                              provider.action !== null ||
+                              migrationActive
+                            }
+                            aria-describedby="settings-embedding-dimension-help"
+                          />
+                          <p
+                            id="settings-embedding-dimension-help"
+                            className="mt-1.5 text-xs leading-5 text-muted-foreground"
+                          >
+                            Must exactly match the vector length returned by the embedding model.
+                          </p>
                         </div>
 
                         <div
@@ -504,6 +698,90 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                             answer them. Review the provider’s data policy before saving.
                           </p>
                         </div>
+
+                        <section
+                          aria-labelledby="model-qualification-heading"
+                          className="space-y-3 border-t pt-4 sm:col-span-2"
+                        >
+                          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                            <div>
+                              <h4 id="model-qualification-heading" className="text-sm font-semibold text-foreground">
+                                Model-pair qualification
+                              </h4>
+                              <p className="mt-1 max-w-prose text-xs leading-5 text-muted-foreground">
+                                Sends one synthetic tool-call prompt and one synthetic embedding input to this draft.
+                                The checks run together and do not save the draft or its result.
+                              </p>
+                            </div>
+                            <Button
+                              type="button"
+                              variant="outline"
+                              className="shrink-0"
+                              onClick={() => void provider.qualifyModelPair()}
+                              disabled={
+                                provider.action !== null ||
+                                migrationActive ||
+                                Boolean(provider.qualificationRemoteOrigin && !provider.qualificationRemoteAcknowledged)
+                              }
+                            >
+                              {provider.action === "qualifying" ? (
+                                <LoaderCircle className="animate-spin" />
+                              ) : (
+                                <FlaskConical />
+                              )}
+                              {provider.action === "qualifying" ? "Qualifying…" : "Qualify model pair"}
+                            </Button>
+                          </div>
+
+                          {provider.qualificationRemoteOrigin && (
+                            <label className="flex cursor-pointer items-start gap-2 rounded-md border border-warning/30 bg-warning/10 px-3 py-2.5 text-xs leading-5 text-muted-foreground">
+                              <input
+                                type="checkbox"
+                                className="mt-1 size-4 shrink-0 accent-primary"
+                                checked={provider.qualificationRemoteAcknowledged}
+                                onChange={(event) => provider.setQualificationRemoteAcknowledged(event.target.checked)}
+                                disabled={provider.action !== null || migrationActive}
+                              />
+                              <span>
+                                I understand that qualification sends synthetic test inputs to the exact remote origin{" "}
+                                <code className="break-all font-mono text-foreground">
+                                  {provider.qualificationRemoteOrigin}
+                                </code>
+                                .
+                              </span>
+                            </label>
+                          )}
+
+                          {provider.qualification && (
+                            <dl className="grid gap-2 sm:grid-cols-2" aria-label="Model qualification results">
+                              <div className="rounded-md border bg-secondary/30 px-3 py-2.5">
+                                <dt className="text-xs font-medium text-foreground">Chat tools</dt>
+                                <dd
+                                  className={cn(
+                                    "mt-1 text-xs",
+                                    provider.qualification.chat.qualified ? "text-success" : "text-destructive",
+                                  )}
+                                >
+                                  {qualificationReason(provider.qualification.chat.reason_code)} ·{" "}
+                                  {Math.round(provider.qualification.chat.latency_ms)} ms
+                                </dd>
+                              </div>
+                              <div className="rounded-md border bg-secondary/30 px-3 py-2.5">
+                                <dt className="text-xs font-medium text-foreground">Embeddings</dt>
+                                <dd
+                                  className={cn(
+                                    "mt-1 text-xs",
+                                    provider.qualification.embedding.qualified ? "text-success" : "text-destructive",
+                                  )}
+                                >
+                                  {qualificationReason(provider.qualification.embedding.reason_code)} ·{" "}
+                                  {provider.qualification.embedding.dimension ?? "no dimension"} dimensions ·{" "}
+                                  {Math.round(provider.qualification.embedding.latency_ms)} ms
+                                </dd>
+                              </div>
+                            </dl>
+                          )}
+                        </section>
                       </div>
 
                       <div className="flex flex-col gap-3 border-t bg-secondary/20 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
@@ -531,7 +809,10 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                             )}
                             {provider.action === "testing" ? "Testing…" : "Test connection"}
                           </Button>
-                          <Button type="submit" disabled={provider.action !== null || !provider.hasChanges}>
+                          <Button
+                            type="submit"
+                            disabled={provider.action !== null || !provider.hasChanges || migrationActive}
+                          >
                             {provider.action === "saving" ? <LoaderCircle className="animate-spin" /> : <Save />}
                             {provider.action === "saving" ? "Saving…" : "Save changes"}
                           </Button>
@@ -540,6 +821,198 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                     </form>
                   ) : null}
                 </div>
+
+                <section aria-labelledby="embedding-migration-heading" className="border-b py-5">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div className="flex min-w-0 items-start gap-3">
+                      <HardDrive className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+                      <div>
+                        <h3 id="embedding-migration-heading" className="text-sm font-semibold text-foreground">
+                          Embedding index migration
+                        </h3>
+                        <p className="mt-1 max-w-prose text-xs leading-5 text-muted-foreground">
+                          Build a verified replacement index before changing an embedding model or dimension. Source
+                          changes pause during the build; the current index stays active until restart.
+                        </p>
+                      </div>
+                    </div>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => void migration.refresh()}
+                      disabled={migration.checking || migration.action !== null}
+                      aria-label="Refresh embedding migration status"
+                    >
+                      <RefreshCw className={cn(migration.checking && "animate-spin")} />
+                      Refresh
+                    </Button>
+                  </div>
+
+                  {migration.loadError && !migration.status ? (
+                    <div
+                      className="mt-3 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2"
+                      role="alert"
+                    >
+                      <p className="text-xs text-destructive">{migration.loadError}</p>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="mt-2"
+                        onClick={() => void migration.refresh()}
+                      >
+                        Try again
+                      </Button>
+                    </div>
+                  ) : !migration.status ? (
+                    <div
+                      className="mt-3 h-20 animate-pulse rounded-md bg-secondary"
+                      aria-label="Loading migration status"
+                    />
+                  ) : (
+                    <div className="mt-3 rounded-lg border bg-card p-4">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <span
+                          className={cn(
+                            "rounded-md border px-2 py-0.5 text-xs font-medium",
+                            migration.status.phase === "failed"
+                              ? "border-destructive/30 bg-destructive/10 text-destructive"
+                              : migration.status.phase === "ready_to_apply" || migration.status.restart_required
+                                ? "border-warning/30 bg-warning/10 text-warning"
+                                : migration.status.phase === "idle"
+                                  ? "bg-secondary text-muted-foreground"
+                                  : "border-primary/30 bg-primary/10 text-primary",
+                          )}
+                        >
+                          {migrationPhaseLabel(migration.status.phase)}
+                        </span>
+                        {migration.status.target_model && migration.status.target_dimension && (
+                          <code className="max-w-full break-all font-mono text-xs text-muted-foreground">
+                            {migration.status.target_model} · {migration.status.target_dimension}d
+                          </code>
+                        )}
+                      </div>
+
+                      {(migration.status.phase === "snapshotting" || migration.status.phase === "building") && (
+                        <div className="mt-4">
+                          <div className="mb-1.5 flex justify-between gap-3 text-xs text-muted-foreground">
+                            <span>
+                              {migration.status.phase === "snapshotting"
+                                ? "Preparing a stable source snapshot"
+                                : `${migration.status.indexed_count.toLocaleString()} of ${migration.status.chunk_count.toLocaleString()} chunks`}
+                            </span>
+                            {migration.status.phase === "building" && <span>{migrationProgress}%</span>}
+                          </div>
+                          <progress
+                            className="h-2 w-full accent-primary"
+                            max={Math.max(1, migration.status.chunk_count)}
+                            value={migration.status.indexed_count}
+                            aria-label="Embedding migration progress"
+                          />
+                          <p className="mt-1.5 text-xs text-muted-foreground">
+                            {migration.status.source_count.toLocaleString()} source
+                            {migration.status.source_count === 1 ? "" : "s"} in the immutable snapshot.
+                          </p>
+                        </div>
+                      )}
+
+                      {migration.status.phase === "idle" && (
+                        <p className="mt-3 text-xs leading-5 text-muted-foreground">
+                          {embeddingIdentityManaged
+                            ? "The embedding identity is managed by the environment and cannot be migrated here."
+                            : !embeddingTargetChanged
+                              ? "Enter a different embedding model or dimension, then qualify that exact draft."
+                              : provider.hasNonEmbeddingChanges
+                                ? "Save or revert endpoint, API key, chat-model, and health-probe changes separately before starting this migration."
+                                : !provider.qualificationReady
+                                  ? "Qualify the exact draft embedding model and dimension before starting."
+                                  : "The exact target passed qualification and is ready to build."}
+                        </p>
+                      )}
+
+                      {migration.status.phase === "ready_to_apply" && (
+                        <div className="mt-3 rounded-md border border-warning/30 bg-warning/10 px-3 py-2.5 text-xs leading-5 text-muted-foreground">
+                          The replacement index is complete and verified. Applying schedules a restart-time swap; keep
+                          the current workspace data directory together and restart the Borealis server immediately
+                          afterward.
+                        </div>
+                      )}
+
+                      {migration.status.restart_required && (
+                        <div className="mt-3 rounded-md border border-warning/30 bg-warning/10 px-3 py-2.5 text-xs leading-5 text-muted-foreground">
+                          Restart required. Quit and reopen Borealis (or restart the browser-development server) to
+                          install and verify the replacement index. Do not change or copy only part of the workspace
+                          data while this is pending.
+                        </div>
+                      )}
+
+                      {migration.status.phase === "failed" && (
+                        <p className="mt-3 text-xs leading-5 text-destructive" role="alert">
+                          {embeddingMigrationErrorMessage(migration.status.error_code)}
+                        </p>
+                      )}
+
+                      {(migration.feedback || (migration.loadError && migration.status)) && (
+                        <p
+                          className={cn(
+                            "mt-3 text-xs",
+                            migration.feedback?.kind === "success" && !migration.loadError
+                              ? "text-success"
+                              : "text-destructive",
+                          )}
+                          role={migration.feedback?.kind === "error" || migration.loadError ? "alert" : "status"}
+                        >
+                          {migration.loadError ?? migration.feedback?.message}
+                        </p>
+                      )}
+
+                      <div className="mt-4 flex flex-wrap gap-2">
+                        {migration.status.phase === "idle" && (
+                          <Button
+                            type="button"
+                            onClick={() => void migration.start(provider.form.default_embed_model, embeddingDimension)}
+                            disabled={!canStartMigration}
+                          >
+                            {migration.action === "starting" && <LoaderCircle className="animate-spin" />}
+                            {migration.action === "starting" ? "Starting…" : "Start migration"}
+                          </Button>
+                        )}
+                        {migration.status.can_retry && (
+                          <Button
+                            type="button"
+                            onClick={() => void migration.retry()}
+                            disabled={migration.action !== null || provider.action !== null}
+                          >
+                            {migration.action === "retrying" && <LoaderCircle className="animate-spin" />}
+                            {migration.action === "retrying" ? "Retrying…" : "Retry migration"}
+                          </Button>
+                        )}
+                        {migration.status.can_apply && (
+                          <Button
+                            type="button"
+                            onClick={() => void migration.apply()}
+                            disabled={migration.action !== null || provider.action !== null}
+                          >
+                            {migration.action === "applying" && <LoaderCircle className="animate-spin" />}
+                            {migration.action === "applying" ? "Scheduling…" : "Apply on restart"}
+                          </Button>
+                        )}
+                        {migration.status.can_cancel && (
+                          <Button
+                            type="button"
+                            variant="outline"
+                            onClick={() => void migration.cancel()}
+                            disabled={migration.action !== null || provider.action !== null}
+                          >
+                            {migration.action === "cancelling" && <LoaderCircle className="animate-spin" />}
+                            {migration.action === "cancelling" ? "Cancelling…" : "Cancel migration"}
+                          </Button>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </section>
 
                 <dl className="grid gap-5 border-b py-5 sm:grid-cols-2">
                   <div>

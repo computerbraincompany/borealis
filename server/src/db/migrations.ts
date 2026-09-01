@@ -1,6 +1,6 @@
 import { SqliteMigrationError } from "./types.js";
 
-export const LATEST_SQLITE_SCHEMA_VERSION = 11;
+export const LATEST_SQLITE_SCHEMA_VERSION = 12;
 
 interface MigrationDatabase {
   exec(sql: string): unknown;
@@ -466,6 +466,23 @@ const SCHEMA_V11 = `
 ALTER TABLE users ADD COLUMN default_chat_model TEXT CHECK (default_chat_model IS NULL OR length(default_chat_model) <= 200);
 `;
 
+// Query-plan evidence for the catalog keysets showed tenant-index scans plus
+// temporary ORDER BY trees for every catalog except chats. These indexes match
+// the exact tenant/order tuples used by bounded pagination.
+const SCHEMA_V12 = `
+CREATE INDEX sources_account_catalog_idx ON sources (account_id, created_at DESC, id DESC);
+CREATE INDEX connectors_account_catalog_idx ON connectors (account_id, created_at DESC, id DESC);
+CREATE INDEX libraries_account_catalog_idx ON libraries (account_id, created_at DESC, id DESC);
+CREATE INDEX agents_account_catalog_idx ON agents (account_id, created_at DESC, id DESC);
+CREATE INDEX automations_account_catalog_idx ON automations (account_id, created_at DESC, id DESC);
+CREATE INDEX reports_account_catalog_idx
+  ON reports (account_id, created_at DESC, id DESC)
+  WHERE status='published';
+DROP INDEX report_shares_recipient_idx;
+CREATE INDEX report_shares_recipient_idx
+  ON report_shares (recipient_account_id, shared_at DESC, report_id DESC);
+`;
+
 const migrations = [
   { version: 1, sql: SCHEMA_V1 },
   { version: 2, sql: SCHEMA_V2 },
@@ -478,6 +495,7 @@ const migrations = [
   { version: 9, sql: SCHEMA_V9 },
   { version: 10, sql: SCHEMA_V10 },
   { version: 11, sql: SCHEMA_V11 },
+  { version: 12, sql: SCHEMA_V12 },
 ] as const;
 
 function schemaVersion(database: MigrationDatabase): number {

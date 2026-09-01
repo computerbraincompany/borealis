@@ -135,7 +135,7 @@ describe("library routes", () => {
     });
 
     const list = await app.inject({ method: "GET", url: "/api/libraries", headers: ownerAuth });
-    expect(list.json()).toEqual([]);
+    expect(list.json()).toEqual({ items: [], next_cursor: null });
   });
 
   it("replaces membership exactly and rejects foreign sources and libraries", async () => {

@@ -5,9 +5,15 @@ import path from "node:path";
 import Fastify, { type FastifyInstance } from "fastify";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { signToken } from "../auth.js";
+import { EmbeddingReindexRequiredError } from "../embeddingMigration.js";
 import { installHttpBoundary } from "../httpErrors.js";
 import { createSettingsRoutes, probeSettingsConnection } from "../routes/settings.js";
-import { createSettingsStore, type SettingsStore } from "../settingsStore.js";
+import {
+  createSettingsStore,
+  type LlmSettingsPatch,
+  type SettingsSnapshot,
+  type SettingsStore,
+} from "../settingsStore.js";
 
 const ACCOUNT_ID = "11111111-1111-4111-8111-111111111111";
 const auth = {
@@ -26,7 +32,13 @@ async function temporaryStore(
   return { store: createSettingsStore({ path: filename, env }), filename };
 }
 
-async function buildApp(store: SettingsStore, options: { timeoutMs?: number } = {}): Promise<FastifyInstance> {
+async function buildApp(
+  store: SettingsStore,
+  options: {
+    timeoutMs?: number;
+    patch?: (patch: LlmSettingsPatch) => Promise<SettingsSnapshot>;
+  } = {}
+): Promise<FastifyInstance> {
   const app = Fastify();
   apps.push(app);
   installHttpBoundary(app);
@@ -34,6 +46,7 @@ async function buildApp(store: SettingsStore, options: { timeoutMs?: number } = 
     createSettingsRoutes({
       store,
       ...(options.timeoutMs === undefined ? {} : { connectionTimeoutMs: options.timeoutMs }),
+      ...(options.patch === undefined ? {} : { patch: options.patch }),
     })
   );
   await app.ready();
@@ -81,6 +94,7 @@ describe("authenticated settings routes", () => {
       lm_studio_base_url: null,
       default_chat_model: "chat-model",
       default_embed_model: "embed-model",
+      embedding_dimension: 768,
     });
     expect(response.body).not.toContain("never-return-this-key");
     expect(response.json()).not.toHaveProperty("llm_api_key");
@@ -100,12 +114,14 @@ describe("authenticated settings routes", () => {
         lm_studio_base_url: "http://localhost:1234",
         default_chat_model: "provider-chat",
         default_embed_model: "provider-embed",
+        embedding_dimension: 384,
       },
     });
     expect(configured.statusCode).toBe(200);
     expect(configured.json()).toMatchObject({
       llm_api_key_configured: true,
       default_chat_model: "provider-chat",
+      embedding_dimension: 384,
     });
     expect(configured.body).not.toContain("patch-secret");
 
@@ -131,6 +147,28 @@ describe("authenticated settings routes", () => {
     expect(cleared.json().llm_api_key_configured).toBe(false);
     expect(cleared.json()).not.toHaveProperty("llm_api_key");
     expect(JSON.parse(await fs.readFile(filename, "utf8"))).not.toHaveProperty("llm_api_key");
+  });
+
+  it("returns a stable reindex-required conflict for generic embedding identity changes", async () => {
+    const { store } = await temporaryStore();
+    const patch = vi.fn(async (_input: LlmSettingsPatch): Promise<SettingsSnapshot> => {
+      throw new EmbeddingReindexRequiredError();
+    });
+    const app = await buildApp(store, { patch });
+
+    const response = await app.inject({
+      method: "PATCH",
+      url: "/api/settings",
+      headers: { ...auth, "x-request-id": "settings.reindex" },
+      payload: { default_embed_model: "new-embed", embedding_dimension: 384 },
+    });
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toEqual({
+      error: "embedding reindex is required",
+      code: "EMBEDDING_REINDEX_REQUIRED",
+      request_id: "settings.reindex",
+    });
+    expect(patch).toHaveBeenCalledWith({ embedModel: "new-embed", embeddingDimension: 384 });
   });
 
   it("returns opaque validation and environment-override errors without reflecting values", async () => {
@@ -251,6 +289,7 @@ describe("settings connection probe", () => {
         llmBaseUrl: "https://provider.example.test",
         chatModel: "chat-model",
         embedModel: "embed-model",
+        embeddingDimension: 768,
       },
       { fetch: fetchMock, timeoutMs: 15 }
     );

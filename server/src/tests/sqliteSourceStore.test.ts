@@ -51,7 +51,7 @@ describe("SQLite SourceStore", () => {
       readyGeneration: null,
     });
     expect(created.createdAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
-    await expect(store.listSources(owner)).resolves.toEqual([created]);
+    await expect(store.listSources(owner)).resolves.toEqual({ items: [created], next: null });
     await expect(store.getSource(foreign, sourceId)).resolves.toBeUndefined();
     await expect(store.updateSourceStatus(foreign, sourceId, { status: "error" })).rejects.toMatchObject({
       code: "SOURCE_STORE_SOURCE_NOT_FOUND",
@@ -75,7 +75,9 @@ describe("SQLite SourceStore", () => {
         displayName: "Duplicate.csv",
       })
     ).rejects.toMatchObject({ code: "SOURCE_STORE_SOURCE_NAME_CONFLICT" });
-    await expect(store.listSources(owner, 0)).rejects.toMatchObject({ code: "SOURCE_STORE_INVALID_ARGUMENT" });
+    await expect(store.listSources(owner, { limit: 0, after: null })).rejects.toMatchObject({
+      code: "INVALID_CATALOG_CURSOR",
+    });
 
     const foreignSource = await store.createSource(foreign, {
       id: randomUUID(),
@@ -84,7 +86,9 @@ describe("SQLite SourceStore", () => {
       displayName: "Same name in another account.csv",
     });
     expect(foreignSource.accountId).toBe(foreign);
-    await expect(store.listSources(owner)).resolves.toHaveLength(1);
+    await expect(store.listSources(owner)).resolves.toMatchObject({
+      items: [expect.objectContaining({ id: sourceId })],
+    });
   });
 
   it("creates connector and source identity atomically and enforces the shared target namespace", async () => {
@@ -115,7 +119,7 @@ describe("SQLite SourceStore", () => {
       name: "transactions_feed",
       status: "index",
     });
-    await expect(store.listConnectors(owner)).resolves.toEqual([created.connector]);
+    await expect(store.listConnectors(owner)).resolves.toEqual({ items: [created.connector], next: null });
     await expect(store.getConnector(foreign, input.id)).resolves.toBeUndefined();
     await expect(
       store.createSource(owner, {
@@ -309,7 +313,7 @@ describe("SQLite SourceStore", () => {
     expect(deleted.alreadyPending).toBe(false);
     expect(deleted.intents.map((intent) => intent.sourceId).sort()).toEqual([input.source.id, secondSource].sort());
     await expect(store.getConnector(owner, input.id)).resolves.toBeUndefined();
-    await expect(store.listSources(owner)).resolves.toEqual([]);
+    await expect(store.listSources(owner)).resolves.toEqual({ items: [], next: null });
     await expect(store.deleteConnector(owner, input.id)).resolves.toMatchObject({
       connectorId: input.id,
       alreadyPending: true,

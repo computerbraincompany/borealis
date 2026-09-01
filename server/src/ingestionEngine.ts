@@ -1,9 +1,13 @@
 import fs from "node:fs/promises";
 
-import type { IngestionJob, SqliteIngestionStore } from "./db/stores/ingestionStore.js";
+import type { DatasetCleanupJob, IngestionJob, SqliteIngestionStore } from "./db/stores/ingestionStore.js";
 import type { SourceStore } from "./db/stores/sourceStore.js";
 import { DataServiceError } from "./dataService.js";
+import { RemoteEgressConsentRequiredError } from "./egressPolicy.js";
+import type { IngestionEmbeddingSession } from "./ingestionEmbedding.js";
+import { normalizeEmbeddingVector } from "./embeddingVector.js";
 import { IngestionStageError, publicIngestionFailure, type IngestionFailureCode } from "./ingestionFailures.js";
+import { LocalOcrError, LocalOcrUnavailableError } from "./localPdfOcr.js";
 import type { IngestionVectorLifecycle } from "./vector/lifecycle.js";
 
 const EMBED_BATCH_SIZE = 16;
@@ -23,6 +27,7 @@ export interface IngestionExecutionInput {
   readonly generation: number;
   readonly leaseToken: string;
   readonly meta?: unknown;
+  readonly signal?: AbortSignal;
 }
 
 export interface IngestionDataOperations {
@@ -48,7 +53,50 @@ export interface IngestionDataOperations {
     expectedFormat: "csv" | "json",
     previousLocation: string | null
   ): Promise<{ version?: unknown; location?: unknown }>;
+  deactivateDatasetLocation(accountId: string, name: string, location: string): Promise<unknown>;
   cleanupDatasetCache(accountId: string, name: string, location: string): Promise<unknown>;
+}
+
+const durableCleanupRuns = new WeakMap<object, Map<string, Promise<boolean>>>();
+
+/** Process one previously reserved exact cleanup intent. Failures remain durable for retry. */
+export function processDurableDatasetCleanupJob(
+  store: Pick<SqliteIngestionStore, "getDatasetCleanupJob" | "resolveDatasetCleanupJob">,
+  data: Pick<IngestionDataOperations, "deactivateDatasetLocation" | "cleanupDatasetCache">,
+  job: DatasetCleanupJob
+): Promise<boolean> {
+  const runs = durableCleanupRuns.get(store) ?? new Map<string, Promise<boolean>>();
+  durableCleanupRuns.set(store, runs);
+  const key = JSON.stringify([job.accountId, job.name, job.location]);
+  const active = runs.get(key);
+  if (active) return active;
+
+  const run = (async () => {
+    try {
+      // A caller may hold a stale list row after another cleanup completed.
+      // Revalidate before any external deactivation so completed authority
+      // cannot be replayed against a subsequently adopted exact location.
+      const current = await store.getDatasetCleanupJob(job.accountId, job.name, job.location);
+      if (!current) return false;
+      await data.deactivateDatasetLocation(current.accountId, current.name, current.location);
+      await data.cleanupDatasetCache(current.accountId, current.name, current.location);
+      await store.resolveDatasetCleanupJob(current, "complete");
+      return true;
+    } catch {
+      await store.resolveDatasetCleanupJob(job, "failed").catch(() => undefined);
+      return false;
+    }
+  })();
+  runs.set(key, run);
+  void run.then(
+    () => {
+      if (runs.get(key) === run) runs.delete(key);
+    },
+    () => {
+      if (runs.get(key) === run) runs.delete(key);
+    }
+  );
+  return run;
 }
 
 export interface IngestionExecutorDependencies {
@@ -56,7 +104,7 @@ export interface IngestionExecutorDependencies {
   readonly lifecycle: IngestionVectorLifecycle;
   readonly data: IngestionDataOperations;
   readonly embeddingDimension: number;
-  readonly embed: (texts: string[], signal?: AbortSignal) => Promise<number[][]>;
+  readonly createEmbeddingSession: (accountId: string) => Promise<IngestionEmbeddingSession>;
   readonly resolveArtifact: (input: {
     accountId: string;
     sourceId: string;
@@ -65,7 +113,7 @@ export interface IngestionExecutorDependencies {
     connector?: string;
   }) => Promise<string | undefined>;
   readonly isTabular: (filePath: string, mime: string) => boolean;
-  readonly extractText: (filePath: string, mime: string) => Promise<string>;
+  readonly extractText: (filePath: string, mime: string, signal?: AbortSignal) => Promise<string>;
   readonly chunkText: (text: string, size: number, overlap: number) => string[];
   readonly datasetRegistration: (input: {
     sourceId: string;
@@ -116,6 +164,7 @@ export class IngestionExecutor {
     const requestedPath = candidateLocation ?? input.filePath;
     let activationStarted = false;
 
+    throwIfAborted(input.signal);
     await store.assertLease(input.accountId, input.sourceId, input.generation, input.leaseToken);
     await store.markSourceProcessing(input.accountId, input.sourceId, input.generation, input.leaseToken);
     try {
@@ -127,6 +176,7 @@ export class IngestionExecutor {
         connector: input.connector,
       });
       if (!artifact) throw new Error("source artifact is unavailable");
+      throwIfAborted(input.signal);
 
       let text: string;
       if (refreshVersion && candidateLocation && input.connector && input.url) {
@@ -163,8 +213,9 @@ export class IngestionExecutor {
         }
         text = this.dependencies.datasetPreviewText(await data.extractDataset(input.accountId, input.name, 40));
       } else {
-        text = await this.dependencies.extractText(artifact, input.mime);
+        text = await this.dependencies.extractText(artifact, input.mime, input.signal);
       }
+      throwIfAborted(input.signal);
       if (!text.trim()) throw new Error("no readable text extracted");
       const contents = this.dependencies.chunkText(text, 800, 110);
       if (!contents.length) throw new Error("no readable text extracted");
@@ -180,16 +231,30 @@ export class IngestionExecutor {
         sourceName: input.displayName,
         chunks: contents.map((content) => ({ content, meta: chunkMeta })),
       });
+      let embed: IngestionEmbeddingSession;
+      try {
+        embed = await this.dependencies.createEmbeddingSession(input.accountId);
+      } catch (error) {
+        if (error instanceof RemoteEgressConsentRequiredError) {
+          throw new IngestionStageError("REMOTE_EGRESS_CONSENT_REQUIRED");
+        }
+        throw new IngestionStageError("EMBEDDING_UNAVAILABLE");
+      }
       for (let start = 0; start < staged.length; start += EMBED_BATCH_SIZE) {
+        throwIfAborted(input.signal);
         await store.assertLease(input.accountId, input.sourceId, input.generation, input.leaseToken);
         const batch = staged.slice(start, start + EMBED_BATCH_SIZE);
         let embeddings: number[][];
         try {
-          embeddings = await this.dependencies.embed(batch.map((chunk) => chunk.content));
+          embeddings = await embed(
+            batch.map((chunk) => chunk.content),
+            input.signal
+          );
         } catch {
           throw new IngestionStageError("EMBEDDING_UNAVAILABLE");
         }
-        this.assertEmbeddings(embeddings, batch.length);
+        throwIfAborted(input.signal);
+        embeddings = this.normalizeEmbeddings(embeddings, batch.length);
         await lifecycle.indexBatch({
           accountId: input.accountId,
           sourceId: input.sourceId,
@@ -200,6 +265,7 @@ export class IngestionExecutor {
       }
 
       const sizeBytes = await fs.stat(artifact).then((stat) => stat.size);
+      throwIfAborted(input.signal);
       await store.assertLease(input.accountId, input.sourceId, input.generation, input.leaseToken);
       if (refreshVersion && candidateLocation && input.connector && input.url) {
         activationStarted = true;
@@ -230,13 +296,13 @@ export class IngestionExecutor {
       const current = await store.getSource(input.accountId, input.sourceId);
       const previous = current?.meta.connector_previous_location;
       if (input.connector && typeof previous === "string" && previous && previous !== current.filePath) {
-        await data.cleanupDatasetCache(input.accountId, input.name, previous);
-        await store.clearSourceMetaValue({
+        const cleanupJob = Object.freeze({
           accountId: input.accountId,
-          sourceId: input.sourceId,
-          key: "connector_previous_location",
-          expectedValue: previous,
+          name: input.name,
+          location: previous,
+          attempts: 0,
         });
+        await processDurableDatasetCleanupJob(store, data, cleanupJob);
       }
     } catch (error) {
       if (refreshVersion && activationStarted) throw new ConnectorRefreshActivatedError();
@@ -244,16 +310,13 @@ export class IngestionExecutor {
     }
   }
 
-  private assertEmbeddings(embeddings: number[][], expected: number): void {
-    if (
-      embeddings.length !== expected ||
-      embeddings.some(
-        (vector) =>
-          !Array.isArray(vector) ||
-          vector.length !== this.dependencies.embeddingDimension ||
-          vector.some((coordinate) => typeof coordinate !== "number" || !Number.isFinite(coordinate))
-      )
-    ) {
+  private normalizeEmbeddings(embeddings: number[][], expected: number): number[][] {
+    if (embeddings.length !== expected) {
+      throw new IngestionStageError("EMBEDDING_INVALID_RESPONSE");
+    }
+    try {
+      return embeddings.map((vector) => normalizeEmbeddingVector(vector, this.dependencies.embeddingDimension));
+    } catch {
       throw new IngestionStageError("EMBEDDING_INVALID_RESPONSE");
     }
   }
@@ -281,7 +344,8 @@ export class IngestionWorker {
     }
   }
 
-  async processOne(): Promise<boolean> {
+  async processOne(signal?: AbortSignal): Promise<boolean> {
+    if (signal?.aborted) return false;
     const job = await this.dependencies.store.claimNext("pending", this.now());
     if (!job) return false;
     const source = await this.dependencies.sources.getSource(job.accountId, job.sourceId);
@@ -299,6 +363,13 @@ export class IngestionWorker {
         failure: publicIngestionFailure("SOURCE_UNAVAILABLE"),
       });
       return true;
+    }
+
+    const jobController = new AbortController();
+    const abortJob = () => jobController.abort(signal?.reason);
+    if (signal) {
+      if (signal.aborted) abortJob();
+      else signal.addEventListener("abort", abortJob, { once: true });
     }
 
     let heartbeatTail = Promise.resolve();
@@ -324,6 +395,7 @@ export class IngestionWorker {
         generation: job.generation,
         leaseToken: job.leaseToken,
         meta: source.meta,
+        signal: jobController.signal,
       });
     } catch (error) {
       const code = ingestionFailureCode(error);
@@ -344,6 +416,7 @@ export class IngestionWorker {
         retryAt,
       });
     } finally {
+      signal?.removeEventListener("abort", abortJob);
       clearInterval(heartbeat);
       await heartbeatTail;
     }
@@ -366,6 +439,8 @@ function recordMeta(value: unknown): Record<string, unknown> {
 
 export function ingestionFailureCode(error: unknown): IngestionFailureCode {
   if (error instanceof IngestionStageError) return error.failureCode;
+  if (error instanceof LocalOcrUnavailableError) return "OCR_UNAVAILABLE";
+  if (error instanceof LocalOcrError) return "OCR_FAILED";
   if (error instanceof DataServiceError) {
     if (error.status === 422) return "DATASET_PARSE_FAILED";
     if (error.status === 404) return "SOURCE_UNAVAILABLE";
@@ -380,11 +455,16 @@ export function ingestionFailureCode(error: unknown): IngestionFailureCode {
 
 function isRetryableIngestError(error: unknown): boolean {
   if (error instanceof IngestionStageError) return error.failureCode === "EMBEDDING_UNAVAILABLE";
+  if (error instanceof LocalOcrUnavailableError || error instanceof LocalOcrError) return false;
   if (error instanceof DataServiceError) return error.status === 429 || error.status >= 500;
   const message = error instanceof Error ? error.message : "";
   return !["no readable text", "not supported", "artifact is unavailable", "shape mismatch", "superseded"].some(
     (fragment) => message.includes(fragment)
   );
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  signal?.throwIfAborted();
 }
 
 export function jobRequestContext(job: IngestionJob): string {

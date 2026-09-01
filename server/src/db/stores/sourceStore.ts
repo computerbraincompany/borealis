@@ -9,6 +9,13 @@ import {
   encodeSafeInteger,
 } from "../codecs.js";
 import { SqliteCodecError, type SqliteLedger, type SqliteTransaction } from "../types.js";
+import {
+  catalogStorePage,
+  defaultCatalogPageRequest,
+  validateCatalogPageRequest,
+  type CatalogPageRequest,
+  type CatalogStorePage,
+} from "../../catalogPagination.js";
 
 const DEFAULT_LIST_LIMIT = 200;
 const MAX_LIST_LIMIT = 1_000;
@@ -235,15 +242,25 @@ export class SourceStore {
     this.now = options.now ?? (() => new Date());
   }
 
-  async listSources(accountId: string, limit = DEFAULT_LIST_LIMIT): Promise<SourceRecord[]> {
+  async listSources(
+    accountId: string,
+    pageValue: CatalogPageRequest = defaultCatalogPageRequest()
+  ): Promise<CatalogStorePage<SourceRecord>> {
     const account = requiredId(accountId, "accountId");
-    const boundedLimit = listLimit(limit);
+    const page = validateCatalogPageRequest(pageValue);
+    const parameters: Array<string | number> = [account];
+    const after = page.after ? " AND (created_at,id) < (?,?)" : "";
+    if (page.after) parameters.push(page.after.timestamp, page.after.id);
+    parameters.push(page.limit + 1);
     const rows = await this.ledger.all<SourceRow>(
       `SELECT ${SOURCE_COLUMNS} FROM sources
-       WHERE account_id=? ORDER BY created_at DESC, id DESC LIMIT ?`,
-      [account, boundedLimit]
+       WHERE account_id=?${after} ORDER BY created_at DESC, id DESC LIMIT ?`,
+      parameters
     );
-    return rows.map(decodeSource);
+    return catalogStorePage(rows.map(decodeSource), page, (source) => ({
+      timestamp: source.createdAt,
+      id: source.id,
+    }));
   }
 
   async getSource(accountId: string, sourceId: string): Promise<SourceRecord | undefined> {
@@ -252,6 +269,22 @@ export class SourceStore {
       requiredId(sourceId, "sourceId"),
     ]);
     return row ? decodeSource(row) : undefined;
+  }
+
+  /** Fetch an exact, account-scoped source set in caller order. */
+  async getSourcesByIds(accountId: string, sourceIds: readonly string[]): Promise<SourceRecord[]> {
+    const account = requiredId(accountId, "accountId");
+    const ids = [...new Set(sourceIds.map((sourceId) => requiredId(sourceId, "sourceId")))];
+    if (!ids.length) return [];
+    const rows = await this.ledger.all<SourceRow>(
+      `SELECT ${SOURCE_COLUMNS} FROM sources WHERE account_id=? AND id IN (${ids.map(() => "?").join(",")})`,
+      [account, ...ids]
+    );
+    const byId = new Map(rows.map((row) => [row.id, decodeSource(row)]));
+    return ids.flatMap((id) => {
+      const source = byId.get(id);
+      return source ? [source] : [];
+    });
   }
 
   async createSource(accountId: string, input: CreateSourceInput): Promise<SourceRecord> {
@@ -315,13 +348,24 @@ export class SourceStore {
     });
   }
 
-  async listConnectors(accountId: string, limit = DEFAULT_LIST_LIMIT): Promise<ConnectorRecord[]> {
+  async listConnectors(
+    accountId: string,
+    pageValue: CatalogPageRequest = defaultCatalogPageRequest()
+  ): Promise<CatalogStorePage<ConnectorRecord>> {
+    const page = validateCatalogPageRequest(pageValue);
+    const parameters: Array<string | number> = [requiredId(accountId, "accountId")];
+    const after = page.after ? " AND (created_at,id) < (?,?)" : "";
+    if (page.after) parameters.push(page.after.timestamp, page.after.id);
+    parameters.push(page.limit + 1);
     const rows = await this.ledger.all<ConnectorRow>(
       `SELECT ${CONNECTOR_COLUMNS} FROM connectors
-       WHERE account_id=? ORDER BY created_at DESC, id DESC LIMIT ?`,
-      [requiredId(accountId, "accountId"), listLimit(limit)]
+       WHERE account_id=?${after} ORDER BY created_at DESC, id DESC LIMIT ?`,
+      parameters
     );
-    return rows.map(decodeConnector);
+    return catalogStorePage(rows.map(decodeConnector), page, (connector) => ({
+      timestamp: connector.createdAt,
+      id: connector.id,
+    }));
   }
 
   async getConnector(accountId: string, connectorId: string): Promise<ConnectorRecord | undefined> {
@@ -330,6 +374,22 @@ export class SourceStore {
       [requiredId(accountId, "accountId"), requiredId(connectorId, "connectorId")]
     );
     return row ? decodeConnector(row) : undefined;
+  }
+
+  /** Fetch an exact, account-scoped connector set in caller order. */
+  async getConnectorsByIds(accountId: string, connectorIds: readonly string[]): Promise<ConnectorRecord[]> {
+    const account = requiredId(accountId, "accountId");
+    const ids = [...new Set(connectorIds.map((connectorId) => requiredId(connectorId, "connectorId")))];
+    if (!ids.length) return [];
+    const rows = await this.ledger.all<ConnectorRow>(
+      `SELECT ${CONNECTOR_COLUMNS} FROM connectors WHERE account_id=? AND id IN (${ids.map(() => "?").join(",")})`,
+      [account, ...ids]
+    );
+    const byId = new Map(rows.map((row) => [row.id, decodeConnector(row)]));
+    return ids.flatMap((id) => {
+      const connector = byId.get(id);
+      return connector ? [connector] : [];
+    });
   }
 
   async createConnector(

@@ -11,11 +11,11 @@ export interface AuthPayload {
 }
 
 export function signToken(payload: AuthPayload): string {
-  return jwt.sign(payload, config.jwtSecret, { algorithm: "HS256", expiresIn: "7d" });
+  return jwt.sign(payload, initializedJwtSecret(), { algorithm: "HS256", expiresIn: "7d" });
 }
 
 export function verifyToken(token: string): AuthPayload {
-  const payload = jwt.verify(token, config.jwtSecret, { algorithms: ["HS256"] }) as Partial<AuthPayload>;
+  const payload = jwt.verify(token, initializedJwtSecret(), { algorithms: ["HS256"] }) as Partial<AuthPayload>;
   if (
     typeof payload.userId !== "string" ||
     !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(payload.userId) ||
@@ -24,6 +24,11 @@ export function verifyToken(token: string): AuthPayload {
     throw new Error("invalid token payload");
   }
   return payload as AuthPayload;
+}
+
+function initializedJwtSecret(): string {
+  if (!config.jwtSecret) throw new Error("JWT signing secret is not initialized");
+  return config.jwtSecret;
 }
 
 export async function authRoutes(app: FastifyInstance) {
@@ -87,7 +92,7 @@ export async function authRoutes(app: FastifyInstance) {
     }
   );
 
-  app.get("/api/me", { preHandler: requireAuth }, async (req, reply) => {
+  app.get("/api/me", { onRequest: requireAuth }, async (req, reply) => {
     const user = (req as any).user;
     return reply.send(user);
   });

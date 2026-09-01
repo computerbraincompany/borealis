@@ -1,14 +1,21 @@
 import {
   ApiError,
   apiText,
+  agentsApi,
+  automationsApi,
   chatsApi,
   connectorsApi,
   formatApiError,
+  librariesApi,
+  modelsApi,
   openProtected,
   parseConnectorListPayload,
   parseConnectorSyncListPayload,
   parseSourceListPayload,
+  preferencesApi,
+  reportsApi,
   settingsApi,
+  sourcesApi,
   streamAgentChat,
   type SourceScopeInput,
 } from "@/lib/api";
@@ -57,12 +64,14 @@ describe("typed API contracts", () => {
       lm_studio_base_url: null,
       default_chat_model: "qwen-chat",
       default_embed_model: "nomic-embed",
+      embedding_dimension: 768,
       managed_by_env: {
         llm_base_url: false,
         llm_api_key: false,
         lm_studio_base_url: false,
         default_chat_model: false,
         default_embed_model: false,
+        embedding_dimension: false,
       },
     };
     const json = (body: unknown) =>
@@ -80,6 +89,7 @@ describe("typed API contracts", () => {
       llm_base_url: "https://models.example.test",
       default_chat_model: "analysis-large",
       default_embed_model: "nomic-embed",
+      embedding_dimension: 768,
     });
 
     expect(fetchMock.mock.calls[0][0]).toBe("/api/settings");
@@ -93,7 +103,76 @@ describe("typed API contracts", () => {
       llm_base_url: "https://models.example.test",
       default_chat_model: "analysis-large",
       default_embed_model: "nomic-embed",
+      embedding_dimension: 768,
     });
+  });
+
+  it("uses the explicit qualification and embedding-migration contracts", async () => {
+    const status = {
+      phase: "idle",
+      target_model: null,
+      target_dimension: null,
+      source_count: 0,
+      chunk_count: 0,
+      indexed_count: 0,
+      error_code: null,
+      restart_required: false,
+      can_cancel: false,
+      can_retry: false,
+      can_apply: false,
+    };
+    const response = (body: unknown) =>
+      new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        response({
+          chat: { qualified: true, reason_code: "qualified", latency_ms: 4 },
+          embedding: { qualified: true, reason_code: "qualified", dimension: 384, latency_ms: 6 },
+        }),
+      )
+      .mockResolvedValueOnce(response(status))
+      .mockResolvedValueOnce(response({ ...status, phase: "building" }))
+      .mockResolvedValueOnce(response({ ...status, phase: "building" }))
+      .mockResolvedValueOnce(response(status))
+      .mockResolvedValueOnce(response({ ...status, phase: "apply_pending", restart_required: true }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await modelsApi.qualify({
+      llm_base_url: "https://models.example.test",
+      default_chat_model: "chat-v2",
+      default_embed_model: "embed-v2",
+      embedding_dimension: 384,
+      expected_dimension: 384,
+      remote_egress_ack_origin: "https://models.example.test",
+    });
+    await modelsApi.embeddingMigrationStatus();
+    await modelsApi.startEmbeddingMigration({ target_embed_model: "embed-v2", target_dimension: 384 });
+    await modelsApi.retryEmbeddingMigration();
+    await modelsApi.cancelEmbeddingMigration();
+    await modelsApi.applyEmbeddingMigration();
+
+    expect(fetchMock.mock.calls.map(([path]) => path)).toEqual([
+      "/api/models/qualify",
+      "/api/models/embedding-migration",
+      "/api/models/embedding-migration/start",
+      "/api/models/embedding-migration/retry",
+      "/api/models/embedding-migration/cancel",
+      "/api/models/embedding-migration/apply",
+    ]);
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1].body))).toEqual({
+      llm_base_url: "https://models.example.test",
+      default_chat_model: "chat-v2",
+      default_embed_model: "embed-v2",
+      embedding_dimension: 384,
+      expected_dimension: 384,
+      remote_egress_ack_origin: "https://models.example.test",
+    });
+    expect(JSON.parse(String(fetchMock.mock.calls[2][1].body))).toEqual({
+      target_embed_model: "embed-v2",
+      target_dimension: 384,
+    });
+    for (const call of fetchMock.mock.calls.slice(3)) expect(call[1].body).toBeUndefined();
   });
 
   it("encodes the optional older-message cursor while leaving the default URL unchanged", async () => {
@@ -111,6 +190,143 @@ describe("typed API contracts", () => {
 
     expect(fetchMock.mock.calls[0][0]).toBe("/api/chats/chat-1");
     expect(fetchMock.mock.calls[1][0]).toBe("/api/chats/chat-1?before_message_id=42&limit=50");
+  });
+
+  it("preserves invalid explicit catalog cursors and requires the one envelope shape", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ items: [], next_cursor: null }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify([]), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await agentsApi.list({ cursor: "", limit: 50 });
+    await expect(agentsApi.list()).rejects.toThrow("invalid catalog response");
+
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/agents?cursor=&limit=50");
+  });
+
+  it("validates exact catalog-status coverage and serializes the bounded UUID request", async () => {
+    const sourceId = "11111111-1111-4111-8111-111111111111";
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            items: [
+              {
+                id: sourceId,
+                name: "scan",
+                display_name: "Scan.pdf",
+                kind: "document",
+                status: "index",
+                mime: "application/pdf",
+                created_at: "2026-09-01T00:00:00.000Z",
+              },
+            ],
+            missing_ids: [],
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ items: [], missing_ids: [] }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(sourcesApi.status([sourceId])).resolves.toMatchObject({
+      items: [expect.objectContaining({ id: sourceId, status: "index" })],
+      missing_ids: [],
+    });
+    const [requestPath, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(requestPath).toBe("/api/sources/status");
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(String(init.body))).toEqual({ ids: [sourceId] });
+    await expect(sourcesApi.status([sourceId])).rejects.toThrow("invalid catalog status response");
+  });
+
+  it("forwards create-mutation abort ownership for chats, automations, and libraries", async () => {
+    const fetchMock = vi.fn().mockImplementation(
+      async () =>
+        new Response(JSON.stringify({}), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const chatAbort = new AbortController();
+    const automationAbort = new AbortController();
+    const libraryAbort = new AbortController();
+
+    await chatsApi.create(
+      undefined,
+      { source_mode: "selected", source_ids: ["source-1"] },
+      undefined,
+      chatAbort.signal,
+    );
+    await automationsApi.create(
+      {
+        name: "Weekly sync",
+        kind: "connector_sync",
+        target_id: "connector-1",
+        schedule_minutes: 60,
+      },
+      automationAbort.signal,
+    );
+    await librariesApi.create("Finance room", libraryAbort.signal);
+
+    expect(fetchMock.mock.calls[0][1].signal).toBe(chatAbort.signal);
+    expect(fetchMock.mock.calls[1][1].signal).toBe(automationAbort.signal);
+    expect(fetchMock.mock.calls[2][1].signal).toBe(libraryAbort.signal);
+  });
+
+  it("forwards preference and row-mutation abort ownership", async () => {
+    const fetchMock = vi.fn().mockImplementation(
+      async () =>
+        new Response(JSON.stringify({}), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const preferenceLoadAbort = new AbortController();
+    const preferenceSaveAbort = new AbortController();
+    const automationUpdateAbort = new AbortController();
+    const automationDeleteAbort = new AbortController();
+    const reportDeleteAbort = new AbortController();
+
+    await preferencesApi.get(preferenceLoadAbort.signal);
+    await preferencesApi.set("analysis-large", preferenceSaveAbort.signal);
+    await automationsApi.update("automation-1", { state: "paused" }, automationUpdateAbort.signal);
+    await automationsApi.remove("automation-1", automationDeleteAbort.signal);
+    await reportsApi.remove("report-1", reportDeleteAbort.signal);
+
+    expect(fetchMock.mock.calls.map(([path]) => path)).toEqual([
+      "/api/preferences",
+      "/api/preferences",
+      "/api/automations/automation-1",
+      "/api/automations/automation-1",
+      "/api/reports/report-1",
+    ]);
+    expect(fetchMock.mock.calls.map(([, init]) => init.signal)).toEqual([
+      preferenceLoadAbort.signal,
+      preferenceSaveAbort.signal,
+      automationUpdateAbort.signal,
+      automationDeleteAbort.signal,
+      reportDeleteAbort.signal,
+    ]);
   });
 
   const chatCreateCases: Array<[string, string | undefined, SourceScopeInput | undefined, Record<string, unknown>]> = [

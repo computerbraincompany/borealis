@@ -8,7 +8,7 @@ export async function auditRoutes(app: FastifyInstance): Promise<void> {
   app.get(
     "/api/accounts",
     {
-      preHandler: requireAuth,
+      onRequest: requireAuth,
       schema: { tags: ["audit"], summary: "Workspace accounts available for snapshot sharing" },
     },
     async (req, reply) => {
@@ -22,7 +22,7 @@ export async function auditRoutes(app: FastifyInstance): Promise<void> {
   app.get(
     "/api/audit/egress",
     {
-      preHandler: requireAuth,
+      onRequest: requireAuth,
       schema: {
         tags: ["audit"],
         summary: "Content-free remote-egress audit for this account",

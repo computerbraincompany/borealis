@@ -6,6 +6,7 @@ import type { ResolvedSourceScope } from "./sourceScope.js";
 import { config } from "./config.js";
 import { explicitHttpUrls } from "./networkPolicy.js";
 import { storageRuntime } from "./storageRuntime.js";
+import { isValidToolCallId } from "./toolCallContract.js";
 
 export type AgentEvent =
   | { type: "step-start"; name: string; summary: string }
@@ -316,9 +317,7 @@ function agentCompletion(
 function assertValidToolCall(value: unknown): void {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("invalid tool call");
   const toolCall = value as { id?: unknown; function?: unknown };
-  if (typeof toolCall.id !== "string" || toolCall.id.length < 1 || toolCall.id.length > 256) {
-    throw new Error("invalid tool call");
-  }
+  if (!isValidToolCallId(toolCall.id)) throw new Error("invalid tool call");
   if (!toolCall.function || typeof toolCall.function !== "object" || Array.isArray(toolCall.function)) {
     throw new Error("invalid tool call");
   }

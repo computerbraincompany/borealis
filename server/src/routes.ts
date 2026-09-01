@@ -11,6 +11,7 @@ import { automationRoutes } from "./routes/automations.js";
 import { containedRoutes } from "./routes/contained.js";
 import { consentRoutes } from "./routes/consent.js";
 import { connectorRoutes } from "./routes/connectors.js";
+import { embeddingMigrationRoutes } from "./routes/embeddingMigration.js";
 import { libraryRoutes } from "./routes/libraries.js";
 import { modelRoutes } from "./routes/models.js";
 import { preferencesRoutes } from "./routes/preferences.js";
@@ -42,6 +43,7 @@ export async function routes(app: FastifyInstance): Promise<void> {
   });
 
   await app.register(modelRoutes);
+  await app.register(embeddingMigrationRoutes);
   await app.register(settingsRoutes);
   await app.register(preferencesRoutes);
   await app.register(systemRoutes);
@@ -56,7 +58,7 @@ export async function routes(app: FastifyInstance): Promise<void> {
   await app.register(connectorRoutes);
   await app.register(reportRoutes);
   await app.register(chartRoutes);
-  app.get("/api/openapi.json", { preHandler: requireAuth, schema: { hide: true } }, async (_req, reply) =>
+  app.get("/api/openapi.json", { onRequest: requireAuth, schema: { hide: true } }, async (_req, reply) =>
     reply.send(app.swagger())
   );
 }

@@ -1,5 +1,6 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { getAccountId, requireAuth } from "../auth.js";
+import { catalogPageQuerySchema, catalogResponse, parseCatalogPageQuery } from "../catalogPagination.js";
 import {
   AgentNotFoundError,
   DuplicateAgentError,
@@ -8,6 +9,7 @@ import {
 } from "../db/stores/agentStore.js";
 import { storageRuntime } from "../storageRuntime.js";
 import { idParamsSchema } from "./schemas.js";
+import { BODYLESS_MUTATION_LIMIT_BYTES, LONG_TEXT_JSON_BODY_LIMIT_BYTES } from "./bodyLimits.js";
 
 const agentBodySchema = {
   type: "object",
@@ -42,22 +44,34 @@ function sendAgentError(reply: FastifyReply, error: unknown): boolean {
 }
 
 export async function agentRoutes(app: FastifyInstance): Promise<void> {
-  app.get("/api/agents", { preHandler: requireAuth }, async (req, reply) => {
-    return reply.send(await storageRuntime().agents.listAgents(getAccountId(req)));
-  });
-
-  app.post("/api/agents", { preHandler: requireAuth, schema: { body: agentBodySchema } }, async (req, reply) => {
-    try {
-      const body = req.body as { name: string; instructions: string };
-      const agent = await storageRuntime().agents.createAgent(getAccountId(req), body.name, body.instructions);
-      return reply.code(201).send(agent);
-    } catch (error) {
-      if (sendAgentError(reply, error)) return;
-      throw error;
+  app.get(
+    "/api/agents",
+    { onRequest: requireAuth, schema: { querystring: catalogPageQuerySchema } },
+    async (req, reply) => {
+      const page = await storageRuntime().agents.listAgents(
+        getAccountId(req),
+        parseCatalogPageQuery("agents", req.query)
+      );
+      return reply.send(catalogResponse("agents", page));
     }
-  });
+  );
 
-  app.get("/api/agents/:id", { preHandler: requireAuth, schema: { params: idParamsSchema } }, async (req, reply) => {
+  app.post(
+    "/api/agents",
+    { onRequest: requireAuth, bodyLimit: LONG_TEXT_JSON_BODY_LIMIT_BYTES, schema: { body: agentBodySchema } },
+    async (req, reply) => {
+      try {
+        const body = req.body as { name: string; instructions: string };
+        const agent = await storageRuntime().agents.createAgent(getAccountId(req), body.name, body.instructions);
+        return reply.code(201).send(agent);
+      } catch (error) {
+        if (sendAgentError(reply, error)) return;
+        throw error;
+      }
+    }
+  );
+
+  app.get("/api/agents/:id", { onRequest: requireAuth, schema: { params: idParamsSchema } }, async (req, reply) => {
     const agent = await storageRuntime().agents.getAgentDetail(getAccountId(req), (req.params as any).id);
     if (!agent) return reply.code(404).send({ error: "agent not found" });
     return reply.send(agent);
@@ -65,7 +79,11 @@ export async function agentRoutes(app: FastifyInstance): Promise<void> {
 
   app.patch(
     "/api/agents/:id",
-    { preHandler: requireAuth, schema: { params: idParamsSchema, body: agentPatchSchema } },
+    {
+      onRequest: requireAuth,
+      bodyLimit: LONG_TEXT_JSON_BODY_LIMIT_BYTES,
+      schema: { params: idParamsSchema, body: agentPatchSchema },
+    },
     async (req, reply) => {
       const accountId = getAccountId(req);
       const agentId = (req.params as any).id;
@@ -89,9 +107,13 @@ export async function agentRoutes(app: FastifyInstance): Promise<void> {
     }
   );
 
-  app.delete("/api/agents/:id", { preHandler: requireAuth, schema: { params: idParamsSchema } }, async (req, reply) => {
-    const deleted = await storageRuntime().agents.deleteAgent(getAccountId(req), (req.params as any).id);
-    if (!deleted) return reply.code(404).send({ error: "agent not found" });
-    return reply.send({ ok: true });
-  });
+  app.delete(
+    "/api/agents/:id",
+    { onRequest: requireAuth, bodyLimit: BODYLESS_MUTATION_LIMIT_BYTES, schema: { params: idParamsSchema } },
+    async (req, reply) => {
+      const deleted = await storageRuntime().agents.deleteAgent(getAccountId(req), (req.params as any).id);
+      if (!deleted) return reply.code(404).send({ error: "agent not found" });
+      return reply.send({ ok: true });
+    }
+  );
 }

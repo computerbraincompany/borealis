@@ -77,7 +77,17 @@ export function ConnectorsView() {
   const [historyTarget, setHistoryTarget] = useState<Connector | null>(null);
   const [history, setHistory] = useState<ConnectorSyncRecord[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
-  const { connectors, loading, error: catalogError, refresh, applyOne } = useConnectorCatalog();
+  const {
+    connectors,
+    loading,
+    loadingMore,
+    hasMore,
+    error: catalogError,
+    refresh,
+    loadMore,
+    applyOne,
+    removeOne,
+  } = useConnectorCatalog();
   const { handleConsentError, dialog: consentDialog } = useEgressConsentGate();
   const historyRequestRef = useRef(0);
 
@@ -140,6 +150,7 @@ export function ConnectorsView() {
     });
     try {
       const updated = await connectorsApi.sync(c.id);
+      applyOne("sync_status" in updated ? updated : { ...c, sync_status: "syncing", sync_error: null });
       await refresh();
       if ("sync_status" in updated && updated.sync_status === "error" && updated.sync_error) {
         const syncError = updated.sync_error;
@@ -163,6 +174,7 @@ export function ConnectorsView() {
     setDeleting(c.id);
     try {
       await connectorsApi.remove(c.id);
+      removeOne(c.id);
       setOperationErrors((current) => {
         const next = { ...current };
         delete next[c.id];
@@ -365,6 +377,14 @@ export function ConnectorsView() {
           <Card className="flex items-center justify-center gap-2 py-16 text-sm text-muted-foreground md:col-span-2">
             <Loader2 className="h-4 w-4 animate-spin" /> Loading connectors…
           </Card>
+        )}
+        {hasMore && (
+          <div className="flex justify-center pt-2 md:col-span-2">
+            <Button variant="outline" onClick={() => void loadMore()} disabled={loadingMore}>
+              {loadingMore && <Loader2 className="h-4 w-4 animate-spin" />}
+              Load older connectors
+            </Button>
+          </div>
         )}
       </div>
 

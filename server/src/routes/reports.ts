@@ -2,11 +2,13 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import type { FastifyInstance } from "fastify";
 import { getAccountId, requireAuth } from "../auth.js";
+import { catalogPageQuerySchema, catalogResponse, parseCatalogPageQuery } from "../catalogPagination.js";
 import { REPORT_CSP } from "../data/reports.js";
 import { ArtifactNotFoundError, type PublishedReport } from "../db/stores/runStore.js";
 import { completeReportArtifactCleanup } from "../reportCleanup.js";
 import { resolveReportArtifact } from "../storageArtifacts.js";
 import { storageRuntime } from "../storageRuntime.js";
+import { BODYLESS_MUTATION_LIMIT_BYTES, COMPACT_JSON_BODY_LIMIT_BYTES } from "./bodyLimits.js";
 import { idParamsSchema } from "./schemas.js";
 
 const reportRenameSchema = {
@@ -32,12 +34,19 @@ function publicReport(row: PublishedReport) {
 }
 
 export async function reportRoutes(app: FastifyInstance): Promise<void> {
-  app.get("/api/reports", { preHandler: requireAuth }, async (req, reply) => {
-    const rows = await storageRuntime().runs.listPublishedReports(getAccountId(req));
-    return reply.send(rows.map(publicReport));
-  });
+  app.get(
+    "/api/reports",
+    { onRequest: requireAuth, schema: { querystring: catalogPageQuerySchema } },
+    async (req, reply) => {
+      const page = await storageRuntime().runs.listPublishedReports(
+        getAccountId(req),
+        parseCatalogPageQuery("reports", req.query)
+      );
+      return reply.send(catalogResponse("reports", { items: page.items.map(publicReport), next: page.next }));
+    }
+  );
 
-  app.get("/api/reports/:id", { preHandler: requireAuth, schema: { params: idParamsSchema } }, async (req, reply) => {
+  app.get("/api/reports/:id", { onRequest: requireAuth, schema: { params: idParamsSchema } }, async (req, reply) => {
     const accountId = getAccountId(req);
     let row = await storageRuntime().runs.getPublishedReport(accountId, (req.params as any).id);
     let sharedByAccount = false;
@@ -71,7 +80,11 @@ export async function reportRoutes(app: FastifyInstance): Promise<void> {
 
   app.patch(
     "/api/reports/:id",
-    { preHandler: requireAuth, schema: { params: idParamsSchema, body: reportRenameSchema } },
+    {
+      onRequest: requireAuth,
+      bodyLimit: COMPACT_JSON_BODY_LIMIT_BYTES,
+      schema: { params: idParamsSchema, body: reportRenameSchema },
+    },
     async (req, reply) => {
       const row = await storageRuntime().runs.renamePublishedReport(
         getAccountId(req),
@@ -85,7 +98,7 @@ export async function reportRoutes(app: FastifyInstance): Promise<void> {
 
   app.get(
     "/api/reports/:id/html",
-    { preHandler: requireAuth, schema: { params: idParamsSchema } },
+    { onRequest: requireAuth, schema: { params: idParamsSchema } },
     async (req, reply) => {
       const row = await storageRuntime().runs.getPublishedReport(getAccountId(req), (req.params as any).id);
       if (!row) return reply.code(404).send({ error: "report not found" });
@@ -106,7 +119,7 @@ export async function reportRoutes(app: FastifyInstance): Promise<void> {
 
   app.get(
     "/api/reports/:id/pdf",
-    { preHandler: requireAuth, schema: { params: idParamsSchema } },
+    { onRequest: requireAuth, schema: { params: idParamsSchema } },
     async (req, reply) => {
       const row = await storageRuntime().runs.getPublishedReport(getAccountId(req), (req.params as any).id);
       if (!row) return reply.code(404).send({ error: "report not found" });
@@ -127,7 +140,8 @@ export async function reportRoutes(app: FastifyInstance): Promise<void> {
   app.post(
     "/api/reports/:id/shares",
     {
-      preHandler: requireAuth,
+      onRequest: requireAuth,
+      bodyLimit: COMPACT_JSON_BODY_LIMIT_BYTES,
       schema: {
         params: idParamsSchema,
         body: {
@@ -161,7 +175,7 @@ export async function reportRoutes(app: FastifyInstance): Promise<void> {
 
   app.get(
     "/api/reports/:id/shares",
-    { preHandler: requireAuth, schema: { params: idParamsSchema } },
+    { onRequest: requireAuth, schema: { params: idParamsSchema } },
     async (req, reply) => {
       return reply.send(await storageRuntime().runs.listReportShares(getAccountId(req), (req.params as any).id));
     }
@@ -170,7 +184,8 @@ export async function reportRoutes(app: FastifyInstance): Promise<void> {
   app.delete(
     "/api/reports/:id/shares/:recipient",
     {
-      preHandler: requireAuth,
+      onRequest: requireAuth,
+      bodyLimit: BODYLESS_MUTATION_LIMIT_BYTES,
       schema: {
         params: {
           type: "object",
@@ -200,13 +215,21 @@ export async function reportRoutes(app: FastifyInstance): Promise<void> {
     }
   );
 
-  app.get("/api/reports/shared", { preHandler: requireAuth }, async (req, reply) => {
-    return reply.send(await storageRuntime().runs.listSharedReports(getAccountId(req)));
-  });
+  app.get(
+    "/api/reports/shared",
+    { onRequest: requireAuth, schema: { querystring: catalogPageQuerySchema } },
+    async (req, reply) => {
+      const page = await storageRuntime().runs.listSharedReports(
+        getAccountId(req),
+        parseCatalogPageQuery("shared_reports", req.query)
+      );
+      return reply.send(catalogResponse("shared_reports", page));
+    }
+  );
 
   app.delete(
     "/api/reports/:id",
-    { preHandler: requireAuth, schema: { params: idParamsSchema } },
+    { onRequest: requireAuth, bodyLimit: BODYLESS_MUTATION_LIMIT_BYTES, schema: { params: idParamsSchema } },
     async (req, reply) => {
       const accountId = getAccountId(req);
       const reportId = (req.params as any).id;

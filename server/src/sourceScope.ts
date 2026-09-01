@@ -1,4 +1,5 @@
 import {
+  MAX_CHAT_SOURCE_SCOPE,
   SourceScopeUnavailableError,
   StoreNotFoundError,
   type AttachedChatSource,
@@ -23,7 +24,6 @@ export class SourceScopeError extends Error {
 }
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const MAX_SCOPED_SOURCES = 100;
 
 /** Validate the exact public source-scope union and return a stable, deduped copy. */
 export function parseSourceScopeInput(value: unknown): SourceScopeInput {
@@ -46,7 +46,7 @@ export function parseSourceScopeInput(value: unknown): SourceScopeInput {
   if (keys.length !== 2 || keys[0] !== "source_ids" || keys[1] !== "source_mode") {
     throw new SourceScopeError(400, "invalid source scope");
   }
-  if (!Array.isArray(record.source_ids) || record.source_ids.length > MAX_SCOPED_SOURCES) {
+  if (!Array.isArray(record.source_ids) || record.source_ids.length > MAX_CHAT_SOURCE_SCOPE) {
     throw new SourceScopeError(400, "invalid source scope");
   }
 

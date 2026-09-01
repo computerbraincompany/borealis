@@ -1,14 +1,21 @@
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
 import { requireAuth } from "../auth.js";
+import {
+  embeddingMigrationCoordinator,
+  EmbeddingMigrationError,
+  EmbeddingReindexRequiredError,
+} from "../embeddingMigration.js";
 import { runtimeSettingsStore } from "../runtimeSettings.js";
 import {
   SettingsEnvironmentOverrideError,
   type EffectiveLlmSettings,
-  type LlmSettingsPatch,
   SettingsValidationError,
   type SettingsStore,
+  type LlmSettingsPatch,
   toPublicLlmSettings,
 } from "../settingsStore.js";
+import { decodeSettingsDraftPatch, resolveEffectiveSettingsDraft, settingsDraftBodySchema } from "../settingsDraft.js";
+import { SETTINGS_DRAFT_JSON_BODY_LIMIT_BYTES } from "./bodyLimits.js";
 
 const DEFAULT_CONNECTION_TIMEOUT_MS = 5_000;
 const MAX_CONNECTION_TIMEOUT_MS = 15_000;
@@ -21,6 +28,7 @@ export interface SettingsRoutesOptions {
   readonly fetch?: SettingsProbeFetch;
   readonly connectionTimeoutMs?: number;
   readonly now?: () => number;
+  readonly patch?: (patch: LlmSettingsPatch) => Promise<Awaited<ReturnType<SettingsStore["patch"]>>>;
 }
 
 export interface SettingsConnectionResult {
@@ -30,44 +38,25 @@ export interface SettingsConnectionResult {
 
 /** Live singleton-backed plugin used by the application route composer. */
 export const settingsRoutes: FastifyPluginAsync = async (app) => {
-  await createSettingsRoutes({ store: runtimeSettingsStore() })(app, {});
+  const store = runtimeSettingsStore();
+  await createSettingsRoutes({
+    store,
+    patch: (patch) => embeddingMigrationCoordinator().patchSettings(patch),
+  })(app, {});
 };
-
-interface HttpSettingsPatch {
-  readonly llm_base_url?: unknown;
-  readonly llm_api_key?: unknown;
-  readonly lm_studio_base_url?: unknown;
-  readonly default_chat_model?: unknown;
-  readonly default_embed_model?: unknown;
-}
-
-const settingsPatchSchema = {
-  type: "object",
-  additionalProperties: false,
-  properties: {
-    llm_base_url: { type: "string", minLength: 1, maxLength: 2_048 },
-    llm_api_key: {
-      anyOf: [{ type: "string", minLength: 1, maxLength: 8_192 }, { type: "null" }],
-    },
-    lm_studio_base_url: {
-      anyOf: [{ type: "string", minLength: 1, maxLength: 2_048 }, { type: "null" }],
-    },
-    default_chat_model: { type: "string", minLength: 1, maxLength: 256 },
-    default_embed_model: { type: "string", minLength: 1, maxLength: 256 },
-  },
-} as const;
 
 /** Authenticated settings API; register the returned plugin exactly once. */
 export function createSettingsRoutes(options: SettingsRoutesOptions): FastifyPluginAsync {
   const timeoutMs = normalizeTimeout(options.connectionTimeoutMs);
   const fetchImpl = options.fetch ?? ((url, init) => fetch(url, init));
   const now = options.now ?? Date.now;
+  const patchSettings = options.patch ?? ((patch: LlmSettingsPatch) => options.store.patch(patch));
 
   return async (app) => {
     app.get(
       "/api/settings",
       {
-        preHandler: requireAuth,
+        onRequest: requireAuth,
         schema: { tags: ["settings"], summary: "Read model provider settings" },
       },
       async (_req, reply) => reply.send(toPublicLlmSettings(await options.store.read()))
@@ -76,17 +65,17 @@ export function createSettingsRoutes(options: SettingsRoutesOptions): FastifyPlu
     app.patch(
       "/api/settings",
       {
-        preHandler: requireAuth,
-        bodyLimit: 16 * 1024,
+        onRequest: requireAuth,
+        bodyLimit: SETTINGS_DRAFT_JSON_BODY_LIMIT_BYTES,
         schema: {
           tags: ["settings"],
           summary: "Update model provider settings",
-          body: settingsPatchSchema,
+          body: settingsDraftBodySchema,
         },
       },
       async (req, reply) => {
         try {
-          const snapshot = await options.store.patch(decodeHttpPatch(req.body));
+          const snapshot = await patchSettings(decodeSettingsDraftPatch(req.body));
           return reply.send(toPublicLlmSettings(snapshot));
         } catch (error) {
           return sendSettingsError(req, reply, error);
@@ -97,21 +86,20 @@ export function createSettingsRoutes(options: SettingsRoutesOptions): FastifyPlu
     app.post(
       "/api/settings/test",
       {
-        preHandler: requireAuth,
+        onRequest: requireAuth,
         preValidation: async (req) => {
           if (req.body === undefined) req.body = {};
         },
-        bodyLimit: 16 * 1024,
+        bodyLimit: SETTINGS_DRAFT_JSON_BODY_LIMIT_BYTES,
         schema: {
           tags: ["settings"],
           summary: "Test the model provider connection",
-          body: settingsPatchSchema,
+          body: settingsDraftBodySchema,
         },
       },
       async (req, reply) => {
         try {
-          const patch = decodeHttpPatch(req.body);
-          const snapshot = Object.keys(patch).length ? await options.store.preview(patch) : await options.store.read();
+          const snapshot = await resolveEffectiveSettingsDraft(options.store, req.body);
           const result = await probeSettingsConnection(snapshot.settings, { fetch: fetchImpl, timeoutMs, now });
           if (!result.ok) return reply.code(503).send({ ok: false });
           return reply.send(result);
@@ -161,53 +149,6 @@ export async function probeSettingsConnection(
   }
 }
 
-function decodeHttpPatch(body: unknown): LlmSettingsPatch {
-  if (body === undefined || body === null) return {};
-  if (!isRecord(body)) throw new SettingsValidationError();
-  const allowed = new Set([
-    "llm_base_url",
-    "llm_api_key",
-    "lm_studio_base_url",
-    "default_chat_model",
-    "default_embed_model",
-  ]);
-  if (Object.keys(body).some((key) => !allowed.has(key))) throw new SettingsValidationError();
-
-  const patch: {
-    llmBaseUrl?: string;
-    apiKey?: string | null;
-    lmStudioBaseUrl?: string | null;
-    chatModel?: string;
-    embedModel?: string;
-  } = {};
-  const input = body as HttpSettingsPatch;
-  if (Object.prototype.hasOwnProperty.call(input, "llm_base_url")) {
-    if (typeof input.llm_base_url !== "string") throw new SettingsValidationError("llm_base_url");
-    patch.llmBaseUrl = input.llm_base_url;
-  }
-  if (Object.prototype.hasOwnProperty.call(input, "llm_api_key")) {
-    if (input.llm_api_key !== null && typeof input.llm_api_key !== "string") {
-      throw new SettingsValidationError("llm_api_key");
-    }
-    patch.apiKey = input.llm_api_key as string | null;
-  }
-  if (Object.prototype.hasOwnProperty.call(input, "lm_studio_base_url")) {
-    if (input.lm_studio_base_url !== null && typeof input.lm_studio_base_url !== "string") {
-      throw new SettingsValidationError("lm_studio_base_url");
-    }
-    patch.lmStudioBaseUrl = input.lm_studio_base_url as string | null;
-  }
-  if (Object.prototype.hasOwnProperty.call(input, "default_chat_model")) {
-    if (typeof input.default_chat_model !== "string") throw new SettingsValidationError("default_chat_model");
-    patch.chatModel = input.default_chat_model;
-  }
-  if (Object.prototype.hasOwnProperty.call(input, "default_embed_model")) {
-    if (typeof input.default_embed_model !== "string") throw new SettingsValidationError("default_embed_model");
-    patch.embedModel = input.default_embed_model;
-  }
-  return patch;
-}
-
 function sendSettingsError(req: FastifyRequest, reply: FastifyReply, error: unknown) {
   const requestId = String(reply.getHeader("X-Request-ID") || req.id);
   if (error instanceof SettingsValidationError) {
@@ -215,6 +156,16 @@ function sendSettingsError(req: FastifyRequest, reply: FastifyReply, error: unkn
   }
   if (error instanceof SettingsEnvironmentOverrideError) {
     return reply.code(409).send({ error: "setting is managed by environment", request_id: requestId });
+  }
+  if (error instanceof EmbeddingReindexRequiredError) {
+    return reply.code(409).send({
+      error: "embedding reindex is required",
+      code: error.code,
+      request_id: requestId,
+    });
+  }
+  if (error instanceof EmbeddingMigrationError) {
+    return reply.code(error.statusCode).send({ error: error.message, code: error.code, request_id: requestId });
   }
   throw error;
 }
@@ -228,8 +179,4 @@ function normalizeTimeout(timeoutMs: number | undefined): number {
 function safeLatency(value: number): number {
   if (!Number.isFinite(value)) return 0;
   return Math.max(0, Math.min(MAX_CONNECTION_TIMEOUT_MS, Math.round(value)));
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }

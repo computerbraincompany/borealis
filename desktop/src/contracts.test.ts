@@ -137,6 +137,28 @@ test("accepts stopped and sanitizes fatal messages", () => {
   );
 });
 
+test("accepts only the fixed native-smoke success marker", () => {
+  assert.deepEqual(
+    parseBackendMessage({
+      type: "native-smoke",
+      ok: true,
+      details: "discarded",
+    }),
+    {
+      type: "native-smoke",
+      ok: true,
+    },
+  );
+  assert.equal(
+    parseBackendMessage({ type: "native-smoke", ok: false }),
+    undefined,
+  );
+  assert.equal(
+    parseBackendMessage({ type: "native-smoke", ok: "true" }),
+    undefined,
+  );
+});
+
 test("copies render bytes into a plain transferable Uint8Array", () => {
   const source = Buffer.from([1, 2, 3]);
   const result = asTransferableBytes(source);

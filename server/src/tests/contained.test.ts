@@ -25,12 +25,17 @@ const ownerAuth = {
 const apps: FastifyInstance[] = [];
 const servers: http.Server[] = [];
 let previousContainedDir: string | undefined;
+let previousStorageDir = "";
+let previousConfiguredContainedDir = "";
 let tempDataDir = "";
 
 beforeEach(async () => {
   tempDataDir = await fs.mkdtemp(path.join(os.tmpdir(), "borealis-contained-"));
   previousContainedDir = process.env.CONTAINED_DIR;
+  previousStorageDir = config.storageDir;
+  previousConfiguredContainedDir = config.containedDir;
   process.env.CONTAINED_DIR = path.join(tempDataDir, "models");
+  config.storageDir = tempDataDir;
   config.containedDir = path.join(tempDataDir, "models");
   await clearContainedConfig();
 });
@@ -48,6 +53,8 @@ afterEach(async () => {
   );
   if (previousContainedDir === undefined) delete process.env.CONTAINED_DIR;
   else process.env.CONTAINED_DIR = previousContainedDir;
+  config.storageDir = previousStorageDir;
+  config.containedDir = previousConfiguredContainedDir;
   await fs.rm(tempDataDir, { recursive: true, force: true });
   tempDataDir = "";
 });

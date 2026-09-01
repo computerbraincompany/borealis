@@ -1,6 +1,14 @@
 import { randomUUID } from "node:crypto";
 
 import {
+  catalogStorePage,
+  defaultCatalogPageRequest,
+  validateCatalogPageRequest,
+  type CatalogPageRequest,
+  type CatalogStorePage,
+} from "../../catalogPagination.js";
+
+import {
   decodeBoolean,
   decodeIsoTimestamp,
   decodeJson,
@@ -524,15 +532,30 @@ export class ChatStore {
     return normalized;
   }
 
-  async listChats(accountId: string): Promise<ChatSummary[]> {
+  async listChats(
+    accountId: string,
+    pageValue: CatalogPageRequest = defaultCatalogPageRequest()
+  ): Promise<CatalogStorePage<ChatSummary>> {
+    const page = validateCatalogPageRequest(pageValue);
+    const parameters: Array<string | number> = [identity(accountId, "account id")];
+    const after = page.after ? " AND (c.updated_at,c.id) < (?,?)" : "";
+    if (page.after) parameters.push(page.after.timestamp, page.after.id);
+    parameters.push(page.limit + 1);
     const rows = await this.ledger.all<ChatRow>(
       `SELECT c.id,c.title,c.model,c.source_mode,c.agent_id,ag.name AS agent_name,c.created_at,c.updated_at
        FROM chats c
        LEFT JOIN agents ag ON ag.id=c.agent_id AND ag.account_id=c.account_id
-       WHERE c.account_id=? ORDER BY c.updated_at DESC,c.id DESC`,
-      [identity(accountId, "account id")]
+       WHERE c.account_id=?${after} ORDER BY c.updated_at DESC,c.id DESC LIMIT ?`,
+      parameters
     );
-    return rows.map((row) => decodeChat(row));
+    return catalogStorePage(
+      rows.map((row) => decodeChat(row)),
+      page,
+      (chat) => ({
+        timestamp: chat.updated_at,
+        id: chat.id,
+      })
+    );
   }
 
   async createChat(input: CreateChatInput): Promise<ChatSummary> {

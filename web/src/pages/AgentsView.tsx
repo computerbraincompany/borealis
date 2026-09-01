@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useState } from "react";
-import { Bot, Plus, RefreshCw, Trash2, History } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Bot, Plus, RefreshCw, Trash2, History, Loader2 } from "lucide-react";
 import { agentsApi, formatApiError, type AgentDetail, type AgentSummary } from "@/lib/api";
+import { mergeCatalogContinuation, mergeCatalogHead } from "@/lib/catalogMerge";
 import { formatDate } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -14,6 +15,8 @@ const EMPTY_INSTRUCTIONS = "";
 export function AgentsView() {
   const [agents, setAgents] = useState<AgentSummary[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [pageError, setPageError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState("");
@@ -25,6 +28,10 @@ export function AgentsView() {
   const [renameValue, setRenameValue] = useState("");
   const [historyTarget, setHistoryTarget] = useState<AgentSummary | null>(null);
   const [historyDetail, setHistoryDetail] = useState<AgentDetail | null>(null);
+  const catalogRequestRef = useRef(0);
+  const nextCursorRef = useRef<string | null>(null);
+  const loadingMoreOwnerRef = useRef<number | null>(null);
+  const mountedRef = useRef(false);
 
   useEffect(() => {
     if (!historyTarget) {
@@ -44,18 +51,58 @@ export function AgentsView() {
   }, [historyTarget]);
 
   const load = useCallback(async () => {
+    const requestId = ++catalogRequestRef.current;
+    loadingMoreOwnerRef.current = null;
+    setLoadingMore(false);
     setPageError(null);
     try {
-      setAgents(await agentsApi.list());
+      const page = await agentsApi.list();
+      if (!mountedRef.current || requestId !== catalogRequestRef.current) return;
+      setAgents((current) => mergeCatalogHead(page.items, current));
+      nextCursorRef.current = page.next_cursor;
+      setNextCursor(page.next_cursor);
     } catch (error: unknown) {
-      setPageError(formatApiError(error, "Could not load agents"));
+      if (mountedRef.current && requestId === catalogRequestRef.current) {
+        setPageError(formatApiError(error, "Could not load agents"));
+      }
     } finally {
-      setLoading(false);
+      if (mountedRef.current && requestId === catalogRequestRef.current) setLoading(false);
     }
   }, []);
 
+  const loadMore = async () => {
+    const cursor = nextCursorRef.current;
+    if (!cursor || loadingMoreOwnerRef.current !== null) return;
+    const requestId = ++catalogRequestRef.current;
+    loadingMoreOwnerRef.current = requestId;
+    setLoadingMore(true);
+    setPageError(null);
+    try {
+      const page = await agentsApi.list({ cursor });
+      if (!mountedRef.current || requestId !== catalogRequestRef.current) return;
+      setAgents((current) => mergeCatalogContinuation(current, page.items));
+      nextCursorRef.current = page.next_cursor;
+      setNextCursor(page.next_cursor);
+    } catch (error: unknown) {
+      if (mountedRef.current && requestId === catalogRequestRef.current) {
+        setPageError(formatApiError(error, "Could not load older agents"));
+      }
+    } finally {
+      if (loadingMoreOwnerRef.current === requestId) {
+        loadingMoreOwnerRef.current = null;
+        if (mountedRef.current) setLoadingMore(false);
+      }
+    }
+  };
+
   useEffect(() => {
+    mountedRef.current = true;
     void load();
+    return () => {
+      mountedRef.current = false;
+      catalogRequestRef.current += 1;
+      loadingMoreOwnerRef.current = null;
+    };
   }, [load]);
 
   const create = async () => {
@@ -227,6 +274,14 @@ export function AgentsView() {
                 </div>
               </Card>
             ))}
+            {nextCursor && (
+              <div className="flex justify-center pt-2">
+                <Button variant="outline" onClick={() => void loadMore()} disabled={loadingMore}>
+                  {loadingMore && <Loader2 className="h-4 w-4 animate-spin" />}
+                  Load older agents
+                </Button>
+              </div>
+            )}
           </div>
         )}
       </div>

@@ -5,7 +5,10 @@ import path from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("../llm.js", () => ({ embed: vi.fn() }));
+vi.mock("../llm.js", () => {
+  const embed = vi.fn();
+  return { embed, createEmbeddingExecutor: vi.fn(() => embed) };
+});
 vi.mock("../storageArtifacts.js", () => ({
   resolveSourceArtifact: vi.fn(async ({ filePath }: { filePath: string }) => filePath),
   removeSourceArtifact: vi.fn(async () => true),
@@ -35,7 +38,10 @@ vi.mock("../dataService.js", () => ({
 
 import { encodeJson } from "../db/codecs.js";
 import { DataServiceError, dataService } from "../dataService.js";
+import { closeEmbeddingMigrationCoordinator } from "../embeddingMigration.js";
 import {
+  processDatasetCacheCleanup,
+  processOneJob,
   processOnePreparingConnectorRefresh,
   recoverPreparingConnectorLeases,
   stopIngestionWorkers,
@@ -48,6 +54,8 @@ const prepareMock = vi.mocked(dataService.prepareDatasetRefresh);
 const abortMock = vi.mocked(dataService.abortDatasetRefresh);
 const extractPreparedMock = vi.mocked(dataService.extractPreparedDataset);
 const activateMock = vi.mocked(dataService.activateDatasetRefresh);
+const deactivateMock = vi.mocked(dataService.deactivateDatasetLocation);
+const cleanupMock = vi.mocked(dataService.cleanupDatasetCache);
 const embedMock = vi.mocked(embed);
 let directory = "";
 
@@ -81,18 +89,50 @@ beforeEach(async () => {
     version,
     location: path.join(directory, `${version}.csv`),
   }));
+  deactivateMock.mockReset();
+  deactivateMock.mockResolvedValue({ status: "dropped" });
+  cleanupMock.mockReset();
+  cleanupMock.mockResolvedValue({ status: "deleted" });
   embedMock.mockReset();
   embedMock.mockImplementation(async (texts) => texts.map(() => Array(768).fill(0.01)));
 });
 
 afterEach(async () => {
   await stopIngestionWorkers();
+  await closeEmbeddingMigrationCoordinator();
   await closeStorageRuntime();
   if (directory) await fs.rm(directory, { recursive: true, force: true });
   directory = "";
 });
 
 describe("durable connector prepare worker", () => {
+  it("does not claim pending prepare or ingestion work while migration state is active", async () => {
+    const prepared = await createPreparingConnector();
+    await recoverPreparingConnectorLeases(true);
+    const upload = await storageRuntime().sourceIngestion.createUploadSource(ACCOUNT, {
+      id: randomUUID(),
+      baseName: "notes",
+      kind: "document",
+      displayName: "Notes.txt",
+      filePath: "/safe/notes.txt",
+      mime: "text/plain",
+      sizeBytes: 5,
+    });
+    await writeActiveMigrationState();
+
+    await expect(processOnePreparingConnectorRefresh()).resolves.toBe(false);
+    await expect(processOneJob()).resolves.toBe(false);
+    expect(prepareMock).not.toHaveBeenCalled();
+    await expect(storageRuntime().ingestion.getJob(ACCOUNT, prepared.source.id)).resolves.toMatchObject({
+      status: "preparing",
+      leaseToken: null,
+    });
+    await expect(storageRuntime().ingestion.getJob(ACCOUNT, upload.source.id)).resolves.toMatchObject({
+      status: "pending",
+      leaseToken: null,
+    });
+  });
+
   it("never steals a live prepare lease created by the request path", async () => {
     await createPreparingConnector();
 
@@ -238,6 +278,115 @@ describe("durable connector prepare worker", () => {
       syncStatus: "error",
     });
   });
+
+  it("retries post-promotion cache cleanup after a new refresh clears the marker and the process restarts", async () => {
+    const connectorId = randomUUID();
+    const sourceId = randomUUID();
+    const oldLocation = path.join(directory, "old-version.csv");
+    await fs.writeFile(oldLocation, "amount\n1\n");
+    await storageRuntime().sources.createConnector(ACCOUNT, {
+      id: connectorId,
+      name: "Feed",
+      type: "url_csv",
+      config: { url: "https://example.invalid/ledger.csv" },
+      targetTable: "ledger",
+      syncStatus: "idle",
+      source: {
+        id: sourceId,
+        displayName: "Ledger feed",
+        url: "https://example.invalid/ledger.csv",
+        mime: "text/csv",
+        filePath: oldLocation,
+        status: "ready",
+        readyGeneration: 1,
+      },
+    });
+    const timestamp = new Date(0).toISOString();
+    await storageRuntime().ledger.run(
+      `INSERT INTO ingestion_jobs
+         (source_id,account_id,generation,status,attempts,available_at,created_at,updated_at)
+       VALUES (?,?,1,'done',1,?,?,?)`,
+      [sourceId, ACCOUNT, timestamp, timestamp, timestamp]
+    );
+    await storageRuntime().ledger.run(
+      `INSERT INTO chunks (id,account_id,source_id,generation,seq,source_name,content,meta)
+       VALUES (?,?,?,?,?,?,?,?)`,
+      [randomUUID(), ACCOUNT, sourceId, 1, 0, "ledger", "last good", encodeJson({})]
+    );
+    const refreshVersion = randomUUID();
+    await storageRuntime().sourceIngestion.beginConnectorRefresh({
+      accountId: ACCOUNT,
+      connectorId,
+      refreshVersion,
+      leaseToken: randomUUID(),
+    });
+    await recoverPreparingConnectorLeases(true);
+    const candidateLocation = path.join(directory, `${refreshVersion}.csv`);
+    prepareMock.mockImplementation(async () => {
+      await fs.writeFile(candidateLocation, "amount\n42\n");
+      return {
+        version: refreshVersion,
+        location: candidateLocation,
+        previous_location: oldLocation,
+        rows: 1,
+        size_bytes: 10,
+      };
+    });
+    deactivateMock.mockImplementationOnce(async (accountId, name, location) => {
+      await expect(storageRuntime().ingestion.listDatasetCleanupJobs({ accountId, name })).resolves.toEqual([
+        { accountId, name, location, attempts: 0 },
+      ]);
+      return { status: "dropped" };
+    });
+    cleanupMock.mockRejectedValueOnce(new Error("simulated first cleanup failure"));
+
+    await expect(processOnePreparingConnectorRefresh()).resolves.toBe(true);
+    await vi.waitFor(async () => {
+      await expect(storageRuntime().ingestion.getJob(ACCOUNT, sourceId)).resolves.toMatchObject({ status: "done" });
+    });
+    await expect(storageRuntime().sources.getSource(ACCOUNT, sourceId)).resolves.toMatchObject({
+      status: "ready",
+      filePath: candidateLocation,
+      readyGeneration: 2,
+      meta: { connector_previous_location: oldLocation },
+    });
+    await vi.waitFor(async () => {
+      await expect(
+        storageRuntime().ingestion.listDatasetCleanupJobs({ accountId: ACCOUNT, name: "ledger" })
+      ).resolves.toEqual([{ accountId: ACCOUNT, name: "ledger", location: oldLocation, attempts: 1 }]);
+    });
+
+    await storageRuntime().sourceIngestion.beginConnectorRefresh({
+      accountId: ACCOUNT,
+      connectorId,
+      refreshVersion: randomUUID(),
+      leaseToken: randomUUID(),
+    });
+    await expect(storageRuntime().sources.getSource(ACCOUNT, sourceId)).resolves.toMatchObject({
+      status: "index",
+      filePath: candidateLocation,
+      meta: expect.not.objectContaining({ connector_previous_location: oldLocation }),
+    });
+
+    await stopIngestionWorkers();
+    await closeStorageRuntime();
+    await initializeStorageRuntime({
+      sqlitePath: path.join(directory, "ledger.sqlite"),
+      lanceDirectory: path.join(directory, "lancedb"),
+      embeddingDimension: 768,
+    });
+    await expect(processDatasetCacheCleanup(ACCOUNT, "ledger")).resolves.toBe(1);
+    await expect(
+      storageRuntime().ingestion.listDatasetCleanupJobs({ accountId: ACCOUNT, name: "ledger" })
+    ).resolves.toEqual([]);
+    await expect(storageRuntime().sources.getSource(ACCOUNT, sourceId)).resolves.toMatchObject({
+      status: "index",
+      filePath: candidateLocation,
+      meta: expect.not.objectContaining({ connector_previous_location: oldLocation }),
+    });
+    expect(deactivateMock).toHaveBeenCalledTimes(2);
+    expect(cleanupMock).toHaveBeenCalledTimes(2);
+  });
 });
 
 async function createPreparingConnector() {
@@ -259,4 +408,28 @@ function connectorId(): string {
 
 function sourceId(): string {
   return "33333333-3333-4333-8333-333333333333";
+}
+
+async function writeActiveMigrationState(): Promise<void> {
+  await fs.writeFile(
+    path.join(directory, "embedding-migration.json"),
+    `${JSON.stringify({
+      version: 1,
+      id: "55555555-5555-4555-8555-555555555555",
+      phase: "building",
+      target_model: "new-embed",
+      target_dimension: 5,
+      old_model: "old-embed",
+      old_dimension: 768,
+      provider_revision: "a".repeat(64),
+      snapshot_hash: null,
+      source_count: 0,
+      chunk_count: 0,
+      indexed_count: 0,
+      error_code: null,
+      created_at: "2026-08-31T00:00:00.000Z",
+      updated_at: "2026-08-31T00:00:00.000Z",
+    })}\n`,
+    { mode: 0o600 }
+  );
 }

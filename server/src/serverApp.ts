@@ -7,7 +7,7 @@ import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest }
 
 import { setAppLogger } from "./appLogger.js";
 import { shutdownActiveRuns, recoverInterruptedRuns } from "./chatRuns.js";
-import { config } from "./config.js";
+import { config, initializeConfigStorage } from "./config.js";
 import { shutdownDatasetWorker } from "./data/datasets.js";
 import { closeDb, initDb } from "./db.js";
 import { automationRunner } from "./automationRuntime.js";
@@ -18,8 +18,8 @@ import { restoreDatasets, startIngestionWorkers, stopIngestionWorkers } from "./
 import { runWithRequestContext } from "./requestContext.js";
 import { routes } from "./routes.js";
 import { closeRuntimeSettings, initializeRuntimeSettings } from "./runtimeSettings.js";
-
-const MAX_BODY_BYTES = 20 * 1024 * 1024;
+import { DEFAULT_BODY_LIMIT_BYTES } from "./routes/bodyLimits.js";
+import { acquireWorkspaceLock, type WorkspaceLock } from "./workspaceLock.js";
 
 export interface BuildBorealisAppOptions {
   readonly logger?: boolean;
@@ -88,7 +88,7 @@ function staticUiNotFound(request: FastifyRequest, reply: FastifyReply): unknown
 
 /** Compose the API and optional same-origin production UI without opening a socket. */
 export async function buildBorealisApp(options: BuildBorealisAppOptions = {}): Promise<FastifyInstance> {
-  const app = Fastify({ logger: options.logger ?? true, bodyLimit: MAX_BODY_BYTES });
+  const app = Fastify({ logger: options.logger ?? true, bodyLimit: DEFAULT_BODY_LIMIT_BYTES });
   setAppLogger(app.log);
   installHttpBoundary(app, options.staticWebDir ? { notFound: staticUiNotFound } : {});
   // The packaged UI is served from this exact Fastify origin and needs no
@@ -145,7 +145,10 @@ export async function startBorealisServer(options: StartBorealisServerOptions = 
   let databaseStarted = false;
   let settingsStarted = false;
   let automationSchedulerStarted = false;
+  let workspaceLock: WorkspaceLock | undefined;
   try {
+    workspaceLock = await acquireWorkspaceLock(config.storageDir);
+    initializeConfigStorage();
     await initializeRuntimeSettings();
     settingsStarted = true;
     await initDb();
@@ -181,6 +184,8 @@ export async function startBorealisServer(options: StartBorealisServerOptions = 
           await closeDb();
         } finally {
           closeRuntimeSettings();
+          await workspaceLock?.release();
+          workspaceLock = undefined;
         }
       })();
       return closePromise;
@@ -190,8 +195,13 @@ export async function startBorealisServer(options: StartBorealisServerOptions = 
     await app?.close().catch(() => {});
     if (workersStarted) await stopIngestionWorkers().catch(() => {});
     await shutdownDatasetWorker().catch(() => {});
-    if (databaseStarted) await closeDb().catch(() => {});
-    if (settingsStarted) closeRuntimeSettings();
+    try {
+      if (databaseStarted) await closeDb().catch(() => {});
+      if (settingsStarted) closeRuntimeSettings();
+    } finally {
+      await workspaceLock?.release();
+      workspaceLock = undefined;
+    }
     throw error;
   }
 }

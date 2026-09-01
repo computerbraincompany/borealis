@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { runAgent } from "../agent.js";
 import { getAccountId, requireAuth } from "../auth.js";
+import { catalogPageQuerySchema, catalogResponse, parseCatalogPageQuery } from "../catalogPagination.js";
 import { enforceRemoteEgressConsent } from "../egressPolicy.js";
 import { auditRemoteEgress } from "../egressAudit.js";
 import { beginRun, cancelRun, completeRunWithAssistant, finishRunDurably, isRunCancellation } from "../chatRuns.js";
@@ -23,6 +24,13 @@ import { currentRequestId } from "../requestContext.js";
 import { sameLlmModel } from "../llmAliases.js";
 import { getRuntimeSettings } from "../runtimeSettings.js";
 import {
+  BODYLESS_MUTATION_LIMIT_BYTES,
+  COMPACT_JSON_BODY_LIMIT_BYTES,
+  IDENTIFIER_LIST_JSON_BODY_LIMIT_BYTES,
+} from "./bodyLimits.js";
+import {
+  CHAT_MODEL_MAX_CHARS,
+  CHAT_TITLE_MAX_CHARS,
   UUID_PATTERN,
   chatCreateBodySchema,
   chatPatchBodySchema,
@@ -33,17 +41,21 @@ import {
 export async function chatRoutes(app: FastifyInstance): Promise<void> {
   app.get(
     "/api/chats",
-    { preHandler: requireAuth, schema: { tags: ["chats"], summary: "List chats" } },
+    {
+      onRequest: requireAuth,
+      schema: { tags: ["chats"], summary: "List chats", querystring: catalogPageQuerySchema },
+    },
     async (req, reply) => {
-      return reply.send(await storageRuntime().chats.listChats(getAccountId(req)));
+      const page = await storageRuntime().chats.listChats(getAccountId(req), parseCatalogPageQuery("chats", req.query));
+      return reply.send(catalogResponse("chats", page));
     }
   );
 
   app.post(
     "/api/chats",
     {
-      preHandler: requireAuth,
-      bodyLimit: 16 * 1024,
+      onRequest: requireAuth,
+      bodyLimit: IDENTIFIER_LIST_JSON_BODY_LIMIT_BYTES,
       schema: { tags: ["chats"], summary: "Create a chat", body: chatCreateBodySchema },
     },
     async (req, reply) => {
@@ -77,7 +89,7 @@ export async function chatRoutes(app: FastifyInstance): Promise<void> {
   app.get(
     "/api/chats/:id",
     {
-      preHandler: requireAuth,
+      onRequest: requireAuth,
       schema: {
         tags: ["chats"],
         summary: "Get a chat with a bounded newest-first history page",
@@ -117,8 +129,8 @@ export async function chatRoutes(app: FastifyInstance): Promise<void> {
   app.put(
     "/api/chats/:id/sources",
     {
-      preHandler: requireAuth,
-      bodyLimit: 16 * 1024,
+      onRequest: requireAuth,
+      bodyLimit: IDENTIFIER_LIST_JSON_BODY_LIMIT_BYTES,
       schema: {
         tags: ["chats"],
         summary: "Replace a chat source scope",
@@ -139,8 +151,8 @@ export async function chatRoutes(app: FastifyInstance): Promise<void> {
   app.patch(
     "/api/chats/:id",
     {
-      preHandler: requireAuth,
-      bodyLimit: 4 * 1024,
+      onRequest: requireAuth,
+      bodyLimit: COMPACT_JSON_BODY_LIMIT_BYTES,
       schema: {
         tags: ["chats"],
         summary: "Update a chat title or model",
@@ -166,7 +178,7 @@ export async function chatRoutes(app: FastifyInstance): Promise<void> {
             return reply.code(400).send({ error: "model must contain between 1 and 256 characters" });
           }
           const model = (body as { model: string }).model.trim();
-          if (model.length < 1 || model.length > 256) {
+          if (model.length < 1 || model.length > CHAT_MODEL_MAX_CHARS) {
             return reply.code(400).send({ error: "model must contain between 1 and 256 characters" });
           }
           const runtime = await getRuntimeSettings();
@@ -184,21 +196,25 @@ export async function chatRoutes(app: FastifyInstance): Promise<void> {
     }
   );
 
-  app.delete("/api/chats/:id", { preHandler: requireAuth, schema: { params: idParamsSchema } }, async (req, reply) => {
-    const chatId = (req.params as any).id;
-    const accountId = getAccountId(req);
-    try {
-      await storageRuntime().chats.deleteChat(accountId, chatId);
-    } catch (error) {
-      return sendChatStoreError(reply, error, "delete");
+  app.delete(
+    "/api/chats/:id",
+    { onRequest: requireAuth, bodyLimit: BODYLESS_MUTATION_LIMIT_BYTES, schema: { params: idParamsSchema } },
+    async (req, reply) => {
+      const chatId = (req.params as any).id;
+      const accountId = getAccountId(req);
+      try {
+        await storageRuntime().chats.deleteChat(accountId, chatId);
+      } catch (error) {
+        return sendChatStoreError(reply, error, "delete");
+      }
+      return reply.send({ ok: true });
     }
-    return reply.send({ ok: true });
-  });
+  );
 
   app.post(
     "/api/chats/:id/messages",
     {
-      preHandler: requireAuth,
+      onRequest: requireAuth,
       // A legal JSON string can require twelve transport bytes per code point
       // when an astral scalar is encoded as a UTF-16 surrogate pair
       // (`\\ud83d\\ude00`). Keep the parser boundary aligned with the decoded
@@ -313,7 +329,8 @@ export async function chatRoutes(app: FastifyInstance): Promise<void> {
   app.delete(
     "/api/chats/:id/runs/:runId",
     {
-      preHandler: requireAuth,
+      onRequest: requireAuth,
+      bodyLimit: BODYLESS_MUTATION_LIMIT_BYTES,
       schema: {
         tags: ["chat-runs"],
         summary: "Cancel an active chat run",
@@ -458,7 +475,9 @@ function parseChatTitle(value: unknown): string {
   if (typeof value !== "string") throw new SourceScopeError(400, "title must contain between 1 and 80 characters");
   const title = value.trim();
   const length = Array.from(title).length;
-  if (length < 1 || length > 80) throw new SourceScopeError(400, "title must contain between 1 and 80 characters");
+  if (length < 1 || length > CHAT_TITLE_MAX_CHARS) {
+    throw new SourceScopeError(400, "title must contain between 1 and 80 characters");
+  }
   return title;
 }
 

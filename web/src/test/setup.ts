@@ -3,8 +3,15 @@
 // a different major than the one running these tests.
 import * as jestDomMatchers from "@testing-library/jest-dom/matchers";
 import { expect } from "vitest";
+import { failOnReactActWarning } from "@/test/console";
 
 expect.extend(jestDomMatchers);
+
+const originalConsoleError = console.error.bind(console);
+console.error = (...args: unknown[]) => {
+  failOnReactActWarning(args);
+  originalConsoleError(...args);
+};
 
 class MemoryStorage implements Storage {
   private readonly values = new Map<string, string>();

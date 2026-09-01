@@ -5,20 +5,29 @@ import { isIP } from "node:net";
 import path from "node:path";
 import { sameLlmModel } from "./llmAliases.js";
 
-export const SETTINGS_FILE_VERSION = 1 as const;
+export const SETTINGS_FILE_VERSION = 2 as const;
+const LEGACY_SETTINGS_FILE_VERSION = 1 as const;
+export const DEFAULT_EMBEDDING_DIMENSION = 768;
 export const DEFAULT_LLM_SETTINGS = Object.freeze({
   llmBaseUrl: "http://127.0.0.1:1234",
   chatModel: "qwen-chat",
   embedModel: "nomic-embed",
+  embeddingDimension: DEFAULT_EMBEDDING_DIMENSION,
 } satisfies EffectiveLlmSettings);
 
 const MAX_SETTINGS_FILE_BYTES = 32 * 1024;
-const MAX_ENDPOINT_CHARS = 2_048;
-const MAX_API_KEY_CHARS = 8_192;
-const MODEL_ID_MAX_CHARS = 256;
+export const MAX_ENDPOINT_CHARS = 2_048;
+export const MAX_API_KEY_CHARS = 8_192;
+export const MODEL_ID_MAX_CHARS = 256;
+const MAX_EMBEDDING_DIMENSION = 16_384;
 
 export type LlmSettingField =
-  "llm_base_url" | "llm_api_key" | "lm_studio_base_url" | "default_chat_model" | "default_embed_model";
+  | "llm_base_url"
+  | "llm_api_key"
+  | "lm_studio_base_url"
+  | "default_chat_model"
+  | "default_embed_model"
+  | "embedding_dimension";
 
 export interface EffectiveLlmSettings {
   readonly llmBaseUrl: string;
@@ -26,6 +35,7 @@ export interface EffectiveLlmSettings {
   readonly lmStudioBaseUrl?: string;
   readonly chatModel: string;
   readonly embedModel: string;
+  readonly embeddingDimension: number;
 }
 
 export interface LlmSettingsPatch {
@@ -34,6 +44,7 @@ export interface LlmSettingsPatch {
   readonly lmStudioBaseUrl?: string | null;
   readonly chatModel?: string;
   readonly embedModel?: string;
+  readonly embeddingDimension?: number;
 }
 
 export interface SettingsSnapshot {
@@ -48,6 +59,7 @@ export interface PublicLlmSettings {
   readonly lm_studio_base_url: string | null;
   readonly default_chat_model: string;
   readonly default_embed_model: string;
+  readonly embedding_dimension: number;
   readonly managed_by_env: Readonly<Record<LlmSettingField, boolean>>;
 }
 
@@ -70,6 +82,7 @@ interface PersistedSettingsFile {
   readonly lm_studio_base_url?: string;
   readonly default_chat_model: string;
   readonly default_embed_model: string;
+  readonly embedding_dimension: number;
 }
 
 interface PersistedRead {
@@ -88,6 +101,7 @@ interface MutableEnvironmentSettings {
   lmStudioBaseUrl?: string;
   chatModel?: string;
   embedModel?: string;
+  embeddingDimension?: number;
 }
 
 export class SettingsValidationError extends Error {
@@ -125,12 +139,14 @@ export function toPublicLlmSettings(snapshot: SettingsSnapshot): PublicLlmSettin
     lm_studio_base_url: snapshot.settings.lmStudioBaseUrl ?? null,
     default_chat_model: snapshot.settings.chatModel,
     default_embed_model: snapshot.settings.embedModel,
+    embedding_dimension: snapshot.settings.embeddingDimension,
     managed_by_env: {
       llm_base_url: managed.has("llm_base_url"),
       llm_api_key: managed.has("llm_api_key"),
       lm_studio_base_url: managed.has("lm_studio_base_url"),
       default_chat_model: managed.has("default_chat_model"),
       default_embed_model: managed.has("default_embed_model"),
+      embedding_dimension: managed.has("embedding_dimension"),
     },
   };
 }
@@ -275,6 +291,10 @@ function resolveEnvironmentSettings(env: Readonly<Record<string, string | undefi
     values.embedModel = validateModelId(embedModel, "default_embed_model");
     fields.push("default_embed_model");
   }
+  if (env.EMBEDDING_DIM !== undefined) {
+    values.embeddingDimension = validateEmbeddingDimension(env.EMBEDDING_DIM, "embedding_dimension");
+    fields.push("embedding_dimension");
+  }
 
   validateCompleteSettings({ ...DEFAULT_LLM_SETTINGS, ...values });
   return { values: Object.freeze(values), fields: Object.freeze(fields) };
@@ -289,14 +309,20 @@ function decodeSettingsFile(input: unknown): EffectiveLlmSettings {
     "lm_studio_base_url",
     "default_chat_model",
     "default_embed_model",
+    "embedding_dimension",
   ]);
-  if (Object.keys(input).some((key) => !allowed.has(key)) || input.version !== SETTINGS_FILE_VERSION) {
+  if (
+    Object.keys(input).some((key) => !allowed.has(key)) ||
+    (input.version !== LEGACY_SETTINGS_FILE_VERSION && input.version !== SETTINGS_FILE_VERSION)
+  ) {
     throw new SettingsValidationError();
   }
   if (
     typeof input.llm_base_url !== "string" ||
     typeof input.default_chat_model !== "string" ||
     typeof input.default_embed_model !== "string" ||
+    (input.version === SETTINGS_FILE_VERSION && typeof input.embedding_dimension !== "number") ||
+    (input.version === LEGACY_SETTINGS_FILE_VERSION && input.embedding_dimension !== undefined) ||
     (input.llm_api_key !== undefined && typeof input.llm_api_key !== "string") ||
     (input.lm_studio_base_url !== undefined &&
       input.lm_studio_base_url !== null &&
@@ -312,6 +338,10 @@ function decodeSettingsFile(input: unknown): EffectiveLlmSettings {
       : { lmStudioBaseUrl: input.lm_studio_base_url }),
     chatModel: input.default_chat_model,
     embedModel: input.default_embed_model,
+    embeddingDimension:
+      input.version === SETTINGS_FILE_VERSION
+        ? validateEmbeddingDimension(input.embedding_dimension, "embedding_dimension")
+        : DEFAULT_EMBEDDING_DIMENSION,
   });
 }
 
@@ -328,6 +358,7 @@ function applyPatch(current: EffectiveLlmSettings, patch: LlmSettingsPatch): Eff
           : patch.lmStudioBaseUrl,
     chatModel: patch.chatModel ?? current.chatModel,
     embedModel: patch.embedModel ?? current.embedModel,
+    embeddingDimension: patch.embeddingDimension ?? current.embeddingDimension,
   });
 }
 
@@ -338,6 +369,7 @@ function validateCompleteSettings(input: EffectiveLlmSettings): EffectiveLlmSett
     input.lmStudioBaseUrl === undefined ? undefined : parseEndpointOrigin(input.lmStudioBaseUrl, "lm_studio_base_url");
   const chatModel = validateModelId(input.chatModel, "default_chat_model");
   const embedModel = validateModelId(input.embedModel, "default_embed_model");
+  const embeddingDimension = validateEmbeddingDimension(input.embeddingDimension, "embedding_dimension");
   if (sameLlmModel(chatModel, embedModel)) throw new SettingsValidationError("default_embed_model");
 
   return {
@@ -348,6 +380,7 @@ function validateCompleteSettings(input: EffectiveLlmSettings): EffectiveLlmSett
       : { lmStudioBaseUrl }),
     chatModel,
     embedModel,
+    embeddingDimension,
   };
 }
 
@@ -372,6 +405,9 @@ function assertPatchTypes(patch: LlmSettingsPatch): void {
   if (patch.embedModel !== undefined && typeof patch.embedModel !== "string") {
     throw new SettingsValidationError("default_embed_model");
   }
+  if (patch.embeddingDimension !== undefined) {
+    validateEmbeddingDimension(patch.embeddingDimension, "embedding_dimension");
+  }
 }
 
 function validateModelId(value: string, field: "default_chat_model" | "default_embed_model"): string {
@@ -387,6 +423,14 @@ function validateApiKey(value: string): string {
     throw new SettingsValidationError("llm_api_key");
   }
   return value;
+}
+
+function validateEmbeddingDimension(value: unknown, field: "embedding_dimension"): number {
+  const parsed = typeof value === "string" && /^\d+$/.test(value) ? Number(value) : value;
+  if (!Number.isSafeInteger(parsed) || Number(parsed) < 1 || Number(parsed) > MAX_EMBEDDING_DIMENSION) {
+    throw new SettingsValidationError(field);
+  }
+  return Number(parsed);
 }
 
 function containsControlCharacter(value: string): boolean {
@@ -434,6 +478,7 @@ function patchFields(patch: LlmSettingsPatch): Set<LlmSettingField> {
   if (Object.prototype.hasOwnProperty.call(patch, "lmStudioBaseUrl")) fields.add("lm_studio_base_url");
   if (Object.prototype.hasOwnProperty.call(patch, "chatModel")) fields.add("default_chat_model");
   if (Object.prototype.hasOwnProperty.call(patch, "embedModel")) fields.add("default_embed_model");
+  if (Object.prototype.hasOwnProperty.call(patch, "embeddingDimension")) fields.add("embedding_dimension");
   return fields;
 }
 
@@ -448,6 +493,7 @@ async function writeSettingsFileAtomically(filename: string, settings: Effective
     ...(settings.lmStudioBaseUrl === undefined ? {} : { lm_studio_base_url: settings.lmStudioBaseUrl }),
     default_chat_model: settings.chatModel,
     default_embed_model: settings.embedModel,
+    embedding_dimension: settings.embeddingDimension,
   };
   let handle: Awaited<ReturnType<typeof fs.open>> | undefined;
   try {

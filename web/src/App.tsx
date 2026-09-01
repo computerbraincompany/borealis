@@ -1,16 +1,30 @@
-import { useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { Shell } from "@/components/Shell";
+import { LazyLoadBoundary } from "@/components/LazyLoadBoundary";
 import { AuthPage } from "@/pages/AuthPage";
 import { ChatView } from "@/pages/ChatView";
-import { SourcesView } from "@/pages/SourcesView";
-import { LibrariesView } from "@/pages/LibrariesView";
-import { AgentsView } from "@/pages/AgentsView";
-import { AutomationsView } from "@/pages/AutomationsView";
-import { ConnectorsView } from "@/pages/ConnectorsView";
-import { ReportsView } from "@/pages/ReportsView";
-import { SettingsView } from "@/pages/SettingsView";
 import { getUser } from "@/lib/api";
 import { hasDesktopBridge, initializeDesktopSession } from "@/lib/desktopBootstrap";
+
+const SourcesView = lazy(() => import("@/pages/SourcesView").then((module) => ({ default: module.SourcesView })));
+const LibrariesView = lazy(() => import("@/pages/LibrariesView").then((module) => ({ default: module.LibrariesView })));
+const AgentsView = lazy(() => import("@/pages/AgentsView").then((module) => ({ default: module.AgentsView })));
+const AutomationsView = lazy(() =>
+  import("@/pages/AutomationsView").then((module) => ({ default: module.AutomationsView })),
+);
+const ConnectorsView = lazy(() =>
+  import("@/pages/ConnectorsView").then((module) => ({ default: module.ConnectorsView })),
+);
+const ReportsView = lazy(() => import("@/pages/ReportsView").then((module) => ({ default: module.ReportsView })));
+const SettingsView = lazy(() => import("@/pages/SettingsView").then((module) => ({ default: module.SettingsView })));
+
+function RouteFallback({ label }: { label: string }) {
+  return (
+    <div className="flex h-full items-center justify-center p-8" role="status" aria-label={`Loading ${label}`}>
+      <div className="h-8 w-48 animate-pulse rounded-md bg-secondary" />
+    </div>
+  );
+}
 
 function useHashRoute(): string {
   const [hash, setHash] = useState(() => window.location.hash);
@@ -83,8 +97,16 @@ export default function App() {
 
   return (
     <Shell>
-      {page}
-      {settingsOpen && <SettingsView onClose={() => (window.location.hash = lastWorkspaceRoute.current)} />}
+      <LazyLoadBoundary label="This workspace view" resetKey={route}>
+        <Suspense fallback={<RouteFallback label="workspace" />}>{page}</Suspense>
+      </LazyLoadBoundary>
+      {settingsOpen && (
+        <LazyLoadBoundary label="Settings" resetKey="settings">
+          <Suspense fallback={<RouteFallback label="Settings" />}>
+            <SettingsView onClose={() => (window.location.hash = lastWorkspaceRoute.current)} />
+          </Suspense>
+        </LazyLoadBoundary>
+      )}
     </Shell>
   );
 }

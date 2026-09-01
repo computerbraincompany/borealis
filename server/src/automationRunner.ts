@@ -7,6 +7,7 @@ import { acceptChatTurn } from "./turnContext.js";
 import { ActiveChatRunError } from "./db/stores/chatStore.js";
 import { AutomationStore } from "./automationStore.js";
 import { recordConnectorSync } from "./connectorSyncHistory.js";
+import { EmbeddingMigrationError } from "./embeddingMigration.js";
 import { storageRuntime } from "./storageRuntime.js";
 import { SourceScopeError } from "./sourceScope.js";
 
@@ -31,6 +32,27 @@ export function createAutomationRunner(dependencies: AutomationRunnerDependencie
   const now = dependencies.now ?? (() => new Date());
   let timer: NodeJS.Timeout | undefined;
   let ticking = false;
+
+  async function recordAgentCancellation(automationId: string, accountId: string): Promise<void> {
+    await store.recordRun(automationId, accountId, "skipped", "the run was cancelled");
+  }
+
+  async function recordAgentTerminalOutcome(
+    automationId: string,
+    accountId: string,
+    terminal: "completed" | "failed" | "cancelled"
+  ): Promise<void> {
+    if (terminal === "cancelled") {
+      await recordAgentCancellation(automationId, accountId);
+      return;
+    }
+    await store.recordRun(
+      automationId,
+      accountId,
+      terminal === "completed" ? "succeeded" : "failed",
+      terminal === "completed" ? null : publicAgentFailureMessage()
+    );
+  }
 
   async function executeConnectorSync(automationId: string, accountId: string, connectorId: string): Promise<void> {
     const startedAt = now().toISOString();
@@ -66,6 +88,19 @@ export function createAutomationRunner(dependencies: AutomationRunnerDependencie
       await store.recordRun(automationId, accountId, "succeeded", null);
       await recordConnectorSync({ accountId, connectorId, trigger: "scheduled", outcome: "succeeded", startedAt });
     } catch (error) {
+      if (error instanceof EmbeddingMigrationError && error.code === "SOURCE_MUTATION_BLOCKED") {
+        const detail = "source changes are paused during embedding migration";
+        await store.recordRun(automationId, accountId, "skipped", detail);
+        await recordConnectorSync({
+          accountId,
+          connectorId,
+          trigger: "scheduled",
+          outcome: "skipped",
+          detail,
+          startedAt,
+        });
+        return;
+      }
       const detail = safeDetail(error);
       await store.recordRun(automationId, accountId, "failed", detail);
       await recordConnectorSync({ accountId, connectorId, trigger: "scheduled", outcome: "failed", detail, startedAt });
@@ -107,16 +142,16 @@ export function createAutomationRunner(dependencies: AutomationRunnerDependencie
         emit: () => undefined,
         signal: controller.signal,
       });
-      await completeRunWithAssistant(accountId, chatId, turn.runId, completion);
-      await store.recordRun(automationId, accountId, "succeeded", null);
+      const terminal = await completeRunWithAssistant(accountId, chatId, turn.runId, completion);
+      await recordAgentTerminalOutcome(automationId, accountId, terminal.status);
     } catch (error) {
       if (error instanceof Error && error.name === "AbortError") {
-        await finishRunDurably(accountId, chatId, turn.runId, "cancelled", "CANCELLED").catch(() => undefined);
-        await store.recordRun(automationId, accountId, "skipped", "the run was cancelled");
+        const terminal = await finishRunDurably(accountId, chatId, turn.runId, "cancelled", "CANCELLED");
+        await recordAgentTerminalOutcome(automationId, accountId, terminal);
         return;
       }
-      await finishRunDurably(accountId, chatId, turn.runId, "failed", "AGENT_FAILED").catch(() => undefined);
-      await store.recordRun(automationId, accountId, "failed", publicAgentFailureMessage());
+      const terminal = await finishRunDurably(accountId, chatId, turn.runId, "failed", "AGENT_FAILED");
+      await recordAgentTerminalOutcome(automationId, accountId, terminal);
     }
   }
 

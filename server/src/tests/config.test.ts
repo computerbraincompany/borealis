@@ -78,7 +78,7 @@ describe("desktop-safe process configuration", () => {
     });
 
     expect(JSON.parse(stdout)).toEqual({ jwt: null, llm: null });
-    expect((await fs.stat(secretFile)).mode & 0o777).toBe(0o600);
+    await expect(fs.stat(secretFile)).rejects.toMatchObject({ code: "ENOENT" });
   });
 });
 

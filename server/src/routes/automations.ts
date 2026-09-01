@@ -1,9 +1,15 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { getAccountId, requireAuth } from "../auth.js";
+import { catalogPageQuerySchema, catalogResponse, parseCatalogPageQuery } from "../catalogPagination.js";
 import { idParamsSchema } from "./schemas.js";
 import { AutomationValidationError, type Automation } from "../automationStore.js";
 import { storageRuntime } from "../storageRuntime.js";
 import { automationRunner } from "../automationRuntime.js";
+import {
+  BODYLESS_MUTATION_LIMIT_BYTES,
+  COMPACT_JSON_BODY_LIMIT_BYTES,
+  LONG_TEXT_JSON_BODY_LIMIT_BYTES,
+} from "./bodyLimits.js";
 
 function sendAutomationError(reply: FastifyReply, error: unknown): boolean {
   if (error instanceof AutomationValidationError) {
@@ -31,15 +37,23 @@ function publicAutomation(automation: Automation) {
 }
 
 export async function automationRoutes(app: FastifyInstance): Promise<void> {
-  app.get("/api/automations", { preHandler: requireAuth }, async (req, reply) => {
-    const rows = await storageRuntime().automations.list(getAccountId(req));
-    return reply.send(rows.map(publicAutomation));
-  });
+  app.get(
+    "/api/automations",
+    { onRequest: requireAuth, schema: { querystring: catalogPageQuerySchema } },
+    async (req, reply) => {
+      const page = await storageRuntime().automations.list(
+        getAccountId(req),
+        parseCatalogPageQuery("automations", req.query)
+      );
+      return reply.send(catalogResponse("automations", { items: page.items.map(publicAutomation), next: page.next }));
+    }
+  );
 
   app.post(
     "/api/automations",
     {
-      preHandler: requireAuth,
+      onRequest: requireAuth,
+      bodyLimit: LONG_TEXT_JSON_BODY_LIMIT_BYTES,
       schema: {
         body: {
           type: "object",
@@ -86,7 +100,8 @@ export async function automationRoutes(app: FastifyInstance): Promise<void> {
   app.patch(
     "/api/automations/:id",
     {
-      preHandler: requireAuth,
+      onRequest: requireAuth,
+      bodyLimit: COMPACT_JSON_BODY_LIMIT_BYTES,
       schema: {
         params: idParamsSchema,
         body: {
@@ -120,7 +135,7 @@ export async function automationRoutes(app: FastifyInstance): Promise<void> {
 
   app.delete(
     "/api/automations/:id",
-    { preHandler: requireAuth, schema: { params: idParamsSchema } },
+    { onRequest: requireAuth, bodyLimit: BODYLESS_MUTATION_LIMIT_BYTES, schema: { params: idParamsSchema } },
     async (req, reply) => {
       const deleted = await storageRuntime().automations.delete(getAccountId(req), (req.params as any).id);
       if (!deleted) return reply.code(404).send({ error: "automation not found" });
@@ -131,7 +146,7 @@ export async function automationRoutes(app: FastifyInstance): Promise<void> {
   app.get(
     "/api/automations/:id/runs",
     {
-      preHandler: requireAuth,
+      onRequest: requireAuth,
       schema: {
         params: idParamsSchema,
         querystring: {
@@ -150,7 +165,7 @@ export async function automationRoutes(app: FastifyInstance): Promise<void> {
 
   // The scheduler runs while the server does; the route exists so operators can
   // verify it is alive from the same surface as everything else.
-  app.get("/api/automations/_scheduler", { preHandler: requireAuth }, async (_req, reply) => {
+  app.get("/api/automations/_scheduler", { onRequest: requireAuth }, async (_req, reply) => {
     return reply.send({ running: automationRunner().isRunning() });
   });
 }

@@ -8,15 +8,26 @@ import { createContainedEngineManager } from "../contained/engineManager.js";
 import { config } from "../config.js";
 
 let tempDataDir = "";
+let previousContainedDir: string | undefined;
+let previousStorageDir = "";
+let previousConfiguredContainedDir = "";
 
 beforeEach(async () => {
   tempDataDir = await fs.mkdtemp(path.join(os.tmpdir(), "borealis-engine-"));
+  previousContainedDir = process.env.CONTAINED_DIR;
+  previousStorageDir = config.storageDir;
+  previousConfiguredContainedDir = config.containedDir;
   process.env.CONTAINED_DIR = path.join(tempDataDir, "models");
+  config.storageDir = tempDataDir;
+  config.containedDir = path.join(tempDataDir, "models");
   await clearContainedConfig();
 });
 
 afterEach(async () => {
-  if (process.env.CONTAINED_DIR === path.join(tempDataDir, "models")) delete process.env.CONTAINED_DIR;
+  if (previousContainedDir === undefined) delete process.env.CONTAINED_DIR;
+  else process.env.CONTAINED_DIR = previousContainedDir;
+  config.storageDir = previousStorageDir;
+  config.containedDir = previousConfiguredContainedDir;
   await fs.rm(tempDataDir, { recursive: true, force: true });
   tempDataDir = "";
 });
@@ -65,7 +76,11 @@ describe("contained engine manager", () => {
     const manager = createContainedEngineManager();
     await expect(manager.start()).rejects.toMatchObject({ name: "ContainedConfigError" });
 
-    await writeContainedConfig({ enabled: true, binaryPath: "/bin/x", modelPath: "/bin/y" });
+    await writeContainedConfig({
+      enabled: true,
+      binaryPath: path.join(tempDataDir, "missing-binary"),
+      modelPath: await writeModelFile(),
+    });
     await expect(manager.start()).rejects.toMatchObject({ message: "binary_path does not exist" });
 
     await writeContainedConfig({

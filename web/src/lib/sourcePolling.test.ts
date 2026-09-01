@@ -33,14 +33,12 @@ describe("source catalog decisions", () => {
     ]);
   });
 
-  it("accepts a compact source envelope defensively and drops malformed entries", () => {
+  it("accepts compact source rows defensively and drops malformed entries", () => {
     expect(
-      parseSourceListPayload({
-        sources: [
-          { ...readySource, mime: undefined, created_at: undefined },
-          { id: "broken", status: "ready" },
-        ],
-      }),
+      parseSourceListPayload([
+        { ...readySource, mime: undefined, created_at: undefined },
+        { id: "broken", status: "ready" },
+      ]),
     ).toEqual([
       expect.objectContaining({
         id: "s1",

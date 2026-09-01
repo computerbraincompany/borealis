@@ -1,8 +1,11 @@
 export type IngestionFailureCode =
   | "NO_READABLE_TEXT"
+  | "OCR_UNAVAILABLE"
+  | "OCR_FAILED"
   | "UNSUPPORTED_FORMAT"
   | "DATASET_PARSE_FAILED"
   | "DATA_SERVICE_UNAVAILABLE"
+  | "REMOTE_EGRESS_CONSENT_REQUIRED"
   | "EMBEDDING_UNAVAILABLE"
   | "EMBEDDING_INVALID_RESPONSE"
   | "SOURCE_UNAVAILABLE"
@@ -21,6 +24,16 @@ const FAILURES: Record<IngestionFailureCode, Omit<PublicIngestionFailure, "code"
     detail: "The file did not contain extractable text or table rows.",
     stage: "reading",
   },
+  OCR_UNAVAILABLE: {
+    summary: "Local OCR is unavailable.",
+    detail: "This PDF has no extractable text, and local macOS Vision OCR is unavailable on this system.",
+    stage: "reading",
+  },
+  OCR_FAILED: {
+    summary: "Local OCR could not read this PDF.",
+    detail: "Borealis stopped local OCR because the document or recognition work exceeded a safe processing limit.",
+    stage: "reading",
+  },
   UNSUPPORTED_FORMAT: {
     summary: "This file format is not supported.",
     detail: "Convert the file to one of the supported upload formats, then upload it again.",
@@ -35,6 +48,11 @@ const FAILURES: Record<IngestionFailureCode, Omit<PublicIngestionFailure, "code"
     summary: "The data service was unavailable.",
     detail: "Borealis could not complete local data processing. Retry; if the problem continues, restart Borealis.",
     stage: "parsing",
+  },
+  REMOTE_EGRESS_CONSENT_REQUIRED: {
+    summary: "Remote model-provider acknowledgment is required.",
+    detail: "A remote provider became active after this source was queued. Acknowledge remote egress, then retry.",
+    stage: "embedding",
   },
   EMBEDDING_UNAVAILABLE: {
     summary: "The embedding service was unavailable.",

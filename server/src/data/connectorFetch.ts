@@ -121,6 +121,15 @@ function manifestPath(candidate: string): string {
   return path.join(path.dirname(candidate), `${path.basename(candidate, path.extname(candidate))}.meta`);
 }
 
+function stagedPrefix(file: string): string {
+  return `.${path.basename(file)}.staged-`;
+}
+
+function isExactStagedName(name: string, file: string): boolean {
+  const prefix = stagedPrefix(file);
+  return name.startsWith(prefix) && VERSION_RE.test(name.slice(prefix.length));
+}
+
 async function validateExistingFile(file: string): Promise<void> {
   const stat = await fs.lstat(file).catch((error: NodeJS.ErrnoException) => {
     if (error.code === "ENOENT") throw new ConnectorFetchError(404, "dataset file not found");
@@ -199,8 +208,11 @@ export async function claimConnectorVersion(input: ConnectorVersion & { url: str
     }
     return candidate;
   } finally {
-    await handle?.close().catch(() => {});
-    await fs.unlink(temporary).catch(() => {});
+    try {
+      await handle?.close();
+    } finally {
+      await removeExactCacheFile(temporary);
+    }
   }
 }
 
@@ -340,7 +352,7 @@ async function downloadToTemporary(input: DownloadConnectorVersionInput, target:
     );
   } finally {
     // Kept only on the successful return path; the caller owns cleanup then.
-    if (!transferred) await fs.unlink(temporary).catch(() => {});
+    if (!transferred) await removeExactCacheFile(temporary);
   }
 }
 
@@ -370,7 +382,7 @@ export async function downloadConnectorVersion(input: DownloadConnectorVersionIn
     await input.inspect(target);
     return target;
   } finally {
-    await fs.unlink(temporary).catch(() => {});
+    await removeExactCacheFile(temporary);
   }
 }
 
@@ -382,14 +394,36 @@ async function provenVersionFromLocation(
   if (path.dirname(candidate) !== directory || !CACHE_FILE_RE.test(path.basename(candidate))) {
     throw new ConnectorFetchError(400, "invalid dataset cache version");
   }
-  const stat = await fs.lstat(candidate).catch((error: NodeJS.ErrnoException) => {
-    if (error.code === "ENOENT") return undefined;
+  return { candidate, manifest: manifestPath(candidate) };
+}
+
+async function removeExactCacheFile(file: string): Promise<boolean> {
+  let stat;
+  try {
+    stat = await fs.lstat(file);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
     throw error;
-  });
-  if (stat && (stat.isSymbolicLink() || !stat.isFile() || (await fs.realpath(candidate)) !== candidate)) {
+  }
+  if (stat.isSymbolicLink() || !stat.isFile()) {
     throw new ConnectorFetchError(400, "invalid dataset cache version");
   }
-  return { candidate, manifest: manifestPath(candidate) };
+  try {
+    if ((await fs.realpath(file)) !== file) {
+      throw new ConnectorFetchError(400, "invalid dataset cache version");
+    }
+  } catch (error) {
+    // A concurrently removed exact file has already reached the desired state.
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return true;
+    throw error;
+  }
+  try {
+    await fs.unlink(file);
+  } catch (error) {
+    // Preserve idempotence when another cleanup wins after the proof above.
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  return true;
 }
 
 export async function cleanupConnectorVersion(input: ConnectorIdentity & { location: string }): Promise<boolean> {
@@ -400,17 +434,26 @@ export async function cleanupConnectorVersion(input: ConnectorIdentity & { locat
     if (error instanceof ConnectorFetchError && error.status === 404) return false;
     throw error;
   }
-  const existed = Boolean(
-    (await fs.lstat(proven.candidate).catch(() => undefined)) ||
-    (await fs.lstat(proven.manifest).catch(() => undefined))
-  );
-  for (const file of [proven.candidate, proven.manifest]) {
-    const stat = await fs.lstat(file).catch(() => undefined);
-    if (stat?.isSymbolicLink() || (stat && !stat.isFile())) {
-      throw new ConnectorFetchError(400, "invalid dataset cache version");
-    }
-    if (stat) await fs.unlink(file);
+  let existed = false;
+  const directory = path.dirname(proven.candidate);
+  const names = await fs.readdir(directory).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return [];
+    throw error;
+  });
+  const stagedFiles = names
+    .filter((name) => isExactStagedName(name, proven.candidate) || isExactStagedName(name, proven.manifest))
+    .map((name) => path.join(directory, name));
+  for (const file of stagedFiles) {
+    if (await removeExactCacheFile(file)) existed = true;
   }
-  await fs.rmdir(path.dirname(proven.candidate)).catch(() => {});
+  for (const file of [proven.candidate, proven.manifest]) {
+    if (await removeExactCacheFile(file)) existed = true;
+  }
+  try {
+    await fs.rmdir(directory);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== "ENOENT" && code !== "ENOTEMPTY") throw error;
+  }
   return existed;
 }

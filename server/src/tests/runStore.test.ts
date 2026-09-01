@@ -327,7 +327,9 @@ describe("RunStore", () => {
       chat_title: "Completed chat",
     });
     await expect(store.getPublishedReport(foreign, selectedReport)).resolves.toBeUndefined();
-    await expect(store.listPublishedReports(account)).resolves.toHaveLength(1);
+    await expect(store.listPublishedReports(account)).resolves.toMatchObject({
+      items: [expect.objectContaining({ id: selectedReport })],
+    });
     await expect(ledger.get("SELECT 1 FROM reports WHERE id=?", [discardedReport])).resolves.toBeUndefined();
     await expect(ledger.get("SELECT 1 FROM charts WHERE id=?", [discardedChart])).resolves.toBeUndefined();
     await expect(ledger.get("SELECT status FROM charts WHERE id=?", [otherChart])).resolves.toEqual({
@@ -358,6 +360,53 @@ describe("RunStore", () => {
     });
     await expect(store.getPublishedReport(account, selectedReport)).resolves.toBeUndefined();
     await expect(store.deletePublishedChartRow(account, selectedChart)).resolves.toBe(true);
+  });
+
+  it("retains published chart provenance until chat deletion safely severs it", async () => {
+    const { ledger, store } = await setup();
+    const account = await insertUser(ledger, "chart-lineage-owner");
+    const foreign = await insertUser(ledger, "chart-lineage-foreign");
+    const chat = await insertChat(ledger, account, "Chart lineage chat");
+    const run = await insertRun(ledger, account, chat);
+    const chart = await insertPendingChart(store, account, run, "lineage");
+
+    await expect(
+      store.completeRunWithAssistant(account, chat, run, {
+        content: "Published chart",
+        meta: { charts: [chart], report: null },
+      })
+    ).resolves.toMatchObject({ status: "completed" });
+    await expect(store.listPublishedCharts(account)).resolves.toEqual([
+      {
+        id: chart,
+        run_id: run,
+        chat_id: chat,
+        title: "lineage",
+        kind: "bar",
+        created_at: expect.any(String),
+      },
+    ]);
+    await expect(store.listPublishedCharts(foreign)).resolves.toEqual([]);
+    await expect(store.getPublishedChart(foreign, chart)).resolves.toBeUndefined();
+
+    // Completed-run cleanup remains pending-only even though the published row
+    // deliberately retains the same run id.
+    await expect(store.deletePendingArtifactRows(account, run, [])).resolves.toEqual({ reports: 0, charts: 0 });
+    await expect(store.getPublishedChart(account, chart)).resolves.toMatchObject({ id: chart });
+
+    await ledger.run("DELETE FROM chats WHERE id=? AND account_id=?", [chat, account]);
+    await expect(ledger.get("SELECT 1 FROM chat_runs WHERE id=?", [run])).resolves.toBeUndefined();
+    await expect(store.getPublishedChart(account, chart)).resolves.toMatchObject({ id: chart });
+    await expect(store.listPublishedCharts(account)).resolves.toEqual([
+      {
+        id: chart,
+        run_id: null,
+        chat_id: null,
+        title: "lineage",
+        kind: "bar",
+        created_at: expect.any(String),
+      },
+    ]);
   });
 
   it("chains per-chat report versions over published reports and stores bounded payloads", async () => {
@@ -437,7 +486,7 @@ describe("RunStore", () => {
     expect(stored).toMatchObject({ version: 4 });
     expect(stored?.payload).toBeUndefined();
 
-    const listed = await store.listPublishedReports(account);
+    const listed = (await store.listPublishedReports(account)).items;
     const versionedChatReports = listed.filter((report) => report.chat_id === chat);
     expect(versionedChatReports.map((report) => report.version)).toEqual([4, 3, 2, 1]);
     expect(listed.find((report) => report.chat_id === otherChat)).toMatchObject({ version: 1 });

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { BarChart3, Trash2, FileText, Eye, Download, MessageSquare, Pencil } from "lucide-react";
+import { BarChart3, Trash2, FileText, Eye, Download, MessageSquare, Pencil, Loader2 } from "lucide-react";
 import {
   api,
   reportsApi,
@@ -12,6 +12,7 @@ import {
   formatApiError,
   openProtected,
 } from "@/lib/api";
+import { mergeCatalogContinuation, mergeCatalogHead } from "@/lib/catalogMerge";
 import { formatDate } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -75,6 +76,8 @@ function ChartArtifactCard({ chart }: { chart: ChartArtifactSummary }) {
 
 export function ReportsView() {
   const [reports, setReports] = useState<Report[]>([]);
+  const [reportsNextCursor, setReportsNextCursor] = useState<string | null>(null);
+  const [reportsLoadingMore, setReportsLoadingMore] = useState(false);
   const [charts, setCharts] = useState<ChartArtifactSummary[]>([]);
   const [chartsError, setChartsError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -87,111 +90,301 @@ export function ReportsView() {
   const [renameValue, setRenameValue] = useState("");
   const [renaming, setRenaming] = useState(false);
   const [sharedReports, setSharedReports] = useState<SharedReport[]>([]);
+  const [sharedNextCursor, setSharedNextCursor] = useState<string | null>(null);
+  const [sharedLoadingMore, setSharedLoadingMore] = useState(false);
   const [shareTarget, setShareTarget] = useState<Report | null>(null);
   const [shareAccounts, setShareAccounts] = useState<Array<{ id: string; email: string }>>([]);
   const [shareList, setShareList] = useState<ReportShare[]>([]);
   const [sharing, setSharing] = useState(false);
   const previewRequestRef = useRef(0);
   const previewAbortRef = useRef<AbortController | null>(null);
+  const shareRequestRef = useRef(0);
+  const shareAbortRef = useRef<AbortController | null>(null);
+  const renameRequestRef = useRef(0);
+  const renameAbortRef = useRef<AbortController | null>(null);
+  const renameTargetIdRef = useRef<string | null>(null);
+  const deleteRequestRef = useRef(0);
+  const deleteRequestsRef = useRef(new Map<string, { requestId: number; abort: AbortController }>());
+  const reportsCatalogRequestRef = useRef(0);
+  const reportsNextCursorRef = useRef<string | null>(null);
+  const reportsLoadingMoreOwnerRef = useRef<number | null>(null);
+  const sharedCatalogRequestRef = useRef(0);
+  const sharedNextCursorRef = useRef<string | null>(null);
+  const sharedLoadingMoreOwnerRef = useRef<number | null>(null);
+  const mountedRef = useRef(false);
+
+  const invalidateReportsCatalog = () => {
+    reportsCatalogRequestRef.current += 1;
+    reportsLoadingMoreOwnerRef.current = null;
+    setReportsLoadingMore(false);
+    setLoading(false);
+  };
 
   const load = useCallback(async () => {
+    const reportsRequestId = ++reportsCatalogRequestRef.current;
+    const sharedRequestId = ++sharedCatalogRequestRef.current;
+    reportsLoadingMoreOwnerRef.current = null;
+    sharedLoadingMoreOwnerRef.current = null;
+    setReportsLoadingMore(false);
+    setSharedLoadingMore(false);
     setPageError(null);
     setChartsError(null);
     try {
-      const [reportRows, chartRows] = await Promise.all([reportsApi.list(), chartsApi.list()]);
-      setReports(reportRows);
-      setCharts(chartRows);
+      const [reportPage, chartRows] = await Promise.all([reportsApi.list(), chartsApi.list()]);
+      if (mountedRef.current && reportsRequestId === reportsCatalogRequestRef.current) {
+        setReports((current) => mergeCatalogHead(reportPage.items, current));
+        reportsNextCursorRef.current = reportPage.next_cursor;
+        setReportsNextCursor(reportPage.next_cursor);
+        setCharts(chartRows);
+      }
     } catch (failure: unknown) {
       // Reports stay usable when only the chart registry fails.
       try {
-        setReports(await reportsApi.list());
-        setChartsError(formatApiError(failure, "Could not load the chart gallery"));
+        const reportPage = await reportsApi.list();
+        if (mountedRef.current && reportsRequestId === reportsCatalogRequestRef.current) {
+          setReports((current) => mergeCatalogHead(reportPage.items, current));
+          reportsNextCursorRef.current = reportPage.next_cursor;
+          setReportsNextCursor(reportPage.next_cursor);
+          setChartsError(formatApiError(failure, "Could not load the chart gallery"));
+        }
       } catch (reportFailure: unknown) {
-        setPageError(formatApiError(reportFailure, "Could not load reports"));
+        if (mountedRef.current && reportsRequestId === reportsCatalogRequestRef.current) {
+          setPageError(formatApiError(reportFailure, "Could not load reports"));
+        }
       }
     } finally {
-      setLoading(false);
+      if (mountedRef.current && reportsRequestId === reportsCatalogRequestRef.current) setLoading(false);
     }
     try {
-      setSharedReports(await reportsApi.listShared());
-    } catch {
-      setSharedReports([]);
-    }
+      const sharedPage = await reportsApi.listShared();
+      if (!mountedRef.current || sharedRequestId !== sharedCatalogRequestRef.current) return;
+      setSharedReports((current) => mergeCatalogHead(sharedPage.items, current));
+      sharedNextCursorRef.current = sharedPage.next_cursor;
+      setSharedNextCursor(sharedPage.next_cursor);
+    } catch {}
   }, []);
 
-  useEffect(() => {
-    load();
-    return () => previewAbortRef.current?.abort();
-  }, [load]);
-
-  const remove = async (r: Report) => {
+  const loadMoreReports = async () => {
+    const cursor = reportsNextCursorRef.current;
+    if (!cursor || reportsLoadingMoreOwnerRef.current !== null) return;
+    const requestId = ++reportsCatalogRequestRef.current;
+    reportsLoadingMoreOwnerRef.current = requestId;
+    setReportsLoadingMore(true);
     setPageError(null);
     try {
-      await reportsApi.remove(r.id);
-      await load();
+      const page = await reportsApi.list({ cursor });
+      if (!mountedRef.current || requestId !== reportsCatalogRequestRef.current) return;
+      reportsNextCursorRef.current = page.next_cursor;
+      setReportsNextCursor(page.next_cursor);
+      setReports((current) => mergeCatalogContinuation(current, page.items));
     } catch (failure: unknown) {
-      setPageError(formatApiError(failure, "Could not delete the report"));
+      if (mountedRef.current && requestId === reportsCatalogRequestRef.current) {
+        setPageError(formatApiError(failure, "Could not load older reports"));
+      }
+    } finally {
+      if (reportsLoadingMoreOwnerRef.current === requestId) {
+        reportsLoadingMoreOwnerRef.current = null;
+        if (mountedRef.current) setReportsLoadingMore(false);
+      }
+    }
+  };
+
+  const loadMoreSharedReports = async () => {
+    const cursor = sharedNextCursorRef.current;
+    if (!cursor || sharedLoadingMoreOwnerRef.current !== null) return;
+    const requestId = ++sharedCatalogRequestRef.current;
+    sharedLoadingMoreOwnerRef.current = requestId;
+    setSharedLoadingMore(true);
+    setPageError(null);
+    try {
+      const page = await reportsApi.listShared({ cursor });
+      if (!mountedRef.current || requestId !== sharedCatalogRequestRef.current) return;
+      sharedNextCursorRef.current = page.next_cursor;
+      setSharedNextCursor(page.next_cursor);
+      setSharedReports((current) => mergeCatalogContinuation(current, page.items));
+    } catch (failure: unknown) {
+      if (mountedRef.current && requestId === sharedCatalogRequestRef.current) {
+        setPageError(formatApiError(failure, "Could not load older shared reports"));
+      }
+    } finally {
+      if (sharedLoadingMoreOwnerRef.current === requestId) {
+        sharedLoadingMoreOwnerRef.current = null;
+        if (mountedRef.current) setSharedLoadingMore(false);
+      }
+    }
+  };
+
+  useEffect(() => {
+    const deleteRequests = deleteRequestsRef.current;
+    mountedRef.current = true;
+    void load();
+    return () => {
+      mountedRef.current = false;
+      reportsCatalogRequestRef.current += 1;
+      sharedCatalogRequestRef.current += 1;
+      reportsLoadingMoreOwnerRef.current = null;
+      sharedLoadingMoreOwnerRef.current = null;
+      previewRequestRef.current += 1;
+      previewAbortRef.current?.abort();
+      shareRequestRef.current += 1;
+      shareAbortRef.current?.abort();
+      renameRequestRef.current += 1;
+      renameAbortRef.current?.abort();
+      for (const request of deleteRequests.values()) request.abort.abort();
+      deleteRequests.clear();
+    };
+  }, [load]);
+
+  const openRenameDialog = (report: Report) => {
+    renameRequestRef.current += 1;
+    renameAbortRef.current?.abort();
+    renameAbortRef.current = null;
+    renameTargetIdRef.current = report.id;
+    setRenaming(false);
+    setRenameTarget(report);
+    setRenameValue(report.title);
+  };
+
+  const closeRenameDialog = () => {
+    renameTargetIdRef.current = null;
+    renameRequestRef.current += 1;
+    renameAbortRef.current?.abort();
+    renameAbortRef.current = null;
+    setRenaming(false);
+    setRenameTarget(null);
+  };
+
+  const remove = async (r: Report) => {
+    const targetId = r.id;
+    const requestId = ++deleteRequestRef.current;
+    deleteRequestsRef.current.get(targetId)?.abort.abort();
+    const abort = new AbortController();
+    deleteRequestsRef.current.set(targetId, { requestId, abort });
+    setPageError(null);
+    try {
+      await reportsApi.remove(targetId, abort.signal);
+      if (deleteRequestsRef.current.get(targetId)?.requestId !== requestId || abort.signal.aborted) return;
+      invalidateReportsCatalog();
+      setReports((current) => current.filter((report) => report.id !== targetId));
+    } catch (failure: unknown) {
+      if (deleteRequestsRef.current.get(targetId)?.requestId === requestId && !abort.signal.aborted) {
+        setPageError(formatApiError(failure, "Could not delete the report"));
+      }
+    } finally {
+      if (deleteRequestsRef.current.get(targetId)?.requestId === requestId) {
+        deleteRequestsRef.current.delete(targetId);
+      }
     }
   };
 
   const submitRename = async () => {
     if (!renameTarget) return;
+    const targetId = renameTarget.id;
     const title = renameValue.trim();
     if (!title) return;
+    const requestId = ++renameRequestRef.current;
+    renameAbortRef.current?.abort();
+    const abort = new AbortController();
+    renameAbortRef.current = abort;
     setRenaming(true);
     setPageError(null);
     try {
-      const renamed = await reportsApi.rename(renameTarget.id, title);
+      const renamed = await reportsApi.rename(targetId, title, abort.signal);
+      if (requestId !== renameRequestRef.current || abort.signal.aborted || renameTargetIdRef.current !== targetId)
+        return;
+      invalidateReportsCatalog();
       setReports((current) => current.map((report) => (report.id === renamed.id ? renamed : report)));
-      setRenameTarget(null);
+      closeRenameDialog();
     } catch (failure: unknown) {
-      setPageError(formatApiError(failure, "Could not rename the report"));
+      if (requestId === renameRequestRef.current && !abort.signal.aborted && renameTargetIdRef.current === targetId) {
+        setPageError(formatApiError(failure, "Could not rename the report"));
+      }
     } finally {
-      setRenaming(false);
+      if (requestId === renameRequestRef.current && !abort.signal.aborted && renameTargetIdRef.current === targetId)
+        setRenaming(false);
     }
   };
 
   const openShareDialog = async (report: Report) => {
+    const requestId = ++shareRequestRef.current;
+    shareAbortRef.current?.abort();
+    const abort = new AbortController();
+    shareAbortRef.current = abort;
     setShareTarget(report);
+    setShareAccounts([]);
+    setShareList([]);
     setSharing(true);
     setPageError(null);
     try {
       const [accounts, shares] = await Promise.all([
-        api<Array<{ id: string; email: string }>>("/api/accounts"),
-        reportsApi.listShares(report.id),
+        api<Array<{ id: string; email: string }>>("/api/accounts", { signal: abort.signal }),
+        reportsApi.listShares(report.id, abort.signal),
       ]);
-      setShareAccounts(accounts);
-      setShareList(shares);
+      if (requestId === shareRequestRef.current && !abort.signal.aborted) {
+        setShareAccounts(accounts);
+        setShareList(shares);
+      }
     } catch (failure: unknown) {
-      setPageError(formatApiError(failure, "Could not load sharing state"));
+      if (requestId === shareRequestRef.current && !abort.signal.aborted) {
+        setPageError(formatApiError(failure, "Could not load sharing state"));
+      }
     } finally {
-      setSharing(false);
+      if (requestId === shareRequestRef.current && !abort.signal.aborted) setSharing(false);
     }
   };
 
   const shareWith = async (recipientAccountId: string) => {
     if (!shareTarget) return;
+    const reportId = shareTarget.id;
+    const requestId = ++shareRequestRef.current;
+    shareAbortRef.current?.abort();
+    const abort = new AbortController();
+    shareAbortRef.current = abort;
     setSharing(true);
     setPageError(null);
     try {
-      await reportsApi.share(shareTarget.id, recipientAccountId);
-      setShareList(await reportsApi.listShares(shareTarget.id));
+      await reportsApi.share(reportId, recipientAccountId, abort.signal);
+      const shares = await reportsApi.listShares(reportId, abort.signal);
+      if (requestId === shareRequestRef.current && !abort.signal.aborted) setShareList(shares);
     } catch (failure: unknown) {
-      setPageError(formatApiError(failure, "Could not share the report"));
+      if (requestId === shareRequestRef.current && !abort.signal.aborted) {
+        setPageError(formatApiError(failure, "Could not share the report"));
+      }
     } finally {
-      setSharing(false);
+      if (requestId === shareRequestRef.current && !abort.signal.aborted) setSharing(false);
     }
   };
 
   const revokeShare = async (recipientAccountId: string) => {
     if (!shareTarget) return;
+    const reportId = shareTarget.id;
+    const requestId = ++shareRequestRef.current;
+    shareAbortRef.current?.abort();
+    const abort = new AbortController();
+    shareAbortRef.current = abort;
+    setSharing(true);
     setPageError(null);
     try {
-      await reportsApi.revoke(shareTarget.id, recipientAccountId);
-      setShareList(await reportsApi.listShares(shareTarget.id));
+      await reportsApi.revoke(reportId, recipientAccountId, abort.signal);
+      const shares = await reportsApi.listShares(reportId, abort.signal);
+      if (requestId === shareRequestRef.current && !abort.signal.aborted) setShareList(shares);
     } catch (failure: unknown) {
-      setPageError(formatApiError(failure, "Could not revoke the share"));
+      if (requestId === shareRequestRef.current && !abort.signal.aborted) {
+        setPageError(formatApiError(failure, "Could not revoke the share"));
+      }
+    } finally {
+      if (requestId === shareRequestRef.current && !abort.signal.aborted) setSharing(false);
     }
+  };
+
+  const closeShareDialog = () => {
+    shareRequestRef.current += 1;
+    shareAbortRef.current?.abort();
+    shareAbortRef.current = null;
+    setShareTarget(null);
+    setShareAccounts([]);
+    setShareList([]);
+    setSharing(false);
   };
 
   const download = async (report: Report) => {
@@ -317,10 +510,7 @@ export function ReportsView() {
                   <Button
                     variant="ghost"
                     size="icon"
-                    onClick={() => {
-                      setRenameTarget(r);
-                      setRenameValue(r.title);
-                    }}
+                    onClick={() => openRenameDialog(r)}
                     title="Rename report"
                     className="text-muted-foreground hover:text-primary"
                   >
@@ -348,6 +538,14 @@ export function ReportsView() {
               </Card>
             );
           })}
+          {reportsNextCursor && (
+            <div className="flex justify-center pt-2">
+              <Button variant="outline" size="sm" onClick={() => void loadMoreReports()} disabled={reportsLoadingMore}>
+                {reportsLoadingMore && <Loader2 className="animate-spin" />}
+                Load older reports
+              </Button>
+            </div>
+          )}
         </div>
       )}
 
@@ -410,6 +608,19 @@ export function ReportsView() {
                 </div>
               </Card>
             ))}
+            {sharedNextCursor && (
+              <div className="flex justify-center pt-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void loadMoreSharedReports()}
+                  disabled={sharedLoadingMore}
+                >
+                  {sharedLoadingMore && <Loader2 className="animate-spin" />}
+                  Load older shared reports
+                </Button>
+              </div>
+            )}
           </div>
         </section>
       )}
@@ -436,7 +647,7 @@ export function ReportsView() {
       )}
 
       {/* rename dialog */}
-      <Dialog open={!!renameTarget} onOpenChange={(open) => !open && setRenameTarget(null)}>
+      <Dialog open={!!renameTarget} onOpenChange={(open) => !open && closeRenameDialog()}>
         <DialogContent className="max-w-md">
           <DialogHeader>
             <DialogTitle>Rename report</DialogTitle>
@@ -457,7 +668,7 @@ export function ReportsView() {
               autoFocus
             />
             <div className="flex justify-end gap-2">
-              <Button type="button" variant="ghost" size="sm" onClick={() => setRenameTarget(null)}>
+              <Button type="button" variant="ghost" size="sm" onClick={closeRenameDialog}>
                 Cancel
               </Button>
               <Button type="submit" size="sm" disabled={renaming || !renameValue.trim()}>
@@ -469,7 +680,7 @@ export function ReportsView() {
       </Dialog>
 
       {/* share dialog */}
-      <Dialog open={!!shareTarget} onOpenChange={(open) => !open && setShareTarget(null)}>
+      <Dialog open={!!shareTarget} onOpenChange={(open) => !open && closeShareDialog()}>
         <DialogContent className="max-w-md">
           <DialogHeader>
             <DialogTitle>Share "{shareTarget?.title}"</DialogTitle>

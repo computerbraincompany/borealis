@@ -14,6 +14,7 @@ vi.mock("../data/datasets.js", () => ({
   extractDataset: vi.fn(),
   extractDatasetCandidate: vi.fn(),
   inspectDataset: vi.fn(),
+  listDatasetSummaries: vi.fn(),
   listDatasets: vi.fn(),
   queryDataset: vi.fn(),
   registerDataset: vi.fn(),
@@ -71,6 +72,7 @@ import {
   extractDataset,
   extractDatasetCandidate,
   inspectDataset,
+  listDatasetSummaries,
   listDatasets,
   queryDataset,
   registerDataset,
@@ -112,6 +114,7 @@ const describeMock = vi.mocked(describeDataset);
 const extractMock = vi.mocked(extractDataset);
 const extractCandidateMock = vi.mocked(extractDatasetCandidate);
 const listMock = vi.mocked(listDatasets);
+const summaryListMock = vi.mocked(listDatasetSummaries);
 const catalogMock = vi.mocked(catalogDatasets);
 const deactivateMock = vi.mocked(deactivateDatasetIfLocation);
 const connectorPathMock = vi.mocked(connectorVersionPath);
@@ -353,6 +356,7 @@ describe("in-process data facade", () => {
 
   it("keeps list, catalog, query, describe, extract, and deactivate scoped in-process", async () => {
     listMock.mockResolvedValue([]);
+    summaryListMock.mockResolvedValue([]);
     catalogMock.mockResolvedValue({ datasets: [], total: 0, returned: 0, omitted: 0, truncated: false });
     queryMock.mockResolvedValue({ columns: [], rows: [], row_count: 0 } as any);
     describeMock.mockResolvedValue({ table: "ledger" } as any);
@@ -369,7 +373,7 @@ describe("in-process data facade", () => {
     deactivateMock.mockResolvedValue(true);
 
     await dataService.listDatasets(ACCOUNT);
-    await dataService.listDatasetSummaries(ACCOUNT);
+    await dataService.listDatasetSummaries(ACCOUNT, ["ledger", "document_only"]);
     await dataService.listDatasetCatalog(ACCOUNT, ["ledger"]);
     await dataService.query(ACCOUNT, "SELECT * FROM ledger", ["ledger"]);
     await dataService.describe(ACCOUNT, "ledger", ["ledger"]);
@@ -379,8 +383,8 @@ describe("in-process data facade", () => {
       status: "dropped",
     });
 
-    expect(listMock).toHaveBeenNthCalledWith(1, ACCOUNT, false, expect.any(AbortSignal));
-    expect(listMock).toHaveBeenNthCalledWith(2, ACCOUNT, true, expect.any(AbortSignal));
+    expect(listMock).toHaveBeenCalledWith(ACCOUNT, false, expect.any(AbortSignal));
+    expect(summaryListMock).toHaveBeenCalledWith(ACCOUNT, ["ledger", "document_only"], expect.any(AbortSignal));
     expect(catalogMock).toHaveBeenCalledWith(ACCOUNT, ["ledger"], expect.any(AbortSignal));
     expect(queryMock).toHaveBeenCalledWith(ACCOUNT, "SELECT * FROM ledger", ["ledger"], expect.any(AbortSignal));
     expect(describeMock).toHaveBeenCalledWith(ACCOUNT, "ledger", ["ledger"], expect.any(AbortSignal));

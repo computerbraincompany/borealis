@@ -208,6 +208,84 @@ export interface Chat {
   updated_at: string;
 }
 
+export interface CatalogPage<T> {
+  items: T[];
+  next_cursor: string | null;
+}
+
+export interface CatalogPageOptions {
+  cursor?: string | null;
+  limit?: number;
+  signal?: AbortSignal;
+}
+
+export interface CatalogStatus<T> {
+  items: T[];
+  missing_ids: string[];
+}
+
+const RESOURCE_ID_PATTERN = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+
+function parseCatalogStatus<T>(
+  payload: unknown,
+  requestedIds: readonly string[],
+  parseItems: (value: unknown) => T[],
+  itemId: (item: T) => string,
+): CatalogStatus<T> {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    throw new Error("invalid catalog status response");
+  }
+  const value = payload as Record<string, unknown>;
+  if (!Array.isArray(value.items) || !Array.isArray(value.missing_ids)) {
+    throw new Error("invalid catalog status response");
+  }
+  const items = parseItems(value.items);
+  const missingIds = value.missing_ids;
+  if (
+    items.length !== value.items.length ||
+    missingIds.some((id) => typeof id !== "string" || !RESOURCE_ID_PATTERN.test(id))
+  ) {
+    throw new Error("invalid catalog status response");
+  }
+  const requested = new Set(requestedIds);
+  const seen = new Set<string>();
+  for (const id of [...items.map(itemId), ...(missingIds as string[])]) {
+    if (!requested.has(id) || seen.has(id)) throw new Error("invalid catalog status response");
+    seen.add(id);
+  }
+  if (seen.size !== requested.size) throw new Error("invalid catalog status response");
+  return { items, missing_ids: missingIds as string[] };
+}
+
+function catalogPath(base: string, options: CatalogPageOptions = {}): string {
+  const params = new URLSearchParams();
+  // Preserve an explicitly supplied invalid cursor so the server can reject it.
+  // Silently omitting it would widen the request back to page one.
+  if (options.cursor !== undefined && options.cursor !== null) params.set("cursor", options.cursor);
+  if (options.limit !== undefined) params.set("limit", String(options.limit));
+  return params.size ? `${base}?${params.toString()}` : base;
+}
+
+function parseCatalogEnvelope<T>(payload: unknown, parseItems: (value: unknown) => T[]): CatalogPage<T> {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) throw new Error("invalid catalog response");
+  const value = payload as Record<string, unknown>;
+  if (
+    !Array.isArray(value.items) ||
+    (value.next_cursor !== null &&
+      (typeof value.next_cursor !== "string" ||
+        value.next_cursor.length < 1 ||
+        value.next_cursor.length > 512 ||
+        !/^[A-Za-z0-9_-]+$/.test(value.next_cursor)))
+  ) {
+    throw new Error("invalid catalog response");
+  }
+  return { items: parseItems(value.items), next_cursor: value.next_cursor as string | null };
+}
+
+function parseTypedCatalogEnvelope<T>(payload: unknown): CatalogPage<T> {
+  return parseCatalogEnvelope(payload, (items) => items as T[]);
+}
+
 export interface Message {
   id: string;
   role: "user" | "assistant" | "system";
@@ -441,7 +519,8 @@ export type ProviderSettingName =
   | "llm_api_key"
   | "lm_studio_base_url"
   | "default_chat_model"
-  | "default_embed_model";
+  | "default_embed_model"
+  | "embedding_dimension";
 
 export interface ProviderSettingsResponse {
   llm_base_url: string;
@@ -450,6 +529,7 @@ export interface ProviderSettingsResponse {
   lm_studio_base_url: string | null;
   default_chat_model: string;
   default_embed_model: string;
+  embedding_dimension: number;
   managed_by_env: Record<ProviderSettingName, boolean>;
 }
 
@@ -460,11 +540,61 @@ export interface ProviderSettingsPatch {
   lm_studio_base_url?: string | null;
   default_chat_model?: string;
   default_embed_model?: string;
+  embedding_dimension?: number;
 }
 
 export interface ProviderConnectionTestResponse {
   ok: true;
   latency_ms: number;
+}
+
+export type ChatQualificationReason = "qualified" | "unreachable" | "tool-call-missing" | "tool-call-invalid";
+export type EmbeddingQualificationReason = "qualified" | "unreachable" | "embedding-invalid" | "dimension-mismatch";
+
+export interface ModelPairQualificationResult {
+  chat: {
+    qualified: boolean;
+    reason_code: ChatQualificationReason;
+    latency_ms: number;
+  };
+  embedding: {
+    qualified: boolean;
+    reason_code: EmbeddingQualificationReason;
+    dimension: number | null;
+    latency_ms: number;
+  };
+}
+
+export type ModelPairQualificationRequest = Omit<ProviderSettingsPatch, "lm_studio_base_url"> & {
+  expected_dimension: number;
+  remote_egress_ack_origin?: string;
+};
+
+export type EmbeddingMigrationPhase =
+  | "idle"
+  | "snapshotting"
+  | "building"
+  | "ready_to_apply"
+  | "apply_pending"
+  | "failed";
+
+export interface EmbeddingMigrationStatus {
+  phase: EmbeddingMigrationPhase;
+  target_model: string | null;
+  target_dimension: number | null;
+  source_count: number;
+  chunk_count: number;
+  indexed_count: number;
+  error_code: string | null;
+  restart_required: boolean;
+  can_cancel: boolean;
+  can_retry: boolean;
+  can_apply: boolean;
+}
+
+export interface EmbeddingMigrationStartRequest {
+  target_embed_model: string;
+  target_dimension: number;
 }
 
 export type ServiceHealthId = "api" | "database" | "data_service" | "model_gateway" | "model_runtime";
@@ -523,20 +653,9 @@ export interface Source {
   tabular?: { rows: number; table: string; original_name: string };
 }
 
-type SourceListPayload = Source[] | { sources?: unknown; items?: unknown };
-
-/** Accept the compact source DTO as well as the legacy array without trusting either shape. */
+/** Normalize compact source DTO rows without trusting their shape. */
 export function parseSourceListPayload(payload: unknown): Source[] {
-  const container = payload as SourceListPayload;
-  const candidates = Array.isArray(container)
-    ? container
-    : container && typeof container === "object"
-      ? Array.isArray(container.sources)
-        ? container.sources
-        : Array.isArray(container.items)
-          ? container.items
-          : []
-      : [];
+  const candidates = Array.isArray(payload) ? payload : [];
 
   return candidates.flatMap((candidate) => {
     if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return [];
@@ -848,11 +967,18 @@ export const authApi = {
 
 // ------------------------------------------------------------------ chats
 export const chatsApi = {
-  list: () => api<Chat[]>("/api/chats"),
-  create: (title?: string, scope: SourceScopeInput = { source_mode: "selected", source_ids: [] }, agentId?: string) =>
+  list: async (options: CatalogPageOptions = {}) =>
+    parseTypedCatalogEnvelope<Chat>(await api<unknown>(catalogPath("/api/chats", options), { signal: options.signal })),
+  create: (
+    title?: string,
+    scope: SourceScopeInput = { source_mode: "selected", source_ids: [] },
+    agentId?: string,
+    signal?: AbortSignal,
+  ) =>
     api<Chat>("/api/chats", {
       method: "POST",
       body: JSON.stringify({ title, ...scope, ...(agentId ? { agent_id: agentId } : {}) }),
+      signal,
     }),
   get: (id: string, page?: { beforeMessageId?: string; limit?: number }) => {
     const params = new URLSearchParams();
@@ -883,24 +1009,48 @@ export const chatsApi = {
 // ------------------------------------------------------------------ models
 export const modelsApi = {
   list: (refresh = false) => api<ModelsResponse>(`/api/models${refresh ? "?refresh=1" : ""}`),
+  qualify: (body: ModelPairQualificationRequest, signal?: AbortSignal) =>
+    api<ModelPairQualificationResult>("/api/models/qualify", {
+      method: "POST",
+      body: JSON.stringify(body),
+      signal,
+    }),
+  embeddingMigrationStatus: (signal?: AbortSignal) =>
+    api<EmbeddingMigrationStatus>("/api/models/embedding-migration", { signal }),
+  startEmbeddingMigration: (body: EmbeddingMigrationStartRequest) =>
+    api<EmbeddingMigrationStatus>("/api/models/embedding-migration/start", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  retryEmbeddingMigration: () =>
+    api<EmbeddingMigrationStatus>("/api/models/embedding-migration/retry", { method: "POST" }),
+  cancelEmbeddingMigration: () =>
+    api<EmbeddingMigrationStatus>("/api/models/embedding-migration/cancel", { method: "POST" }),
+  applyEmbeddingMigration: () =>
+    api<EmbeddingMigrationStatus>("/api/models/embedding-migration/apply", { method: "POST" }),
 };
 
 // ------------------------------------------------------------------ settings
 export const settingsApi = {
   get: (signal?: AbortSignal) => api<ProviderSettingsResponse>("/api/settings", { signal }),
-  update: (body: ProviderSettingsPatch) =>
-    api<ProviderSettingsResponse>("/api/settings", { method: "PATCH", body: JSON.stringify(body) }),
-  testConnection: (body: ProviderSettingsPatch) =>
-    api<ProviderConnectionTestResponse>("/api/settings/test", { method: "POST", body: JSON.stringify(body) }),
+  update: (body: ProviderSettingsPatch, signal?: AbortSignal) =>
+    api<ProviderSettingsResponse>("/api/settings", { method: "PATCH", body: JSON.stringify(body), signal }),
+  testConnection: (body: ProviderSettingsPatch, signal?: AbortSignal) =>
+    api<ProviderConnectionTestResponse>("/api/settings/test", {
+      method: "POST",
+      body: JSON.stringify(body),
+      signal,
+    }),
 };
 
 // ------------------------------------------------------------------ preferences
 export const preferencesApi = {
-  get: () => api<AccountPreferences>("/api/preferences"),
-  set: (defaultChatModel: string | null) =>
+  get: (signal?: AbortSignal) => api<AccountPreferences>("/api/preferences", { signal }),
+  set: (defaultChatModel: string | null, signal?: AbortSignal) =>
     api<AccountPreferences>("/api/preferences", {
       method: "PATCH",
       body: JSON.stringify({ default_chat_model: defaultChatModel }),
+      signal,
     }),
 };
 
@@ -913,7 +1063,7 @@ export interface EgressEvent {
 }
 
 export const auditApi = {
-  egress: (limit = 50) => api<EgressEvent[]>(`/api/audit/egress?limit=${limit}`),
+  egress: (limit = 50, signal?: AbortSignal) => api<EgressEvent[]>(`/api/audit/egress?limit=${limit}`, { signal }),
 };
 
 // ------------------------------------------------------------------ shares
@@ -961,18 +1111,29 @@ export interface AutomationRun {
 }
 
 export const automationsApi = {
-  list: () => api<Automation[]>("/api/automations"),
-  create: (body: {
-    name: string;
-    kind: AutomationKind;
-    target_id: string;
-    prompt?: string;
-    schedule_minutes: number;
-  }) => api<Automation>("/api/automations", { method: "POST", body: JSON.stringify(body) }),
-  update: (id: string, patch: { name?: string; state?: "active" | "paused"; schedule_minutes?: number }) =>
-    api<Automation>(`/api/automations/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
-  remove: (id: string) => api<{ ok: true }>(`/api/automations/${id}`, { method: "DELETE" }),
-  runs: (id: string, limit = 20) => api<AutomationRun[]>(`/api/automations/${id}/runs?limit=${limit}`),
+  list: async (options: CatalogPageOptions = {}) =>
+    parseTypedCatalogEnvelope<Automation>(
+      await api<unknown>(catalogPath("/api/automations", options), { signal: options.signal }),
+    ),
+  create: (
+    body: {
+      name: string;
+      kind: AutomationKind;
+      target_id: string;
+      prompt?: string;
+      schedule_minutes: number;
+    },
+    signal?: AbortSignal,
+  ) => api<Automation>("/api/automations", { method: "POST", body: JSON.stringify(body), signal }),
+  update: (
+    id: string,
+    patch: { name?: string; state?: "active" | "paused"; schedule_minutes?: number },
+    signal?: AbortSignal,
+  ) => api<Automation>(`/api/automations/${id}`, { method: "PATCH", body: JSON.stringify(patch), signal }),
+  remove: (id: string, signal?: AbortSignal) =>
+    api<{ ok: true }>(`/api/automations/${id}`, { method: "DELETE", signal }),
+  runs: (id: string, limit = 20, signal?: AbortSignal) =>
+    api<AutomationRun[]>(`/api/automations/${id}/runs?limit=${limit}`, { signal }),
 };
 
 // ------------------------------------------------------------------ system
@@ -1011,7 +1172,10 @@ export interface AgentDetail extends AgentSummary {
 export const MAX_AGENT_INSTRUCTION_CHARS = 8_000;
 
 export const agentsApi = {
-  list: () => api<AgentSummary[]>("/api/agents"),
+  list: async (options: CatalogPageOptions = {}) =>
+    parseTypedCatalogEnvelope<AgentSummary>(
+      await api<unknown>(catalogPath("/api/agents", options), { signal: options.signal }),
+    ),
   create: (name: string, instructions: string) =>
     api<AgentSummary>("/api/agents", { method: "POST", body: JSON.stringify({ name, instructions }) }),
   get: (id: string) => api<AgentDetail>(`/api/agents/${id}`),
@@ -1036,22 +1200,38 @@ export interface LibraryDetail extends LibrarySummary {
 export const MAX_LIBRARY_MEMBERS = 100;
 
 export const librariesApi = {
-  list: () => api<LibrarySummary[]>("/api/libraries"),
-  create: (name: string) => api<LibrarySummary>("/api/libraries", { method: "POST", body: JSON.stringify({ name }) }),
-  get: (id: string) => api<LibraryDetail>(`/api/libraries/${id}`),
-  rename: (id: string, name: string) =>
-    api<LibrarySummary>(`/api/libraries/${id}`, { method: "PATCH", body: JSON.stringify({ name }) }),
-  setMembers: (id: string, sourceIds: string[]) =>
+  list: async (options: CatalogPageOptions = {}) =>
+    parseTypedCatalogEnvelope<LibrarySummary>(
+      await api<unknown>(catalogPath("/api/libraries", options), { signal: options.signal }),
+    ),
+  create: (name: string, signal?: AbortSignal) =>
+    api<LibrarySummary>("/api/libraries", { method: "POST", body: JSON.stringify({ name }), signal }),
+  get: (id: string, signal?: AbortSignal) => api<LibraryDetail>(`/api/libraries/${id}`, { signal }),
+  rename: (id: string, name: string, signal?: AbortSignal) =>
+    api<LibrarySummary>(`/api/libraries/${id}`, { method: "PATCH", body: JSON.stringify({ name }), signal }),
+  setMembers: (id: string, sourceIds: string[], signal?: AbortSignal) =>
     api<{ ok: true }>(`/api/libraries/${id}/sources`, {
       method: "PUT",
       body: JSON.stringify({ source_ids: sourceIds }),
+      signal,
     }),
-  remove: (id: string) => api<{ ok: true }>(`/api/libraries/${id}`, { method: "DELETE" }),
+  remove: (id: string, signal?: AbortSignal) => api<{ ok: true }>(`/api/libraries/${id}`, { method: "DELETE", signal }),
 };
 
 // ------------------------------------------------------------------ sources
 export const sourcesApi = {
-  list: async () => parseSourceListPayload(await api<unknown>("/api/sources")),
+  list: async (options: CatalogPageOptions = {}) =>
+    parseCatalogEnvelope(
+      await api<unknown>(catalogPath("/api/sources", options), { signal: options.signal }),
+      parseSourceListPayload,
+    ),
+  status: async (ids: string[], signal?: AbortSignal) =>
+    parseCatalogStatus(
+      await api<unknown>("/api/sources/status", { method: "POST", body: JSON.stringify({ ids }), signal }),
+      ids,
+      parseSourceListPayload,
+      (source) => source.id,
+    ),
   upload: (file: File) => {
     const fd = new FormData();
     fd.append("file", file);
@@ -1065,7 +1245,18 @@ export const sourcesApi = {
 const MAX_CONNECTOR_SYNC_HISTORY_LIMIT = 50;
 
 export const connectorsApi = {
-  list: async () => parseConnectorListPayload(await api<unknown>("/api/connectors")),
+  list: async (options: CatalogPageOptions = {}) =>
+    parseCatalogEnvelope(
+      await api<unknown>(catalogPath("/api/connectors", options), { signal: options.signal }),
+      parseConnectorListPayload,
+    ),
+  status: async (ids: string[], signal?: AbortSignal) =>
+    parseCatalogStatus(
+      await api<unknown>("/api/connectors/status", { method: "POST", body: JSON.stringify({ ids }), signal }),
+      ids,
+      parseConnectorListPayload,
+      (connector) => connector.id,
+    ),
   create: (body: {
     display_name: string;
     target_table: string;
@@ -1091,16 +1282,23 @@ export const connectorsApi = {
 
 // ------------------------------------------------------------------ reports
 export const reportsApi = {
-  list: () => api<Report[]>("/api/reports"),
-  listShared: () => api<SharedReport[]>("/api/reports/shared"),
-  listShares: (id: string) => api<ReportShare[]>(`/api/reports/${id}/shares`),
-  share: (id: string, recipientAccountId: string) =>
+  list: async (options: CatalogPageOptions = {}) =>
+    parseTypedCatalogEnvelope<Report>(
+      await api<unknown>(catalogPath("/api/reports", options), { signal: options.signal }),
+    ),
+  listShared: async (options: CatalogPageOptions = {}) =>
+    parseTypedCatalogEnvelope<SharedReport>(
+      await api<unknown>(catalogPath("/api/reports/shared", options), { signal: options.signal }),
+    ),
+  listShares: (id: string, signal?: AbortSignal) => api<ReportShare[]>(`/api/reports/${id}/shares`, { signal }),
+  share: (id: string, recipientAccountId: string, signal?: AbortSignal) =>
     api<ReportShare>(`/api/reports/${id}/shares`, {
       method: "POST",
       body: JSON.stringify({ recipient_account_id: recipientAccountId }),
+      signal,
     }),
-  revoke: (id: string, recipientAccountId: string) =>
-    api<{ ok: true }>(`/api/reports/${id}/shares/${recipientAccountId}`, { method: "DELETE" }),
+  revoke: (id: string, recipientAccountId: string, signal?: AbortSignal) =>
+    api<{ ok: true }>(`/api/reports/${id}/shares/${recipientAccountId}`, { method: "DELETE", signal }),
   get: (id: string) =>
     api<{
       id: string;
@@ -1114,9 +1312,9 @@ export const reportsApi = {
       supersedes: string | null;
       payload?: unknown;
     }>(`/api/reports/${id}`),
-  rename: (id: string, title: string) =>
-    api<Report>(`/api/reports/${id}`, { method: "PATCH", body: JSON.stringify({ title }) }),
-  remove: (id: string) => api<{ ok: true }>(`/api/reports/${id}`, { method: "DELETE" }),
+  rename: (id: string, title: string, signal?: AbortSignal) =>
+    api<Report>(`/api/reports/${id}`, { method: "PATCH", body: JSON.stringify({ title }), signal }),
+  remove: (id: string, signal?: AbortSignal) => api<{ ok: true }>(`/api/reports/${id}`, { method: "DELETE", signal }),
 };
 
 // ------------------------------------------------------------------ charts

@@ -10,9 +10,12 @@ interface ChatHistoryProps {
   chats: Chat[];
   activeChatId?: string;
   busyChatIds: ReadonlySet<string>;
+  hasMore: boolean;
+  loadingMore: boolean;
   onOpen: (id: string) => void;
   onDelete: (id: string) => void | Promise<void>;
   onRename: (id: string, title: string) => Promise<void>;
+  onLoadMore: () => void | Promise<void>;
 }
 
 interface RenameState {
@@ -44,7 +47,17 @@ function validateTitle(value: string): string | null {
   return null;
 }
 
-export function ChatHistory({ chats, activeChatId, busyChatIds, onOpen, onDelete, onRename }: ChatHistoryProps) {
+export function ChatHistory({
+  chats,
+  activeChatId,
+  busyChatIds,
+  hasMore,
+  loadingMore,
+  onOpen,
+  onDelete,
+  onRename,
+  onLoadMore,
+}: ChatHistoryProps) {
   const [search, setSearch] = useState("");
   const [rename, setRename] = useState<RenameState | null>(null);
   const normalizedSearch = search.trim().toLocaleLowerCase();
@@ -280,6 +293,17 @@ export function ChatHistory({ chats, activeChatId, busyChatIds, onOpen, onDelete
               </section>
             ))}
           </div>
+        )}
+        {hasMore && (
+          <button
+            type="button"
+            disabled={loadingMore}
+            onClick={() => void onLoadMore()}
+            className="mt-3 flex h-8 w-full items-center justify-center gap-2 rounded-md border bg-card px-2 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-wait disabled:opacity-60"
+          >
+            {loadingMore && <LoaderCircle className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />}
+            {loadingMore ? "Loading older conversations…" : "Load older conversations"}
+          </button>
         )}
       </div>
     </div>

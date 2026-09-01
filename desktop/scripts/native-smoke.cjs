@@ -1,19 +1,13 @@
 const fs = require("node:fs/promises");
-const { createRequire } = require("node:module");
 const os = require("node:os");
 const path = require("node:path");
-
-const packagedAppAsar = process.env.BOREALIS_PACKAGED_APP_ASAR;
-const runtimeRequire = packagedAppAsar
-  ? createRequire(path.join(packagedAppAsar, "package.json"))
-  : require;
 
 async function main() {
   const temporaryDirectory = await fs.mkdtemp(
     path.join(os.tmpdir(), "borealis-electron-native-"),
   );
   try {
-    const Database = runtimeRequire("better-sqlite3");
+    const Database = require("better-sqlite3");
     const sqlite = new Database(":memory:");
     sqlite.exec("CREATE TABLE smoke (value INTEGER NOT NULL)");
     sqlite.prepare("INSERT INTO smoke (value) VALUES (?)").run(1);
@@ -21,7 +15,7 @@ async function main() {
       throw new Error("SQLite smoke failed");
     sqlite.close();
 
-    const lancedb = runtimeRequire("@lancedb/lancedb");
+    const lancedb = require("@lancedb/lancedb");
     const lance = await lancedb.connect(
       path.join(temporaryDirectory, "lancedb"),
     );
@@ -33,7 +27,7 @@ async function main() {
     table.close();
     lance.close();
 
-    const { DuckDBInstance } = runtimeRequire("@duckdb/node-api");
+    const { DuckDBInstance } = require("@duckdb/node-api");
     const instance = await DuckDBInstance.create(":memory:");
     const connection = await instance.connect();
     await connection.run("SELECT 1");
@@ -46,7 +40,6 @@ async function main() {
         arch: process.arch,
         electron: process.versions.electron,
         node: process.versions.node,
-        packaged: Boolean(packagedAppAsar),
         native: ["better-sqlite3", "@lancedb/lancedb", "@duckdb/node-api"],
       }) + "\n",
     );

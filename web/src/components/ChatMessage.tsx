@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useState, type ReactNode } from "react";
+import { lazy, memo, Suspense, useEffect, useMemo, useState, type ReactNode } from "react";
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
@@ -13,9 +13,20 @@ import {
   type RetrievedEvidence as RetrievedEvidenceItem,
 } from "@/lib/api";
 import { citeLinkify, parseCiteHref } from "@/lib/citations";
-import { ChartCard } from "@/components/ChartCard";
 import { DataResultCard } from "@/components/DataResultCard";
+import { LazyLoadBoundary } from "@/components/LazyLoadBoundary";
 import { RetrievedEvidence } from "@/components/RetrievedEvidence";
+
+const ChartCard = lazy(() => import("@/components/ChartCard").then((module) => ({ default: module.ChartCard })));
+
+function ChartFallback() {
+  return (
+    <div className="embedded-chart space-y-2 py-4" role="status" aria-label="Loading chart">
+      <div className="h-4 w-1/3 animate-pulse rounded bg-secondary" />
+      <div className="h-52 w-full animate-pulse rounded bg-secondary" />
+    </div>
+  );
+}
 
 function ReportLink({ reportId }: { reportId: string }) {
   const [info, setInfo] = useState<{ title: string; hasHtml: boolean; hasPdf: boolean } | null>(null);
@@ -222,7 +233,11 @@ export const ChatMessage = memo(function ChatMessage({
             {charts && charts.length > 0 && (
               <div className="mt-2 space-y-3">
                 {charts.map((id) => (
-                  <ChartCard key={id} chartId={id} />
+                  <LazyLoadBoundary key={id} label="This chart" resetKey={id}>
+                    <Suspense fallback={<ChartFallback />}>
+                      <ChartCard chartId={id} />
+                    </Suspense>
+                  </LazyLoadBoundary>
                 ))}
               </div>
             )}

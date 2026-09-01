@@ -154,6 +154,21 @@ try {
 }
 
 const gitFiles = listedGitFiles();
+const localOcrHelper = path.join(
+  serverDirectory,
+  "src",
+  "data",
+  "assets",
+  "pdf-ocr.jxa",
+);
+const localOcrSource = readFileSync(localOcrHelper, "utf8");
+if (
+  !localOcrSource.includes('ObjC.import("Vision")') ||
+  /https?:|fetch\(|curl|XMLHttpRequest/.test(localOcrSource)
+) {
+  fail("The fixed local OCR helper must use macOS Vision without network access.");
+  process.exit(1);
+}
 const remnantFiles = gitFiles.filter((filePath) => {
   const relative = posixRelative(filePath);
   return (

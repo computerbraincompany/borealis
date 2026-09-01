@@ -18,6 +18,25 @@ export default defineConfig({
       },
     },
   },
+  build: {
+    manifest: true,
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (!id.includes("node_modules")) return undefined;
+          if (id.includes("/echarts/")) return "echarts";
+          if (id.includes("/zrender/")) return "zrender";
+          if (id.includes("/@radix-ui/")) return "radix";
+          if (
+            /\/(react-markdown|remark-|rehype-|highlight\.js|unified|micromark|mdast|hast|unist|vfile)[/@]/.test(id)
+          ) {
+            return "markdown";
+          }
+          return undefined;
+        },
+      },
+    },
+  },
   test: {
     environment: "jsdom",
     globals: true,

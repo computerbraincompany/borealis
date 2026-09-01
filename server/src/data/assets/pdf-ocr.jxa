@@ -1,0 +1,112 @@
+ObjC.import("Foundation");
+ObjC.import("AppKit");
+ObjC.import("PDFKit");
+ObjC.import("Vision");
+
+function integerArgument(value, minimum, maximum) {
+  if (!/^\d+$/.test(value)) throw new Error("invalid numeric argument");
+  var parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < minimum || parsed > maximum) {
+    throw new Error("numeric argument out of range");
+  }
+  return parsed;
+}
+
+function rasterSizeForBounds(sourceWidthValue, sourceHeightValue, maxPixels) {
+  var sourceWidth = Number(sourceWidthValue);
+  var sourceHeight = Number(sourceHeightValue);
+  if (!Number.isFinite(sourceWidth) || sourceWidth <= 0 || !Number.isFinite(sourceHeight) || sourceHeight <= 0) {
+    throw new Error("invalid PDF page geometry");
+  }
+  var sourceArea = sourceWidth * sourceHeight;
+  if (!Number.isFinite(sourceArea) || sourceArea <= 0) throw new Error("invalid PDF page geometry");
+  var scale = Math.min(3, Math.sqrt(maxPixels / sourceArea));
+  if (!Number.isFinite(scale) || scale <= 0) throw new Error("invalid PDF raster scale");
+  var scaledWidth = sourceWidth * scale;
+  var scaledHeight = sourceHeight * scale;
+  if (!Number.isFinite(scaledWidth) || scaledWidth <= 0 || !Number.isFinite(scaledHeight) || scaledHeight <= 0) {
+    throw new Error("invalid PDF raster dimensions");
+  }
+  var width = Math.max(1, Math.floor(scaledWidth));
+  var height = Math.max(1, Math.floor(scaledHeight));
+  if (
+    !Number.isSafeInteger(width) ||
+    width < 1 ||
+    width > maxPixels ||
+    !Number.isSafeInteger(height) ||
+    height < 1 ||
+    height > maxPixels
+  ) {
+    throw new Error("invalid PDF raster dimensions");
+  }
+  var rasterPixels = width * height;
+  if (!Number.isSafeInteger(rasterPixels) || rasterPixels < 1 || rasterPixels > maxPixels) {
+    throw new Error("raster budget exceeded");
+  }
+  return { width: width, height: height };
+}
+
+function run(argv) {
+  if (argv[0] === "--") argv = argv.slice(1);
+  if (argv.length !== 6) throw new Error("invalid argument count");
+  var filePath = String(argv[0]);
+  var pageNumber = integerArgument(String(argv[1]), 1, 500);
+  var maxPixels = integerArgument(String(argv[2]), 1, 16000000);
+  var maxObservations = integerArgument(String(argv[3]), 1, 5000);
+  var maxChars = integerArgument(String(argv[4]), 1, 100000);
+  var language = String(argv[5]);
+  if (language !== "en-US") throw new Error("unsupported recognition language");
+
+  var url = $.NSURL.fileURLWithPath(filePath);
+  var document = $.PDFDocument.alloc.initWithURL(url);
+  if (!document || pageNumber > Number(document.pageCount)) throw new Error("PDF page is unavailable");
+  var page = document.pageAtIndex(pageNumber - 1);
+  var bounds = page.boundsForBox($.kPDFDisplayBoxMediaBox);
+  var rasterSize = rasterSizeForBounds(bounds.size.width, bounds.size.height, maxPixels);
+
+  var image = page.thumbnailOfSizeForBox(
+    $.NSMakeSize(rasterSize.width, rasterSize.height),
+    $.kPDFDisplayBoxMediaBox
+  );
+  var imageData = image.TIFFRepresentation;
+  if (!imageData) throw new Error("PDF rasterization failed");
+
+  var request;
+  try {
+    request = $.VNRecognizeTextRequest.alloc.init;
+    request.recognitionLevel = $.VNRequestTextRecognitionLevelAccurate;
+    request.usesLanguageCorrection = false;
+    request.recognitionLanguages = $([language]);
+  } catch (requestError) {
+    throw new Error("recognition request failed: " + String(requestError));
+  }
+  var handler;
+  try {
+    handler = $.VNImageRequestHandler.alloc.initWithDataOptions(imageData, $.NSDictionary.alloc.init);
+  } catch (handlerError) {
+    throw new Error("recognition handler failed: " + String(handlerError));
+  }
+  var error = Ref();
+  try {
+    if (!handler.performRequestsError($([request]), error)) throw new Error("recognition failed");
+  } catch (performError) {
+    throw new Error("recognition execution failed: " + String(performError));
+  }
+
+  var observations = request.results ? request.results.js : [];
+  if (observations.length > maxObservations) throw new Error("observation budget exceeded");
+  var lines = [];
+  var characters = 0;
+  for (var index = 0; index < observations.length; index += 1) {
+    var candidates = observations[index].topCandidates(1);
+    if (!candidates || Number(candidates.count) < 1) continue;
+    var text = ObjC.unwrap(candidates.objectAtIndex(0).string);
+    if (typeof text !== "string" || text.length === 0) continue;
+    var remaining = maxChars - characters;
+    if (remaining <= 0) break;
+    var bounded = text.slice(0, remaining);
+    lines.push(bounded);
+    characters += bounded.length + 1;
+  }
+  return JSON.stringify({ page: pageNumber, text: lines.join("\n").slice(0, maxChars), observations: observations.length });
+}

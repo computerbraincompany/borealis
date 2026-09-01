@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
-import { CalendarClock, Pause, Play, Plus, RefreshCw, Trash2 } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { CalendarClock, Loader2, Pause, Play, Plus, RefreshCw, Trash2 } from "lucide-react";
 import {
   automationsApi,
   connectorsApi,
@@ -9,6 +9,7 @@ import {
   type AutomationRun,
   type Connector,
 } from "@/lib/api";
+import { mergeCatalogContinuation, mergeCatalogHead } from "@/lib/catalogMerge";
 import { formatDate } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -28,6 +29,11 @@ export function AutomationsView() {
   const [connectors, setConnectors] = useState<Connector[]>([]);
   const [chats, setChats] = useState<Array<{ id: string; title: string }>>([]);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [connectorsNextCursor, setConnectorsNextCursor] = useState<string | null>(null);
+  const [chatsNextCursor, setChatsNextCursor] = useState<string | null>(null);
+  const [targetsLoadingMore, setTargetsLoadingMore] = useState(false);
   const [pageError, setPageError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState("");
@@ -38,8 +44,50 @@ export function AutomationsView() {
   const [busy, setBusy] = useState(false);
   const [runsTarget, setRunsTarget] = useState<Automation | null>(null);
   const [runs, setRuns] = useState<AutomationRun[]>([]);
+  const [runsLoading, setRunsLoading] = useState(false);
+  const [runsError, setRunsError] = useState<string | null>(null);
+  const createRequestRef = useRef(0);
+  const createAbortRef = useRef<AbortController | null>(null);
+  const rowMutationRequestRef = useRef(0);
+  const rowMutationRequestsRef = useRef(new Map<string, { requestId: number; abort: AbortController }>());
+  const runsRequestRef = useRef(0);
+  const runsAbortRef = useRef<AbortController | null>(null);
+  const catalogRequestRef = useRef(0);
+  const catalogNextCursorRef = useRef<string | null>(null);
+  const catalogLoadingMoreOwnerRef = useRef<number | null>(null);
+  const targetsRequestRef = useRef(0);
+  const targetsAbortRef = useRef<AbortController | null>(null);
+  const kindRef = useRef(kind);
+  const connectorsNextCursorRef = useRef<string | null>(null);
+  const chatsNextCursorRef = useRef<string | null>(null);
+  const targetsLoadingMoreOwnerRef = useRef<number | null>(null);
+  const mountedRef = useRef(false);
+
+  const invalidateCatalog = () => {
+    catalogRequestRef.current += 1;
+    catalogLoadingMoreOwnerRef.current = null;
+    setLoadingMore(false);
+    setLoading(false);
+  };
+
+  const invalidateTargetPagination = () => {
+    if (targetsLoadingMoreOwnerRef.current === null) return;
+    targetsRequestRef.current += 1;
+    targetsAbortRef.current?.abort();
+    targetsAbortRef.current = null;
+    targetsLoadingMoreOwnerRef.current = null;
+    setTargetsLoadingMore(false);
+  };
 
   const load = useCallback(async () => {
+    const catalogRequestId = ++catalogRequestRef.current;
+    const targetsRequestId = ++targetsRequestRef.current;
+    targetsAbortRef.current?.abort();
+    targetsAbortRef.current = null;
+    catalogLoadingMoreOwnerRef.current = null;
+    targetsLoadingMoreOwnerRef.current = null;
+    setLoadingMore(false);
+    setTargetsLoadingMore(false);
     setPageError(null);
     try {
       const [rows, connectorRows, chatRows] = await Promise.all([
@@ -47,71 +95,269 @@ export function AutomationsView() {
         connectorsApi.list(),
         chatsApi.list(),
       ]);
-      setAutomations(rows);
-      setConnectors(connectorRows);
-      setChats(chatRows.map((chat) => ({ id: chat.id, title: chat.title })));
+      if (!mountedRef.current) return;
+      if (catalogRequestId === catalogRequestRef.current) {
+        setAutomations((current) => mergeCatalogHead(rows.items, current));
+        catalogNextCursorRef.current = rows.next_cursor;
+        setNextCursor(rows.next_cursor);
+      }
+      if (targetsRequestId === targetsRequestRef.current) {
+        setConnectors((current) => mergeCatalogHead(connectorRows.items, current));
+        setChats((current) =>
+          mergeCatalogHead(
+            chatRows.items.map((chat) => ({ id: chat.id, title: chat.title })),
+            current,
+          ),
+        );
+        connectorsNextCursorRef.current = connectorRows.next_cursor;
+        chatsNextCursorRef.current = chatRows.next_cursor;
+        setConnectorsNextCursor(connectorRows.next_cursor);
+        setChatsNextCursor(chatRows.next_cursor);
+      }
     } catch (failure: unknown) {
-      setPageError(formatApiError(failure, "Could not load automations"));
+      if (
+        mountedRef.current &&
+        catalogRequestId === catalogRequestRef.current &&
+        targetsRequestId === targetsRequestRef.current
+      ) {
+        setPageError(formatApiError(failure, "Could not load automations"));
+      }
     } finally {
-      setLoading(false);
+      if (mountedRef.current && catalogRequestId === catalogRequestRef.current) setLoading(false);
     }
   }, []);
 
+  const loadMore = async () => {
+    const cursor = catalogNextCursorRef.current;
+    if (!cursor || catalogLoadingMoreOwnerRef.current !== null) return;
+    const requestId = ++catalogRequestRef.current;
+    catalogLoadingMoreOwnerRef.current = requestId;
+    setLoadingMore(true);
+    try {
+      const page = await automationsApi.list({ cursor });
+      if (!mountedRef.current || requestId !== catalogRequestRef.current) return;
+      setAutomations((current) => mergeCatalogContinuation(current, page.items));
+      catalogNextCursorRef.current = page.next_cursor;
+      setNextCursor(page.next_cursor);
+    } catch (failure: unknown) {
+      if (mountedRef.current && requestId === catalogRequestRef.current) {
+        setPageError(formatApiError(failure, "Could not load older automations"));
+      }
+    } finally {
+      if (catalogLoadingMoreOwnerRef.current === requestId) {
+        catalogLoadingMoreOwnerRef.current = null;
+        if (mountedRef.current) setLoadingMore(false);
+      }
+    }
+  };
+
+  const loadMoreTargets = async () => {
+    const cursor = kind === "connector_sync" ? connectorsNextCursorRef.current : chatsNextCursorRef.current;
+    if (!cursor || targetsLoadingMoreOwnerRef.current !== null) return;
+    const requestId = ++targetsRequestRef.current;
+    targetsLoadingMoreOwnerRef.current = requestId;
+    const targetKind = kind;
+    const abort = new AbortController();
+    targetsAbortRef.current = abort;
+    setTargetsLoadingMore(true);
+    try {
+      if (targetKind === "connector_sync") {
+        const page = await connectorsApi.list({ cursor, signal: abort.signal });
+        if (
+          !mountedRef.current ||
+          requestId !== targetsRequestRef.current ||
+          abort.signal.aborted ||
+          kindRef.current !== targetKind
+        )
+          return;
+        setConnectors((current) => mergeCatalogContinuation(current, page.items));
+        connectorsNextCursorRef.current = page.next_cursor;
+        setConnectorsNextCursor(page.next_cursor);
+      } else {
+        const page = await chatsApi.list({ cursor, signal: abort.signal });
+        if (
+          !mountedRef.current ||
+          requestId !== targetsRequestRef.current ||
+          abort.signal.aborted ||
+          kindRef.current !== targetKind
+        )
+          return;
+        setChats((current) =>
+          mergeCatalogContinuation(
+            current,
+            page.items.map((chat) => ({ id: chat.id, title: chat.title })),
+          ),
+        );
+        chatsNextCursorRef.current = page.next_cursor;
+        setChatsNextCursor(page.next_cursor);
+      }
+    } catch (failure: unknown) {
+      if (mountedRef.current && requestId === targetsRequestRef.current && !abort.signal.aborted) {
+        setPageError(formatApiError(failure, "Could not load older automation targets"));
+      }
+    } finally {
+      if (targetsLoadingMoreOwnerRef.current === requestId) {
+        targetsLoadingMoreOwnerRef.current = null;
+        if (targetsAbortRef.current === abort) targetsAbortRef.current = null;
+        if (mountedRef.current) setTargetsLoadingMore(false);
+      }
+    }
+  };
+
   useEffect(() => {
+    const rowMutationRequests = rowMutationRequestsRef.current;
+    mountedRef.current = true;
     void load();
+    return () => {
+      mountedRef.current = false;
+      catalogRequestRef.current += 1;
+      targetsRequestRef.current += 1;
+      targetsAbortRef.current?.abort();
+      targetsAbortRef.current = null;
+      catalogLoadingMoreOwnerRef.current = null;
+      targetsLoadingMoreOwnerRef.current = null;
+      createRequestRef.current += 1;
+      createAbortRef.current?.abort();
+      createAbortRef.current = null;
+      for (const request of rowMutationRequests.values()) request.abort.abort();
+      rowMutationRequests.clear();
+      runsRequestRef.current += 1;
+      runsAbortRef.current?.abort();
+    };
   }, [load]);
 
+  const openCreateDialog = () => {
+    invalidateTargetPagination();
+    createRequestRef.current += 1;
+    createAbortRef.current?.abort();
+    createAbortRef.current = null;
+    setBusy(false);
+    setCreating(true);
+  };
+
+  const closeCreateDialog = () => {
+    invalidateTargetPagination();
+    createRequestRef.current += 1;
+    createAbortRef.current?.abort();
+    createAbortRef.current = null;
+    setBusy(false);
+    setCreating(false);
+  };
+
   const create = async () => {
-    if (!name.trim() || !targetId) return;
+    const createInput = {
+      name: name.trim(),
+      kind,
+      target_id: targetId,
+      ...(kind === "agent_turn" ? { prompt: prompt.trim() } : {}),
+      schedule_minutes: schedule,
+    };
+    if (!createInput.name || !createInput.target_id) return;
+    const requestId = ++createRequestRef.current;
+    createAbortRef.current?.abort();
+    const abort = new AbortController();
+    createAbortRef.current = abort;
     setBusy(true);
     setPageError(null);
     try {
-      await automationsApi.create({
-        name: name.trim(),
-        kind,
-        target_id: targetId,
-        ...(kind === "agent_turn" ? { prompt: prompt.trim() } : {}),
-        schedule_minutes: schedule,
-      });
-      setCreating(false);
+      const created = await automationsApi.create(createInput, abort.signal);
+      if (requestId !== createRequestRef.current || abort.signal.aborted) return;
+      invalidateCatalog();
+      setAutomations((current) => mergeCatalogHead([created], current));
+      void load();
       setName("");
       setTargetId("");
       setPrompt("");
-      await load();
+      createAbortRef.current = null;
+      closeCreateDialog();
     } catch (failure: unknown) {
-      setPageError(formatApiError(failure, "Could not create the automation"));
+      if (requestId === createRequestRef.current && !abort.signal.aborted) {
+        setPageError(formatApiError(failure, "Could not create the automation"));
+      }
     } finally {
-      setBusy(false);
+      if (requestId === createRequestRef.current && !abort.signal.aborted) {
+        createAbortRef.current = null;
+        setBusy(false);
+      }
     }
   };
 
   const toggleState = async (automation: Automation) => {
+    const targetId = automation.id;
+    const patch = { state: automation.state === "active" ? ("paused" as const) : ("active" as const) };
+    const requestId = ++rowMutationRequestRef.current;
+    rowMutationRequestsRef.current.get(targetId)?.abort.abort();
+    const abort = new AbortController();
+    rowMutationRequestsRef.current.set(targetId, { requestId, abort });
     setPageError(null);
     try {
-      await automationsApi.update(automation.id, { state: automation.state === "active" ? "paused" : "active" });
-      await load();
+      const updated = await automationsApi.update(targetId, patch, abort.signal);
+      if (rowMutationRequestsRef.current.get(targetId)?.requestId !== requestId || abort.signal.aborted) return;
+      invalidateCatalog();
+      setAutomations((current) => current.map((entry) => (entry.id === targetId ? updated : entry)));
     } catch (failure: unknown) {
-      setPageError(formatApiError(failure, "Could not update the automation"));
+      if (rowMutationRequestsRef.current.get(targetId)?.requestId === requestId && !abort.signal.aborted) {
+        setPageError(formatApiError(failure, "Could not update the automation"));
+      }
+    } finally {
+      if (rowMutationRequestsRef.current.get(targetId)?.requestId === requestId) {
+        rowMutationRequestsRef.current.delete(targetId);
+      }
     }
   };
 
   const remove = async (automation: Automation) => {
+    const targetId = automation.id;
+    const requestId = ++rowMutationRequestRef.current;
+    rowMutationRequestsRef.current.get(targetId)?.abort.abort();
+    const abort = new AbortController();
+    rowMutationRequestsRef.current.set(targetId, { requestId, abort });
     setPageError(null);
     try {
-      await automationsApi.remove(automation.id);
-      setAutomations((current) => current.filter((entry) => entry.id !== automation.id));
+      await automationsApi.remove(targetId, abort.signal);
+      if (rowMutationRequestsRef.current.get(targetId)?.requestId !== requestId || abort.signal.aborted) return;
+      invalidateCatalog();
+      setAutomations((current) => current.filter((entry) => entry.id !== targetId));
     } catch (failure: unknown) {
-      setPageError(formatApiError(failure, "Could not delete the automation"));
+      if (rowMutationRequestsRef.current.get(targetId)?.requestId === requestId && !abort.signal.aborted) {
+        setPageError(formatApiError(failure, "Could not delete the automation"));
+      }
+    } finally {
+      if (rowMutationRequestsRef.current.get(targetId)?.requestId === requestId) {
+        rowMutationRequestsRef.current.delete(targetId);
+      }
     }
   };
 
   const openRuns = async (automation: Automation) => {
+    const requestId = ++runsRequestRef.current;
+    runsAbortRef.current?.abort();
+    const abort = new AbortController();
+    runsAbortRef.current = abort;
     setRunsTarget(automation);
+    setRuns([]);
+    setRunsError(null);
+    setRunsLoading(true);
     try {
-      setRuns(await automationsApi.runs(automation.id));
-    } catch {
-      setRuns([]);
+      const nextRuns = await automationsApi.runs(automation.id, 20, abort.signal);
+      if (requestId === runsRequestRef.current && !abort.signal.aborted) setRuns(nextRuns);
+    } catch (failure: unknown) {
+      if (requestId === runsRequestRef.current && !abort.signal.aborted) {
+        setRunsError(formatApiError(failure, "Could not load automation runs"));
+      }
+    } finally {
+      if (requestId === runsRequestRef.current && !abort.signal.aborted) setRunsLoading(false);
     }
+  };
+
+  const closeRuns = () => {
+    runsRequestRef.current += 1;
+    runsAbortRef.current?.abort();
+    runsAbortRef.current = null;
+    setRunsTarget(null);
+    setRuns([]);
+    setRunsError(null);
+    setRunsLoading(false);
   };
 
   const targets =
@@ -134,7 +380,7 @@ export function AutomationsView() {
             <Button variant="secondary" size="sm" onClick={() => void load()}>
               <RefreshCw className="h-4 w-4" /> Refresh
             </Button>
-            <Button size="sm" onClick={() => setCreating(true)}>
+            <Button size="sm" onClick={openCreateDialog}>
               <Plus className="h-4 w-4" /> New automation
             </Button>
           </div>
@@ -215,12 +461,20 @@ export function AutomationsView() {
                 </div>
               </Card>
             ))}
+            {nextCursor && (
+              <div className="flex justify-center pt-2">
+                <Button variant="outline" onClick={() => void loadMore()} disabled={loadingMore}>
+                  {loadingMore && <Loader2 className="h-4 w-4 animate-spin" />}
+                  Load older automations
+                </Button>
+              </div>
+            )}
           </div>
         )}
       </div>
 
       {/* create dialog */}
-      <Dialog open={creating} onOpenChange={setCreating}>
+      <Dialog open={creating} onOpenChange={(open) => (open ? openCreateDialog() : closeCreateDialog())}>
         <DialogContent className="max-w-lg">
           <DialogHeader>
             <DialogTitle>New automation</DialogTitle>
@@ -247,7 +501,10 @@ export function AutomationsView() {
               aria-label="Automation kind"
               value={kind}
               onChange={(event) => {
-                setKind(event.target.value as "connector_sync" | "agent_turn");
+                const nextKind = event.target.value as "connector_sync" | "agent_turn";
+                invalidateTargetPagination();
+                kindRef.current = nextKind;
+                setKind(nextKind);
                 setTargetId("");
               }}
               className="h-9 w-full rounded-md border bg-background px-2 text-sm"
@@ -268,6 +525,18 @@ export function AutomationsView() {
                 </option>
               ))}
             </select>
+            {(kind === "connector_sync" ? connectorsNextCursor : chatsNextCursor) && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={() => void loadMoreTargets()}
+                disabled={targetsLoadingMore}
+              >
+                {targetsLoadingMore && <Loader2 className="h-4 w-4 animate-spin" />}
+                Load older {kind === "connector_sync" ? "connectors" : "chats"}
+              </Button>
+            )}
             {kind === "agent_turn" && (
               <textarea
                 value={prompt}
@@ -292,7 +561,7 @@ export function AutomationsView() {
               minutes
             </label>
             <div className="flex justify-end gap-2">
-              <Button type="button" variant="ghost" size="sm" onClick={() => setCreating(false)}>
+              <Button type="button" variant="ghost" size="sm" onClick={closeCreateDialog}>
                 Cancel
               </Button>
               <Button type="submit" size="sm" disabled={busy || !name.trim() || !targetId}>
@@ -304,29 +573,44 @@ export function AutomationsView() {
       </Dialog>
 
       {/* runs dialog */}
-      <Dialog open={!!runsTarget} onOpenChange={(open) => !open && setRunsTarget(null)}>
+      <Dialog open={!!runsTarget} onOpenChange={(open) => !open && closeRuns()}>
         <DialogContent className="max-w-lg">
           <DialogHeader>
             <DialogTitle>{runsTarget?.name} runs</DialogTitle>
             <DialogDescription>Durable run history with outcomes. Failed runs never contain content.</DialogDescription>
           </DialogHeader>
-          <ol className="max-h-72 space-y-2 overflow-y-auto" aria-label="Automation runs">
-            {runs.map((run) => (
-              <li key={run.id} className="rounded-md border px-3 py-2 text-sm">
-                <div className="flex items-center justify-between gap-2">
-                  <span
-                    className={`inline-flex items-center rounded-md border px-2 py-0.5 text-[11px] font-semibold ${OUTCOME_STYLING[run.outcome]}`}
-                  >
-                    {run.outcome}
-                  </span>
-                  <time dateTime={run.started_at} className="text-xs text-muted-foreground">
-                    {formatDate(run.started_at)}
-                  </time>
-                </div>
-                {run.detail && <p className="mt-1.5 text-xs text-muted-foreground">{run.detail}</p>}
+          <ol className="max-h-72 space-y-2 overflow-y-auto" aria-label="Automation runs" aria-busy={runsLoading}>
+            {runsLoading && (
+              <li className="rounded-md border border-dashed px-3 py-4 text-center text-sm text-muted-foreground">
+                Loading runs…
               </li>
-            ))}
-            {runs.length === 0 && (
+            )}
+            {!runsLoading && runsError && (
+              <li
+                className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-3 text-sm text-destructive"
+                role="alert"
+              >
+                {runsError}
+              </li>
+            )}
+            {!runsLoading &&
+              !runsError &&
+              runs.map((run) => (
+                <li key={run.id} className="rounded-md border px-3 py-2 text-sm">
+                  <div className="flex items-center justify-between gap-2">
+                    <span
+                      className={`inline-flex items-center rounded-md border px-2 py-0.5 text-[11px] font-semibold ${OUTCOME_STYLING[run.outcome]}`}
+                    >
+                      {run.outcome}
+                    </span>
+                    <time dateTime={run.started_at} className="text-xs text-muted-foreground">
+                      {formatDate(run.started_at)}
+                    </time>
+                  </div>
+                  {run.detail && <p className="mt-1.5 text-xs text-muted-foreground">{run.detail}</p>}
+                </li>
+              ))}
+            {!runsLoading && !runsError && runs.length === 0 && (
               <li className="rounded-md border border-dashed px-3 py-4 text-center text-sm text-muted-foreground">
                 No runs yet.
               </li>

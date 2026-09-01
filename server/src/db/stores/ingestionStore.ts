@@ -225,6 +225,22 @@ function sourceRowInTransaction(tx: SqliteTransaction, accountId: string, source
   );
 }
 
+function enqueueDatasetCleanupTx(
+  tx: SqliteTransaction,
+  accountId: string,
+  name: string,
+  location: string,
+  timestamp: string
+): void {
+  tx.run(
+    `INSERT INTO dataset_cache_cleanup_jobs
+       (account_id,name,location,attempts,created_at,updated_at)
+     VALUES (?,?,?,0,?,?)
+     ON CONFLICT(account_id,name,location) DO UPDATE SET updated_at=excluded.updated_at`,
+    [accountId, name, location, timestamp, timestamp]
+  );
+}
+
 /** Typed SQLite state machine for durable ingestion. External I/O belongs in the coordinator. */
 export class SqliteIngestionStore {
   constructor(readonly ledger: SqliteLedger) {}
@@ -521,20 +537,29 @@ export class SqliteIngestionStore {
     return result.changes;
   }
 
-  async reserveDatasetCleanup(accountId: string, name: string, locations: readonly string[]): Promise<void> {
-    const unique = [...new Set(locations.filter((location) => typeof location === "string" && location))];
-    if (!unique.length) return;
-    await this.ledger.withImmediateTransaction((tx) => {
-      const timestamp = nowIso();
-      for (const location of unique) {
-        tx.run(
-          `INSERT INTO dataset_cache_cleanup_jobs
-             (account_id,name,location,attempts,created_at,updated_at)
-           VALUES (?,?,?,0,?,?)
-           ON CONFLICT(account_id,name,location) DO UPDATE SET updated_at=excluded.updated_at`,
-          [accountId, name, location, timestamp, timestamp]
-        );
+  /**
+   * Revalidate reconciliation's stale registry observation against the current
+   * source transition state and reserve exact cleanup authority atomically.
+   * A current source file or prepared candidate always wins over reconciliation.
+   */
+  async reserveReconciliationDatasetCleanup(accountIdInput: string, nameInput: string, locationInput: string) {
+    const accountId = requiredId(accountIdInput, "account id");
+    const name = requiredId(nameInput, "dataset name", 256);
+    const location = requiredId(locationInput, "dataset location", 32_768);
+    return this.ledger.withImmediateTransaction((tx) => {
+      const sources = tx.all<SourceRow>(
+        `SELECT id, account_id, name, kind, connector, display_name, file_path, url, mime,
+                size_bytes, status, meta, ready_generation
+           FROM sources WHERE account_id=? AND name=?`,
+        [accountId, name]
+      );
+      for (const row of sources) {
+        const source = sourceFromRow(row);
+        const candidate = source.meta.connector_candidate_location;
+        if (source.filePath === location || candidate === location) return false;
       }
+      enqueueDatasetCleanupTx(tx, accountId, name, location, nowIso());
+      return true;
     });
   }
 
@@ -572,13 +597,47 @@ export class SqliteIngestionStore {
     );
   }
 
+  async getDatasetCleanupJob(
+    accountIdInput: string,
+    nameInput: string,
+    locationInput: string
+  ): Promise<DatasetCleanupJob | undefined> {
+    const accountId = requiredId(accountIdInput, "account id");
+    const name = requiredId(nameInput, "dataset name", 256);
+    const location = requiredId(locationInput, "dataset location", 32_768);
+    const row = await this.ledger.get<{ attempts: bigint }>(
+      `SELECT attempts FROM dataset_cache_cleanup_jobs
+       WHERE account_id=? AND name=? AND location=?`,
+      [accountId, name, location]
+    );
+    return row
+      ? Object.freeze({ accountId, name, location, attempts: decodeSafeInteger(row.attempts, "attempts") })
+      : undefined;
+  }
+
   async resolveDatasetCleanupJob(job: DatasetCleanupJob, outcome: "complete" | "failed"): Promise<void> {
     if (outcome === "complete") {
-      await this.ledger.run("DELETE FROM dataset_cache_cleanup_jobs WHERE account_id=? AND name=? AND location=?", [
-        job.accountId,
-        job.name,
-        job.location,
-      ]);
+      await this.ledger.withImmediateTransaction((tx) => {
+        tx.run("DELETE FROM dataset_cache_cleanup_jobs WHERE account_id=? AND name=? AND location=?", [
+          job.accountId,
+          job.name,
+          job.location,
+        ]);
+        const rows = tx.all<{ id: string; meta: string }>("SELECT id,meta FROM sources WHERE account_id=? AND name=?", [
+          job.accountId,
+          job.name,
+        ]);
+        for (const row of rows) {
+          const meta = decodeJson<Record<string, unknown>>(row.meta, "source meta");
+          if (meta.connector_previous_location !== job.location) continue;
+          delete meta.connector_previous_location;
+          tx.run("UPDATE sources SET meta=? WHERE id=? AND account_id=?", [
+            encodeJson(meta, "source meta"),
+            row.id,
+            job.accountId,
+          ]);
+        }
+      });
       return;
     }
     await this.ledger.run(
@@ -664,6 +723,18 @@ export class SqliteIngestionStore {
       this.assertLeaseTx(tx, input.accountId, input.sourceId, generation, input.leaseToken);
       const source = sourceRowInTransaction(tx, input.accountId, input.sourceId);
       if (!source) throw new IngestionStoreError("INGESTION_SUPERSEDED", "source ingestion superseded");
+      // Defense in depth for every caller: a durable cleanup owner prevents
+      // the exact location from becoming authoritative at promotion time.
+      if (
+        input.promotedFilePath &&
+        tx.get(
+          `SELECT 1 FROM dataset_cache_cleanup_jobs
+           WHERE account_id=? AND name=? AND location=?`,
+          [input.accountId, source.name, input.promotedFilePath]
+        )
+      ) {
+        throw new IngestionStoreError("INGESTION_SUPERSEDED", "source artifact is reserved for cleanup");
+      }
       const staged = tx.all<StagingRow>(
         `SELECT chunk_id, source_id, account_id, generation, seq, source_name, content, meta
          FROM ingestion_chunk_staging WHERE source_id=? AND generation=? ORDER BY seq`,
@@ -693,6 +764,16 @@ export class SqliteIngestionStore {
         "connector_activation_previous_location",
       ]) {
         delete cleanedMeta[key];
+      }
+      const cleanupLocation = currentMeta.connector_previous_location;
+      const promotedFilePath = input.promotedFilePath ?? source.file_path;
+      if (
+        source.connector &&
+        typeof cleanupLocation === "string" &&
+        cleanupLocation &&
+        cleanupLocation !== promotedFilePath
+      ) {
+        enqueueDatasetCleanupTx(tx, input.accountId, source.name, cleanupLocation, nowIso());
       }
       tx.run(
         `UPDATE sources SET status='ready', ready_generation=?, size_bytes=?,

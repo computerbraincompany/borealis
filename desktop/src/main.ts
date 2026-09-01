@@ -1,4 +1,5 @@
-import { mkdir, stat } from "node:fs/promises";
+import { chmod, mkdir, stat } from "node:fs/promises";
+import { url as inspectorUrl } from "node:inspector";
 import path from "node:path";
 
 import {
@@ -37,6 +38,15 @@ import {
 
 const BACKEND_READY_TIMEOUT_MS = 30_000;
 const BACKEND_SHUTDOWN_TIMEOUT_MS = 8_000;
+const PACKAGED_NATIVE_SMOKE_SWITCH = "borealis-packaged-native-smoke";
+const UTILITY_NATIVE_SMOKE_ARGUMENT =
+  "--borealis-packaged-native-smoke-utility";
+const PACKAGED_NATIVE_SMOKE_TIMEOUT_MS = 30_000;
+const PACKAGED_NATIVE_SMOKE_SUCCESS = "BOREALIS_PACKAGED_NATIVE_SMOKE_OK";
+const packagedNativeSmoke =
+  app.isPackaged && app.commandLine.hasSwitch(PACKAGED_NATIVE_SMOKE_SWITCH);
+
+if (packagedNativeSmoke) process.noDeprecation = true;
 
 class BootstrapVault {
   #encrypted: Buffer | undefined;
@@ -67,6 +77,63 @@ class BootstrapVault {
   }
 }
 
+async function runPackagedNativeSmoke(paths: DesktopPaths): Promise<void> {
+  if (inspectorUrl())
+    throw new Error("the Electron inspector must be disabled");
+  await mkdir(paths.userData, { recursive: true, mode: 0o700 });
+  await chmod(paths.userData, 0o700);
+  const backendEntry = await stat(paths.backendEntry);
+  if (!backendEntry.isFile()) throw new Error("desktop runtime is incomplete");
+
+  await new Promise<void>((resolve, reject) => {
+    let settled = false;
+    const backend = utilityProcess.fork(
+      paths.backendEntry,
+      [UTILITY_NATIVE_SMOKE_ARGUMENT],
+      {
+        cwd: paths.userData,
+        env: backendEnvironment(paths),
+        stdio: "ignore",
+        serviceName: "Borealis Packaged Native Smoke",
+      },
+    );
+    const timeout = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      backend.kill();
+      reject(new Error("packaged native smoke timed out"));
+    }, PACKAGED_NATIVE_SMOKE_TIMEOUT_MS);
+    const finish = (error?: Error): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      if (error) reject(error);
+      else resolve();
+    };
+    backend.on("message", (rawMessage: unknown) => {
+      const message = parseBackendMessage(rawMessage);
+      if (message?.type === "native-smoke") {
+        backend.kill();
+        finish();
+        return;
+      }
+      backend.kill();
+      finish(new Error("packaged native smoke returned an invalid result"));
+    });
+    backend.on("error", () => {
+      backend.kill();
+      finish(new Error("packaged native smoke utility failed"));
+    });
+    backend.on("exit", (code) => {
+      finish(
+        new Error(
+          `packaged native smoke utility exited before verification (${code})`,
+        ),
+      );
+    });
+  });
+}
+
 class DesktopApplication {
   readonly #paths: DesktopPaths;
   readonly #vault = new BootstrapVault();
@@ -87,7 +154,6 @@ class DesktopApplication {
   }
 
   async start(): Promise<void> {
-    await this.#prepareStorage();
     await this.#assertRuntime();
     this.#installBootstrapHandler();
     const ready = await this.#startBackend();
@@ -135,15 +201,6 @@ class DesktopApplication {
     await Promise.race([this.#backendStoppedPromise, timeout]);
   }
 
-  async #prepareStorage(): Promise<void> {
-    await mkdir(this.#paths.userData, { recursive: true, mode: 0o700 });
-    await Promise.all(
-      [this.#paths.lance, this.#paths.uploads, this.#paths.reports].map(
-        (directory) => mkdir(directory, { recursive: true, mode: 0o700 }),
-      ),
-    );
-  }
-
   async #assertRuntime(): Promise<void> {
     const [backend, web] = await Promise.all([
       stat(this.#paths.backendEntry),
@@ -180,7 +237,9 @@ class DesktopApplication {
       }, BACKEND_READY_TIMEOUT_MS);
 
       const backend = utilityProcess.fork(this.#paths.backendEntry, [], {
-        cwd: this.#paths.userData,
+        // The backend owns workspace creation after acquiring its exact lock;
+        // an existing OS directory avoids touching userData in a lock race.
+        cwd: app.getPath("temp"),
         env: backendEnvironment(this.#paths),
         stdio: "inherit",
         serviceName: "Borealis Backend",
@@ -221,7 +280,11 @@ class DesktopApplication {
           clearTimeout(timeout);
           reject(new Error("backend startup failed"));
         } else {
-          this.#handleBackendFatal(message.error_code);
+          this.#handleBackendFatal(
+            message.type === "fatal"
+              ? message.error_code
+              : "BACKEND_PROTOCOL_ERROR",
+          );
         }
       });
       backend.on("error", () => {
@@ -386,7 +449,22 @@ if (explicitUserData) {
 let desktop: DesktopApplication | undefined;
 let quitInProgress = false;
 
-if (!app.requestSingleInstanceLock()) {
+if (packagedNativeSmoke) {
+  void app.whenReady().then(async () => {
+    try {
+      const paths = resolveDesktopPaths(
+        app.getPath("userData"),
+        app.getAppPath(),
+      );
+      await runPackagedNativeSmoke(paths);
+      process.stdout.write(`${PACKAGED_NATIVE_SMOKE_SUCCESS}\n`);
+      app.exit(0);
+    } catch {
+      process.stderr.write("BOREALIS_PACKAGED_NATIVE_SMOKE_FAILED\n");
+      app.exit(1);
+    }
+  });
+} else if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
   app.on("second-instance", () => desktop?.focus());

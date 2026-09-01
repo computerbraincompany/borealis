@@ -8,6 +8,13 @@ import {
   encodeJson,
 } from "../codecs.js";
 import type { SqliteLedger, SqliteTransaction } from "../types.js";
+import {
+  catalogStorePage,
+  defaultCatalogPageRequest,
+  validateCatalogPageRequest,
+  type CatalogPageRequest,
+  type CatalogStorePage,
+} from "../../catalogPagination.js";
 
 export type ChatRunStatus = "running" | "cancelling" | "completed" | "failed" | "cancelled";
 export type TerminalChatRunStatus = "completed" | "failed" | "cancelled";
@@ -182,6 +189,17 @@ export interface PublishedReport {
   readonly version: number;
   readonly supersedes: string | null;
   readonly payload?: unknown;
+}
+
+export interface SharedReportSummary {
+  readonly id: string;
+  readonly title: string;
+  readonly subtitle: string | null;
+  readonly version: number;
+  readonly owner_account_id: string;
+  readonly owner_email: string;
+  readonly shared_at: string;
+  readonly created_at: string;
 }
 
 export interface PendingReportCleanupPath {
@@ -672,7 +690,7 @@ export class RunStore {
 
       if (chartIds.length) {
         const published = transaction.run(
-          `UPDATE charts SET status='published',run_id=NULL
+          `UPDATE charts SET status='published'
            WHERE account_id=? AND run_id=? AND status='pending'
              AND id IN (${placeholders(chartIds.length)})`,
           [accountId, runId, ...chartIds]
@@ -858,18 +876,33 @@ export class RunStore {
       : undefined;
   }
 
-  async listPublishedReports(accountIdValue: string): Promise<PublishedReport[]> {
+  async listPublishedReports(
+    accountIdValue: string,
+    pageValue: CatalogPageRequest = defaultCatalogPageRequest()
+  ): Promise<CatalogStorePage<PublishedReport>> {
     const accountId = identity(accountIdValue, "account id");
+    const page = validateCatalogPageRequest(pageValue);
+    const parameters: Array<string | number> = [accountId];
+    const after = page.after ? " AND (r.created_at,r.id) < (?,?)" : "";
+    if (page.after) parameters.push(page.after.timestamp, page.after.id);
+    parameters.push(page.limit + 1);
     const rows = await this.ledger.all<ReportRow>(
       `SELECT r.id,r.title,r.subtitle,r.chat_id,c.title AS chat_title,
               r.created_at,r.updated_at,r.html_path,r.pdf_path,r.version,r.supersedes
        FROM reports r
        LEFT JOIN chats c ON c.id=r.chat_id AND c.account_id=r.account_id
-       WHERE r.account_id=? AND r.status='published'
-       ORDER BY r.created_at DESC,r.id DESC`,
-      [accountId]
+       WHERE r.account_id=? AND r.status='published'${after}
+       ORDER BY r.created_at DESC,r.id DESC LIMIT ?`,
+      parameters
     );
-    return rows.map((row) => decodePublishedReport(row));
+    return catalogStorePage(
+      rows.map((row) => decodePublishedReport(row)),
+      page,
+      (report) => ({
+        timestamp: report.created_at,
+        id: report.id,
+      })
+    );
   }
 
   async getPublishedReport(accountIdValue: string, reportIdValue: string): Promise<PublishedReport | undefined> {
@@ -948,18 +981,15 @@ export class RunStore {
     );
   }
 
-  async listSharedReports(recipientIdValue: string): Promise<
-    ReadonlyArray<{
-      id: string;
-      title: string;
-      subtitle: string | null;
-      version: number;
-      owner_account_id: string;
-      owner_email: string;
-      shared_at: string;
-      created_at: string;
-    }>
-  > {
+  async listSharedReports(
+    recipientIdValue: string,
+    pageValue: CatalogPageRequest = defaultCatalogPageRequest()
+  ): Promise<CatalogStorePage<SharedReportSummary>> {
+    const page = validateCatalogPageRequest(pageValue);
+    const parameters: Array<string | number> = [identity(recipientIdValue, "recipient account id")];
+    const after = page.after ? " AND (rs.shared_at,rs.report_id) < (?,?)" : "";
+    if (page.after) parameters.push(page.after.timestamp, page.after.id);
+    parameters.push(page.limit + 1);
     const rows = await this.ledger.all<{
       id?: unknown;
       title?: unknown;
@@ -975,21 +1005,25 @@ export class RunStore {
        FROM report_shares rs
        JOIN reports r ON r.id=rs.report_id AND r.account_id=rs.owner_account_id AND r.status='published'
        JOIN users u ON u.id=rs.owner_account_id
-       WHERE rs.recipient_account_id=?
-       ORDER BY rs.shared_at DESC,r.id DESC`,
-      [identity(recipientIdValue, "recipient account id")]
+       WHERE rs.recipient_account_id=?${after}
+       ORDER BY rs.shared_at DESC,rs.report_id DESC LIMIT ?`,
+      parameters
     );
-    return rows.map((row) =>
-      Object.freeze({
-        id: requiredString(row.id, "shared report id"),
-        title: requiredString(row.title, "shared report title"),
-        subtitle: optionalString(row.subtitle, "shared report subtitle"),
-        version: decodeSafeInteger(row.version, "shared report version"),
-        owner_account_id: requiredString(row.owner_account_id, "share owner"),
-        owner_email: requiredString(row.owner_email, "share owner email"),
-        shared_at: decodeIsoTimestamp(row.shared_at, "share shared_at"),
-        created_at: decodeIsoTimestamp(row.created_at, "shared report created_at"),
-      })
+    return catalogStorePage(
+      rows.map((row) =>
+        Object.freeze({
+          id: requiredString(row.id, "shared report id"),
+          title: requiredString(row.title, "shared report title"),
+          subtitle: optionalString(row.subtitle, "shared report subtitle"),
+          version: decodeSafeInteger(row.version, "shared report version"),
+          owner_account_id: requiredString(row.owner_account_id, "share owner"),
+          owner_email: requiredString(row.owner_email, "share owner email"),
+          shared_at: decodeIsoTimestamp(row.shared_at, "share shared_at"),
+          created_at: decodeIsoTimestamp(row.created_at, "shared report created_at"),
+        })
+      ),
+      page,
+      (report) => ({ timestamp: report.shared_at, id: report.id })
     );
   }
 

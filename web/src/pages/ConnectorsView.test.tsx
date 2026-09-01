@@ -23,6 +23,15 @@ const connector = (sync_status: Connector["sync_status"]): Connector => ({
   created_at: "2026-01-01T00:00:00Z",
   schedule: null,
 });
+const page = (items: Connector[], next_cursor: string | null = null) => ({ items, next_cursor });
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((next) => {
+    resolve = next;
+  });
+  return { promise, resolve };
+}
 
 const schedule = (overrides: Partial<NonNullable<Connector["schedule"]>> = {}): NonNullable<Connector["schedule"]> => ({
   automation_id: "auto-1",
@@ -35,7 +44,7 @@ const schedule = (overrides: Partial<NonNullable<Connector["schedule"]>> = {}): 
 
 describe("ConnectorsView status controls", () => {
   it.each(["syncing", "indexing"] as const)("renders %s and blocks duplicate sync/delete actions", async (status) => {
-    vi.spyOn(connectorsApi, "list").mockResolvedValue([connector(status)]);
+    vi.spyOn(connectorsApi, "list").mockResolvedValue(page([connector(status)]));
     const sync = vi.spyOn(connectorsApi, "sync");
     const remove = vi.spyOn(connectorsApi, "remove");
 
@@ -53,18 +62,33 @@ describe("ConnectorsView status controls", () => {
   });
 
   it("renders the terminal error returned by the typed status contract", async () => {
-    vi.spyOn(connectorsApi, "list").mockResolvedValue([connector("error")]);
+    vi.spyOn(connectorsApi, "list").mockResolvedValue(page([connector("error")]));
     render(<ConnectorsView />);
 
     expect(await screen.findByText("Connector indexing failed.")).toBeInTheDocument();
     expect(screen.getByText("error")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Sync now" })).toBeEnabled();
   });
+
+  it("marks a summary-only manual sync as transitional before reconciliation", async () => {
+    const refreshed = deferred<ReturnType<typeof page>>();
+    vi.spyOn(connectorsApi, "list")
+      .mockResolvedValueOnce(page([connector("idle")]))
+      .mockReturnValueOnce(refreshed.promise);
+    vi.spyOn(connectorsApi, "sync").mockResolvedValue({ synced: true, processing: true });
+
+    render(<ConnectorsView />);
+    fireEvent.click(await screen.findByRole("button", { name: "Sync now" }));
+
+    expect(await screen.findByRole("button", { name: "Syncing…" })).toBeDisabled();
+    refreshed.resolve(page([connector("idle")]));
+    expect(await screen.findByRole("button", { name: "Sync now" })).toBeEnabled();
+  });
 });
 
 describe("ConnectorsView schedule control", () => {
   it("renders the current schedule value and next run", async () => {
-    vi.spyOn(connectorsApi, "list").mockResolvedValue([{ ...connector("idle"), schedule: schedule() }]);
+    vi.spyOn(connectorsApi, "list").mockResolvedValue(page([{ ...connector("idle"), schedule: schedule() }]));
     render(<ConnectorsView />);
 
     const select = await screen.findByLabelText("Refresh schedule for Ledger");
@@ -74,9 +98,9 @@ describe("ConnectorsView schedule control", () => {
   });
 
   it("flags a paused schedule", async () => {
-    vi.spyOn(connectorsApi, "list").mockResolvedValue([
-      { ...connector("idle"), schedule: schedule({ state: "paused", next_run_at: null }) },
-    ]);
+    vi.spyOn(connectorsApi, "list").mockResolvedValue(
+      page([{ ...connector("idle"), schedule: schedule({ state: "paused", next_run_at: null }) }]),
+    );
     render(<ConnectorsView />);
 
     expect(await screen.findByText("paused")).toBeInTheDocument();
@@ -85,7 +109,9 @@ describe("ConnectorsView schedule control", () => {
   it("sends the chosen interval and updates state from the response", async () => {
     const scheduled = { ...connector("idle"), schedule: schedule() };
     const updated = { ...connector("idle"), schedule: schedule({ schedule_minutes: 15 }) };
-    vi.spyOn(connectorsApi, "list").mockResolvedValueOnce([scheduled]).mockResolvedValue([updated]);
+    vi.spyOn(connectorsApi, "list")
+      .mockResolvedValueOnce(page([scheduled]))
+      .mockResolvedValue(page([updated]));
     const update = vi.spyOn(connectorsApi, "updateConnectorSchedule").mockResolvedValue(updated);
 
     render(<ConnectorsView />);
@@ -99,7 +125,9 @@ describe("ConnectorsView schedule control", () => {
   it("removes the schedule when Off is selected", async () => {
     const scheduled = { ...connector("idle"), schedule: schedule({ schedule_minutes: 15 }) };
     const cleared = { ...connector("idle"), schedule: null };
-    vi.spyOn(connectorsApi, "list").mockResolvedValueOnce([scheduled]).mockResolvedValue([cleared]);
+    vi.spyOn(connectorsApi, "list")
+      .mockResolvedValueOnce(page([scheduled]))
+      .mockResolvedValue(page([cleared]));
     const update = vi.spyOn(connectorsApi, "updateConnectorSchedule").mockResolvedValue(cleared);
 
     render(<ConnectorsView />);
@@ -111,7 +139,7 @@ describe("ConnectorsView schedule control", () => {
   });
 
   it("surfaces a schedule conflict inline and keeps the previous value", async () => {
-    vi.spyOn(connectorsApi, "list").mockResolvedValue([{ ...connector("idle"), schedule: schedule() }]);
+    vi.spyOn(connectorsApi, "list").mockResolvedValue(page([{ ...connector("idle"), schedule: schedule() }]));
     vi.spyOn(connectorsApi, "updateConnectorSchedule").mockRejectedValue(
       new ApiError(409, "Multiple connector refresh automations target this connector. Clean them up in Automations."),
     );
@@ -128,7 +156,7 @@ describe("ConnectorsView schedule control", () => {
 
 describe("ConnectorsView sync history", () => {
   it("opens the dialog and renders recorded syncs newest first", async () => {
-    vi.spyOn(connectorsApi, "list").mockResolvedValue([connector("idle")]);
+    vi.spyOn(connectorsApi, "list").mockResolvedValue(page([connector("idle")]));
     vi.spyOn(connectorsApi, "listConnectorSyncs").mockResolvedValue([
       {
         id: 2,
@@ -160,7 +188,7 @@ describe("ConnectorsView sync history", () => {
   });
 
   it("shows the empty state when no syncs are recorded", async () => {
-    vi.spyOn(connectorsApi, "list").mockResolvedValue([connector("idle")]);
+    vi.spyOn(connectorsApi, "list").mockResolvedValue(page([connector("idle")]));
     vi.spyOn(connectorsApi, "listConnectorSyncs").mockResolvedValue([]);
 
     render(<ConnectorsView />);

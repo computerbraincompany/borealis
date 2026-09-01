@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 const apiMocks = vi.hoisted(() => ({
   list: vi.fn(),
@@ -33,6 +33,16 @@ vi.mock("@/components/ui/dialog", () => ({
 
 import { AutomationsView } from "@/pages/AutomationsView";
 
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
 const automation = {
   id: "auto-1",
   name: "Nightly ledger",
@@ -51,9 +61,9 @@ const automation = {
 describe("AutomationsView", () => {
   beforeEach(() => {
     Object.values(apiMocks).forEach((mock) => mock.mockReset());
-    apiMocks.list.mockResolvedValue([automation]);
-    apiMocks.connectorsList.mockResolvedValue([{ id: "conn-1", name: "Ledger feed" }]);
-    apiMocks.chatsList.mockResolvedValue([{ id: "chat-1", title: "Digest chat" }]);
+    apiMocks.list.mockResolvedValue({ items: [automation], next_cursor: null });
+    apiMocks.connectorsList.mockResolvedValue({ items: [{ id: "conn-1", name: "Ledger feed" }], next_cursor: null });
+    apiMocks.chatsList.mockResolvedValue({ items: [{ id: "chat-1", title: "Digest chat" }], next_cursor: null });
     apiMocks.runs.mockResolvedValue([
       {
         id: 1,
@@ -84,13 +94,192 @@ describe("AutomationsView", () => {
     fireEvent.click(screen.getByRole("button", { name: "Create" }));
 
     await waitFor(() =>
-      expect(apiMocks.create).toHaveBeenCalledWith({
-        name: "Weekly sync",
+      expect(apiMocks.create).toHaveBeenCalledWith(
+        {
+          name: "Weekly sync",
+          kind: "connector_sync",
+          target_id: "conn-1",
+          schedule_minutes: 60,
+        },
+        expect.any(AbortSignal),
+      ),
+    );
+  });
+
+  it("reconciles the authoritative catalog after create supersedes an unresolved refresh", async () => {
+    const stale = deferred<{ items: Array<typeof automation>; next_cursor: null }>();
+    const created = { ...automation, id: "auto-2", name: "Weekly sync" };
+    apiMocks.list
+      .mockResolvedValueOnce({ items: [automation], next_cursor: null })
+      .mockReturnValueOnce(stale.promise)
+      .mockResolvedValueOnce({ items: [created, automation], next_cursor: null });
+    apiMocks.create.mockResolvedValue(created);
+    render(<AutomationsView />);
+
+    expect(await screen.findByText("Nightly ledger")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    await waitFor(() => expect(apiMocks.list).toHaveBeenCalledTimes(2));
+    fireEvent.click(screen.getByRole("button", { name: /New automation/i }));
+    fireEvent.change(screen.getByLabelText("Automation name"), { target: { value: "Weekly sync" } });
+    fireEvent.change(screen.getByLabelText("Automation target"), { target: { value: "conn-1" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create" }));
+
+    await waitFor(() => expect(apiMocks.list).toHaveBeenCalledTimes(3));
+    expect(await screen.findByText("Weekly sync")).toBeInTheDocument();
+    expect(screen.getByText("Nightly ledger")).toBeInTheDocument();
+    await act(async () => stale.resolve({ items: [automation], next_cursor: null }));
+    expect(screen.getByText("Weekly sync")).toBeInTheDocument();
+    expect(screen.getByText("Nightly ledger")).toBeInTheDocument();
+  });
+
+  it.each(["resolve", "reject"] as const)(
+    "keeps a reopened create form owned when the older request later %ss",
+    async (settlement) => {
+      const older = deferred<typeof automation>();
+      const newer = deferred<typeof automation>();
+      apiMocks.create.mockReturnValueOnce(older.promise).mockReturnValueOnce(newer.promise);
+      render(<AutomationsView />);
+
+      fireEvent.click(await screen.findByRole("button", { name: /New automation/i }));
+      fireEvent.change(screen.getByLabelText("Automation name"), { target: { value: "First automation" } });
+      fireEvent.change(screen.getByLabelText("Automation target"), { target: { value: "conn-1" } });
+      fireEvent.click(screen.getByRole("button", { name: "Create" }));
+
+      await waitFor(() => expect(apiMocks.create).toHaveBeenCalledTimes(1));
+      expect(apiMocks.create.mock.calls[0][0]).toEqual({
+        name: "First automation",
         kind: "connector_sync",
         target_id: "conn-1",
         schedule_minutes: 60,
-      }),
+      });
+      const olderSignal = apiMocks.create.mock.calls[0][1] as AbortSignal;
+
+      fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+      expect(olderSignal.aborted).toBe(true);
+      fireEvent.click(screen.getByRole("button", { name: /New automation/i }));
+      fireEvent.change(screen.getByLabelText("Automation name"), { target: { value: "Second automation" } });
+      fireEvent.click(screen.getByRole("button", { name: "Create" }));
+
+      await waitFor(() => expect(apiMocks.create).toHaveBeenCalledTimes(2));
+      expect(apiMocks.create.mock.calls[1][0]).toEqual({
+        name: "Second automation",
+        kind: "connector_sync",
+        target_id: "conn-1",
+        schedule_minutes: 60,
+      });
+      expect(apiMocks.create.mock.calls[1][1]).toBeInstanceOf(AbortSignal);
+
+      await act(async () => {
+        if (settlement === "resolve") {
+          older.resolve({ ...automation, id: "auto-stale", name: "Stale automation" });
+        } else {
+          older.reject(new Error("stale create failed"));
+        }
+      });
+
+      expect(screen.getByRole("heading", { name: "New automation" })).toBeInTheDocument();
+      expect(screen.getByLabelText("Automation name")).toHaveValue("Second automation");
+      expect(screen.getByRole("button", { name: "Create" })).toBeDisabled();
+      expect(screen.queryByText("Stale automation")).not.toBeInTheDocument();
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+
+      await act(async () => newer.resolve({ ...automation, id: "auto-2", name: "Second automation" }));
+      await waitFor(() => expect(screen.queryByRole("heading", { name: "New automation" })).not.toBeInTheDocument());
+      expect(screen.getByText("Second automation")).toBeInTheDocument();
+    },
+  );
+
+  it("aborts and invalidates a pending create when unmounted", async () => {
+    const pending = deferred<typeof automation>();
+    apiMocks.create.mockReturnValue(pending.promise);
+    const { unmount } = render(<AutomationsView />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /New automation/i }));
+    fireEvent.change(screen.getByLabelText("Automation name"), { target: { value: "Unmounted automation" } });
+    fireEvent.change(screen.getByLabelText("Automation target"), { target: { value: "conn-1" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create" }));
+    await waitFor(() => expect(apiMocks.create).toHaveBeenCalledTimes(1));
+    const signal = apiMocks.create.mock.calls[0][1] as AbortSignal;
+
+    unmount();
+    expect(signal.aborted).toBe(true);
+    await act(async () => pending.resolve({ ...automation, id: "auto-late", name: "Unmounted automation" }));
+  });
+
+  it("reaches automation targets across repeated bounded pages", async () => {
+    apiMocks.connectorsList.mockImplementation((options?: { cursor?: string }) => {
+      if (options?.cursor === "connectors-page-2") {
+        return Promise.resolve({ items: [{ id: "conn-2", name: "Older feed" }], next_cursor: "connectors-page-3" });
+      }
+      if (options?.cursor === "connectors-page-3") {
+        return Promise.resolve({ items: [{ id: "conn-3", name: "Oldest feed" }], next_cursor: null });
+      }
+      return Promise.resolve({ items: [{ id: "conn-1", name: "Ledger feed" }], next_cursor: "connectors-page-2" });
+    });
+    render(<AutomationsView />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /New automation/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Load older connectors" }));
+    await screen.findByRole("option", { name: "Older feed" });
+    fireEvent.click(screen.getByRole("button", { name: "Load older connectors" }));
+
+    expect(await screen.findByRole("option", { name: "Oldest feed" })).toBeInTheDocument();
+    expect(apiMocks.connectorsList).toHaveBeenCalledWith({
+      cursor: "connectors-page-2",
+      signal: expect.any(AbortSignal),
+    });
+    expect(apiMocks.connectorsList).toHaveBeenCalledWith({
+      cursor: "connectors-page-3",
+      signal: expect.any(AbortSignal),
+    });
+  });
+
+  it("aborts obsolete target pagination on kind change and lets the new kind load immediately", async () => {
+    const obsolete = deferred<{ items: Array<{ id: string; name: string }>; next_cursor: null }>();
+    apiMocks.connectorsList.mockImplementation((options?: { cursor?: string }) =>
+      options?.cursor
+        ? obsolete.promise
+        : Promise.resolve({ items: [{ id: "conn-1", name: "Ledger feed" }], next_cursor: "connector-page-2" }),
     );
+    apiMocks.chatsList.mockImplementation((options?: { cursor?: string }) =>
+      Promise.resolve(
+        options?.cursor
+          ? { items: [{ id: "chat-2", title: "Older digest" }], next_cursor: null }
+          : { items: [{ id: "chat-1", title: "Digest chat" }], next_cursor: "chat-page-2" },
+      ),
+    );
+    render(<AutomationsView />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /New automation/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Load older connectors" }));
+    await waitFor(() => expect(apiMocks.connectorsList).toHaveBeenCalledTimes(2));
+    const obsoleteSignal = apiMocks.connectorsList.mock.calls[1][0].signal as AbortSignal;
+    fireEvent.change(screen.getByLabelText("Automation kind"), { target: { value: "agent_turn" } });
+    expect(obsoleteSignal.aborted).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Load older chats" }));
+
+    expect(await screen.findByRole("option", { name: "Older digest" })).toBeInTheDocument();
+    await act(async () => obsolete.reject(new Error("obsolete connector page failed")));
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("aborts target pagination when the create dialog closes", async () => {
+    const pending = deferred<{ items: Array<{ id: string; name: string }>; next_cursor: null }>();
+    apiMocks.connectorsList.mockImplementation((options?: { cursor?: string }) =>
+      options?.cursor
+        ? pending.promise
+        : Promise.resolve({ items: [{ id: "conn-1", name: "Ledger feed" }], next_cursor: "connector-page-2" }),
+    );
+    render(<AutomationsView />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /New automation/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Load older connectors" }));
+    await waitFor(() => expect(apiMocks.connectorsList).toHaveBeenCalledTimes(2));
+    const signal = apiMocks.connectorsList.mock.calls[1][0].signal as AbortSignal;
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(signal.aborted).toBe(true);
+    await act(async () => pending.reject(new Error("closed target page failed")));
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
   it("shows durable run history with generic failure details", async () => {
@@ -101,12 +290,60 @@ describe("AutomationsView", () => {
     expect(screen.getByText(/the automation could not complete this run/)).toBeInTheDocument();
   });
 
+  it("keeps run history owned by the newest dialog target", async () => {
+    const older = deferred<Awaited<ReturnType<typeof apiMocks.runs>>>();
+    const newer = deferred<Awaited<ReturnType<typeof apiMocks.runs>>>();
+    const secondAutomation = { ...automation, id: "auto-2", name: "Weekly digest" };
+    apiMocks.list.mockResolvedValue({ items: [automation, secondAutomation], next_cursor: null });
+    apiMocks.runs.mockImplementation((id: string) => (id === automation.id ? older.promise : newer.promise));
+    render(<AutomationsView />);
+
+    const buttons = await screen.findAllByRole("button", { name: "Runs" });
+    fireEvent.click(buttons[0]);
+    await waitFor(() => expect(apiMocks.runs).toHaveBeenCalledWith("auto-1", 20, expect.any(AbortSignal)));
+    const olderSignal = apiMocks.runs.mock.calls[0][2] as AbortSignal;
+
+    fireEvent.click(buttons[1]);
+    await waitFor(() => expect(apiMocks.runs).toHaveBeenCalledWith("auto-2", 20, expect.any(AbortSignal)));
+    expect(olderSignal.aborted).toBe(true);
+
+    await act(async () =>
+      newer.resolve([
+        {
+          id: 2,
+          outcome: "succeeded",
+          detail: "new target result",
+          started_at: "2026-01-03T00:00:00Z",
+          finished_at: "2026-01-03T00:01:00Z",
+        },
+      ]),
+    );
+    expect(await screen.findByText("new target result")).toBeInTheDocument();
+
+    await act(async () =>
+      older.resolve([
+        {
+          id: 1,
+          outcome: "failed",
+          detail: "stale target result",
+          started_at: "2026-01-02T00:00:00Z",
+          finished_at: null,
+        },
+      ]),
+    );
+    expect(screen.queryByText("stale target result")).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Weekly digest runs" })).toBeInTheDocument();
+  });
+
   it("pauses and resumes an automation", async () => {
     apiMocks.update.mockResolvedValue({ ...automation, state: "paused" });
     render(<AutomationsView />);
 
     fireEvent.click(await screen.findByTitle("Pause automation"));
-    await waitFor(() => expect(apiMocks.update).toHaveBeenCalledWith("auto-1", { state: "paused" }));
+    await waitFor(() =>
+      expect(apiMocks.update).toHaveBeenCalledWith("auto-1", { state: "paused" }, expect.any(AbortSignal)),
+    );
+    expect(await screen.findByTitle("Resume automation")).toBeInTheDocument();
   });
 
   it("deletes an automation", async () => {
@@ -114,7 +351,81 @@ describe("AutomationsView", () => {
     render(<AutomationsView />);
 
     fireEvent.click(await screen.findByTitle("Delete automation"));
-    await waitFor(() => expect(apiMocks.remove).toHaveBeenCalledWith("auto-1"));
+    await waitFor(() => expect(apiMocks.remove).toHaveBeenCalledWith("auto-1", expect.any(AbortSignal)));
     await waitFor(() => expect(screen.queryByText("Nightly ledger")).not.toBeInTheDocument());
+  });
+
+  it("does not let a stale catalog refresh resurrect a successfully deleted automation", async () => {
+    const stale = deferred<{ items: Array<typeof automation>; next_cursor: null }>();
+    apiMocks.list.mockResolvedValueOnce({ items: [automation], next_cursor: null }).mockReturnValueOnce(stale.promise);
+    apiMocks.remove.mockResolvedValue({ ok: true });
+    render(<AutomationsView />);
+
+    expect(await screen.findByText("Nightly ledger")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    await waitFor(() => expect(apiMocks.list).toHaveBeenCalledTimes(2));
+    fireEvent.click(screen.getByTitle("Delete automation"));
+    await waitFor(() => expect(screen.queryByText("Nightly ledger")).not.toBeInTheDocument());
+
+    await act(async () => stale.resolve({ items: [automation], next_cursor: null }));
+    expect(screen.queryByText("Nightly ledger")).not.toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it.each(["resolve", "reject"] as const)(
+    "keeps a newer same-row deletion owned when the older toggle later %ss",
+    async (settlement) => {
+      const older = deferred<Awaited<ReturnType<typeof apiMocks.update>>>();
+      const newer = deferred<{ ok: true }>();
+      apiMocks.update.mockReturnValue(older.promise);
+      apiMocks.remove.mockReturnValue(newer.promise);
+      render(<AutomationsView />);
+
+      fireEvent.click(await screen.findByTitle("Pause automation"));
+      await waitFor(() => expect(apiMocks.update).toHaveBeenCalledTimes(1));
+      const olderSignal = apiMocks.update.mock.calls[0][2] as AbortSignal;
+      fireEvent.click(screen.getByTitle("Delete automation"));
+      await waitFor(() => expect(apiMocks.remove).toHaveBeenCalledTimes(1));
+      expect(olderSignal.aborted).toBe(true);
+
+      await act(async () => {
+        if (settlement === "resolve") older.resolve({ ...automation, state: "paused" });
+        else older.reject(new Error("stale toggle failed"));
+      });
+
+      expect(screen.getByText("Nightly ledger")).toBeInTheDocument();
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+      await act(async () => newer.resolve({ ok: true }));
+      expect(screen.queryByText("Nightly ledger")).not.toBeInTheDocument();
+    },
+  );
+
+  it("keeps different-row mutations concurrent and aborts all of them on unmount", async () => {
+    const toggle = deferred<Awaited<ReturnType<typeof apiMocks.update>>>();
+    const deletion = deferred<{ ok: true }>();
+    const secondAutomation = { ...automation, id: "auto-2", name: "Weekly digest" };
+    apiMocks.list.mockResolvedValue({ items: [automation, secondAutomation], next_cursor: null });
+    apiMocks.update.mockReturnValue(toggle.promise);
+    apiMocks.remove.mockReturnValue(deletion.promise);
+    const { unmount } = render(<AutomationsView />);
+
+    const pauseButtons = await screen.findAllByTitle("Pause automation");
+    const deleteButtons = screen.getAllByTitle("Delete automation");
+    fireEvent.click(pauseButtons[0]);
+    fireEvent.click(deleteButtons[1]);
+    await waitFor(() => expect(apiMocks.update).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(apiMocks.remove).toHaveBeenCalledTimes(1));
+    const toggleSignal = apiMocks.update.mock.calls[0][2] as AbortSignal;
+    const deleteSignal = apiMocks.remove.mock.calls[0][1] as AbortSignal;
+    expect(toggleSignal.aborted).toBe(false);
+    expect(deleteSignal.aborted).toBe(false);
+
+    unmount();
+    expect(toggleSignal.aborted).toBe(true);
+    expect(deleteSignal.aborted).toBe(true);
+    await act(async () => {
+      toggle.resolve({ ...automation, state: "paused" });
+      deletion.reject(new Error("late deletion failed"));
+    });
   });
 });

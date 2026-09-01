@@ -1,5 +1,6 @@
 import { getToken, getUser, setSession } from "@/lib/api";
 import { initializeDesktopSession, type BorealisDesktopBridge } from "@/lib/desktopBootstrap";
+import { failOnReactActWarning } from "@/test/console";
 
 describe("desktop bootstrap", () => {
   beforeEach(() => {
@@ -48,7 +49,7 @@ describe("desktop bootstrap", () => {
   it("ignores rejected and malformed preload payloads without leaking them", async () => {
     const secret = "must-not-appear";
     const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
-    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const error = vi.spyOn(console, "error").mockImplementation((...args) => failOnReactActWarning(args));
     try {
       window.borealisDesktop = {
         consumeBootstrap: vi.fn().mockResolvedValue({ token: secret, user: { id: "", email: "invalid" } }),

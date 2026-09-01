@@ -138,6 +138,27 @@ describe("ChatSourcePicker", () => {
     expect(screen.queryByRole("menuitemcheckbox", { name: "Select source: Dataset 1.csv" })).not.toBeInTheDocument();
   });
 
+  it("keeps accessible source and library pagination controls inside the open menu", async () => {
+    const user = userEvent.setup();
+    const onLoadMoreSources = vi.fn<() => Promise<void>>().mockResolvedValue(undefined);
+    const onLoadMoreLibraries = vi.fn<() => Promise<void>>().mockResolvedValue(undefined);
+    renderPicker({
+      sourcesHasMore: true,
+      onLoadMoreSources,
+      libraries: [financeLibrary],
+      librariesHasMore: true,
+      onLoadMoreLibraries,
+    });
+    await user.click(screen.getByRole("button", { name: "Chat sources: No sources" }));
+
+    await user.click(screen.getByRole("button", { name: "Load more sources" }));
+    await user.click(screen.getByRole("menuitem", { name: "Load more libraries" }));
+
+    expect(onLoadMoreSources).toHaveBeenCalledTimes(1);
+    expect(onLoadMoreLibraries).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("menu")).toBeVisible();
+  });
+
   it("uploads a file and immediately adds it to a specific-source chat", async () => {
     const user = userEvent.setup();
     const { onApply, onUpload } = renderPicker();

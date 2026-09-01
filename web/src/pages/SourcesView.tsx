@@ -25,7 +25,18 @@ export function SourcesView() {
   const [retrying, setRetrying] = useState<string | null>(null);
   const [operationError, setOperationError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
-  const { sources, loading, error: catalogError, refresh, addPending } = useSourceCatalog();
+  const {
+    sources,
+    loading,
+    loadingMore,
+    hasMore,
+    error: catalogError,
+    refresh,
+    loadMore,
+    addPending,
+    applyOne,
+    removeOne,
+  } = useSourceCatalog();
   const { handleConsentError, dialog: consentDialog } = useEgressConsentGate();
 
   useEffect(() => {
@@ -57,6 +68,7 @@ export function SourcesView() {
     setOperationError(null);
     try {
       await sourcesApi.remove(id);
+      removeOne(id);
       await refresh();
     } catch (error: unknown) {
       setOperationError(formatApiError(error, "Could not delete the source"));
@@ -67,7 +79,7 @@ export function SourcesView() {
     setRetrying(id);
     setOperationError(null);
     try {
-      addPending(await sourcesApi.reingest(id));
+      applyOne(await sourcesApi.reingest(id));
       await refresh();
     } catch (error: unknown) {
       if (!handleConsentError(error, () => void retry(id))) {
@@ -240,6 +252,14 @@ export function SourcesView() {
               </div>
             </Card>
           ))}
+          {hasMore && (
+            <div className="flex justify-center pt-3">
+              <Button variant="outline" onClick={() => void loadMore()} disabled={loadingMore}>
+                {loadingMore && <Loader2 className="h-4 w-4 animate-spin" />}
+                Load older sources
+              </Button>
+            </div>
+          )}
         </div>
       </div>
     </div>

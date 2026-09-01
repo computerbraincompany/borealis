@@ -309,6 +309,47 @@ describe("SQLite + LanceDB ingestion lifecycle", () => {
     ).resolves.toMatchObject({ chunk_id: newChunk });
   });
 
+  it("never promotes an exact file location while durable cleanup owns it", async () => {
+    const resource = await stores();
+    const accountId = randomUUID();
+    const sourceId = randomUUID();
+    const reservedLocation = `/cache/${randomUUID()}.csv`;
+    await seedUser(resource.ledger, accountId, "cleanup-race@example.test");
+    await seedSource(resource.ledger, accountId, sourceId);
+    const oldChunk = await seedLiveChunk(resource, {
+      accountId,
+      sourceId,
+      generation: 1,
+      content: "old",
+      vector: [0, 1, 0],
+    });
+    const job = await nextRunningJob(resource, accountId, sourceId);
+    await stageNew(resource, job);
+    await resource.ledger.run(
+      `INSERT INTO dataset_cache_cleanup_jobs (account_id,name,location)
+       VALUES (?,?,?)`,
+      [accountId, sourceId, reservedLocation]
+    );
+
+    await expect(
+      resource.lifecycle.promote({
+        accountId,
+        sourceId,
+        generation: job.generation,
+        leaseToken: job.leaseToken!,
+        sizeBytes: 12,
+        promotedFilePath: reservedLocation,
+      })
+    ).rejects.toMatchObject({ code: "INGESTION_SUPERSEDED" } satisfies Partial<IngestionStoreError>);
+    await expect(resource.store.getSource(accountId, sourceId)).resolves.toMatchObject({
+      filePath: `/proven/${sourceId}.txt`,
+      readyGeneration: 1,
+    });
+    await expect(resource.ledger.get("SELECT id FROM chunks WHERE id=?", [oldChunk])).resolves.toEqual({
+      id: oldChunk,
+    });
+  });
+
   it("repairs a durable source-delete crash and removes every source vector", async () => {
     const resource = await stores();
     const accountId = randomUUID();

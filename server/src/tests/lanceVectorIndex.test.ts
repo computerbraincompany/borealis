@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
   LanceVectorClosedError,
+  LanceVectorEmbeddingIdentityError,
   LanceVectorIdentityError,
   LanceVectorIndex,
   LanceVectorInputError,
@@ -198,15 +199,115 @@ describe("LanceVectorIndex", () => {
       original.upsert([vectorRow("non-finite", ACCOUNT_A, SOURCE_1, 1, [1, Number.NaN, 0])])
     ).rejects.toBeInstanceOf(LanceVectorInputError);
     await expect(
+      original.upsert([vectorRow("float32-overflow", ACCOUNT_A, SOURCE_1, 1, [1e100, 1, 0])])
+    ).rejects.toBeInstanceOf(LanceVectorInputError);
+    await expect(
+      original.upsert([vectorRow("float32-underflow", ACCOUNT_A, SOURCE_1, 1, [1e-100, 0, 0])])
+    ).rejects.toBeInstanceOf(LanceVectorInputError);
+    await expect(
+      original.upsert([vectorRow("float32-norm-underflow", ACCOUNT_A, SOURCE_1, 1, [1e-23, 0, 0])])
+    ).rejects.toBeInstanceOf(LanceVectorInputError);
+    await expect(
+      original.upsert([vectorRow("float32-norm-overflow", ACCOUNT_A, SOURCE_1, 1, [1e20, 0, 0])])
+    ).rejects.toBeInstanceOf(LanceVectorInputError);
+    await expect(
       original.upsert([vectorRow("bad-generation", ACCOUNT_A, SOURCE_1, 1.5, [1, 0, 0])])
     ).rejects.toBeInstanceOf(LanceVectorInputError);
     await original.upsert([vectorRow("chunk", ACCOUNT_A, SOURCE_1, 1, [1, 0, 0])]);
+    await expect(
+      original.search({ accountId: ACCOUNT_A, sourceIds: [SOURCE_1], vector: [1e-23, 0, 0], limit: 1 })
+    ).rejects.toBeInstanceOf(LanceVectorInputError);
+    await expect(
+      original.search({ accountId: ACCOUNT_A, sourceIds: [SOURCE_1], vector: [1e20, 0, 0], limit: 1 })
+    ).rejects.toBeInstanceOf(LanceVectorInputError);
     await original.close();
 
     await expect(LanceVectorIndex.open({ directory, dimension: 4 })).rejects.toBeInstanceOf(LanceVectorSchemaError);
     const reopened = await LanceVectorIndex.open({ directory, dimension: 3 });
     indexes.push(reopened);
     await expect(reopened.hasAll(["chunk"], SOURCE_1, 1)).resolves.toBe(true);
+  });
+
+  it("persists the resolved embedding identity and rejects same-dimension drift", async () => {
+    const directory = await temporaryDirectory();
+    const original = await LanceVectorIndex.open({ directory, dimension: 3, embeddingModel: "nomic-embed" });
+    await original.upsert([vectorRow("chunk-a", ACCOUNT_A, SOURCE_1, 1, [1, 0, 0])]);
+    await original.close();
+
+    const marker = JSON.parse(await readFile(join(directory, ".borealis-embedding-index.json"), "utf8")) as {
+      resolved_model: string;
+      dimension: number;
+    };
+    expect(marker).toEqual({
+      version: 1,
+      resolved_model: "text-embedding-nomic-embed-text-v1.5",
+      dimension: 3,
+    });
+    await expect(readFile(join(directory, ".borealis-embedding-index-binding.json"), "utf8")).resolves.toBe(
+      `${JSON.stringify(marker)}\n`
+    );
+    await expect(
+      LanceVectorIndex.open({ directory, dimension: 3, embeddingModel: "different-model" })
+    ).rejects.toBeInstanceOf(LanceVectorEmbeddingIdentityError);
+    const reopened = await LanceVectorIndex.open({
+      directory,
+      dimension: 3,
+      embeddingModel: "text-embedding-nomic-embed-text-v1.5",
+    });
+    indexes.push(reopened);
+    expect(await reopened.countRows()).toBe(1);
+  });
+
+  it("requires explicit adoption for a populated legacy index", async () => {
+    const directory = await temporaryDirectory();
+    const legacy = await LanceVectorIndex.open({ directory, dimension: 3 });
+    await legacy.upsert([vectorRow("chunk-a", ACCOUNT_A, SOURCE_1, 1, [1, 0, 0])]);
+    await legacy.close();
+
+    await expect(
+      LanceVectorIndex.open({ directory, dimension: 3, embeddingModel: "legacy-model" })
+    ).rejects.toBeInstanceOf(LanceVectorEmbeddingIdentityError);
+    const adopted = await LanceVectorIndex.open({
+      directory,
+      dimension: 3,
+      embeddingModel: "legacy-model",
+      allowLegacyIdentityAdoption: true,
+    });
+    indexes.push(adopted);
+    expect(adopted.embeddingModel).toBe("legacy-model");
+  });
+
+  it("does not reopen legacy adoption after a populated index has been bound", async () => {
+    const directory = await temporaryDirectory();
+    const legacy = await LanceVectorIndex.open({ directory, dimension: 3 });
+    await legacy.upsert([vectorRow("chunk-a", ACCOUNT_A, SOURCE_1, 1, [1, 0, 0])]);
+    await legacy.close();
+
+    const adopted = await LanceVectorIndex.open({
+      directory,
+      dimension: 3,
+      embeddingModel: "model-a",
+      allowLegacyIdentityAdoption: true,
+    });
+    await adopted.close();
+    await unlink(join(directory, ".borealis-embedding-index.json"));
+
+    await expect(
+      LanceVectorIndex.open({
+        directory,
+        dimension: 3,
+        embeddingModel: "model-b",
+        allowLegacyIdentityAdoption: true,
+      })
+    ).rejects.toBeInstanceOf(LanceVectorEmbeddingIdentityError);
+    const repaired = await LanceVectorIndex.open({
+      directory,
+      dimension: 3,
+      embeddingModel: "model-a",
+      allowLegacyIdentityAdoption: true,
+    });
+    indexes.push(repaired);
+    expect(await repaired.countRows()).toBe(1);
   });
 
   it("closes idempotently while empty operations remain no-call identities", async () => {

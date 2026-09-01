@@ -1,5 +1,10 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+
+vi.mock("@/components/ChartCard", () => ({
+  ChartCard: ({ chartId }: { chartId: string }) => <div data-testid={`chart-${chartId}`}>Loaded chart</div>,
+}));
+
 import { ChatMessage } from "@/components/ChatMessage";
 import type { CitationRef, RetrievedEvidence } from "@/lib/api";
 
@@ -35,5 +40,14 @@ describe("ChatMessage citations", () => {
 
     expect(screen.getByRole("button", { name: "Citation 1: Quarterly report" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Citation 2: Meeting notes" })).toBeInTheDocument();
+  });
+
+  it("loads the chart renderer only for messages with chart metadata", async () => {
+    const withoutChart = render(<ChatMessage role="assistant" content="No chart here." />);
+    expect(screen.queryByText("Loaded chart")).not.toBeInTheDocument();
+    withoutChart.unmount();
+
+    render(<ChatMessage role="assistant" content="Chart follows." charts={["chart-1"]} />);
+    expect(await screen.findByTestId("chart-chart-1")).toBeInTheDocument();
   });
 });

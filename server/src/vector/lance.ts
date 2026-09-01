@@ -1,7 +1,13 @@
+import { randomUUID } from "node:crypto";
+import { constants as fsConstants } from "node:fs";
+import fs from "node:fs/promises";
 import path from "node:path";
 
 import * as lancedb from "@lancedb/lancedb";
 import type { Connection, Table, VectorQuery } from "@lancedb/lancedb";
+
+import { normalizeEmbeddingVector } from "../embeddingVector.js";
+import { resolveLlmModelId } from "../llmAliases.js";
 
 const TABLE_NAME = "chunk_vectors";
 const MAX_ID_LENGTH = 1_024;
@@ -10,6 +16,10 @@ const MAX_UPSERT_ROWS = 10_000;
 const MAX_CHUNK_IDS = 10_000;
 const MAX_CHUNK_IDS_PER_PREDICATE = 500;
 const MAX_KEEP_GENERATIONS = 32;
+const INDEX_IDENTITY_FILENAME = ".borealis-embedding-index.json";
+const INDEX_BINDING_FILENAME = ".borealis-embedding-index-binding.json";
+const INDEX_IDENTITY_VERSION = 1 as const;
+const MAX_INDEX_IDENTITY_BYTES = 4 * 1024;
 
 export const MAX_VECTOR_SOURCE_ALLOWLIST = 100;
 export const MAX_VECTOR_SEARCH_RESULTS = 100;
@@ -17,6 +27,12 @@ export const MAX_VECTOR_SEARCH_RESULTS = 100;
 export interface LanceVectorIndexOptions {
   directory: string;
   dimension: number;
+  /** Logical or physical model id; persisted as its resolved outbound identity. */
+  embeddingModel?: string;
+  /** One-release compatibility path for a populated index created before identity markers. */
+  allowLegacyIdentityAdoption?: boolean;
+  /** Verification paths must never manufacture a table or accept an unbound existing index. */
+  requireExistingTable?: boolean;
 }
 
 export interface LanceVectorRow {
@@ -60,6 +76,13 @@ export class LanceVectorSchemaError extends Error {
   constructor() {
     super("LanceDB vector schema does not match the configured contract");
     this.name = "LanceVectorSchemaError";
+  }
+}
+
+export class LanceVectorEmbeddingIdentityError extends Error {
+  constructor() {
+    super("LanceDB embedding identity does not match the configured model");
+    this.name = "LanceVectorEmbeddingIdentityError";
   }
 }
 
@@ -170,16 +193,11 @@ function sourceScopePredicate(
 }
 
 function normalizeVector(vector: readonly number[] | Float32Array, dimension: number): number[] {
-  if (!(Array.isArray(vector) || vector instanceof Float32Array) || vector.length !== dimension) {
-    throw new LanceVectorInputError(`vector must contain exactly ${dimension} values`);
+  try {
+    return normalizeEmbeddingVector(vector, dimension);
+  } catch {
+    throw new LanceVectorInputError(`vector must contain exactly ${dimension} usable float32 values`);
   }
-  return Array.from(vector, (value) => {
-    const normalized = Math.fround(value);
-    if (!Number.isFinite(value) || !Number.isFinite(normalized)) {
-      throw new LanceVectorInputError("vector values must be finite float32 numbers");
-    }
-    return normalized;
-  });
 }
 
 function expectedSchema(dimension: number): ExpectedSchema {
@@ -241,9 +259,207 @@ function batches<T>(values: readonly T[], size: number): T[][] {
   return result;
 }
 
+interface StoredEmbeddingIdentity {
+  readonly version: typeof INDEX_IDENTITY_VERSION;
+  readonly resolved_model: string;
+  readonly dimension: number;
+}
+
+function embeddingModelValue(value: string): string {
+  const normalized = typeof value === "string" ? resolveLlmModelId(value.trim()) : "";
+  const hasControlCharacter = Array.from(normalized).some((character) => {
+    const codePoint = character.codePointAt(0) ?? 0;
+    return codePoint <= 0x1f || codePoint === 0x7f;
+  });
+  if (!normalized || normalized.length > 256 || hasControlCharacter) {
+    throw new LanceVectorInputError("embedding model must be a bounded model id without control characters");
+  }
+  return normalized;
+}
+
+function decodeEmbeddingIdentity(value: unknown): StoredEmbeddingIdentity {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new LanceVectorEmbeddingIdentityError();
+  }
+  const candidate = value as Record<string, unknown>;
+  if (
+    Object.keys(candidate).sort().join(",") !== "dimension,resolved_model,version" ||
+    candidate.version !== INDEX_IDENTITY_VERSION ||
+    typeof candidate.resolved_model !== "string" ||
+    embeddingModelValue(candidate.resolved_model) !== candidate.resolved_model ||
+    typeof candidate.dimension !== "number" ||
+    !Number.isSafeInteger(candidate.dimension) ||
+    candidate.dimension < 1 ||
+    candidate.dimension > MAX_VECTOR_DIMENSION
+  ) {
+    throw new LanceVectorEmbeddingIdentityError();
+  }
+  return Object.freeze({
+    version: INDEX_IDENTITY_VERSION,
+    resolved_model: candidate.resolved_model,
+    dimension: candidate.dimension,
+  });
+}
+
+async function ensureEmbeddingIdentity(
+  directory: string,
+  expected: Omit<StoredEmbeddingIdentity, "version">,
+  mayCreate: boolean
+): Promise<void> {
+  const filename = path.join(directory, INDEX_IDENTITY_FILENAME);
+  const bindingFilename = path.join(directory, INDEX_BINDING_FILENAME);
+  const [identity, binding] = await Promise.all([
+    readOptionalEmbeddingIdentity(filename),
+    readOptionalEmbeddingIdentity(bindingFilename),
+  ]);
+  if (identity) {
+    assertEmbeddingIdentity(identity, expected);
+    if (binding) {
+      assertEmbeddingIdentity(binding, identity);
+    } else {
+      // Upgrade marker-only indexes without changing the identity the marker already authorizes.
+      await publishEmbeddingIdentity(bindingFilename, identity);
+      assertEmbeddingIdentity(await readEmbeddingIdentity(bindingFilename), identity);
+    }
+    return;
+  }
+  if (binding) {
+    // The receipt is independent durable authority for the exact first-bound
+    // identity. It can safely finish an interrupted marker publication (or
+    // repair a missing marker) but can never authorize a relabel.
+    assertEmbeddingIdentity(binding, expected);
+    await publishEmbeddingIdentity(filename, binding);
+    assertEmbeddingIdentity(await readEmbeddingIdentity(filename), binding);
+    return;
+  }
+  if (!mayCreate) throw new LanceVectorEmbeddingIdentityError();
+  const created = Object.freeze({
+    version: INDEX_IDENTITY_VERSION,
+    resolved_model: expected.resolved_model,
+    dimension: expected.dimension,
+  });
+  // Publish the durable one-time receipt first. A crash before marker
+  // publication can recover only the exact identity stored in this receipt.
+  await publishEmbeddingIdentity(bindingFilename, created);
+  await publishEmbeddingIdentity(filename, created);
+  assertEmbeddingIdentity(await readEmbeddingIdentity(bindingFilename), created);
+  assertEmbeddingIdentity(await readEmbeddingIdentity(filename), created);
+}
+
+async function validateOptionalEmbeddingIdentity(
+  directory: string,
+  dimension: number,
+  requireIdentity: boolean
+): Promise<void> {
+  const [identity, binding] = await Promise.all([
+    readOptionalEmbeddingIdentity(path.join(directory, INDEX_IDENTITY_FILENAME)),
+    readOptionalEmbeddingIdentity(path.join(directory, INDEX_BINDING_FILENAME)),
+  ]);
+  if (!identity) {
+    // Receipt-first publication makes this a legitimate crash state. Offline
+    // verification may validate it read-only by schema dimension; only normal
+    // startup has an expected model and may republish the public marker.
+    if (!binding) {
+      if (requireIdentity) throw new LanceVectorEmbeddingIdentityError();
+      return;
+    }
+    if (binding.dimension !== dimension) throw new LanceVectorEmbeddingIdentityError();
+    return;
+  }
+  if (identity.dimension !== dimension) throw new LanceVectorEmbeddingIdentityError();
+  if (binding) assertEmbeddingIdentity(binding, identity);
+}
+
+function assertEmbeddingIdentity(
+  actual: StoredEmbeddingIdentity,
+  expected: Pick<StoredEmbeddingIdentity, "resolved_model" | "dimension">
+): void {
+  if (actual.resolved_model !== expected.resolved_model || actual.dimension !== expected.dimension) {
+    throw new LanceVectorEmbeddingIdentityError();
+  }
+}
+
+async function readOptionalEmbeddingIdentity(filename: string): Promise<StoredEmbeddingIdentity | undefined> {
+  try {
+    return await readEmbeddingIdentity(filename);
+  } catch (error) {
+    if (isNodeError(error) && error.code === "ENOENT") return undefined;
+    throw error;
+  }
+}
+
+async function readEmbeddingIdentity(filename: string): Promise<StoredEmbeddingIdentity> {
+  let handle: Awaited<ReturnType<typeof fs.open>> | undefined;
+  try {
+    handle = await fs.open(filename, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+    const stat = await handle.stat();
+    if (!stat.isFile() || stat.size < 1 || stat.size > MAX_INDEX_IDENTITY_BYTES) {
+      throw new LanceVectorEmbeddingIdentityError();
+    }
+    if ((stat.mode & 0o777) !== 0o600) await handle.chmod(0o600);
+    const body = await handle.readFile("utf8");
+    if (Buffer.byteLength(body, "utf8") > MAX_INDEX_IDENTITY_BYTES) {
+      throw new LanceVectorEmbeddingIdentityError();
+    }
+    return decodeEmbeddingIdentity(JSON.parse(body));
+  } catch (error) {
+    if (isNodeError(error) && error.code === "ENOENT") throw error;
+    if (error instanceof LanceVectorEmbeddingIdentityError) throw error;
+    throw new LanceVectorEmbeddingIdentityError();
+  } finally {
+    await handle?.close().catch(() => undefined);
+  }
+}
+
+async function publishEmbeddingIdentity(filename: string, identity: StoredEmbeddingIdentity): Promise<void> {
+  const directory = path.dirname(filename);
+  const temporary = path.join(directory, `.${path.basename(filename)}.${process.pid}.${randomUUID()}.tmp`);
+  let handle: Awaited<ReturnType<typeof fs.open>> | undefined;
+  try {
+    handle = await fs.open(
+      temporary,
+      fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY | fsConstants.O_NOFOLLOW,
+      0o600
+    );
+    await handle.writeFile(`${JSON.stringify(identity)}\n`, "utf8");
+    await handle.sync();
+    await handle.close();
+    handle = undefined;
+    try {
+      await fs.link(temporary, filename);
+    } catch (error) {
+      if (!isNodeError(error) || error.code !== "EEXIST") throw error;
+    }
+    await syncDirectory(directory);
+  } finally {
+    await handle?.close().catch(() => undefined);
+    await fs.unlink(temporary).catch(() => undefined);
+  }
+}
+
+async function syncDirectory(directory: string): Promise<void> {
+  let handle: Awaited<ReturnType<typeof fs.open>> | undefined;
+  try {
+    handle = await fs.open(directory, "r");
+    await handle.sync();
+  } catch {
+    // The marker file fsync remains authoritative where directory fsync is unavailable.
+  } finally {
+    await handle?.close().catch(() => undefined);
+  }
+}
+
+function isNodeError(error: unknown): error is NodeJS.ErrnoException {
+  return error instanceof Error && "code" in error;
+}
+
 export class LanceVectorIndex {
   readonly directory: string;
   readonly dimension: number;
+  readonly embeddingModel: string | undefined;
+
+  private readonly allowLegacyIdentityAdoption: boolean;
+  private readonly requireExistingTable: boolean;
 
   private connection: Connection | undefined;
   private table: Table | undefined;
@@ -257,6 +473,10 @@ export class LanceVectorIndex {
     }
     this.directory = path.resolve(options.directory);
     this.dimension = positiveBoundedInteger(options.dimension, "dimension", MAX_VECTOR_DIMENSION);
+    this.embeddingModel =
+      options.embeddingModel === undefined ? undefined : embeddingModelValue(options.embeddingModel);
+    this.allowLegacyIdentityAdoption = options.allowLegacyIdentityAdoption === true;
+    this.requireExistingTable = options.requireExistingTable === true;
   }
 
   static async open(options: LanceVectorIndexOptions): Promise<LanceVectorIndex> {
@@ -289,10 +509,22 @@ export class LanceVectorIndex {
     try {
       const schema = expectedSchema(this.dimension);
       const names = await connection.tableNames();
-      table = names.includes(TABLE_NAME)
+      const tableExisted = names.includes(TABLE_NAME);
+      if (!tableExisted && this.requireExistingTable) throw new LanceVectorSchemaError();
+      table = tableExisted
         ? await connection.openTable(TABLE_NAME)
         : await connection.createEmptyTable(TABLE_NAME, schema);
       if (!schemaMatches(await table.schema(), schema)) throw new LanceVectorSchemaError();
+      if (this.embeddingModel !== undefined) {
+        const empty = (await table.countRows()) === 0;
+        await ensureEmbeddingIdentity(
+          this.directory,
+          { resolved_model: this.embeddingModel, dimension: this.dimension },
+          !tableExisted || empty || this.allowLegacyIdentityAdoption
+        );
+      } else {
+        await validateOptionalEmbeddingIdentity(this.directory, this.dimension, this.requireExistingTable);
+      }
       this.connection = connection;
       this.table = table;
     } catch (error) {
@@ -424,6 +656,12 @@ export class LanceVectorIndex {
       .select(["chunk_id", "account_id", "source_id", "generation"])
       .toArray();
     return rows.map((row) => storedMetadata(row));
+  }
+
+  async countRows(): Promise<number> {
+    const count = await this.requireTable().countRows();
+    if (!Number.isSafeInteger(count) || count < 0) throw new LanceVectorSchemaError();
+    return count;
   }
 
   async deleteGeneration(sourceId: string, generation: number): Promise<number> {

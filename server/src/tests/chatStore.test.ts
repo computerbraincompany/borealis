@@ -180,7 +180,7 @@ describe("ChatStore", () => {
         message: "one or more sources are unavailable",
       });
     }
-    expect(await store.listChats(owner)).toHaveLength(3);
+    expect((await store.listChats(owner)).items).toHaveLength(3);
   });
 
   it("enforces the 100-source boundary and preserves exact replacement semantics", async () => {
@@ -826,7 +826,10 @@ describe("ChatStore", () => {
 
       const turn = await store.acceptChatTurn(owner, chatId, "turn after deletion");
       expect(turn.agent).toBe(null);
-      await expect(store.listChats(owner)).resolves.toEqual([expect.objectContaining({ id: chatId, agent: null })]);
+      await expect(store.listChats(owner)).resolves.toEqual({
+        items: [expect.objectContaining({ id: chatId, agent: null })],
+        next: null,
+      });
     });
   });
 });

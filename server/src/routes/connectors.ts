@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { getAccountId, requireAuth } from "../auth.js";
+import { embeddingMigrationCoordinator, EmbeddingMigrationError } from "../embeddingMigration.js";
+import { catalogPageQuerySchema, catalogResponse, parseCatalogPageQuery } from "../catalogPagination.js";
 import {
   SourceIngestionTransitionError,
   type ReservedConnectorPrepare,
@@ -15,29 +17,79 @@ import { SourceScopeError } from "../sourceScope.js";
 import { enforceRemoteEgressConsent } from "../egressPolicy.js";
 import { auditRemoteEgress } from "../egressAudit.js";
 import { storageRuntime } from "../storageRuntime.js";
-import { connectorBodySchema, connectorScheduleBodySchema, idParamsSchema } from "./schemas.js";
+import {
+  BODYLESS_MUTATION_LIMIT_BYTES,
+  CONNECTOR_JSON_BODY_LIMIT_BYTES,
+  IDENTIFIER_LIST_JSON_BODY_LIMIT_BYTES,
+} from "./bodyLimits.js";
+import {
+  CONNECTOR_DISPLAY_NAME_MAX_CHARS,
+  CONNECTOR_TABLE_MAX_CHARS,
+  CONNECTOR_URL_MAX_CHARS,
+  catalogStatusBodySchema,
+  connectorBodySchema,
+  connectorScheduleBodySchema,
+  idParamsSchema,
+} from "./schemas.js";
+
+const CONNECTOR_TABLE_PATTERN = new RegExp(`^[a-z][a-z0-9_]{0,${CONNECTOR_TABLE_MAX_CHARS - 1}}$`);
 
 export async function connectorRoutes(app: FastifyInstance): Promise<void> {
-  app.get("/api/connectors", { preHandler: requireAuth }, async (req, reply) => {
-    const accountId = getAccountId(req);
-    const connectors = await storageRuntime().sources.listConnectors(accountId);
-    const schedules = await storageRuntime().automations.listConnectorSyncsForTargets(
-      accountId,
-      connectors.map((connector) => connector.id)
-    );
-    return reply.send(
-      connectors.map((connector) => ({
+  app.get(
+    "/api/connectors",
+    { onRequest: requireAuth, schema: { querystring: catalogPageQuerySchema } },
+    async (req, reply) => {
+      const pageRequest = parseCatalogPageQuery("connectors", req.query);
+      const accountId = getAccountId(req);
+      const page = await storageRuntime().sources.listConnectors(accountId, pageRequest);
+      const schedules = await storageRuntime().automations.listConnectorSyncsForTargets(
+        accountId,
+        page.items.map((connector) => connector.id)
+      );
+      const items = page.items.map((connector) => ({
         ...connectorToApi(connector),
         schedule: scheduleToApi(schedules.get(connector.id)),
-      }))
-    );
-  });
+      }));
+      return reply.send(catalogResponse("connectors", { items, next: page.next }));
+    }
+  );
+
+  app.post(
+    "/api/connectors/status",
+    {
+      onRequest: requireAuth,
+      bodyLimit: IDENTIFIER_LIST_JSON_BODY_LIMIT_BYTES,
+      schema: { body: catalogStatusBodySchema },
+    },
+    async (req, reply) => {
+      const accountId = getAccountId(req);
+      const requestedIds = (req.body as { ids: string[] }).ids;
+      const connectors = await storageRuntime().sources.getConnectorsByIds(accountId, requestedIds);
+      const schedules = await storageRuntime().automations.listConnectorSyncsForTargets(
+        accountId,
+        connectors.map((connector) => connector.id)
+      );
+      const foundIds = new Set(connectors.map((connector) => connector.id));
+      return reply.send({
+        items: connectors.map((connector) => ({
+          ...connectorToApi(connector),
+          schedule: scheduleToApi(schedules.get(connector.id)),
+        })),
+        missing_ids: requestedIds.filter((id) => !foundIds.has(id)),
+      });
+    }
+  );
 
   app.post(
     "/api/connectors",
-    { preHandler: requireAuth, bodyLimit: 8 * 1024, schema: { body: connectorBodySchema } },
+    { onRequest: requireAuth, bodyLimit: CONNECTOR_JSON_BODY_LIMIT_BYTES, schema: { body: connectorBodySchema } },
     async (req, reply) => {
       const accountId = getAccountId(req);
+      try {
+        await embeddingMigrationCoordinator().assertSourceMutationAllowed();
+      } catch (error) {
+        return sendConnectorError(reply, error);
+      }
       if (!(await enforceRemoteEgressConsent(reply, accountId))) return;
       void auditRemoteEgress("remote_ingest", accountId);
       let parsed: ReturnType<typeof parseConnectorBody>;
@@ -48,25 +100,24 @@ export async function connectorRoutes(app: FastifyInstance): Promise<void> {
       }
       const refreshVersion = randomUUID();
       const leaseToken = randomUUID();
-      let reservation: ReservedConnectorPrepare;
-      try {
-        reservation = await storageRuntime().sourceIngestion.createConnectorPrepare(accountId, {
-          connectorId: randomUUID(),
-          sourceId: randomUUID(),
-          displayName: parsed.displayName,
-          targetTable: parsed.targetTable,
-          type: parsed.type,
-          url: parsed.url,
-          refreshVersion,
-          leaseToken,
-        });
-      } catch (error) {
-        return sendConnectorError(reply, error);
-      }
+      let reservation: ReservedConnectorPrepare | undefined;
       const syncStartedAt = new Date().toISOString();
       try {
-        await syncConnector(accountId, reservation);
-      } catch {
+        await embeddingMigrationCoordinator().runSourceMutation(async () => {
+          reservation = await storageRuntime().sourceIngestion.createConnectorPrepare(accountId, {
+            connectorId: randomUUID(),
+            sourceId: randomUUID(),
+            displayName: parsed.displayName,
+            targetTable: parsed.targetTable,
+            type: parsed.type,
+            url: parsed.url,
+            refreshVersion,
+            leaseToken,
+          });
+          await syncConnectorUnlocked(accountId, reservation);
+        });
+      } catch (error) {
+        if (error instanceof EmbeddingMigrationError || !reservation) return sendConnectorError(reply, error);
         await recordConnectorSync({
           accountId,
           connectorId: reservation.connector.id,
@@ -78,6 +129,7 @@ export async function connectorRoutes(app: FastifyInstance): Promise<void> {
         const payload = await connectorToApiWithSchedule(accountId, failed ?? reservation.connector);
         return reply.code(422).send({ ...payload, sync_error: "Connector sync failed." });
       }
+      if (!reservation) throw new Error("connector reservation was not created");
       await recordConnectorSync({
         accountId,
         connectorId: reservation.connector.id,
@@ -92,7 +144,7 @@ export async function connectorRoutes(app: FastifyInstance): Promise<void> {
 
   app.post(
     "/api/connectors/:id/sync",
-    { preHandler: requireAuth, schema: { params: idParamsSchema } },
+    { onRequest: requireAuth, bodyLimit: BODYLESS_MUTATION_LIMIT_BYTES, schema: { params: idParamsSchema } },
     async (req, reply) => {
       const accountId = getAccountId(req);
       if (!(await enforceRemoteEgressConsent(reply, accountId))) return;
@@ -123,6 +175,7 @@ export async function connectorRoutes(app: FastifyInstance): Promise<void> {
         });
         return reply.send(result);
       } catch (error) {
+        if (error instanceof EmbeddingMigrationError) return sendConnectorError(reply, error);
         if (error instanceof SourceScopeError) {
           // A 409 scope error is the "already active" case; everything else is
           // a plain failure. Transition messages are generic and content-free.
@@ -151,7 +204,7 @@ export async function connectorRoutes(app: FastifyInstance): Promise<void> {
   app.get(
     "/api/connectors/:id/syncs",
     {
-      preHandler: requireAuth,
+      onRequest: requireAuth,
       schema: {
         params: idParamsSchema,
         querystring: {
@@ -175,7 +228,7 @@ export async function connectorRoutes(app: FastifyInstance): Promise<void> {
   app.put(
     "/api/connectors/:id/schedule",
     {
-      preHandler: requireAuth,
+      onRequest: requireAuth,
       bodyLimit: 1024,
       schema: { params: idParamsSchema, body: connectorScheduleBodySchema },
     },
@@ -218,13 +271,15 @@ export async function connectorRoutes(app: FastifyInstance): Promise<void> {
 
   app.delete(
     "/api/connectors/:id",
-    { preHandler: requireAuth, schema: { params: idParamsSchema } },
+    { onRequest: requireAuth, bodyLimit: BODYLESS_MUTATION_LIMIT_BYTES, schema: { params: idParamsSchema } },
     async (req, reply) => {
       const accountId = getAccountId(req);
       const connectorId = (req.params as { id: string }).id;
       try {
-        const deletion = await storageRuntime().sources.deleteConnector(accountId, connectorId);
-        await completeSourceDeleteIntents(deletion.intents);
+        await embeddingMigrationCoordinator().runSourceMutation(async () => {
+          const deletion = await storageRuntime().sources.deleteConnector(accountId, connectorId);
+          await completeSourceDeleteIntents(deletion.intents);
+        });
         // M09 teardown: the connector's derived schedule automations go with it
         // (runs and sync history cascade through their foreign keys). Best
         // effort and idempotent — connector deletion never fails or leaves a
@@ -256,10 +311,10 @@ function parseConnectorBody(body: unknown): {
   }
   const displayName = typeof record.display_name === "string" ? record.display_name.trim() : "";
   const targetTable = typeof record.target_table === "string" ? record.target_table.trim().toLowerCase() : "";
-  if (Array.from(displayName).length < 1 || Array.from(displayName).length > 120) {
+  if (Array.from(displayName).length < 1 || Array.from(displayName).length > CONNECTOR_DISPLAY_NAME_MAX_CHARS) {
     throw new SourceScopeError(400, "display_name must contain between 1 and 120 characters");
   }
-  if (!/^[a-z][a-z0-9_]{0,62}$/.test(targetTable)) {
+  if (!CONNECTOR_TABLE_PATTERN.test(targetTable)) {
     throw new SourceScopeError(
       400,
       "target_table must start with a letter and contain only letters, digits, and underscores"
@@ -282,7 +337,12 @@ function parseConnectorBody(body: unknown): {
   } catch {
     throw new SourceScopeError(400, "config.url must be an HTTP(S) URL");
   }
-  if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.toString().length > 2_000) {
+  if (
+    !["http:", "https:"].includes(url.protocol) ||
+    url.username ||
+    url.password ||
+    url.toString().length > CONNECTOR_URL_MAX_CHARS
+  ) {
     throw new SourceScopeError(400, "config.url must be an HTTP(S) URL");
   }
   url.hash = "";
@@ -295,6 +355,9 @@ function sendValidationError(reply: FastifyReply, error: unknown) {
 }
 
 function sendConnectorError(reply: FastifyReply, error: unknown) {
+  if (error instanceof EmbeddingMigrationError) {
+    return reply.code(error.statusCode).send({ error: error.message, code: error.code });
+  }
   const code =
     error instanceof SourceStoreError || error instanceof SourceIngestionTransitionError ? error.code : undefined;
   if (code === "SOURCE_STORE_CONNECTOR_NOT_FOUND" || code === "SOURCE_TRANSITION_CONNECTOR_NOT_FOUND") {
@@ -313,6 +376,16 @@ function sendConnectorError(reply: FastifyReply, error: unknown) {
 }
 
 export async function syncConnector(
+  accountId: string,
+  initialReservation?: ReservedConnectorPrepare,
+  connectorId?: string
+): Promise<{ synced: true; processing: true }> {
+  return embeddingMigrationCoordinator().runSourceMutation(() =>
+    syncConnectorUnlocked(accountId, initialReservation, connectorId)
+  );
+}
+
+async function syncConnectorUnlocked(
   accountId: string,
   initialReservation?: ReservedConnectorPrepare,
   connectorId?: string

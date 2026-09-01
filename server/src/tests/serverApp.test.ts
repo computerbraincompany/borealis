@@ -38,6 +38,9 @@ vi.mock("../routes.js", () => ({
 }));
 
 import { buildBorealisApp, isLoopbackDesktopHost, startBorealisServer } from "../serverApp.js";
+import { DEFAULT_BODY_LIMIT_BYTES } from "../routes/bodyLimits.js";
+import { config } from "../config.js";
+import { acquireWorkspaceLock, WorkspaceLockedError } from "../workspaceLock.js";
 
 const apps: FastifyInstance[] = [];
 const directories: string[] = [];
@@ -74,6 +77,23 @@ afterEach(async () => {
 });
 
 describe("Fastify same-origin static host", () => {
+  it("uses a conservative fail-safe body limit when a route omits one", async () => {
+    const app = await buildBorealisApp({ logger: false });
+    apps.push(app);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/echo",
+      headers: { "content-type": "application/json", "x-request-id": "body.default-limit" },
+      payload: { value: "x".repeat(DEFAULT_BODY_LIMIT_BYTES) },
+    });
+    expect(response.statusCode).toBe(413);
+    expect(response.json()).toEqual({
+      error: "request payload is too large",
+      request_id: "body.default-limit",
+    });
+  });
+
   it("serves the shell and fingerprinted assets with distinct cache policies", async () => {
     const app = await buildBorealisApp({ logger: false, staticWebDir: await staticFixture() });
     apps.push(app);
@@ -205,6 +225,21 @@ describe("desktop listener guard", () => {
       expect(mocks.initDb).not.toHaveBeenCalled();
     } finally {
       if (previousStaticWebDir !== undefined) process.env.STATIC_WEB_DIR = previousStaticWebDir;
+    }
+  });
+});
+
+describe("workspace instance ownership", () => {
+  it("refuses startup before opening stores when another process owns the workspace lock", async () => {
+    const lock = await acquireWorkspaceLock(config.storageDir);
+    try {
+      await expect(startBorealisServer({ host: "127.0.0.1", port: 0, logger: false })).rejects.toBeInstanceOf(
+        WorkspaceLockedError
+      );
+      expect(mocks.initDb).not.toHaveBeenCalled();
+      expect(mocks.startIngestionWorkers).not.toHaveBeenCalled();
+    } finally {
+      await lock.release();
     }
   });
 });

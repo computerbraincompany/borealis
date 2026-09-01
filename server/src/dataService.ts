@@ -22,6 +22,7 @@ import {
   extractDataset as extractRegisteredDataset,
   extractDatasetCandidate,
   inspectDataset,
+  listDatasetSummaries as listRegisteredDatasetSummaries,
   listDatasets as listRegisteredDatasets,
   queryDataset,
   registerDataset as registerWorkerDataset,
@@ -357,10 +358,11 @@ export const dataService = {
 
   listDatasetSummaries(
     accountId: string,
+    tableNames: readonly string[],
     caller?: AbortSignal
   ): Promise<Array<{ table: string; original_name: string; rows: number; exists: boolean }>> {
     return inProcess("/datasets?view=summary", caller, DEFAULT_TIMEOUT_MS, (signal) =>
-      listRegisteredDatasets(accountId, true, signal)
+      listRegisteredDatasetSummaries(accountId, tableNames, signal)
     );
   },
 

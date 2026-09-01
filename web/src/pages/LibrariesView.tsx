@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
-import { BookOpen, Library as LibraryIcon, MessageSquare, Plus, RefreshCw, Trash2, X } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { BookOpen, Library as LibraryIcon, Loader2, MessageSquare, Plus, RefreshCw, Trash2, X } from "lucide-react";
 import {
   formatApiError,
   librariesApi,
@@ -9,6 +9,7 @@ import {
   type LibrarySummary,
   type Source,
 } from "@/lib/api";
+import { mergeCatalogContinuation, mergeCatalogHead } from "@/lib/catalogMerge";
 import { formatDate } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -25,102 +26,368 @@ interface LibraryDetailState {
 export function LibrariesView() {
   const [libraries, setLibraries] = useState<LibrarySummary[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [pageError, setPageError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+  const [createBusy, setCreateBusy] = useState(false);
   const [newName, setNewName] = useState("");
   const [open, setOpen] = useState<LibraryDetailState | null>(null);
   const [availableSources, setAvailableSources] = useState<Source[]>([]);
+  const [sourcesNextCursor, setSourcesNextCursor] = useState<string | null>(null);
+  const [sourcesLoadingMore, setSourcesLoadingMore] = useState(false);
   const [selectedSource, setSelectedSource] = useState("");
+  const [detailLoading, setDetailLoading] = useState(false);
   const [membersBusy, setMembersBusy] = useState(false);
+  const [attaching, setAttaching] = useState(false);
   const [renamingTarget, setRenamingTarget] = useState<LibrarySummary | null>(null);
   const [renameValue, setRenameValue] = useState("");
+  const [renaming, setRenaming] = useState(false);
+  const createRequestRef = useRef(0);
+  const createAbortRef = useRef<AbortController | null>(null);
+  const attachRequestRef = useRef(0);
+  const attachAbortRef = useRef<AbortController | null>(null);
+  const attachTargetIdRef = useRef<string | null>(null);
+  const attachBusyRef = useRef(false);
+  const detailRequestRef = useRef(0);
+  const detailAbortRef = useRef<AbortController | null>(null);
+  const openLibraryIdRef = useRef<string | null>(null);
+  const catalogRequestRef = useRef(0);
+  const nextCursorRef = useRef<string | null>(null);
+  const loadingMoreOwnerRef = useRef<number | null>(null);
+  const mountedRef = useRef(false);
+  const sourcePageRequestRef = useRef(0);
+  const sourcePageAbortRef = useRef<AbortController | null>(null);
+  const renameRequestRef = useRef(0);
+  const renameAbortRef = useRef<AbortController | null>(null);
+  const renameTargetIdRef = useRef<string | null>(null);
+  const deleteRequestRef = useRef(0);
+  const deleteRequestsRef = useRef(new Map<string, { requestId: number; abort: AbortController }>());
+
+  const invalidateCatalog = () => {
+    catalogRequestRef.current += 1;
+    loadingMoreOwnerRef.current = null;
+    setLoadingMore(false);
+    setLoading(false);
+  };
 
   const load = useCallback(async () => {
+    const requestId = ++catalogRequestRef.current;
+    loadingMoreOwnerRef.current = null;
+    setLoadingMore(false);
     setPageError(null);
     try {
-      setLibraries(await librariesApi.list());
+      const page = await librariesApi.list();
+      if (!mountedRef.current || requestId !== catalogRequestRef.current) return;
+      setLibraries((current) => mergeCatalogHead(page.items, current));
+      nextCursorRef.current = page.next_cursor;
+      setNextCursor(page.next_cursor);
     } catch (error: unknown) {
-      setPageError(formatError(error, "Could not load libraries"));
+      if (mountedRef.current && requestId === catalogRequestRef.current) {
+        setPageError(formatError(error, "Could not load libraries"));
+      }
     } finally {
-      setLoading(false);
+      if (mountedRef.current && requestId === catalogRequestRef.current) setLoading(false);
     }
   }, []);
 
+  const loadMore = async () => {
+    const cursor = nextCursorRef.current;
+    if (!cursor || loadingMoreOwnerRef.current !== null) return;
+    const requestId = ++catalogRequestRef.current;
+    loadingMoreOwnerRef.current = requestId;
+    setLoadingMore(true);
+    try {
+      const page = await librariesApi.list({ cursor });
+      if (!mountedRef.current || requestId !== catalogRequestRef.current) return;
+      setLibraries((current) => mergeCatalogContinuation(current, page.items));
+      nextCursorRef.current = page.next_cursor;
+      setNextCursor(page.next_cursor);
+    } catch (error: unknown) {
+      if (mountedRef.current && requestId === catalogRequestRef.current) {
+        setPageError(formatError(error, "Could not load older libraries"));
+      }
+    } finally {
+      if (loadingMoreOwnerRef.current === requestId) {
+        loadingMoreOwnerRef.current = null;
+        if (mountedRef.current) setLoadingMore(false);
+      }
+    }
+  };
+
   useEffect(() => {
+    const deleteRequests = deleteRequestsRef.current;
+    mountedRef.current = true;
     void load();
+    return () => {
+      mountedRef.current = false;
+      catalogRequestRef.current += 1;
+      loadingMoreOwnerRef.current = null;
+      createRequestRef.current += 1;
+      createAbortRef.current?.abort();
+      createAbortRef.current = null;
+      attachRequestRef.current += 1;
+      attachAbortRef.current?.abort();
+      attachAbortRef.current = null;
+      attachTargetIdRef.current = null;
+      attachBusyRef.current = false;
+      detailRequestRef.current += 1;
+      detailAbortRef.current?.abort();
+      sourcePageRequestRef.current += 1;
+      sourcePageAbortRef.current?.abort();
+      renameRequestRef.current += 1;
+      renameAbortRef.current?.abort();
+      for (const request of deleteRequests.values()) request.abort.abort();
+      deleteRequests.clear();
+    };
   }, [load]);
 
   const openLibrary = useCallback(async (library: LibrarySummary) => {
+    attachRequestRef.current += 1;
+    attachAbortRef.current?.abort();
+    attachAbortRef.current = null;
+    attachTargetIdRef.current = null;
+    attachBusyRef.current = false;
+    const requestId = ++detailRequestRef.current;
+    detailAbortRef.current?.abort();
+    sourcePageRequestRef.current += 1;
+    sourcePageAbortRef.current?.abort();
+    sourcePageAbortRef.current = null;
+    openLibraryIdRef.current = library.id;
+    const abort = new AbortController();
+    detailAbortRef.current = abort;
     setPageError(null);
+    setOpen({ summary: library, members: [] });
+    setAvailableSources([]);
+    setSourcesNextCursor(null);
+    setSourcesLoadingMore(false);
+    setSelectedSource("");
+    setDetailLoading(true);
+    setMembersBusy(false);
+    setAttaching(false);
     try {
-      const [detail, sources] = await Promise.all([librariesApi.get(library.id), sourcesApi.list()]);
-      setOpen({ summary: { ...library, ...detail, member_count: detail.members.length }, members: detail.members });
-      setAvailableSources(sources);
+      const [detail, sources] = await Promise.all([
+        librariesApi.get(library.id, abort.signal),
+        sourcesApi.list({ signal: abort.signal }),
+      ]);
+      if (requestId === detailRequestRef.current && !abort.signal.aborted && openLibraryIdRef.current === library.id) {
+        setOpen({ summary: { ...library, ...detail, member_count: detail.members.length }, members: detail.members });
+        setAvailableSources(sources.items);
+        setSourcesNextCursor(sources.next_cursor);
+      }
     } catch (error: unknown) {
-      setPageError(formatError(error, "Could not load the library"));
+      if (requestId === detailRequestRef.current && !abort.signal.aborted) {
+        setPageError(formatError(error, "Could not load the library"));
+      }
+    } finally {
+      if (requestId === detailRequestRef.current && !abort.signal.aborted) setDetailLoading(false);
     }
   }, []);
+
+  const closeLibrary = () => {
+    attachRequestRef.current += 1;
+    attachAbortRef.current?.abort();
+    attachAbortRef.current = null;
+    attachTargetIdRef.current = null;
+    attachBusyRef.current = false;
+    openLibraryIdRef.current = null;
+    detailRequestRef.current += 1;
+    detailAbortRef.current?.abort();
+    detailAbortRef.current = null;
+    sourcePageRequestRef.current += 1;
+    sourcePageAbortRef.current?.abort();
+    sourcePageAbortRef.current = null;
+    setOpen(null);
+    setAvailableSources([]);
+    setSourcesNextCursor(null);
+    setSourcesLoadingMore(false);
+    setSelectedSource("");
+    setDetailLoading(false);
+    setMembersBusy(false);
+    setAttaching(false);
+  };
+
+  const loadMoreSources = async () => {
+    if (!open || !sourcesNextCursor || sourcesLoadingMore) return;
+    const targetId = open.summary.id;
+    const requestId = ++sourcePageRequestRef.current;
+    sourcePageAbortRef.current?.abort();
+    const abort = new AbortController();
+    sourcePageAbortRef.current = abort;
+    setSourcesLoadingMore(true);
+    try {
+      const page = await sourcesApi.list({ cursor: sourcesNextCursor, signal: abort.signal });
+      if (requestId !== sourcePageRequestRef.current || abort.signal.aborted || openLibraryIdRef.current !== targetId)
+        return;
+      setAvailableSources((current) => mergeCatalogContinuation(current, page.items));
+      setSourcesNextCursor(page.next_cursor);
+    } catch (error: unknown) {
+      if (
+        requestId === sourcePageRequestRef.current &&
+        !abort.signal.aborted &&
+        openLibraryIdRef.current === targetId
+      ) {
+        setPageError(formatError(error, "Could not load older sources"));
+      }
+    } finally {
+      if (requestId === sourcePageRequestRef.current && !abort.signal.aborted && openLibraryIdRef.current === targetId)
+        setSourcesLoadingMore(false);
+    }
+  };
+
+  const openRenameDialog = (library: LibrarySummary) => {
+    renameRequestRef.current += 1;
+    renameAbortRef.current?.abort();
+    renameAbortRef.current = null;
+    renameTargetIdRef.current = library.id;
+    setRenaming(false);
+    setRenamingTarget(library);
+    setRenameValue(library.name);
+  };
+
+  const closeRenameDialog = () => {
+    renameTargetIdRef.current = null;
+    renameRequestRef.current += 1;
+    renameAbortRef.current?.abort();
+    renameAbortRef.current = null;
+    setRenaming(false);
+    setRenamingTarget(null);
+  };
+
+  const openCreateDialog = () => {
+    createRequestRef.current += 1;
+    createAbortRef.current?.abort();
+    createAbortRef.current = null;
+    setCreateBusy(false);
+    setCreating(true);
+  };
+
+  const closeCreateDialog = () => {
+    createRequestRef.current += 1;
+    createAbortRef.current?.abort();
+    createAbortRef.current = null;
+    setCreateBusy(false);
+    setCreating(false);
+  };
 
   const create = async () => {
     const name = newName.trim();
     if (!name) return;
+    const requestId = ++createRequestRef.current;
+    createAbortRef.current?.abort();
+    const abort = new AbortController();
+    createAbortRef.current = abort;
+    setCreateBusy(true);
     setPageError(null);
     try {
-      await librariesApi.create(name);
+      const created = await librariesApi.create(name, abort.signal);
+      if (requestId !== createRequestRef.current || abort.signal.aborted) return;
+      invalidateCatalog();
+      setLibraries((current) => {
+        const remaining = current.filter((library) => library.id !== created.id);
+        return [created, ...remaining];
+      });
+      void load();
       setNewName("");
-      setCreating(false);
-      await load();
+      createAbortRef.current = null;
+      closeCreateDialog();
     } catch (error: unknown) {
-      setPageError(formatError(error, "Could not create the library"));
+      if (requestId === createRequestRef.current && !abort.signal.aborted) {
+        setPageError(formatError(error, "Could not create the library"));
+      }
+    } finally {
+      if (requestId === createRequestRef.current && !abort.signal.aborted) {
+        createAbortRef.current = null;
+        setCreateBusy(false);
+      }
     }
   };
 
   const submitRename = async () => {
     if (!renamingTarget) return;
+    const targetId = renamingTarget.id;
     const name = renameValue.trim();
     if (!name) return;
+    const requestId = ++renameRequestRef.current;
+    renameAbortRef.current?.abort();
+    const abort = new AbortController();
+    renameAbortRef.current = abort;
+    setRenaming(true);
     setPageError(null);
     try {
-      const renamed = await librariesApi.rename(renamingTarget.id, name);
+      const renamed = await librariesApi.rename(targetId, name, abort.signal);
+      if (requestId !== renameRequestRef.current || abort.signal.aborted || renameTargetIdRef.current !== targetId)
+        return;
+      invalidateCatalog();
       setLibraries((current) => current.map((library) => (library.id === renamed.id ? renamed : library)));
       setOpen((current) =>
         current && current.summary.id === renamed.id
           ? { ...current, summary: { ...current.summary, name: renamed.name } }
           : current,
       );
-      setRenamingTarget(null);
+      closeRenameDialog();
     } catch (error: unknown) {
-      setPageError(formatError(error, "Could not rename the library"));
+      if (requestId === renameRequestRef.current && !abort.signal.aborted && renameTargetIdRef.current === targetId) {
+        setPageError(formatError(error, "Could not rename the library"));
+      }
+    } finally {
+      if (requestId === renameRequestRef.current && !abort.signal.aborted && renameTargetIdRef.current === targetId)
+        setRenaming(false);
     }
   };
 
   const remove = async (library: LibrarySummary) => {
+    const requestId = ++deleteRequestRef.current;
+    deleteRequestsRef.current.get(library.id)?.abort.abort();
+    const abort = new AbortController();
+    deleteRequestsRef.current.set(library.id, { requestId, abort });
     setPageError(null);
     try {
-      await librariesApi.remove(library.id);
+      await librariesApi.remove(library.id, abort.signal);
+      if (deleteRequestsRef.current.get(library.id)?.requestId !== requestId || abort.signal.aborted) return;
+      invalidateCatalog();
       setLibraries((current) => current.filter((entry) => entry.id !== library.id));
-      setOpen((current) => (current?.summary.id === library.id ? null : current));
+      if (openLibraryIdRef.current === library.id) closeLibrary();
     } catch (error: unknown) {
-      setPageError(formatError(error, "Could not delete the library"));
+      if (deleteRequestsRef.current.get(library.id)?.requestId === requestId && !abort.signal.aborted) {
+        setPageError(formatError(error, "Could not delete the library"));
+      }
+    } finally {
+      if (deleteRequestsRef.current.get(library.id)?.requestId === requestId) {
+        deleteRequestsRef.current.delete(library.id);
+      }
     }
   };
 
   const saveMembers = async (libraryId: string, memberIds: string[]) => {
+    const requestId = ++detailRequestRef.current;
+    detailAbortRef.current?.abort();
+    const abort = new AbortController();
+    detailAbortRef.current = abort;
     setMembersBusy(true);
     setPageError(null);
     try {
-      await librariesApi.setMembers(libraryId, memberIds);
-      const detail = await librariesApi.get(libraryId);
-      setOpen({ summary: { ...detail, member_count: detail.members.length }, members: detail.members });
-      setLibraries((current) =>
-        current.map((library) =>
-          library.id === libraryId ? { ...library, member_count: detail.members.length } : library,
-        ),
-      );
+      await librariesApi.setMembers(libraryId, memberIds, abort.signal);
+      const detail = await librariesApi.get(libraryId, abort.signal);
+      if (requestId === detailRequestRef.current && !abort.signal.aborted) {
+        invalidateCatalog();
+        setOpen((current) =>
+          current?.summary.id === libraryId
+            ? { summary: { ...detail, member_count: detail.members.length }, members: detail.members }
+            : current,
+        );
+        setLibraries((current) =>
+          current.map((library) =>
+            library.id === libraryId ? { ...library, member_count: detail.members.length } : library,
+          ),
+        );
+      }
     } catch (error: unknown) {
-      setPageError(formatError(error, "Could not update library members"));
+      if (requestId === detailRequestRef.current && !abort.signal.aborted) {
+        setPageError(formatError(error, "Could not update library members"));
+      }
     } finally {
-      setMembersBusy(false);
+      if (requestId === detailRequestRef.current && !abort.signal.aborted) setMembersBusy(false);
     }
   };
 
@@ -142,14 +409,46 @@ export function LibrariesView() {
   };
 
   const attachToNewChat = async (library: LibraryDetailState) => {
+    const targetId = library.summary.id;
     const readyIds = library.members.filter((member) => member.status === "ready").map((member) => member.id);
-    if (readyIds.length > MAX_LIBRARY_MEMBERS) return;
+    const scope = { source_mode: "selected" as const, source_ids: readyIds };
+    if (readyIds.length > MAX_LIBRARY_MEMBERS || openLibraryIdRef.current !== targetId || attachBusyRef.current) return;
+    const requestId = ++attachRequestRef.current;
+    attachAbortRef.current?.abort();
+    const abort = new AbortController();
+    attachAbortRef.current = abort;
+    attachTargetIdRef.current = targetId;
+    attachBusyRef.current = true;
+    setAttaching(true);
     setPageError(null);
     try {
-      const chat = await chatsApi.create(undefined, { source_mode: "selected", source_ids: readyIds });
+      const chat = await chatsApi.create(undefined, scope, undefined, abort.signal);
+      if (
+        !mountedRef.current ||
+        requestId !== attachRequestRef.current ||
+        abort.signal.aborted ||
+        attachTargetIdRef.current !== targetId ||
+        openLibraryIdRef.current !== targetId
+      )
+        return;
       window.location.hash = `#/chat/${chat.id}`;
     } catch (error: unknown) {
-      setPageError(formatError(error, "Could not attach the library to a new chat"));
+      if (
+        mountedRef.current &&
+        requestId === attachRequestRef.current &&
+        !abort.signal.aborted &&
+        attachTargetIdRef.current === targetId &&
+        openLibraryIdRef.current === targetId
+      ) {
+        setPageError(formatError(error, "Could not attach the library to a new chat"));
+      }
+    } finally {
+      if (requestId === attachRequestRef.current && !abort.signal.aborted && attachTargetIdRef.current === targetId) {
+        attachAbortRef.current = null;
+        attachTargetIdRef.current = null;
+        attachBusyRef.current = false;
+        if (mountedRef.current && openLibraryIdRef.current === targetId) setAttaching(false);
+      }
     }
   };
 
@@ -169,7 +468,7 @@ export function LibrariesView() {
             <Button variant="secondary" size="sm" onClick={() => void load()}>
               <RefreshCw className="h-4 w-4" /> Refresh
             </Button>
-            <Button size="sm" onClick={() => setCreating(true)}>
+            <Button size="sm" onClick={openCreateDialog}>
               <Plus className="h-4 w-4" /> New library
             </Button>
           </div>
@@ -238,12 +537,20 @@ export function LibrariesView() {
                 </div>
               </Card>
             ))}
+            {nextCursor && (
+              <div className="flex justify-center pt-2">
+                <Button variant="outline" onClick={() => void loadMore()} disabled={loadingMore}>
+                  {loadingMore && <Loader2 className="h-4 w-4 animate-spin" />}
+                  Load older libraries
+                </Button>
+              </div>
+            )}
           </div>
         )}
       </div>
 
       {/* member manager */}
-      <Dialog open={!!open} onOpenChange={(value) => !value && setOpen(null)}>
+      <Dialog open={!!open} onOpenChange={(value) => !value && closeLibrary()}>
         <DialogContent className="max-w-xl">
           <DialogHeader>
             <DialogTitle>{open?.summary.name}</DialogTitle>
@@ -251,7 +558,12 @@ export function LibrariesView() {
               Members reference your existing sources. Attaching a library to a new chat selects its ready members.
             </DialogDescription>
           </DialogHeader>
-          {open && (
+          {open && detailLoading ? (
+            <div className="space-y-3" aria-label="Loading library" aria-busy="true">
+              <Skeleton className="h-16 w-full rounded-lg" />
+              <Skeleton className="h-9 w-full rounded-lg" />
+            </div>
+          ) : open ? (
             <div className="space-y-3">
               <ul className="max-h-56 space-y-1.5 overflow-y-auto" aria-label="Library members">
                 {open.members.map((member) => (
@@ -294,21 +606,21 @@ export function LibrariesView() {
                   Add
                 </Button>
               </div>
+              {sourcesNextCursor && (
+                <Button variant="ghost" size="sm" onClick={() => void loadMoreSources()} disabled={sourcesLoadingMore}>
+                  {sourcesLoadingMore && <Loader2 className="h-4 w-4 animate-spin" />}
+                  Load older sources
+                </Button>
+              )}
               <div className="flex flex-wrap items-center justify-between gap-2 border-t pt-3">
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => {
-                    setRenamingTarget(open.summary);
-                    setRenameValue(open.summary.name);
-                  }}
-                >
+                <Button variant="ghost" size="sm" onClick={() => openRenameDialog(open.summary)}>
                   Rename
                 </Button>
                 <Button
                   size="sm"
                   onClick={() => void attachToNewChat(open)}
                   disabled={
+                    attaching ||
                     membersBusy ||
                     open.members.filter((member) => member.status === "ready").length > MAX_LIBRARY_MEMBERS
                   }
@@ -322,12 +634,12 @@ export function LibrariesView() {
                 </Button>
               </div>
             </div>
-          )}
+          ) : null}
         </DialogContent>
       </Dialog>
 
       {/* create dialog */}
-      <Dialog open={creating} onOpenChange={setCreating}>
+      <Dialog open={creating} onOpenChange={(open) => (open ? openCreateDialog() : closeCreateDialog())}>
         <DialogContent className="max-w-md">
           <DialogHeader>
             <DialogTitle>New library</DialogTitle>
@@ -349,10 +661,10 @@ export function LibrariesView() {
               autoFocus
             />
             <div className="flex justify-end gap-2">
-              <Button type="button" variant="ghost" size="sm" onClick={() => setCreating(false)}>
+              <Button type="button" variant="ghost" size="sm" onClick={closeCreateDialog}>
                 Cancel
               </Button>
-              <Button type="submit" size="sm" disabled={!newName.trim()}>
+              <Button type="submit" size="sm" disabled={createBusy || !newName.trim()}>
                 Create
               </Button>
             </div>
@@ -361,7 +673,7 @@ export function LibrariesView() {
       </Dialog>
 
       {/* rename dialog */}
-      <Dialog open={!!renamingTarget} onOpenChange={(value) => !value && setRenamingTarget(null)}>
+      <Dialog open={!!renamingTarget} onOpenChange={(value) => !value && closeRenameDialog()}>
         <DialogContent className="max-w-md">
           <DialogHeader>
             <DialogTitle>Rename library</DialogTitle>
@@ -382,11 +694,11 @@ export function LibrariesView() {
               autoFocus
             />
             <div className="flex justify-end gap-2">
-              <Button type="button" variant="ghost" size="sm" onClick={() => setRenamingTarget(null)}>
+              <Button type="button" variant="ghost" size="sm" onClick={closeRenameDialog}>
                 Cancel
               </Button>
-              <Button type="submit" size="sm" disabled={!renameValue.trim()}>
-                Rename
+              <Button type="submit" size="sm" disabled={renaming || !renameValue.trim()}>
+                {renaming ? "Renaming…" : "Rename"}
               </Button>
             </div>
           </form>

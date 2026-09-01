@@ -274,6 +274,23 @@ describe("source/ingestion SQLite transitions", () => {
       status: "preparing",
     });
 
+    await ledger.run(
+      `INSERT INTO dataset_cache_cleanup_jobs (account_id,name,location)
+       VALUES (?,?,?)`,
+      [accountId, input.targetTable, activation.candidateLocation]
+    );
+    await expect(transitions.activatePreparedConnector(activation)).rejects.toMatchObject({
+      code: "SOURCE_TRANSITION_PREPARE_SUPERSEDED",
+    });
+    await expect(ledger.get(`SELECT status FROM ingestion_jobs WHERE source_id=?`, [input.sourceId])).resolves.toEqual({
+      status: "preparing",
+    });
+    await ledger.run(
+      `DELETE FROM dataset_cache_cleanup_jobs
+       WHERE account_id=? AND name=? AND location=?`,
+      [accountId, input.targetTable, activation.candidateLocation]
+    );
+
     const activated = await transitions.activatePreparedConnector(activation);
     expect(activated).toMatchObject({
       generation: 1,

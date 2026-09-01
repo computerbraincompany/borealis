@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { performance } from "node:perf_hooks";
 import { parentPort } from "node:worker_threads";
 
 import {
@@ -14,6 +15,7 @@ import {
   DuckDBUnionValue,
   DuckDBVariantValue,
   StatementType,
+  type DuckDBPreparedStatement,
   type DuckDBValue,
 } from "@duckdb/node-api";
 
@@ -57,6 +59,16 @@ const MAX_CATALOG_CHARS = 256_000;
 const JS_MAX_SAFE_INTEGER = BigInt(Number.MAX_SAFE_INTEGER);
 
 let queryTimeoutMs = 30_000;
+type QueryPreflightPhase = "scope_load" | "scope_install";
+interface QueryPreflightTestDelay {
+  phase: QueryPreflightPhase;
+  delayMs: number;
+}
+let queryPreflightTestDelay: QueryPreflightTestDelay | undefined;
+let activeQueryPreflightTestDelays = 0;
+let queryNativePrepareUnionCount: number | undefined;
+let activeQueryNativePrepares = 0;
+let openCatalogs = 0;
 
 type DatasetFormat = "csv" | "json";
 type DatasetKind = "path" | "url";
@@ -124,6 +136,16 @@ interface RequestMessage {
   payload: unknown;
 }
 
+interface QueryDeadline {
+  readonly deadlineAt: number;
+  expired: boolean;
+}
+
+interface MutexAdmission {
+  readonly context: RequestContext;
+  readonly deadline: QueryDeadline;
+}
+
 interface CancelMessage {
   type: "cancel";
   id: number;
@@ -132,17 +154,21 @@ interface CancelMessage {
 class Mutex {
   private tail: Promise<void> = Promise.resolve();
 
-  async run<T>(operation: () => Promise<T>): Promise<T> {
+  async run<T>(operation: () => Promise<T>, admission?: MutexAdmission): Promise<T> {
     let release!: () => void;
     const previous = this.tail;
     this.tail = new Promise<void>((resolve) => {
       release = resolve;
     });
-    await previous;
+    let acquired = false;
     try {
+      if (admission) await waitForMutexAdmission(previous, admission.context, admission.deadline);
+      else await previous;
+      acquired = true;
       return await operation();
     } finally {
-      release();
+      if (acquired) release();
+      else void previous.then(release, release);
     }
   }
 }
@@ -203,6 +229,7 @@ async function createCatalog(): Promise<CatalogConnection> {
     await connection.run(`SET threads=${DUCKDB_THREADS}`);
     await connection.run(`SET memory_limit='${DUCKDB_MEMORY_LIMIT}'`);
     await connection.run(`SET max_temp_directory_size='${DUCKDB_TEMP_LIMIT}'`);
+    openCatalogs += 1;
     return { instance, connection };
   } catch (error) {
     connection.closeSync();
@@ -215,7 +242,11 @@ function closeCatalog(catalog: CatalogConnection): void {
   try {
     catalog.connection.closeSync();
   } finally {
-    catalog.instance.closeSync();
+    try {
+      catalog.instance.closeSync();
+    } finally {
+      openCatalogs -= 1;
+    }
   }
 }
 
@@ -239,36 +270,147 @@ async function runInterruptible<T>(
   }
 }
 
+function queryDeadlineExpired(deadline: QueryDeadline): boolean {
+  if (!deadline.expired && performance.now() >= deadline.deadlineAt) deadline.expired = true;
+  return deadline.expired;
+}
+
+function assertQueryDeadline(context: RequestContext, deadline: QueryDeadline): void {
+  if (queryDeadlineExpired(deadline)) throw operationError(504, "query execution timed out");
+  ensureActive(context);
+}
+
+async function waitForMutexAdmission(
+  previous: Promise<void>,
+  context: RequestContext,
+  deadline: QueryDeadline
+): Promise<void> {
+  assertQueryDeadline(context, deadline);
+  const previousInterrupt = context.interrupt;
+  let rejectInterrupted!: (error: DatasetOperationError) => void;
+  const interrupted = new Promise<never>((_resolve, reject) => {
+    rejectInterrupted = reject;
+  });
+  const interrupt = () => {
+    try {
+      previousInterrupt?.();
+    } finally {
+      rejectInterrupted(
+        operationError(
+          queryDeadlineExpired(deadline) ? 504 : 499,
+          queryDeadlineExpired(deadline) ? "query execution timed out" : "operation cancelled"
+        )
+      );
+    }
+  };
+  context.interrupt = interrupt;
+  try {
+    await Promise.race([previous, interrupted]);
+    assertQueryDeadline(context, deadline);
+  } catch (error) {
+    if (queryDeadlineExpired(deadline)) throw operationError(504, "query execution timed out");
+    if (context.cancelled) throw operationError(499, "operation cancelled");
+    throw error;
+  } finally {
+    if (context.interrupt === interrupt) context.interrupt = previousInterrupt;
+  }
+}
+
+async function runWithQueryOperationDeadline<T>(
+  context: RequestContext,
+  operation: (deadline: QueryDeadline) => Promise<T>
+): Promise<T> {
+  const deadline: QueryDeadline = {
+    deadlineAt: performance.now() + queryTimeoutMs,
+    expired: false,
+  };
+  const timer = setTimeout(() => {
+    deadline.expired = true;
+    try {
+      context.interrupt?.();
+    } catch {
+      // The active operation reports the stable timeout below.
+    }
+  }, queryTimeoutMs);
+  timer.unref();
+  try {
+    assertQueryDeadline(context, deadline);
+    const result = await operation(deadline);
+    assertQueryDeadline(context, deadline);
+    return result;
+  } catch (error) {
+    if (queryDeadlineExpired(deadline)) throw operationError(504, "query execution timed out");
+    if (context.cancelled) throw operationError(499, "operation cancelled");
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function runWithinQueryDeadline<T>(
+  context: RequestContext,
+  connection: DuckDBConnection,
+  deadline: QueryDeadline,
+  operation: () => Promise<T>
+): Promise<T> {
+  const previousInterrupt = context.interrupt;
+  context.interrupt = () => connection.interrupt();
+  try {
+    assertQueryDeadline(context, deadline);
+    const result = await operation();
+    assertQueryDeadline(context, deadline);
+    return result;
+  } catch (error) {
+    if (queryDeadlineExpired(deadline)) throw operationError(504, "query execution timed out");
+    if (context.cancelled) throw operationError(499, "operation cancelled");
+    throw error;
+  } finally {
+    context.interrupt = previousInterrupt;
+  }
+}
+
 async function runWithDeadline<T>(
   context: RequestContext,
   connection: DuckDBConnection,
   operation: () => Promise<T>
 ): Promise<T> {
-  let expired = false;
+  return runWithQueryOperationDeadline(context, (deadline) =>
+    runWithinQueryDeadline(context, connection, deadline, operation)
+  );
+}
+
+/** One-shot worker-only seam proving that the query deadline encloses uncached scope loading. */
+async function applyQueryPreflightTestDelay(context: RequestContext, phase: QueryPreflightPhase): Promise<void> {
+  ensureActive(context);
+  const configured = queryPreflightTestDelay;
+  if (!configured || configured.phase !== phase) return;
+  queryPreflightTestDelay = undefined;
+  activeQueryPreflightTestDelays += 1;
+
   const previousInterrupt = context.interrupt;
-  context.interrupt = () => connection.interrupt();
-  if (context.cancelled) connection.interrupt();
-  const timer = setTimeout(() => {
-    expired = true;
+  let interrupted = false;
+  let release!: () => void;
+  const waiting = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const delayTimer = setTimeout(release, configured.delayMs);
+  const interrupt = () => {
+    interrupted = true;
     try {
-      connection.interrupt();
-    } catch {
-      // The executing promise reports the stable timeout below.
+      previousInterrupt?.();
+    } finally {
+      release();
     }
-  }, queryTimeoutMs);
-  timer.unref();
+  };
+  context.interrupt = interrupt;
   try {
-    const result = await operation();
-    if (expired) throw operationError(504, "query execution timed out");
+    await waiting;
+    if (interrupted) throw new Error("query preflight interrupted");
     ensureActive(context);
-    return result;
-  } catch (error) {
-    if (expired) throw operationError(504, "query execution timed out");
-    if (context.cancelled) throw operationError(499, "operation cancelled");
-    throw error;
   } finally {
-    clearTimeout(timer);
-    context.interrupt = previousInterrupt;
+    clearTimeout(delayTimer);
+    if (context.interrupt === interrupt) context.interrupt = previousInterrupt;
+    activeQueryPreflightTestDelays -= 1;
   }
 }
 
@@ -748,7 +890,11 @@ function cloneMetadata(meta: DatasetMeta): DatasetMeta {
   return structuredClone(meta);
 }
 
-async function registrySnapshot(accountId: string, allowedTables: unknown): Promise<RegistrySnapshot> {
+async function registrySnapshot(
+  accountId: string,
+  allowedTables: unknown,
+  admission?: MutexAdmission
+): Promise<RegistrySnapshot> {
   return accountMutex(accountId).run(async () => {
     const tables = validateAllowedTables(accountId, allowedTables);
     const accountRegistry = registry.get(accountId);
@@ -758,7 +904,7 @@ async function registrySnapshot(accountId: string, allowedTables: unknown): Prom
       entries.set(name, { ref, meta: cloneMetadata(ref) });
     }
     return { accountId, tables, entries };
-  });
+  }, admission);
 }
 
 function snapshotIsCurrent(snapshot: RegistrySnapshot): boolean {
@@ -785,15 +931,18 @@ function signaturesEqual(left: Array<[string, string]>, right: Array<[string, st
 async function buildScope(
   snapshot: RegistrySnapshot,
   signatures: Array<[string, string]>,
-  context: RequestContext
+  context: RequestContext,
+  deadline?: QueryDeadline
 ): Promise<ScopedCatalog> {
   const catalog = await createCatalog();
   const metadata = new Map<string, DatasetMeta>();
   try {
-    await runInterruptible(context, catalog.connection, async () => {
+    if (deadline) assertQueryDeadline(context, deadline);
+    const build = async () => {
       for (const [name, signature] of signatures) {
         if (signature === "missing") throw operationError(422, `dataset ${name} could not be reloaded`);
         const meta = cloneMetadata(snapshot.entries.get(name)!.meta);
+        await applyQueryPreflightTestDelay(context, "scope_load");
         await loadTable(catalog.connection, name, meta.safe_location, meta.format);
         const countReader = await catalog.connection.runAndReadAll(`SELECT count(*) FROM ${quoteIdentifier(name)}`);
         meta.rows = Number(countReader.getRows()[0]?.[0] ?? 0);
@@ -809,7 +958,9 @@ async function buildScope(
       // Uploaded files are loaded while trusted. This setting is deliberately
       // last and irreversible for the lifetime of this catalog.
       await catalog.connection.run("SET enable_external_access=false");
-    });
+    };
+    if (deadline) await runWithinQueryDeadline(context, catalog.connection, deadline, build);
+    else await runInterruptible(context, catalog.connection, build);
     return {
       ...catalog,
       accountId: snapshot.accountId,
@@ -831,16 +982,21 @@ async function buildScope(
 async function acquireScopedConnection(
   accountId: string,
   allowedTables: unknown,
-  context: RequestContext
+  context: RequestContext,
+  deadline?: QueryDeadline
 ): Promise<{ key: string; scope: ScopedCatalog }> {
   // A concurrent registration can win while a catalog is loading. Retry from
   // a fresh registry snapshot; no registry/CAS mutex is held during file or
   // DuckDB work.
   for (;;) {
-    ensureActive(context);
-    const snapshot = await registrySnapshot(accountId, allowedTables);
+    if (deadline) assertQueryDeadline(context, deadline);
+    else ensureActive(context);
+    const admission = deadline ? { context, deadline } : undefined;
+    const snapshot = await registrySnapshot(accountId, allowedTables, admission);
+    if (deadline) assertQueryDeadline(context, deadline);
     const key = scopeId(accountId, snapshot.tables);
     const signatures = await scopeSignatures(snapshot);
+    if (deadline) assertQueryDeadline(context, deadline);
     const cachedOutcome = await accountMutex(accountId).run(async () => {
       if (!snapshotIsCurrent(snapshot)) return { retry: true, closable: [] as ScopedCatalog[] };
       const cached = scopes.get(key);
@@ -857,45 +1013,53 @@ async function acquireScopedConnection(
         if (retired) closable.push(retired);
       }
       return { retry: false, closable };
-    });
+    }, admission);
     closeRetired(cachedOutcome.closable);
     if (cachedOutcome.retry) continue;
     if (cachedOutcome.lease) return { key, scope: cachedOutcome.lease };
 
-    const built = await buildScope(snapshot, signatures, context);
-    const installed = await accountMutex(accountId).run(async () => {
-      if (!snapshotIsCurrent(snapshot)) return { retry: true, closable: [retireScope(built)] };
-      const closable: Array<ScopedCatalog | undefined> = [];
-      const winner = scopes.get(key);
-      if (winner && !winner.retired && signaturesEqual(winner.signatures, signatures)) {
-        winner.users += 1;
-        scopes.delete(key);
-        scopes.set(key, winner);
-        closable.push(retireScope(built));
-        return { retry: false, lease: winner, closable };
-      }
-      if (winner) {
-        scopes.delete(key);
-        closable.push(retireScope(winner));
-      }
-      for (const name of snapshot.tables) {
-        Object.assign(snapshot.entries.get(name)!.ref, built.metadata.get(name)!);
-      }
-      scopes.set(key, built);
-      built.users += 1;
-      while (
-        [...scopes.values()].filter((candidate) => candidate.accountId === accountId).length > MAX_SCOPES_PER_ACCOUNT
-      ) {
-        const evicted = [...scopes.entries()].find(([, candidate]) => candidate.accountId === accountId);
-        if (!evicted) break;
-        scopes.delete(evicted[0]);
-        closable.push(retireScope(evicted[1]));
-      }
-      return { retry: false, lease: built, closable };
-    });
-    closeRetired(installed.closable);
-    if (installed.retry) continue;
-    return { key, scope: installed.lease! };
+    const built = await buildScope(snapshot, signatures, context, deadline);
+    let builtInstalled = false;
+    try {
+      await applyQueryPreflightTestDelay(context, "scope_install");
+      if (deadline) assertQueryDeadline(context, deadline);
+      const installed = await accountMutex(accountId).run(async () => {
+        if (!snapshotIsCurrent(snapshot)) return { retry: true, closable: [retireScope(built)] };
+        const closable: Array<ScopedCatalog | undefined> = [];
+        const winner = scopes.get(key);
+        if (winner && !winner.retired && signaturesEqual(winner.signatures, signatures)) {
+          winner.users += 1;
+          scopes.delete(key);
+          scopes.set(key, winner);
+          closable.push(retireScope(built));
+          return { retry: false, lease: winner, closable };
+        }
+        if (winner) {
+          scopes.delete(key);
+          closable.push(retireScope(winner));
+        }
+        for (const name of snapshot.tables) {
+          Object.assign(snapshot.entries.get(name)!.ref, built.metadata.get(name)!);
+        }
+        scopes.set(key, built);
+        builtInstalled = true;
+        built.users += 1;
+        while (
+          [...scopes.values()].filter((candidate) => candidate.accountId === accountId).length > MAX_SCOPES_PER_ACCOUNT
+        ) {
+          const evicted = [...scopes.entries()].find(([, candidate]) => candidate.accountId === accountId);
+          if (!evicted) break;
+          scopes.delete(evicted[0]);
+          closable.push(retireScope(evicted[1]));
+        }
+        return { retry: false, lease: built, closable };
+      }, admission);
+      closeRetired(installed.closable);
+      if (installed.retry) continue;
+      return { key, scope: installed.lease! };
+    } finally {
+      if (!builtInstalled) closeRetired([retireScope(built)]);
+    }
   }
 }
 
@@ -917,8 +1081,9 @@ function leadingSqlKeyword(sql: string): string {
       continue;
     }
     if (sql.startsWith("--", index)) {
-      const newline = sql.indexOf("\n", index + 2);
-      index = newline < 0 ? sql.length : newline + 1;
+      let newline = index + 2;
+      while (newline < sql.length && sql[newline] !== "\n" && sql[newline] !== "\r") newline += 1;
+      index = newline < sql.length ? newline + 1 : sql.length;
       continue;
     }
     if (sql.startsWith("/*", index)) {
@@ -940,16 +1105,17 @@ function leadingSqlKeyword(sql: string): string {
   return "";
 }
 
-function withoutStatementTerminator(sql: string): string {
-  const normalSemicolons: number[] = [];
+function singleStatementSql(sql: string): string {
+  let terminator: number | undefined;
   let index = 0;
   let quote: "'" | '"' | undefined;
+  let backslashEscapedQuote = false;
   let dollarQuote: string | undefined;
   let blockDepth = 0;
   let lineComment = false;
   while (index < sql.length) {
     if (lineComment) {
-      if (sql[index] === "\n") lineComment = false;
+      if (sql[index] === "\n" || sql[index] === "\r") lineComment = false;
       index += 1;
       continue;
     }
@@ -971,12 +1137,17 @@ function withoutStatementTerminator(sql: string): string {
       continue;
     }
     if (quote) {
+      if (backslashEscapedQuote && sql[index] === "\\" && index + 1 < sql.length) {
+        index += 2;
+        continue;
+      }
       if (sql[index] === quote) {
         if (sql[index + 1] === quote) {
           index += 2;
           continue;
         }
         quote = undefined;
+        backslashEscapedQuote = false;
       }
       index += 1;
       continue;
@@ -991,8 +1162,20 @@ function withoutStatementTerminator(sql: string): string {
       index += 2;
       continue;
     }
+    if (terminator !== undefined) {
+      if (/\s/.test(sql[index]!)) {
+        index += 1;
+        continue;
+      }
+      throw operationError(400, "exactly one read-only query is allowed");
+    }
     if (sql[index] === "'" || sql[index] === '"') {
       quote = sql[index] as "'" | '"';
+      backslashEscapedQuote =
+        quote === "'" &&
+        index > 0 &&
+        (sql[index - 1] === "E" || sql[index - 1] === "e") &&
+        (index === 1 || !/[A-Za-z0-9_$]/.test(sql[index - 2]!));
       index += 1;
       continue;
     }
@@ -1002,24 +1185,38 @@ function withoutStatementTerminator(sql: string): string {
       index += dollarQuote.length;
       continue;
     }
-    if (sql[index] === ";") normalSemicolons.push(index);
+    if (sql[index] === ";") terminator = index;
     index += 1;
   }
-  const terminator = normalSemicolons.at(-1);
   return terminator === undefined ? sql : `${sql.slice(0, terminator)}${sql.slice(terminator + 1)}`;
 }
 
-async function assertReadOnlySql(connection: DuckDBConnection, sql: string): Promise<void> {
-  let extracted;
+async function trackedNativePrepare(connection: DuckDBConnection, sql: string) {
+  activeQueryNativePrepares += 1;
   try {
-    extracted = await connection.extractStatements(sql);
-  } catch {
-    throw operationError(400, "invalid SQL");
+    return await connection.prepare(sql);
+  } finally {
+    activeQueryNativePrepares -= 1;
   }
-  if (extracted.count !== 1) throw operationError(400, "exactly one read-only query is allowed");
-  // Parsing succeeded; a binder/catalog error is a query failure, not a
-  // reason to weaken or bypass the statement-type check.
-  const prepared = await extracted.prepare(0);
+}
+
+/** Test-only native workload; the production configuration path cannot set it. */
+async function runNativePrepareTestWorkload(connection: DuckDBConnection): Promise<void> {
+  const unionCount = queryNativePrepareUnionCount;
+  if (unionCount === undefined) return;
+  queryNativePrepareUnionCount = undefined;
+  const sql = Array.from({ length: unionCount }, (_, index) => `SELECT ${index} AS value`).join(" UNION ALL ");
+  let prepared: DuckDBPreparedStatement | undefined;
+  try {
+    prepared = await trackedNativePrepare(connection, sql);
+  } finally {
+    prepared?.destroySync();
+  }
+}
+
+async function assertReadOnlySql(connection: DuckDBConnection, sql: string): Promise<void> {
+  await runNativePrepareTestWorkload(connection);
+  const prepared = await trackedNativePrepare(connection, sql);
   try {
     if (prepared.statementType !== StatementType.SELECT) {
       throw operationError(400, "exactly one read-only query is allowed");
@@ -1038,84 +1235,93 @@ async function queryDataset(
   }
   const sql = input.sql.trim();
   if (!sql) throw operationError(400, "empty SQL");
-  if (!["SELECT", "WITH", "VALUES"].includes(leadingSqlKeyword(sql))) {
-    throw operationError(400, "exactly one read-only query is allowed");
-  }
   let scoped: Awaited<ReturnType<typeof acquireScopedConnection>> | undefined;
   try {
-    scoped = await acquireScopedConnection(input.accountId, input.allowedTables, context);
-    const lease = scoped;
-    return await lease.scope.ioMutex.run(async () => {
-      ensureActive(context);
-      await assertReadOnlySql(lease.scope.connection, sql);
-      const executableSql = withoutStatementTerminator(sql);
-      const { schema, selected, rows } = await runWithDeadline(context, lease.scope.connection, async () => {
-        const schemaReader = await lease.scope.connection.runAndReadAll(
-          `DESCRIBE SELECT * FROM (${executableSql}\n) AS _q`
-        );
-        const schemaRows = schemaReader.getRows();
-        const selectedRows = schemaRows.slice(0, MAX_QUERY_COLUMNS);
-        if (!selectedRows.length) return { schema: schemaRows, selected: selectedRows, rows: [] as DuckDBValue[][] };
-        const rowLimit = Math.min(MAX_QUERY_ROWS, Math.floor(MAX_QUERY_CELLS / selectedRows.length));
-        const projection = selectedRows
-          .map((column) => boundedSqlExpression(String(column[0]), String(column[1]), MAX_QUERY_CELL_CHARS))
-          .join(", ");
-        const rowReader = await lease.scope.connection.runAndReadUntil(
-          `SELECT ${projection} FROM (${executableSql}\n) AS _q LIMIT ${rowLimit + 1}`,
-          rowLimit + 1
-        );
-        return { schema: schemaRows, selected: selectedRows, rows: rowReader.getRows().slice(0, rowLimit + 1) };
-      });
+    return await runWithQueryOperationDeadline(context, async (deadline) => {
+      if (!["SELECT", "WITH", "VALUES"].includes(leadingSqlKeyword(sql))) {
+        throw operationError(400, "exactly one read-only query is allowed");
+      }
+      const executableSql = singleStatementSql(sql);
+      assertQueryDeadline(context, deadline);
+      scoped = await acquireScopedConnection(input.accountId, input.allowedTables, context, deadline);
+      const lease = scoped;
+      return lease.scope.ioMutex.run(
+        () =>
+          runWithinQueryDeadline(context, lease.scope.connection, deadline, async () => {
+            await assertReadOnlySql(lease.scope.connection, executableSql);
+            const schemaReader = await lease.scope.connection.runAndReadAll(
+              `DESCRIBE SELECT * FROM (${executableSql}\n) AS _q`
+            );
+            const schemaRows = schemaReader.getRows();
+            const selectedRows = schemaRows.slice(0, MAX_QUERY_COLUMNS);
+            let rows: DuckDBValue[][] = [];
+            if (selectedRows.length) {
+              const rowLimit = Math.min(MAX_QUERY_ROWS, Math.floor(MAX_QUERY_CELLS / selectedRows.length));
+              const projection = selectedRows
+                .map((column) => boundedSqlExpression(String(column[0]), String(column[1]), MAX_QUERY_CELL_CHARS))
+                .join(", ");
+              const rowReader = await lease.scope.connection.runAndReadUntil(
+                `SELECT ${projection} FROM (${executableSql}\n) AS _q LIMIT ${rowLimit + 1}`,
+                rowLimit + 1
+              );
+              rows = rowReader.getRows().slice(0, rowLimit + 1);
+            }
 
-      const outputColumns: string[] = [];
-      let headerChars = 0;
-      let headersTruncated = false;
-      for (const column of selected) {
-        const remaining = MAX_QUERY_HEADER_CHARS - headerChars;
-        if (remaining <= 0) {
-          headersTruncated = true;
-          break;
-        }
-        const [name, nameTruncated] = boundedValue(String(column[0]), Math.min(MAX_QUERY_COLUMN_NAME_CHARS, remaining));
-        outputColumns.push(String(name));
-        headerChars += String(name).length;
-        headersTruncated ||= nameTruncated;
-      }
-      const columnCount = outputColumns.length;
-      const rowLimit = columnCount ? Math.min(MAX_QUERY_ROWS, Math.floor(MAX_QUERY_CELLS / columnCount)) : 0;
-      let truncated = headersTruncated || schema.length > columnCount || rows.length > rowLimit;
-      const outputRows: JsonCell[][] = [];
-      let usedChars = headerChars;
-      for (const row of rows.slice(0, rowLimit)) {
-        const remaining = MAX_QUERY_CHARS - usedChars;
-        if (remaining <= 0) {
-          truncated = true;
-          break;
-        }
-        const perCellCap = Math.min(MAX_QUERY_CELL_CHARS, Math.max(1, Math.floor(remaining / columnCount)));
-        const output: JsonCell[] = [];
-        let rowChars = 0;
-        for (const rawValue of row.slice(0, columnCount)) {
-          const [value, valueTruncated] = boundedValue(normalizeCell(rawValue), perCellCap);
-          rowChars += renderedChars(value);
-          output.push(value);
-          truncated ||= valueTruncated;
-        }
-        if (usedChars + rowChars > MAX_QUERY_CHARS) {
-          truncated = true;
-          break;
-        }
-        outputRows.push(output);
-        usedChars += rowChars;
-      }
-      return {
-        columns: outputColumns,
-        rows: outputRows,
-        row_count: outputRows.length,
-        returned_row_count: outputRows.length,
-        columns_truncated: schema.length > outputColumns.length || headersTruncated,
-        truncated,
-      };
+            const outputColumns: string[] = [];
+            let headerChars = 0;
+            let headersTruncated = false;
+            for (const column of selectedRows) {
+              const remaining = MAX_QUERY_HEADER_CHARS - headerChars;
+              if (remaining <= 0) {
+                headersTruncated = true;
+                break;
+              }
+              const [name, nameTruncated] = boundedValue(
+                String(column[0]),
+                Math.min(MAX_QUERY_COLUMN_NAME_CHARS, remaining)
+              );
+              outputColumns.push(String(name));
+              headerChars += String(name).length;
+              headersTruncated ||= nameTruncated;
+            }
+            const columnCount = outputColumns.length;
+            const rowLimit = columnCount ? Math.min(MAX_QUERY_ROWS, Math.floor(MAX_QUERY_CELLS / columnCount)) : 0;
+            let truncated = headersTruncated || schemaRows.length > columnCount || rows.length > rowLimit;
+            const outputRows: JsonCell[][] = [];
+            let usedChars = headerChars;
+            for (const row of rows.slice(0, rowLimit)) {
+              const remaining = MAX_QUERY_CHARS - usedChars;
+              if (remaining <= 0) {
+                truncated = true;
+                break;
+              }
+              const perCellCap = Math.min(MAX_QUERY_CELL_CHARS, Math.max(1, Math.floor(remaining / columnCount)));
+              const output: JsonCell[] = [];
+              let rowChars = 0;
+              for (const rawValue of row.slice(0, columnCount)) {
+                const [value, valueTruncated] = boundedValue(normalizeCell(rawValue), perCellCap);
+                rowChars += renderedChars(value);
+                output.push(value);
+                truncated ||= valueTruncated;
+              }
+              if (usedChars + rowChars > MAX_QUERY_CHARS) {
+                truncated = true;
+                break;
+              }
+              outputRows.push(output);
+              usedChars += rowChars;
+            }
+            return {
+              columns: outputColumns,
+              rows: outputRows,
+              row_count: outputRows.length,
+              returned_row_count: outputRows.length,
+              columns_truncated: schemaRows.length > outputColumns.length || headersTruncated,
+              truncated,
+            };
+          }),
+        { context, deadline }
+      );
     });
   } catch (error) {
     if (error instanceof DatasetOperationError) {
@@ -1536,6 +1742,50 @@ async function listDatasets(input: { accountId: string; summary: boolean }): Pro
   );
 }
 
+function validateSummaryTables(tableNames: unknown): string[] {
+  if (!Array.isArray(tableNames)) throw operationError(400, "table_names must be a list");
+  // Count repeated entries before de-duplicating so the transport boundary is
+  // bounded independently of the registry contents.
+  if (tableNames.length > MAX_ALLOWED_TABLES) {
+    throw operationError(422, `table_names supports at most ${MAX_ALLOWED_TABLES} entries`);
+  }
+  if (tableNames.some((name) => typeof name !== "string" || !TABLE_RE.test(name))) {
+    throw operationError(400, "table_names contains an invalid table name");
+  }
+  return [...new Set(tableNames as string[])];
+}
+
+async function listDatasetSummaries(input: {
+  accountId: string;
+  tableNames: unknown;
+}): Promise<Array<Record<string, unknown>>> {
+  const tables = validateSummaryTables(input.tableNames);
+  const snapshot = await accountMutex(input.accountId).run(async () => {
+    const accountRegistry = registry.get(input.accountId);
+    return tables.flatMap((name) => {
+      const item = accountRegistry?.get(name);
+      return item
+        ? [
+            {
+              name: item.name,
+              originalName: item.original_name,
+              rows: item.rows,
+              location: item.location,
+            },
+          ]
+        : [];
+    });
+  });
+  return Promise.all(
+    snapshot.map(async (item) => ({
+      table: item.name,
+      original_name: item.originalName,
+      rows: item.rows,
+      exists: (await fileSignature(item.location)) !== "missing",
+    }))
+  );
+}
+
 async function catalogDatasets(input: { accountId: string; allowedTables: unknown }): Promise<Record<string, unknown>> {
   return accountMutex(input.accountId).run(async () => {
     const tables = validateAllowedTables(input.accountId, input.allowedTables);
@@ -1656,6 +1906,8 @@ async function dispatch(operation: string, rawPayload: unknown, context: Request
       return extractCandidate(payload as Parameters<typeof extractCandidate>[0], context);
     case "list":
       return listDatasets(payload as Parameters<typeof listDatasets>[0]);
+    case "summaries":
+      return listDatasetSummaries(payload as Parameters<typeof listDatasetSummaries>[0]);
     case "catalog":
       return catalogDatasets(payload as Parameters<typeof catalogDatasets>[0]);
     case "drop":
@@ -1668,6 +1920,9 @@ async function dispatch(operation: string, rawPayload: unknown, context: Request
         pendingPreparations: pendingPreparations.size,
         pendingActivations: pendingActivations.size,
         cleanupReservations: cleanupReservations.size,
+        activeQueryPreflightTestDelays,
+        activeQueryNativePrepares,
+        openCatalogs,
       };
     case "configureForTests": {
       if (process.env.NODE_ENV !== "test") throw operationError(403, "test configuration is unavailable");
@@ -1677,6 +1932,40 @@ async function dispatch(operation: string, rawPayload: unknown, context: Request
           throw operationError(400, "invalid test query timeout");
         }
         queryTimeoutMs = timeout;
+      }
+      const delay = payload.queryPreflightDelay;
+      if (delay !== undefined) {
+        if (delay === null) {
+          queryPreflightTestDelay = undefined;
+        } else if (
+          typeof delay === "object" &&
+          !Array.isArray(delay) &&
+          ((delay as Record<string, unknown>).phase === "scope_load" ||
+            (delay as Record<string, unknown>).phase === "scope_install") &&
+          typeof (delay as Record<string, unknown>).delayMs === "number" &&
+          Number.isFinite((delay as Record<string, unknown>).delayMs) &&
+          ((delay as Record<string, unknown>).delayMs as number) >= 1 &&
+          ((delay as Record<string, unknown>).delayMs as number) <= 30_000
+        ) {
+          queryPreflightTestDelay = {
+            phase: (delay as Record<string, unknown>).phase as QueryPreflightPhase,
+            delayMs: (delay as Record<string, unknown>).delayMs as number,
+          };
+        } else {
+          throw operationError(400, "invalid test query preflight delay");
+        }
+      }
+      const unionCount = payload.queryNativePrepareUnionCount;
+      if (unionCount !== undefined) {
+        if (unionCount === null) queryNativePrepareUnionCount = undefined;
+        else if (
+          typeof unionCount === "number" &&
+          Number.isInteger(unionCount) &&
+          unionCount >= 1_000 &&
+          unionCount <= 50_000
+        ) {
+          queryNativePrepareUnionCount = unionCount;
+        } else throw operationError(400, "invalid test native-prepare workload");
       }
       return undefined;
     }

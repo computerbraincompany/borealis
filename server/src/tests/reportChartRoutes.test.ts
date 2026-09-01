@@ -32,6 +32,8 @@ const OWNER_CHART = "66666666-6666-4666-8666-666666666666";
 const FOREIGN_CHART = "77777777-7777-4777-8777-777777777777";
 const PENDING_CHART = "88888888-8888-4888-8888-888888888888";
 const NO_PNG_CHART = "99999999-9999-4999-8999-999999999999";
+const OWNER_CHART_CHAT = "aaaaaaaa-1111-4111-8111-111111111111";
+const OWNER_CHART_RUN = "bbbbbbbb-2222-4222-8222-222222222222";
 
 const ownerAuth = {
   authorization: `Bearer ${signToken({ userId: OWNER, email: "owner@example.test" })}`,
@@ -79,9 +81,10 @@ describe("published report and chart routes", () => {
 
     const ownerReports = await app.inject({ method: "GET", url: "/api/reports", headers: ownerAuth });
     expect(ownerReports.statusCode).toBe(200);
-    expect(ownerReports.json()).toEqual([
-      expect.objectContaining({ id: OWNER_REPORT, title: "Owner report", version: 1, supersedes: null }),
-    ]);
+    expect(ownerReports.json()).toEqual({
+      items: [expect.objectContaining({ id: OWNER_REPORT, title: "Owner report", version: 1, supersedes: null })],
+      next_cursor: null,
+    });
     expect(ownerReports.body).not.toContain("html_path");
     expect(ownerReports.body).not.toContain("pdf_path");
     expect(ownerReports.body).not.toContain("payload");
@@ -100,7 +103,10 @@ describe("published report and chart routes", () => {
     await expectStatus(app, `/api/charts/${PENDING_CHART}`, ownerAuth, 404);
 
     const foreignReports = await app.inject({ method: "GET", url: "/api/reports", headers: foreignAuth });
-    expect(foreignReports.json()).toEqual([expect.objectContaining({ id: FOREIGN_REPORT, title: "Foreign report" })]);
+    expect(foreignReports.json()).toEqual({
+      items: [expect.objectContaining({ id: FOREIGN_REPORT, title: "Foreign report" })],
+      next_cursor: null,
+    });
   });
 
   it("serves HTML and PDF only after exact account/report path proof", async () => {
@@ -252,9 +258,12 @@ describe("published report and chart routes", () => {
     expect(pendingShare.statusCode).toBe(404);
 
     const foreignList = await app.inject({ method: "GET", url: "/api/reports/shared", headers: foreignAuth });
-    expect(foreignList.json()).toEqual([
-      expect.objectContaining({ id: OWNER_REPORT, title: "Shared report", version: 1, owner_account_id: OWNER }),
-    ]);
+    expect(foreignList.json()).toEqual({
+      items: [
+        expect.objectContaining({ id: OWNER_REPORT, title: "Shared report", version: 1, owner_account_id: OWNER }),
+      ],
+      next_cursor: null,
+    });
 
     // The recipient can read the snapshot through the shared path.
     const detail = await app.inject({ method: "GET", url: `/api/reports/${OWNER_REPORT}`, headers: foreignAuth });
@@ -286,7 +295,7 @@ describe("published report and chart routes", () => {
   });
 
   it("lists the account's published chart registry without spec or bytes", async () => {
-    await insertChart(OWNER_CHART, OWNER, "published", "owner", "owner-png", "bar");
+    await publishChartThroughCompletion(OWNER_CHART, OWNER_CHART_RUN, OWNER_CHART_CHAT);
     await insertChart(PENDING_CHART, OWNER, "pending", "pending", "pending-png");
     await insertChart(FOREIGN_CHART, FOREIGN, "published", "foreign", "foreign-png");
     const app = await buildApp();
@@ -294,7 +303,14 @@ describe("published report and chart routes", () => {
     const registry = await app.inject({ method: "GET", url: "/api/charts", headers: ownerAuth });
     expect(registry.statusCode).toBe(200);
     expect(registry.json()).toEqual([
-      { id: OWNER_CHART, run_id: null, chat_id: null, title: "owner", kind: "bar", created_at: expect.any(String) },
+      {
+        id: OWNER_CHART,
+        run_id: OWNER_CHART_RUN,
+        chat_id: OWNER_CHART_CHAT,
+        title: "owner",
+        kind: "bar",
+        created_at: expect.any(String),
+      },
     ]);
     expect(registry.body).not.toContain("spec");
     expect(registry.body).not.toContain("png_base64");
@@ -340,6 +356,33 @@ async function insertChart(
     `INSERT INTO charts (id,account_id,status,spec,echarts,png_base64) VALUES (?,?,?,?,?,?)`,
     [id, accountId, status, encodeJson({ title, type }), encodeJson({ series: [] }), pngBase64]
   );
+}
+
+async function publishChartThroughCompletion(chartId: string, runId: string, chatId: string): Promise<void> {
+  const runtime = storageRuntime();
+  await runtime.ledger.run("INSERT INTO chats (id,account_id,title,model,source_mode) VALUES (?,?,?,?,?)", [
+    chatId,
+    OWNER,
+    "Chart source",
+    "chat-model",
+    "selected",
+  ]);
+  await runtime.ledger.run(
+    "INSERT INTO chat_runs (id,account_id,chat_id,status,cancel_requested) VALUES (?,?,?,'running',0)",
+    [runId, OWNER, chatId]
+  );
+  await runtime.runs.insertPendingChart({
+    id: chartId,
+    accountId: OWNER,
+    runId,
+    spec: { title: "owner", type: "bar" },
+    echarts: { series: [] },
+    pngBase64: "owner-png",
+  });
+  await runtime.runs.completeRunWithAssistant(OWNER, chatId, runId, {
+    content: "Published chart",
+    meta: { charts: [chartId], report: null },
+  });
 }
 
 async function expectStatus(

@@ -16,8 +16,10 @@ import {
   type LibrarySummary,
   type Message,
   type Source,
+  type SourceMode,
   type SourceScopeInput,
 } from "@/lib/api";
+import { mergeCatalogContinuation, mergeCatalogHead } from "@/lib/catalogMerge";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -35,7 +37,7 @@ import { agentsApi, type AgentSummary } from "@/lib/api";
 import { useEgressConsentGate } from "@/hooks/useEgressConsentGate";
 import { cancelRunThenAbort } from "@/lib/chatRun";
 import { prependOlderMessages } from "@/lib/chatHistoryPage";
-import { reconcileAttachedSources, sameAttachedSources } from "@/lib/sourceScope";
+import { sameAttachedSources } from "@/lib/sourceScope";
 
 const SUGGESTIONS = [
   "Analyze my spending and produce a financial report with charts",
@@ -62,10 +64,16 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
   const [newChatError, setNewChatError] = useState<string | null>(null);
   const [newChatModelSelection, setNewChatModelSelection] = useState<string | null>(null);
   const [newChatAgentSelection, setNewChatAgentSelection] = useState<string | null>(null);
+  const [chatsNextCursor, setChatsNextCursor] = useState<string | null>(null);
+  const [chatsLoadingMore, setChatsLoadingMore] = useState(false);
   const [agentCatalog, setAgentCatalog] = useState<AgentSummary[]>([]);
   const [agentCatalogLoading, setAgentCatalogLoading] = useState(false);
+  const [agentCatalogNextCursor, setAgentCatalogNextCursor] = useState<string | null>(null);
+  const [agentCatalogLoadingMore, setAgentCatalogLoadingMore] = useState(false);
   const [libraries, setLibraries] = useState<LibrarySummary[]>([]);
   const [librariesLoading, setLibrariesLoading] = useState(false);
+  const [librariesNextCursor, setLibrariesNextCursor] = useState<string | null>(null);
+  const [librariesLoadingMore, setLibrariesLoadingMore] = useState(false);
   const [librariesError, setLibrariesError] = useState<string | null>(null);
   const [newChatSourceScope, setNewChatSourceScope] = useState<SourceScopeInput>({
     source_mode: "selected",
@@ -81,7 +89,14 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
   const bottomRef = useRef<HTMLDivElement>(null);
   const stepKeyRef = useRef(0);
   const chatListRequestRef = useRef(0);
+  const chatsNextCursorRef = useRef<string | null>(null);
+  const chatsLoadingMoreRef = useRef(false);
+  const agentCatalogRequestRef = useRef(0);
+  const agentCatalogNextCursorRef = useRef<string | null>(null);
+  const agentCatalogLoadingMoreRef = useRef(false);
   const librariesRequestRef = useRef(0);
+  const librariesNextCursorRef = useRef<string | null>(null);
+  const librariesLoadingMoreRef = useRef(false);
   const newChatRequestRef = useRef<string | null>(null);
   const appliedDetailChatIdRef = useRef<string | null>(null);
   const firstSubmitInFlightRef = useRef(false);
@@ -100,23 +115,6 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
   } = useChatSessionController();
   const { handleConsentError, dialog: consentDialog } = useEgressConsentGate();
 
-  useEffect(() => {
-    let cancelled = false;
-    setAgentCatalogLoading(true);
-    agentsApi
-      .list()
-      .then((agents) => {
-        if (!cancelled) setAgentCatalog(agents);
-      })
-      .catch(() => undefined)
-      .finally(() => {
-        if (!cancelled) setAgentCatalogLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
   const releaseFirstSubmit = useCallback(() => {
     firstSubmitInFlightRef.current = false;
     firstSubmitTargetChatIdRef.current = null;
@@ -133,21 +131,96 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
 
   const loadChats = useCallback(async () => {
     const requestId = ++chatListRequestRef.current;
+    chatsLoadingMoreRef.current = false;
+    setChatsLoadingMore(false);
     try {
-      const latest = await chatsApi.list();
-      if (isMounted() && requestId === chatListRequestRef.current) setChats(latest);
+      const page = await chatsApi.list();
+      if (!isMounted() || requestId !== chatListRequestRef.current) return;
+      setChats((current) => sortChatsByActivity(mergeCatalogHead(page.items, current)));
+      chatsNextCursorRef.current = page.next_cursor;
+      setChatsNextCursor(page.next_cursor);
     } catch {}
   }, [isMounted]);
+
+  const loadMoreChats = useCallback(async () => {
+    const cursor = chatsNextCursorRef.current;
+    if (!cursor || chatsLoadingMoreRef.current) return;
+    const requestId = ++chatListRequestRef.current;
+    chatsLoadingMoreRef.current = true;
+    setChatsLoadingMore(true);
+    try {
+      const page = await chatsApi.list({ cursor });
+      if (!isMounted() || requestId !== chatListRequestRef.current) return;
+      chatsNextCursorRef.current = page.next_cursor;
+      setChatsNextCursor(page.next_cursor);
+      setChats((current) => sortChatsByActivity(mergeCatalogContinuation(current, page.items)));
+    } catch {
+      // Keep the cursor available so the user can retry the same page.
+    } finally {
+      if (isMounted() && requestId === chatListRequestRef.current) {
+        chatsLoadingMoreRef.current = false;
+        setChatsLoadingMore(false);
+      }
+    }
+  }, [isMounted]);
+
+  const loadAgents = useCallback(async () => {
+    const requestId = ++agentCatalogRequestRef.current;
+    agentCatalogLoadingMoreRef.current = false;
+    setAgentCatalogLoadingMore(false);
+    setAgentCatalogLoading(true);
+    try {
+      const page = await agentsApi.list();
+      if (!isMounted() || requestId !== agentCatalogRequestRef.current) return;
+      setAgentCatalog((current) => mergeCatalogHead(page.items, current));
+      agentCatalogNextCursorRef.current = page.next_cursor;
+      setAgentCatalogNextCursor(page.next_cursor);
+    } catch {
+      // Agent selection is optional; keep any previously loaded choices.
+    } finally {
+      if (isMounted() && requestId === agentCatalogRequestRef.current) setAgentCatalogLoading(false);
+    }
+  }, [isMounted]);
+
+  const loadMoreAgents = useCallback(async () => {
+    const cursor = agentCatalogNextCursorRef.current;
+    if (!cursor || agentCatalogLoadingMoreRef.current) return;
+    const requestId = ++agentCatalogRequestRef.current;
+    agentCatalogLoadingMoreRef.current = true;
+    setAgentCatalogLoadingMore(true);
+    try {
+      const page = await agentsApi.list({ cursor });
+      if (!isMounted() || requestId !== agentCatalogRequestRef.current) return;
+      agentCatalogNextCursorRef.current = page.next_cursor;
+      setAgentCatalogNextCursor(page.next_cursor);
+      setAgentCatalog((current) => mergeCatalogContinuation(current, page.items));
+    } catch {
+      // Keep the cursor available so the user can retry the same page.
+    } finally {
+      if (isMounted() && requestId === agentCatalogRequestRef.current) {
+        agentCatalogLoadingMoreRef.current = false;
+        setAgentCatalogLoadingMore(false);
+      }
+    }
+  }, [isMounted]);
+
+  useEffect(() => {
+    void loadAgents();
+  }, [loadAgents]);
 
   // Library catalog for the composer's scope picker. A failed load keeps the
   // previous catalog (if any) and surfaces a retryable error to the picker.
   const loadLibraries = useCallback(async () => {
     const requestId = ++librariesRequestRef.current;
+    librariesLoadingMoreRef.current = false;
+    setLibrariesLoadingMore(false);
     setLibrariesLoading(true);
     try {
-      const catalog = await librariesApi.list();
+      const page = await librariesApi.list();
       if (!isMounted() || requestId !== librariesRequestRef.current) return;
-      setLibraries(catalog);
+      setLibraries((current) => mergeCatalogHead(page.items, current));
+      librariesNextCursorRef.current = page.next_cursor;
+      setLibrariesNextCursor(page.next_cursor);
       setLibrariesError(null);
     } catch (error: unknown) {
       if (!isMounted() || requestId !== librariesRequestRef.current) return;
@@ -157,26 +230,45 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
     }
   }, [isMounted]);
 
+  const loadMoreLibraries = useCallback(async () => {
+    const cursor = librariesNextCursorRef.current;
+    if (!cursor || librariesLoadingMoreRef.current) return;
+    const requestId = ++librariesRequestRef.current;
+    librariesLoadingMoreRef.current = true;
+    setLibrariesLoadingMore(true);
+    try {
+      const page = await librariesApi.list({ cursor });
+      if (!isMounted() || requestId !== librariesRequestRef.current) return;
+      librariesNextCursorRef.current = page.next_cursor;
+      setLibrariesNextCursor(page.next_cursor);
+      setLibraries((current) => mergeCatalogContinuation(current, page.items));
+      setLibrariesError(null);
+    } catch (error: unknown) {
+      if (!isMounted() || requestId !== librariesRequestRef.current) return;
+      setLibrariesError(formatApiError(error, "Could not load more libraries"));
+    } finally {
+      if (isMounted() && requestId === librariesRequestRef.current) {
+        librariesLoadingMoreRef.current = false;
+        setLibrariesLoadingMore(false);
+      }
+    }
+  }, [isMounted]);
+
   const reconcileCatalog = useCallback((catalog: Source[]) => {
     setDetail((current) => {
       if (!current) return current;
-      const reconciled = reconcileAttachedSources(current.source_mode, current.sources, catalog);
+      const reconciled = reconcilePaginatedAttachedSources(current.source_mode, current.sources, catalog);
       return sameAttachedSources(current.sources, reconciled) ? current : { ...current, sources: reconciled };
-    });
-    setNewChatSourceScope((current) => {
-      if (current.source_mode === "all") return current;
-      const availableIds = new Set(catalog.map((source) => source.id));
-      const sourceIds = current.source_ids.filter((id) => availableIds.has(id));
-      return sourceIds.length === current.source_ids.length
-        ? current
-        : { source_mode: "selected", source_ids: sourceIds };
     });
   }, []);
   const {
     sources,
     loading: sourcesLoading,
+    loadingMore: sourcesLoadingMore,
+    hasMore: sourcesHasMore,
     error: sourcesError,
     refresh: refreshSources,
+    loadMore: loadMoreSources,
     addPending: addPendingSource,
   } = useSourceCatalog({ onCatalog: reconcileCatalog });
 
@@ -1014,6 +1106,8 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
         <ChatHistory
           chats={chats}
           activeChatId={detail?.id}
+          hasMore={chatsNextCursor !== null}
+          loadingMore={chatsLoadingMore}
           busyChatIds={
             new Set(
               chats
@@ -1032,6 +1126,7 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
           onOpen={(id) => void loadChat(id)}
           onDelete={deleteChat}
           onRename={renameChat}
+          onLoadMore={loadMoreChats}
         />
         <a
           href="#/settings"
@@ -1216,8 +1311,11 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
                             agents={agentCatalog}
                             selection={detail.agent?.id ?? null}
                             loading={false}
+                            hasMore={false}
+                            loadingMore={false}
                             locked
                             onSelect={() => undefined}
+                            onLoadMore={() => undefined}
                           />
                           <ChatSourcePicker
                             key={detail.id}
@@ -1225,6 +1323,8 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
                             attachedSources={detail.sources}
                             sources={sources}
                             sourcesLoading={sourcesLoading}
+                            sourcesHasMore={sourcesHasMore}
+                            sourcesLoadingMore={sourcesLoadingMore}
                             sourcesError={sourcesError}
                             disabled={
                               creatingChat || isModelSaving || isSourceSaving || isTitleSaving || stream.running
@@ -1234,10 +1334,14 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
                             onApply={saveSourceScope}
                             onUpload={uploadSource}
                             onRetrySources={() => refreshSources(true)}
+                            onLoadMoreSources={loadMoreSources}
                             libraries={libraries}
                             librariesLoading={librariesLoading}
+                            librariesHasMore={librariesNextCursor !== null}
+                            librariesLoadingMore={librariesLoadingMore}
                             librariesError={librariesError}
                             onRetryLibraries={() => void loadLibraries()}
+                            onLoadMoreLibraries={loadMoreLibraries}
                           />
                         </div>
                         <ActiveSourceScope
@@ -1268,8 +1372,11 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
                             agents={agentCatalog}
                             selection={newChatAgentSelection}
                             loading={agentCatalogLoading}
+                            hasMore={agentCatalogNextCursor !== null}
+                            loadingMore={agentCatalogLoadingMore}
                             locked={false}
                             onSelect={setNewChatAgentSelection}
+                            onLoadMore={loadMoreAgents}
                           />
                           <ChatSourcePicker
                             key="new-chat"
@@ -1277,6 +1384,8 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
                             attachedSources={newChatAttachedSources}
                             sources={sources}
                             sourcesLoading={sourcesLoading}
+                            sourcesHasMore={sourcesHasMore}
+                            sourcesLoadingMore={sourcesLoadingMore}
                             sourcesError={sourcesError}
                             disabled={creatingChat}
                             saving={creatingChat}
@@ -1284,10 +1393,14 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
                             onApply={saveNewChatSourceScope}
                             onUpload={uploadSource}
                             onRetrySources={() => refreshSources(true)}
+                            onLoadMoreSources={loadMoreSources}
                             libraries={libraries}
                             librariesLoading={librariesLoading}
+                            librariesHasMore={librariesNextCursor !== null}
+                            librariesLoadingMore={librariesLoadingMore}
                             librariesError={librariesError}
                             onRetryLibraries={() => void loadLibraries()}
+                            onLoadMoreLibraries={loadMoreLibraries}
                           />
                         </div>
                         <ActiveSourceScope
@@ -1403,6 +1516,41 @@ function ActiveSourceScope({ sources, disabled, error, onRemove, onDismissError 
       )}
     </div>
   );
+}
+
+function reconcilePaginatedAttachedSources(
+  mode: SourceMode,
+  attached: AttachedSource[],
+  catalog: Source[],
+): AttachedSource[] {
+  const catalogById = new Map(catalog.map((source) => [source.id, source]));
+  const reconciled = attached.map((source) => {
+    const current = catalogById.get(source.id);
+    return current
+      ? {
+          id: current.id,
+          name: current.name,
+          display_name: current.display_name,
+          kind: current.kind,
+          status: current.status,
+        }
+      : source;
+  });
+  if (mode === "selected") return reconciled;
+
+  const attachedIds = new Set(reconciled.map((source) => source.id));
+  return [
+    ...reconciled,
+    ...catalog
+      .filter((source) => !attachedIds.has(source.id))
+      .map((source) => ({
+        id: source.id,
+        name: source.name,
+        display_name: source.display_name,
+        kind: source.kind,
+        status: source.status,
+      })),
+  ];
 }
 
 function sortChatsByActivity(chats: Chat[]): Chat[] {

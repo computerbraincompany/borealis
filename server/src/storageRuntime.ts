@@ -1,5 +1,8 @@
 import path from "node:path";
 
+import { resolveLlmModelId } from "./llmAliases.js";
+import { DEFAULT_LLM_SETTINGS, type SettingsSnapshot } from "./settingsStore.js";
+
 import { ChatStore } from "./db/stores/chatStore.js";
 import { AgentStore } from "./db/stores/agentStore.js";
 import { AutomationStore } from "./automationStore.js";
@@ -17,6 +20,8 @@ export interface StorageRuntimeOptions {
   readonly sqlitePath: string;
   readonly lanceDirectory: string;
   readonly embeddingDimension: number;
+  readonly embeddingModel?: string;
+  readonly allowLegacyEmbeddingIdentityAdoption?: boolean;
 }
 
 export interface StorageRuntime {
@@ -38,6 +43,19 @@ export interface StorageRuntime {
 let active: StorageRuntime | undefined;
 let initializing: Promise<StorageRuntime> | undefined;
 
+/** Explicit trust-on-first-upgrade policy for a populated pre-marker live index. */
+export function mayAdoptLegacyEmbeddingIdentity(snapshot: SettingsSnapshot): boolean {
+  const managed = new Set(snapshot.environmentOverrides);
+  return (
+    !managed.has("default_embed_model") &&
+    !managed.has("embedding_dimension") &&
+    (snapshot.fileStatus === "loaded" ||
+      (snapshot.fileStatus === "missing" &&
+        snapshot.settings.embedModel === DEFAULT_LLM_SETTINGS.embedModel &&
+        snapshot.settings.embeddingDimension === DEFAULT_LLM_SETTINGS.embeddingDimension))
+  );
+}
+
 function normalizedOptions(options: StorageRuntimeOptions): StorageRuntimeOptions {
   if (!Number.isSafeInteger(options.embeddingDimension) || options.embeddingDimension < 1) {
     throw new RangeError("embeddingDimension must be a positive safe integer");
@@ -46,6 +64,10 @@ function normalizedOptions(options: StorageRuntimeOptions): StorageRuntimeOption
     sqlitePath: path.resolve(options.sqlitePath),
     lanceDirectory: path.resolve(options.lanceDirectory),
     embeddingDimension: options.embeddingDimension,
+    ...(options.embeddingModel === undefined ? {} : { embeddingModel: options.embeddingModel }),
+    ...(options.allowLegacyEmbeddingIdentityAdoption === undefined
+      ? {}
+      : { allowLegacyEmbeddingIdentityAdoption: options.allowLegacyEmbeddingIdentityAdoption }),
   });
 }
 
@@ -53,7 +75,9 @@ function sameRuntime(runtime: StorageRuntime, options: StorageRuntimeOptions): b
   return (
     runtime.sqlitePath === options.sqlitePath &&
     runtime.lanceDirectory === options.lanceDirectory &&
-    runtime.vectors.dimension === options.embeddingDimension
+    runtime.vectors.dimension === options.embeddingDimension &&
+    (options.embeddingModel === undefined ||
+      runtime.vectors.embeddingModel === resolveLlmModelId(options.embeddingModel))
   );
 }
 
@@ -75,6 +99,10 @@ export async function initializeStorageRuntime(optionsValue: StorageRuntimeOptio
       vectors = await LanceVectorIndex.open({
         directory: options.lanceDirectory,
         dimension: options.embeddingDimension,
+        ...(options.embeddingModel === undefined ? {} : { embeddingModel: options.embeddingModel }),
+        ...(options.allowLegacyEmbeddingIdentityAdoption === undefined
+          ? {}
+          : { allowLegacyIdentityAdoption: options.allowLegacyEmbeddingIdentityAdoption }),
       });
       const ingestion = new SqliteIngestionStore(ledger);
       const runtime: StorageRuntime = Object.freeze({

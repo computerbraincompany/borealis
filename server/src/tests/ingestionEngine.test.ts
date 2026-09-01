@@ -9,7 +9,14 @@ import { SqliteIngestionStore } from "../db/stores/ingestionStore.js";
 import { SourceStore } from "../db/stores/sourceStore.js";
 import { openSqliteLedger } from "../db/sqlite.js";
 import type { SqliteLedger } from "../db/types.js";
-import { IngestionExecutor, IngestionWorker, type IngestionDataOperations } from "../ingestionEngine.js";
+import { RemoteEgressConsentRequiredError } from "../egressPolicy.js";
+import type { IngestionEmbeddingSession } from "../ingestionEmbedding.js";
+import {
+  IngestionExecutor,
+  IngestionWorker,
+  processDurableDatasetCleanupJob,
+  type IngestionDataOperations,
+} from "../ingestionEngine.js";
 import { LanceVectorIndex } from "../vector/lance.js";
 import { IngestionVectorLifecycle } from "../vector/lifecycle.js";
 
@@ -31,7 +38,10 @@ afterEach(async () => {
   );
 });
 
-async function setup(embed: (texts: string[]) => Promise<number[][]>) {
+async function setup(
+  embed: (texts: string[]) => Promise<number[][]>,
+  createEmbeddingSession: (accountId: string) => Promise<IngestionEmbeddingSession> = async () => embed
+) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "borealis-ingestion-engine-test-"));
   const ledger = await openSqliteLedger({ path: path.join(directory, "ledger.sqlite") });
   const vectors = await LanceVectorIndex.open({ directory: path.join(directory, "lance"), dimension: 3 });
@@ -46,6 +56,7 @@ async function setup(embed: (texts: string[]) => Promise<number[][]>) {
     extractDataset: vi.fn(async () => ({})),
     extractPreparedDataset: vi.fn(async () => ({})),
     activateDatasetRefresh: vi.fn(async () => ({})),
+    deactivateDatasetLocation: vi.fn(async () => undefined),
     cleanupDatasetCache: vi.fn(async () => undefined),
   };
   const executor = new IngestionExecutor({
@@ -53,7 +64,7 @@ async function setup(embed: (texts: string[]) => Promise<number[][]>) {
     lifecycle,
     data,
     embeddingDimension: 3,
-    embed,
+    createEmbeddingSession,
     resolveArtifact: vi.fn(async ({ filePath }) => (filePath === artifact ? artifact : undefined)),
     isTabular: () => false,
     extractText: vi.fn(async () => "alpha beta gamma"),
@@ -167,6 +178,45 @@ describe("IngestionExecutor and worker", () => {
     await expect(runtime.vectors.scanRows()).resolves.toEqual([]);
   });
 
+  it.each([
+    ["float32 overflow", [1e100, 1, 0]],
+    ["float32 underflow to an all-zero vector", [1e-100, 0, 0]],
+    ["float32 norm underflow", [1e-23, 0, 0]],
+    ["float32 norm overflow", [1e20, 0, 0]],
+  ])("terminalizes %s as an invalid embedding response", async (_label, vector) => {
+    const runtime = await setup(async () => [vector]);
+    const { accountId, sourceId } = await seedSource(runtime.ledger, runtime.sourceStore, runtime.artifact);
+    await runtime.ingestionStore.reserveJob(accountId, sourceId);
+
+    await expect(runtime.worker.processOne()).resolves.toBe(true);
+    await expect(runtime.ingestionStore.getJob(accountId, sourceId)).resolves.toMatchObject({
+      status: "error",
+      lastError: "EMBEDDING_INVALID_RESPONSE",
+    });
+    await expect(runtime.vectors.scanRows()).resolves.toEqual([]);
+  });
+
+  it("fails a durable job closed when worker-time remote egress is not acknowledged", async () => {
+    const transport = vi.fn(async () => [[1, 0, 0]]);
+    const runtime = await setup(transport, async () => {
+      throw new RemoteEgressConsentRequiredError();
+    });
+    const { accountId, sourceId } = await seedSource(runtime.ledger, runtime.sourceStore, runtime.artifact);
+    await runtime.ingestionStore.reserveJob(accountId, sourceId);
+
+    await expect(runtime.worker.processOne()).resolves.toBe(true);
+    expect(transport).not.toHaveBeenCalled();
+    await expect(runtime.ingestionStore.getJob(accountId, sourceId)).resolves.toMatchObject({
+      status: "error",
+      lastError: "REMOTE_EGRESS_CONSENT_REQUIRED",
+    });
+    await expect(runtime.sourceStore.getSource(accountId, sourceId)).resolves.toMatchObject({
+      status: "error",
+      meta: { error_code: "REMOTE_EGRESS_CONSENT_REQUIRED" },
+    });
+    await expect(runtime.vectors.scanRows()).resolves.toEqual([]);
+  });
+
   it("fails closed before extraction when the UUID-scoped artifact cannot be proven", async () => {
     const runtime = await setup(async (texts) => texts.map(() => [1, 0, 0]));
     const { accountId, sourceId } = await seedSource(runtime.ledger, runtime.sourceStore, runtime.artifact);
@@ -204,4 +254,46 @@ describe("IngestionExecutor and worker", () => {
     expect(heartbeat).toHaveBeenCalledWith(accountId, sourceId, 1, expect.any(String));
     await expect(runtime.ingestionStore.getJob(accountId, sourceId)).resolves.toMatchObject({ status: "done" });
   });
+
+  it("coalesces exact cleanup workers and never replays stale completed authority", async () => {
+    const runtime = await setup(async (texts) => texts.map(() => [1, 0, 0]));
+    const { accountId } = await seedSource(runtime.ledger, runtime.sourceStore, runtime.artifact);
+    const job = Object.freeze({
+      accountId,
+      name: "document",
+      location: path.join(runtime.directory, "retired.csv"),
+      attempts: 0,
+    });
+    await runtime.ledger.run(
+      `INSERT INTO dataset_cache_cleanup_jobs (account_id,name,location)
+       VALUES (?,?,?)`,
+      [job.accountId, job.name, job.location]
+    );
+    const deactivation = deferred<void>();
+    const deactivate = vi.mocked(runtime.data.deactivateDatasetLocation);
+    const cleanup = vi.mocked(runtime.data.cleanupDatasetCache);
+    deactivate.mockImplementation(async () => deactivation.promise);
+
+    const first = processDurableDatasetCleanupJob(runtime.ingestionStore, runtime.data, job);
+    const concurrent = processDurableDatasetCleanupJob(runtime.ingestionStore, runtime.data, job);
+    await vi.waitFor(() => expect(deactivate).toHaveBeenCalledTimes(1));
+    deactivation.resolve(undefined);
+    await expect(Promise.all([first, concurrent])).resolves.toEqual([true, true]);
+    expect(cleanup).toHaveBeenCalledTimes(1);
+    await expect(runtime.ingestionStore.getDatasetCleanupJob(job.accountId, job.name, job.location)).resolves.toBe(
+      undefined
+    );
+
+    await expect(processDurableDatasetCleanupJob(runtime.ingestionStore, runtime.data, job)).resolves.toBe(false);
+    expect(deactivate).toHaveBeenCalledTimes(1);
+    expect(cleanup).toHaveBeenCalledTimes(1);
+  });
 });
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((fulfill) => {
+    resolve = fulfill;
+  });
+  return { promise, resolve };
+}

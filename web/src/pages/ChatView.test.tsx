@@ -4,14 +4,18 @@ import userEvent from "@testing-library/user-event";
 import * as apiModule from "@/lib/api";
 import {
   ApiError,
+  agentsApi,
   chatsApi,
   librariesApi,
   modelsApi,
   sourcesApi,
+  type AgentSummary,
   type AttachedSource,
+  type CatalogPage,
   type Chat,
   type ChatDetail,
   type ChatModelOption,
+  type LibrarySummary,
   type Message,
   type Source,
   type SourceMode,
@@ -23,12 +27,18 @@ import { ChatView } from "@/pages/ChatView";
 vi.mock("@/components/ChatHistory", () => ({
   ChatHistory: ({
     chats,
+    hasMore,
+    loadingMore,
     onOpen,
     onDelete,
+    onLoadMore,
   }: {
     chats: Array<{ id: string; title: string }>;
+    hasMore: boolean;
+    loadingMore: boolean;
     onOpen: (id: string) => void;
     onDelete: (id: string) => void | Promise<void>;
+    onLoadMore: () => void | Promise<void>;
   }) => (
     <div>
       {chats.map((chat) => (
@@ -37,6 +47,11 @@ vi.mock("@/components/ChatHistory", () => ({
           <button onClick={() => void onDelete(chat.id)}>Delete {chat.title}</button>
         </div>
       ))}
+      {hasMore && (
+        <button type="button" disabled={loadingMore} onClick={() => void onLoadMore()}>
+          {loadingMore ? "Loading older conversations…" : "Load older conversations"}
+        </button>
+      )}
     </div>
   ),
 }));
@@ -88,17 +103,31 @@ vi.mock("@/components/ChatSourcePicker", () => ({
     attachedSources,
     sources,
     sourcesLoading,
+    sourcesHasMore,
+    sourcesLoadingMore,
     disabled,
     saving,
     onApply,
+    onLoadMoreSources,
+    libraries,
+    librariesHasMore,
+    librariesLoadingMore,
+    onLoadMoreLibraries,
   }: {
     sourceMode: SourceMode;
     attachedSources: AttachedSource[];
     sources: Source[];
     sourcesLoading: boolean;
+    sourcesHasMore?: boolean;
+    sourcesLoadingMore?: boolean;
     disabled: boolean;
     saving: boolean;
     onApply: (scope: SourceScopeInput) => Promise<void>;
+    onLoadMoreSources?: () => void | Promise<void>;
+    libraries?: Array<{ id: string; name: string }> | null;
+    librariesHasMore?: boolean;
+    librariesLoadingMore?: boolean;
+    onLoadMoreLibraries?: () => void | Promise<void>;
   }) => {
     const sourceLabel =
       sourceMode === "all"
@@ -132,6 +161,19 @@ vi.mock("@/components/ChatSourcePicker", () => ({
             {source.display_name}
           </button>
         ))}
+        {sourcesHasMore && (
+          <button type="button" disabled={sourcesLoadingMore} onClick={() => void onLoadMoreSources?.()}>
+            {sourcesLoadingMore ? "Loading more sources…" : "Load more sources"}
+          </button>
+        )}
+        {(libraries ?? []).map((library) => (
+          <span key={library.id}>{library.name}</span>
+        ))}
+        {librariesHasMore && (
+          <button type="button" disabled={librariesLoadingMore} onClick={() => void onLoadMoreLibraries?.()}>
+            {librariesLoadingMore ? "Loading more libraries…" : "Load more libraries"}
+          </button>
+        )}
       </div>
     );
   },
@@ -151,6 +193,10 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
+function catalogPage<T>(items: T[], nextCursor: string | null = null): CatalogPage<T> {
+  return { items, next_cursor: nextCursor };
+}
+
 const chat: Chat = {
   id: "chat-a",
   title: "Alpha",
@@ -165,6 +211,24 @@ const chatB: Chat = {
   ...chat,
   id: "chat-b",
   title: "Beta",
+};
+
+const agentA: AgentSummary = {
+  id: "agent-a",
+  name: "Analyst",
+  current_version: 1,
+  instructions: "Analyze the selected data.",
+  instructions_chars: 26,
+  created_at: "2026-01-01T00:00:00Z",
+  updated_at: "2026-01-01T00:00:00Z",
+};
+
+const libraryA: LibrarySummary = {
+  id: "library-a",
+  name: "Finance library",
+  member_count: 1,
+  created_at: "2026-01-01T00:00:00Z",
+  updated_at: "2026-01-01T00:00:00Z",
 };
 
 const source: Source = {
@@ -209,7 +273,7 @@ describe("ChatView orchestration", () => {
   beforeEach(() => {
     resetModelCatalogStoreForTests();
     window.location.hash = "#/chat";
-    vi.spyOn(chatsApi, "list").mockResolvedValue([chat]);
+    vi.spyOn(chatsApi, "list").mockResolvedValue(catalogPage([chat]));
     vi.spyOn(chatsApi, "get").mockResolvedValue(detail());
     vi.spyOn(chatsApi, "create").mockResolvedValue(chat);
     vi.spyOn(chatsApi, "updateModel").mockImplementation(async (id, model) => ({ ...chat, id, model }));
@@ -222,8 +286,9 @@ describe("ChatView orchestration", () => {
       account_default_model: null,
       discovery: "live",
     });
-    vi.spyOn(sourcesApi, "list").mockResolvedValue([]);
-    vi.spyOn(librariesApi, "list").mockResolvedValue([]);
+    vi.spyOn(sourcesApi, "list").mockResolvedValue(catalogPage([]));
+    vi.spyOn(librariesApi, "list").mockResolvedValue(catalogPage([]));
+    vi.spyOn(agentsApi, "list").mockResolvedValue(catalogPage([]));
   });
 
   it("links the conversation footer to Settings with truthful model availability", async () => {
@@ -400,6 +465,112 @@ describe("ChatView orchestration", () => {
     expect(chatsApi.create).not.toHaveBeenCalled();
   });
 
+  it("loads every paginated composer catalog beyond its first page without dropping earlier items", async () => {
+    const user = userEvent.setup();
+    const secondAgent = { ...agentA, id: "agent-b", name: "Researcher" };
+    const secondLibrary = { ...libraryA, id: "library-b", name: "Research library" };
+    const secondSource = {
+      ...source,
+      id: "source-2",
+      name: "research-notes.pdf",
+      display_name: "Research notes.pdf",
+    };
+    vi.mocked(chatsApi.list).mockImplementation(async (options = {}) =>
+      options.cursor === "chats-next" ? catalogPage([chatB]) : catalogPage([chat], "chats-next"),
+    );
+    vi.mocked(agentsApi.list).mockImplementation(async (options = {}) =>
+      options.cursor === "agents-next" ? catalogPage([secondAgent]) : catalogPage([agentA], "agents-next"),
+    );
+    vi.mocked(librariesApi.list).mockImplementation(async (options = {}) =>
+      options.cursor === "libraries-next" ? catalogPage([secondLibrary]) : catalogPage([libraryA], "libraries-next"),
+    );
+    vi.mocked(sourcesApi.list).mockImplementation(async (options = {}) =>
+      options.cursor === "sources-next" ? catalogPage([secondSource]) : catalogPage([source], "sources-next"),
+    );
+
+    render(<ChatView />);
+
+    await user.click(await screen.findByRole("button", { name: "Load older conversations" }));
+    expect(await screen.findByRole("button", { name: "Open Beta" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Open Alpha" })).toBeVisible();
+
+    await user.click(await screen.findByRole("button", { name: "Agent: None" }));
+    expect(await screen.findByRole("menuitemradio", { name: /Analyst/ })).toBeVisible();
+    await user.click(screen.getByRole("menuitem", { name: "Load more agents" }));
+    expect(await screen.findByRole("menuitemradio", { name: /Researcher/ })).toBeVisible();
+    expect(screen.getByRole("menuitemradio", { name: /Analyst/ })).toBeVisible();
+    await user.keyboard("{Escape}");
+
+    await user.click(screen.getByRole("button", { name: "Load more sources" }));
+    expect(await screen.findByRole("button", { name: "Select source: Research notes.pdf" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Select source: Quarterly revenue.pdf" })).toBeVisible();
+
+    await user.click(screen.getByRole("button", { name: "Load more libraries" }));
+    expect(await screen.findByText("Research library")).toBeVisible();
+    expect(screen.getByText("Finance library")).toBeVisible();
+
+    expect(chatsApi.list).toHaveBeenCalledWith({ cursor: "chats-next" });
+    expect(agentsApi.list).toHaveBeenCalledWith({ cursor: "agents-next" });
+    expect(sourcesApi.list).toHaveBeenCalledWith({ cursor: "sources-next" });
+    expect(librariesApi.list).toHaveBeenCalledWith({ cursor: "libraries-next" });
+  });
+
+  it("makes a fresh chat continuation reachable after the previous traversal completed", async () => {
+    const user = userEvent.setup();
+    const created = { ...chat, id: "chat-created", title: "Created" };
+    const inserted = { ...chat, id: "chat-inserted", title: "Inserted" };
+    let headRequests = 0;
+    vi.mocked(chatsApi.list).mockImplementation(async (options = {}) => {
+      if (options.cursor === "old-chats-page-2") return catalogPage([chatB]);
+      if (options.cursor === "fresh-chats-page-2") return catalogPage([inserted, chatB]);
+      headRequests += 1;
+      return headRequests === 1
+        ? catalogPage([chat], "old-chats-page-2")
+        : catalogPage([created, chat], "fresh-chats-page-2");
+    });
+    vi.mocked(chatsApi.create).mockResolvedValue(created);
+    vi.mocked(chatsApi.get).mockImplementation(async (id) => detail({ ...created, id }));
+    render(<ChatView />);
+
+    await user.click(await screen.findByRole("button", { name: "Load older conversations" }));
+    expect(await screen.findByRole("button", { name: "Open Beta" })).toBeVisible();
+
+    await user.click(screen.getByRole("button", { name: "New chat" }));
+    await waitFor(() => expect(headRequests).toBe(2));
+    await user.click(await screen.findByRole("button", { name: "Load older conversations" }));
+
+    expect(await screen.findByRole("button", { name: "Open Inserted" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Open Created" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Open Alpha" })).toBeVisible();
+    expect(screen.getAllByRole("button", { name: "Open Beta" })).toHaveLength(1);
+    expect(chatsApi.list).toHaveBeenCalledWith({ cursor: "fresh-chats-page-2" });
+  });
+
+  it("does not narrow an attached selected scope when the source is outside the loaded catalog page", async () => {
+    const partialCatalog = deferred<CatalogPage<Source>>();
+    const olderAttached = {
+      ...attachedSource,
+      id: "older-source",
+      name: "older-source.pdf",
+      display_name: "Older attached source.pdf",
+    };
+    vi.mocked(chatsApi.get).mockResolvedValue(
+      detail({
+        source_mode: "selected",
+        sources: [olderAttached],
+      }),
+    );
+    vi.mocked(sourcesApi.list).mockReturnValue(partialCatalog.promise);
+
+    render(<ChatView chatId={chat.id} />);
+    expect(await screen.findByText("Older attached source.pdf")).toBeVisible();
+
+    await act(async () => partialCatalog.resolve(catalogPage([source], "sources-next")));
+    await waitFor(() => expect(sourcesApi.list).toHaveBeenCalledTimes(1));
+    expect(screen.getByText("Older attached source.pdf")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Remove Older attached source.pdf from this chat" })).toBeEnabled();
+  });
+
   it("starts the new-chat selector at the account default and leaves existing chats unchanged", async () => {
     const user = userEvent.setup();
     vi.mocked(modelsApi.list).mockResolvedValue({
@@ -457,7 +628,7 @@ describe("ChatView orchestration", () => {
       account_default_model: null,
       discovery: "live",
     });
-    vi.mocked(sourcesApi.list).mockResolvedValue([source]);
+    vi.mocked(sourcesApi.list).mockResolvedValue(catalogPage([source]));
     vi.mocked(chatsApi.create).mockResolvedValue(created);
     vi.mocked(chatsApi.updateModel).mockResolvedValue({ ...created, model: selectedModel });
     vi.mocked(chatsApi.get).mockResolvedValue(detail({ ...created, sources: [attachedSource] }));
@@ -813,7 +984,7 @@ describe("ChatView orchestration", () => {
     const user = userEvent.setup();
     const droppedStream = deferred<void>();
     let alphaReads = 0;
-    vi.mocked(chatsApi.list).mockResolvedValue([chat, chatB]);
+    vi.mocked(chatsApi.list).mockResolvedValue(catalogPage([chat, chatB]));
     vi.mocked(chatsApi.get).mockImplementation(async (id) => {
       if (id === chatB.id) return detail(chatB);
       alphaReads += 1;
@@ -851,7 +1022,7 @@ describe("ChatView orchestration", () => {
   it("does not let a delayed deletion clear a newer chat selection", async () => {
     const user = userEvent.setup();
     const deletion = deferred<{ ok: true }>();
-    vi.mocked(chatsApi.list).mockResolvedValue([chat, chatB]);
+    vi.mocked(chatsApi.list).mockResolvedValue(catalogPage([chat, chatB]));
     vi.mocked(chatsApi.get).mockImplementation(async (id) =>
       id === chatB.id ? detail({ ...chatB, messages: [message("beta", "Beta detail")] }) : detail(),
     );
@@ -872,7 +1043,7 @@ describe("ChatView orchestration", () => {
   it("clears a chat opened while its deletion is pending once deletion succeeds", async () => {
     const user = userEvent.setup();
     const deletion = deferred<{ ok: true }>();
-    vi.mocked(chatsApi.list).mockResolvedValue([chat, chatB]);
+    vi.mocked(chatsApi.list).mockResolvedValue(catalogPage([chat, chatB]));
     vi.mocked(chatsApi.get).mockImplementation(async (id) =>
       id === chatB.id ? detail(chatB) : detail({ messages: [message("alpha", "Alpha detail")] }),
     );

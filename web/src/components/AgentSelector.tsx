@@ -1,11 +1,13 @@
-import { Bot, ChevronDown } from "lucide-react";
+import { Bot, ChevronDown, LoaderCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuRadioGroup,
   DropdownMenuRadioItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import type { AgentSummary } from "@/lib/api";
@@ -17,12 +19,25 @@ interface AgentSelectorProps {
   agents: AgentSummary[];
   selection: string | null;
   loading: boolean;
+  hasMore: boolean;
+  loadingMore: boolean;
   /** True for existing chats: the chip displays the binding read-only. */
   locked: boolean;
   onSelect: (agentId: string | null) => void;
+  onLoadMore: () => void | Promise<void>;
 }
 
-export function AgentSelector({ bound, agents, selection, loading, locked, onSelect }: AgentSelectorProps) {
+export function AgentSelector({
+  bound,
+  agents,
+  selection,
+  loading,
+  hasMore,
+  loadingMore,
+  locked,
+  onSelect,
+  onLoadMore,
+}: AgentSelectorProps) {
   if (locked) {
     return (
       <span
@@ -70,6 +85,21 @@ export function AgentSelector({ bound, agents, selection, loading, locked, onSel
             ))
           )}
         </DropdownMenuRadioGroup>
+        {hasMore && (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem
+              disabled={loading || loadingMore}
+              onSelect={(event) => {
+                event.preventDefault();
+                void onLoadMore();
+              }}
+            >
+              {loadingMore && <LoaderCircle className="animate-spin" aria-hidden="true" />}
+              {loadingMore ? "Loading more agents…" : "Load more agents"}
+            </DropdownMenuItem>
+          </>
+        )}
       </DropdownMenuContent>
     </DropdownMenu>
   );

@@ -13,6 +13,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:integration": "vitest run --config vitest.integration.config.ts",
+    "workspace:archive": "tsx src/workspaceArchiveCli.ts",
     "lint": "eslint src --max-warnings=0",
     "format": "prettier --write 'src/**/*.ts' '*.config.ts' 'eslint.config.js' 'package.json'",
     "format:check": "prettier --check 'src/**/*.ts' '*.config.ts' 'eslint.config.js' 'package.json'"
@@ -35,6 +36,7 @@
     "openai": "^4.77.0",
     "pdfjs-dist": "^4.8.69",
     "playwright": "^1.62.1",
+    "tar-stream": "3.2.1",
     "tsx": "^4.19.2"
   },
   "devDependencies": {
@@ -42,6 +44,7 @@
     "@types/better-sqlite3": "9.6.0",
     "@types/jsonwebtoken": "^9.0.9",
     "@types/node": "^22.10.0",
+    "@types/tar-stream": "3.1.4",
     "eslint": "^10.9.0",
     "prettier": "^3.9.6",
     "typescript": "^5.7.2",

@@ -1,4 +1,11 @@
 import { randomUUID } from "node:crypto";
+import {
+  catalogStorePage,
+  defaultCatalogPageRequest,
+  validateCatalogPageRequest,
+  type CatalogPageRequest,
+  type CatalogStorePage,
+} from "../../catalogPagination.js";
 import { SqliteConstraintError } from "../types.js";
 import type { SqliteLedger } from "../types.js";
 import { SOURCE_COLUMNS, decodeSource, type SourceRecord } from "./sourceStore.js";
@@ -85,21 +92,33 @@ function decodeLibrary(row: LibraryRow): LibraryRecord {
 export class LibraryStore {
   constructor(private readonly ledger: SqliteLedger) {}
 
-  async listLibraries(accountIdValue: string): Promise<LibrarySummary[]> {
+  async listLibraries(
+    accountIdValue: string,
+    pageValue: CatalogPageRequest = defaultCatalogPageRequest()
+  ): Promise<CatalogStorePage<LibrarySummary>> {
     const accountId = requiredId(accountIdValue, "account id");
+    const page = validateCatalogPageRequest(pageValue);
+    const parameters: Array<string | number> = [accountId];
+    const after = page.after ? " AND (l.created_at,l.id) < (?,?)" : "";
+    if (page.after) parameters.push(page.after.timestamp, page.after.id);
+    parameters.push(page.limit + 1);
     const rows = await this.ledger.all<LibraryRow>(
-      `SELECT l.id,l.name,l.created_at,l.updated_at,COUNT(s.source_id) AS member_count
+      `SELECT l.id,l.name,l.created_at,l.updated_at,
+              (SELECT COUNT(*) FROM library_sources s
+               WHERE s.library_id=l.id AND s.account_id=l.account_id) AS member_count
        FROM libraries l
-       LEFT JOIN library_sources s ON s.library_id=l.id AND s.account_id=l.account_id
-       WHERE l.account_id=?
-       GROUP BY l.id
-       ORDER BY l.created_at DESC,l.id DESC`,
-      [accountId]
+       WHERE l.account_id=?${after}
+       ORDER BY l.created_at DESC,l.id DESC LIMIT ?`,
+      parameters
     );
-    return rows.map((row) => ({
-      ...decodeLibrary(row),
-      member_count: typeof row.member_count === "number" ? row.member_count : Number(row.member_count ?? 0),
-    }));
+    return catalogStorePage(
+      rows.map((row) => ({
+        ...decodeLibrary(row),
+        member_count: typeof row.member_count === "number" ? row.member_count : Number(row.member_count ?? 0),
+      })),
+      page,
+      (library) => ({ timestamp: library.created_at, id: library.id })
+    );
   }
 
   async createLibrary(accountIdValue: string, nameValue: string): Promise<LibraryRecord> {

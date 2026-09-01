@@ -1,14 +1,15 @@
 import type { FastifyInstance } from "fastify";
 import { getAccountId, requireAuth } from "../auth.js";
 import { storageRuntime } from "../storageRuntime.js";
+import { BODYLESS_MUTATION_LIMIT_BYTES } from "./bodyLimits.js";
 import { idParamsSchema } from "./schemas.js";
 
 export async function chartRoutes(app: FastifyInstance): Promise<void> {
-  app.get("/api/charts", { preHandler: requireAuth }, async (req, reply) => {
+  app.get("/api/charts", { onRequest: requireAuth }, async (req, reply) => {
     return reply.send(await storageRuntime().runs.listPublishedCharts(getAccountId(req)));
   });
 
-  app.get("/api/charts/:id", { preHandler: requireAuth, schema: { params: idParamsSchema } }, async (req, reply) => {
+  app.get("/api/charts/:id", { onRequest: requireAuth, schema: { params: idParamsSchema } }, async (req, reply) => {
     const row = await storageRuntime().runs.getPublishedChart(getAccountId(req), (req.params as any).id);
     if (!row) return reply.code(404).send({ error: "chart not found" });
     return reply.send({ id: row.id, spec: row.spec, echarts: row.echarts, png_base64: row.png_base64 });
@@ -16,7 +17,7 @@ export async function chartRoutes(app: FastifyInstance): Promise<void> {
 
   app.post(
     "/api/charts/:id/png",
-    { preHandler: requireAuth, schema: { params: idParamsSchema } },
+    { onRequest: requireAuth, bodyLimit: BODYLESS_MUTATION_LIMIT_BYTES, schema: { params: idParamsSchema } },
     async (req, reply) => {
       const row = await storageRuntime().runs.getPublishedChart(getAccountId(req), (req.params as any).id);
       if (!row) return reply.code(404).send({ error: "chart not found" });

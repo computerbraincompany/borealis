@@ -1,4 +1,11 @@
 import { randomUUID } from "node:crypto";
+import {
+  catalogStorePage,
+  defaultCatalogPageRequest,
+  validateCatalogPageRequest,
+  type CatalogPageRequest,
+  type CatalogStorePage,
+} from "./catalogPagination.js";
 import { SqliteConstraintError, type SqliteLedger } from "./db/types.js";
 
 export const AUTOMATION_NAME_MAX = 80;
@@ -159,12 +166,27 @@ export class AutomationStore {
     return this.decode(row);
   }
 
-  async list(accountIdValue: string): Promise<Automation[]> {
+  async list(
+    accountIdValue: string,
+    pageValue: CatalogPageRequest = defaultCatalogPageRequest()
+  ): Promise<CatalogStorePage<Automation>> {
+    const page = validateCatalogPageRequest(pageValue);
+    const parameters: Array<string | number> = [requiredId(accountIdValue, "account id")];
+    const after = page.after ? " AND (created_at,id) < (?,?)" : "";
+    if (page.after) parameters.push(page.after.timestamp, page.after.id);
+    parameters.push(page.limit + 1);
     const rows = await this.ledger.all<AutomationRow>(
-      "SELECT * FROM automations WHERE account_id=? ORDER BY created_at DESC,id DESC",
-      [requiredId(accountIdValue, "account id")]
+      `SELECT * FROM automations WHERE account_id=?${after} ORDER BY created_at DESC,id DESC LIMIT ?`,
+      parameters
     );
-    return rows.map((row) => this.decode(row));
+    return catalogStorePage(
+      rows.map((row) => this.decode(row)),
+      page,
+      (automation) => ({
+        timestamp: automation.created_at,
+        id: automation.id,
+      })
+    );
   }
 
   async get(accountIdValue: string, automationIdValue: string): Promise<Automation | undefined> {

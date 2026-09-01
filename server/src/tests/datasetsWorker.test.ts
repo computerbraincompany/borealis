@@ -22,6 +22,7 @@ import {
   endDatasetPreparation,
   endInactiveLocationCleanup,
   extractDataset,
+  listDatasetSummaries,
   listDatasets,
   queryDataset,
   registerDataset,
@@ -61,6 +62,30 @@ async function waitForScope(accountId: string): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   throw new Error("dataset scope was not created");
+}
+
+async function waitForQueryPreflightDelay(): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if ((await __datasetWorkerDebugState()).activeQueryPreflightTestDelays > 0) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error("query preflight delay was not entered");
+}
+
+async function waitForNativeQueryPrepare(active: boolean): Promise<void> {
+  for (let attempt = 0; attempt < 2_000; attempt += 1) {
+    if ((await __datasetWorkerDebugState()).activeQueryNativePrepares > 0 === active) return;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error(`native query preparation did not become ${active ? "active" : "idle"}`);
+}
+
+async function waitForScopeRetirement(accountId: string): Promise<void> {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    if (!(await __datasetWorkerDebugState()).scopes.some((scope) => scope.accountId === accountId)) return;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error("cancelled query did not release and retire its scope");
 }
 
 function centralDirectoryOffset(archive: Buffer): number {
@@ -139,6 +164,10 @@ describe("DuckDB dataset worker", () => {
       rows: [[";"]],
     });
     await expect(queryDataset(accountId, "SELECT $$a;b$$ AS value;", [])).resolves.toMatchObject({ rows: [["a;b"]] });
+    await expect(queryDataset(accountId, String.raw`SELECT E'a\';b' AS value;`, [])).resolves.toMatchObject({
+      rows: [["a';b"]],
+    });
+    await expect(queryDataset(accountId, "-- comment\rSELECT 5 AS value", [])).resolves.toMatchObject({ rows: [[5]] });
 
     for (const sql of [
       "",
@@ -146,10 +175,30 @@ describe("DuckDB dataset worker", () => {
       "INSERT INTO missing VALUES (1)",
       "SELECT 1; SELECT 2",
       "SELECT 1; DROP TABLE missing",
+      String.raw`SELECT E'a\';b' AS value; SELECT 2`,
+      "SELECT 1; -- comment\rSELECT 2",
       "INSTALL httpfs",
     ]) {
       await expectStatus(queryDataset(accountId, sql, []), 400);
     }
+
+    await registerDataset({
+      accountId,
+      name: "accounts",
+      location: accountsFixture,
+      kind: "path",
+      originalName: "accounts.csv",
+    });
+    for (const sql of [
+      "WITH ignored AS (SELECT 1) DELETE FROM accounts",
+      "WITH ignored AS (SELECT 1) UPDATE accounts SET account = 'changed'",
+      "WITH replacement AS (SELECT * FROM accounts) INSERT INTO accounts SELECT * FROM replacement",
+    ]) {
+      await expectStatus(queryDataset(accountId, sql, ["accounts"]), 400);
+    }
+    await expect(queryDataset(accountId, "SELECT count(*) AS n FROM accounts", ["accounts"])).resolves.toMatchObject({
+      rows: [[4]],
+    });
   });
 
   it("preserves the former request caps for SQL and raw allowed-table entries", async () => {
@@ -440,17 +489,155 @@ describe("DuckDB dataset worker", () => {
     expect(await queryDataset(otherAccount, "SELECT value FROM other", ["other"])).toMatchObject({ rows: [[9]] });
   });
 
-  it("interrupts the 30-second boundary as 504 and closes the timed-out scope", async () => {
+  // Large enough to exceed the test deadline, but bounded so a missed or
+  // delayed cooperative interrupt cannot strand the worker under suite load.
+  it("interrupts execution at the query deadline as 504 and closes the timed-out scope", async () => {
     const accountId = account();
     await __configureDatasetWorkerForTests({ queryTimeoutMs: 10 });
     try {
-      await expectStatus(queryDataset(accountId, "SELECT SUM(value) FROM range(1000000000000) values(value)", []), 504);
+      await expectStatus(queryDataset(accountId, "SELECT SUM(value) FROM range(1000000000) values(value)", []), 504);
       const state = await __datasetWorkerDebugState();
       expect(state.scopes.some((scope) => scope.accountId === accountId)).toBe(false);
     } finally {
       await __configureDatasetWorkerForTests({ queryTimeoutMs: 30_000 });
     }
-  }, 20_000); // seconds under parallel test load; the assertion itself must not flake. // Interrupting a saturating DuckDB aggregation is cooperative and can take
+  }, 20_000);
+
+  it("interrupts in-flight native preparation, cleans its lease, and permits a follow-up", async () => {
+    const accountId = account();
+    await expect(queryDataset(accountId, "SELECT 0 AS value", [])).resolves.toMatchObject({ rows: [[0]] });
+    await __configureDatasetWorkerForTests({ queryTimeoutMs: 100, queryNativePrepareUnionCount: 10_000 });
+    try {
+      const timedOut = expectStatus(queryDataset(accountId, "SELECT 1 AS value", []), 504);
+      await waitForNativeQueryPrepare(true);
+      await timedOut;
+      await waitForNativeQueryPrepare(false);
+      const state = await __datasetWorkerDebugState();
+      expect(state.scopes.some((scope) => scope.accountId === accountId)).toBe(false);
+
+      await expect(queryDataset(accountId, "SELECT 2 AS value", [])).resolves.toMatchObject({ rows: [[2]] });
+    } finally {
+      await __configureDatasetWorkerForTests({ queryTimeoutMs: 30_000, queryNativePrepareUnionCount: null });
+    }
+  }, 20_000);
+
+  it("starts the query deadline before an uncached scope is loaded", async () => {
+    const accountId = account();
+    const source = await csvFile("scope-load.csv", "value\n1\n");
+    await registerDataset({
+      accountId,
+      name: "scope_load",
+      location: source,
+      kind: "path",
+      originalName: "scope-load.csv",
+    });
+    await __configureDatasetWorkerForTests({
+      queryTimeoutMs: 250,
+      queryPreflightDelay: { phase: "scope_load", delayMs: 5_000 },
+    });
+    try {
+      const timedOut = expectStatus(queryDataset(accountId, "SELECT value FROM scope_load", ["scope_load"]), 504);
+      await waitForQueryPreflightDelay();
+      await timedOut;
+      const state = await __datasetWorkerDebugState();
+      expect(state.activeQueryPreflightTestDelays).toBe(0);
+      expect(state.scopes.some((scope) => scope.accountId === accountId)).toBe(false);
+
+      await expect(queryDataset(accountId, "SELECT value FROM scope_load", ["scope_load"])).resolves.toMatchObject({
+        rows: [[1]],
+      });
+    } finally {
+      await __configureDatasetWorkerForTests({ queryTimeoutMs: 30_000, queryPreflightDelay: null });
+    }
+  }, 20_000);
+
+  it("closes an uncached catalog when the deadline expires before installation", async () => {
+    const accountId = account();
+    const source = await csvFile("scope-install.csv", "value\n1\n");
+    await registerDataset({
+      accountId,
+      name: "scope_install",
+      location: source,
+      kind: "path",
+      originalName: "scope-install.csv",
+    });
+    const catalogsBefore = (await __datasetWorkerDebugState()).openCatalogs;
+    await __configureDatasetWorkerForTests({
+      queryTimeoutMs: 250,
+      queryPreflightDelay: { phase: "scope_install", delayMs: 5_000 },
+    });
+    try {
+      const timedOut = expectStatus(queryDataset(accountId, "SELECT value FROM scope_install", ["scope_install"]), 504);
+      await waitForQueryPreflightDelay();
+      await timedOut;
+      const state = await __datasetWorkerDebugState();
+      expect(state.openCatalogs).toBe(catalogsBefore);
+      expect(state.scopes.some((scope) => scope.accountId === accountId)).toBe(false);
+    } finally {
+      await __configureDatasetWorkerForTests({ queryTimeoutMs: 30_000, queryPreflightDelay: null });
+    }
+  }, 20_000);
+
+  it("times out while queued for a busy scope mutex without interrupting its owner", async () => {
+    const accountId = account();
+    await expect(queryDataset(accountId, "SELECT 0 AS value", [])).resolves.toMatchObject({ rows: [[0]] });
+
+    const ownerController = new AbortController();
+    await __configureDatasetWorkerForTests({
+      queryTimeoutMs: 30_000,
+      queryNativePrepareUnionCount: 10_000,
+    });
+    const owner = queryDataset(accountId, "SELECT 1 AS value", [], ownerController.signal).then(
+      () => undefined,
+      (error: unknown) => error
+    );
+    try {
+      await waitForNativeQueryPrepare(true);
+      await __configureDatasetWorkerForTests({ queryTimeoutMs: 250 });
+
+      await expectStatus(queryDataset(accountId, "SELECT 2 AS value", []), 504);
+      expect((await __datasetWorkerDebugState()).activeQueryNativePrepares).toBeGreaterThan(0);
+
+      ownerController.abort();
+      await expect(owner).resolves.toMatchObject({ name: "AbortError" });
+      await __configureDatasetWorkerForTests({ queryTimeoutMs: 30_000, queryNativePrepareUnionCount: null });
+      await expect(queryDataset(accountId, "SELECT 3 AS value", [])).resolves.toMatchObject({ rows: [[3]] });
+    } finally {
+      ownerController.abort();
+      await owner;
+      await __configureDatasetWorkerForTests({ queryTimeoutMs: 30_000, queryNativePrepareUnionCount: null });
+    }
+  }, 20_000);
+
+  it("cancels in-flight native preparation and releases its mutex and lease", async () => {
+    const accountId = account();
+    const controller = new AbortController();
+    await __configureDatasetWorkerForTests({
+      queryTimeoutMs: 30_000,
+      queryNativePrepareUnionCount: 10_000,
+    });
+    try {
+      const cancelled = queryDataset(accountId, "SELECT 1 AS value", [], controller.signal).then(
+        () => undefined,
+        (error: unknown) => error
+      );
+      await waitForNativeQueryPrepare(true);
+      controller.abort();
+      await expect(cancelled).resolves.toMatchObject({ name: "AbortError" });
+      await waitForNativeQueryPrepare(false);
+      await waitForScopeRetirement(accountId);
+
+      await expect(
+        Promise.race([
+          queryDataset(accountId, "SELECT 3 AS value", []),
+          new Promise((_, reject) => setTimeout(() => reject(new Error("cancelled query retained its mutex")), 10_000)),
+        ])
+      ).resolves.toMatchObject({ rows: [[3]] });
+      expect((await __datasetWorkerDebugState()).activeQueryNativePrepares).toBe(0);
+    } finally {
+      await __configureDatasetWorkerForTests({ queryTimeoutMs: 30_000, queryNativePrepareUnionCount: null });
+    }
+  }, 30_000);
 
   it("lists and catalogs only explicitly requested registered metadata", async () => {
     const accountId = account();
@@ -462,10 +649,20 @@ describe("DuckDB dataset worker", () => {
     expect(await listDatasets(accountId, true)).toEqual(
       expect.arrayContaining([expect.objectContaining({ table: "alpha", rows: 1, exists: true })])
     );
+    expect(await listDatasetSummaries(accountId, ["alpha", "document_only", "alpha"])).toEqual([
+      expect.objectContaining({ table: "alpha", rows: 1, exists: true }),
+    ]);
     expect(await catalogDatasets(accountId, ["alpha"])).toMatchObject({
       total: 1,
       returned: 1,
       datasets: [expect.objectContaining({ table: "alpha", original_name: "alpha.csv" })],
     });
+    await expectStatus(
+      listDatasetSummaries(
+        accountId,
+        Array.from({ length: 101 }, (_, index) => `table_${index}`)
+      ),
+      422
+    );
   });
 });

@@ -20,7 +20,9 @@
     "package:dir": "electron-builder --mac --arm64 --dir",
     "package:mac": "electron-builder --mac --arm64",
     "package:unsigned": "CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --config scripts/electron-builder.unsigned.cjs --mac --arm64",
-    "package:native:smoke": "BOREALIS_PACKAGED_APP_ASAR=\"$PWD/release/mac-arm64/Borealis.app/Contents/Resources/app.asar\" ELECTRON_RUN_AS_NODE=1 \"$PWD/release/mac-arm64/Borealis.app/Contents/MacOS/Borealis\" scripts/native-smoke.cjs",
+    "package:fuses:inspect": "node scripts/inspect-fuses.mjs",
+    "package:native:smoke": "pnpm run package:fuses:inspect && node scripts/packaged-native-smoke.mjs",
+    "package:entitlements:smoke": "node scripts/entitlement-matrix.mjs",
     "native:rebuild": "node scripts/isolate-native-addons.mjs && electron-builder install-app-deps",
     "native:smoke": "node scripts/assert-isolated-native-requires.mjs && ELECTRON_RUN_AS_NODE=1 electron scripts/native-smoke.cjs && electron scripts/utility-native-smoke.cjs",
     "render:smoke": "electron scripts/render-smoke-app",
@@ -46,6 +48,7 @@
     "openai": "^4.77.0",
     "pdfjs-dist": "^4.8.69",
     "playwright": "^1.62.1",
+    "tar-stream": "3.2.1",
     "tsx": "^4.19.2"
   },
   "dependenciesMeta": {
@@ -60,6 +63,7 @@
     }
   },
   "devDependencies": {
+    "@electron/fuses": "2.1.3",
     "@types/node": "22.18.6",
     "electron": "44.0.0",
     "electron-builder": "26.15.3",
@@ -72,6 +76,17 @@
     "asar": true,
     "npmRebuild": true,
     "afterPack": "scripts/after-pack.cjs",
+    "electronFuses": {
+      "runAsNode": false,
+      "enableCookieEncryption": true,
+      "enableNodeOptionsEnvironmentVariable": false,
+      "enableNodeCliInspectArguments": false,
+      "enableEmbeddedAsarIntegrityValidation": true,
+      "onlyLoadAppFromAsar": true,
+      "loadBrowserProcessSpecificV8Snapshot": false,
+      "grantFileProtocolExtraPrivileges": false,
+      "resetAdHocDarwinSignature": true
+    },
     "files": [
       "dist/**/*",
       "!dist/**/*.test.js",
@@ -92,6 +107,7 @@
       "!node_modules/.pnpm/sharp@*/**"
     ],
     "asarUnpack": [
+      "runtime/server/dist/data/assets/pdf-ocr.jxa",
       "node_modules/better-sqlite3/**/*",
       "node_modules/@lancedb/**/*",
       "node_modules/@duckdb/**/*",

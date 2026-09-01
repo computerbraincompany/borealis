@@ -278,8 +278,9 @@ describe("chat persistence routes", () => {
     const response = await app.inject({ method: "GET", url: "/api/chats", headers: authHeader });
 
     expect(response.statusCode).toBe(200);
-    expect(response.json().map((chat: { title: string }) => chat.title)).toEqual(["Recently active", "Older"]);
-    expect(response.json()[0].updated_at).toBe("2026-08-23T00:00:00.000Z");
+    expect(response.json().items.map((chat: { title: string }) => chat.title)).toEqual(["Recently active", "Older"]);
+    expect(response.json().items[0].updated_at).toBe("2026-08-23T00:00:00.000Z");
+    expect(response.json().next_cursor).toBeNull();
   });
 
   it("marks an explicit create title as manual while using the configured model", async () => {
@@ -326,9 +327,9 @@ describe("chat persistence routes", () => {
     expect(reread.json().model).toBe("personal-default");
   });
 
-  it("hot-applies saved model defaults to discovery, new chats, and embedding-role rejection", async () => {
+  it("hot-applies a saved chat default to discovery and new chats while preserving embedding-role rejection", async () => {
     const app = await buildApp();
-    const beforeRevision = (await getRuntimeSettings()).revision;
+    const before = await getRuntimeSettings();
 
     const saved = await app.inject({
       method: "PATCH",
@@ -336,19 +337,18 @@ describe("chat persistence routes", () => {
       headers: authHeader,
       payload: {
         default_chat_model: "saved-default-chat",
-        default_embed_model: "saved-default-embed",
       },
     });
     expect(saved.statusCode).toBe(200);
     expect(saved.json()).toMatchObject({
       default_chat_model: "saved-default-chat",
-      default_embed_model: "saved-default-embed",
+      default_embed_model: before.settings.embedModel,
     });
-    expect((await getRuntimeSettings()).revision).toBeGreaterThan(beforeRevision);
+    expect((await getRuntimeSettings()).revision).toBeGreaterThan(before.revision);
 
     const client = await getLlmClient();
     vi.spyOn(client.models, "list").mockResolvedValue({
-      data: [{ id: "saved-default-chat" }, { id: "saved-default-embed" }],
+      data: [{ id: "saved-default-chat" }, { id: before.settings.embedModel }],
     } as any);
     const catalog = await app.inject({ method: "GET", url: "/api/models?refresh=1", headers: authHeader });
     expect(catalog.statusCode).toBe(200);
@@ -367,7 +367,7 @@ describe("chat persistence routes", () => {
       method: "PATCH",
       url: `/api/chats/${created.json().id}`,
       headers: authHeader,
-      payload: { model: "saved-default-embed" },
+      payload: { model: before.settings.embedModel },
     });
     expect(rejected.statusCode).toBe(400);
     await expect(storageRuntime().chats.getChatSnapshot(accountId, created.json().id)).resolves.toMatchObject({
@@ -401,7 +401,7 @@ describe("chat persistence routes", () => {
       const response = await app.inject({ method: "POST", url: "/api/chats", headers: authHeader, payload });
 
       expect(response.statusCode).toBe(400);
-      await expect(storageRuntime().chats.listChats(accountId)).resolves.toEqual([]);
+      await expect(storageRuntime().chats.listChats(accountId)).resolves.toEqual({ items: [], next: null });
     }
   );
 

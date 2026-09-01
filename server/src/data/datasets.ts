@@ -96,6 +96,7 @@ type WorkerOperation =
   | "extract"
   | "extractCandidate"
   | "list"
+  | "summaries"
   | "catalog"
   | "drop"
   | "deactivateIfLocation"
@@ -382,6 +383,19 @@ export function listDatasets(accountId: string, summary = false, signal?: AbortS
   return rpc("list", { accountId, summary }, signal);
 }
 
+/**
+ * Return compact metadata only for the bounded table-name set supplied by the
+ * caller. Names that are not registered datasets are intentionally omitted so
+ * mixed document/tabular source pages remain fail-soft.
+ */
+export function listDatasetSummaries(
+  accountId: string,
+  tableNames: readonly string[],
+  signal?: AbortSignal
+): Promise<DatasetListItem[]> {
+  return rpc("summaries", { accountId, tableNames: [...tableNames] }, signal);
+}
+
 export function catalogDatasets(
   accountId: string,
   allowedTables: readonly string[],
@@ -408,6 +422,9 @@ export interface DatasetWorkerDebugState {
   pendingPreparations: number;
   pendingActivations: number;
   cleanupReservations: number;
+  activeQueryPreflightTestDelays: number;
+  activeQueryNativePrepares: number;
+  openCatalogs: number;
 }
 
 /** Test-only observability for lifecycle and LRU assertions. */
@@ -415,8 +432,12 @@ export function __datasetWorkerDebugState(): Promise<DatasetWorkerDebugState> {
   return rpc("debugState", {});
 }
 
-/** Test-only query deadline override; rejected by the worker outside NODE_ENV=test. */
-export function __configureDatasetWorkerForTests(input: { queryTimeoutMs?: number }): Promise<void> {
+/** Test-only query controls; rejected by the worker outside NODE_ENV=test. */
+export function __configureDatasetWorkerForTests(input: {
+  queryTimeoutMs?: number;
+  queryPreflightDelay?: { phase: "scope_load" | "scope_install"; delayMs: number } | null;
+  queryNativePrepareUnionCount?: number | null;
+}): Promise<void> {
   return rpc("configureForTests", input);
 }
 

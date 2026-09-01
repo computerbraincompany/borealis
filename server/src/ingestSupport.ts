@@ -1,10 +1,14 @@
 import fs from "node:fs/promises";
+import { createRequire } from "node:module";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { inflateRawSync } from "node:zlib";
 import { getDocument, GlobalWorkerOptions } from "pdfjs-dist/legacy/build/pdf.mjs";
 import mammoth from "mammoth";
 import { config } from "./config.js";
-GlobalWorkerOptions.workerSrc = "";
+import { LocalOcrError, LocalOcrUnavailableError, recognizeLocalPdfPages, type PdfOcrPage } from "./localPdfOcr.js";
+const require = createRequire(import.meta.url);
+GlobalWorkerOptions.workerSrc = pathToFileURL(require.resolve("pdfjs-dist/legacy/build/pdf.worker.mjs")).href;
 
 const EXT_TEXT = new Set([".txt", ".md", ".markdown", ".text", ".log"]);
 const EXT_TABULAR = new Set([".csv", ".tsv", ".xlsx", ".parquet", ".jsonl", ".json"]);
@@ -13,6 +17,27 @@ const MAX_DOCX_MEMBERS = 2_048;
 const MAX_DOCX_EXPANDED_BYTES = 100 * 1024 * 1024;
 const MAX_DOCX_MEMBER_BYTES = 50 * 1024 * 1024;
 const MAX_DOCX_COMPRESSION_RATIO = 200;
+const MIN_MEANINGFUL_PDF_PAGE_CHARACTERS = 8;
+const MIN_DENSE_PDF_PAGE_CHARACTERS = 16;
+const HIGH_CONFIDENCE_PDF_PAGE_CHARACTERS = 48;
+const MIN_PDF_PAGE_WORDS = 3;
+const MIN_PDF_CHARACTERS_PER_100K_POINTS = 4;
+const MIN_PDF_TEXT_AREA_RATIO = 0.001;
+const PDF_PAGE_MARGIN_FRACTION = 0.08;
+const MAX_PDF_TEXT_LINE_BANDS = 64;
+
+interface PdfPageTextMetrics {
+  readonly pageArea: number;
+  alphanumericCharacters: number;
+  interiorAlphanumericCharacters: number;
+  wordCount: number;
+  textArea: number;
+  readonly lineBands: Set<number>;
+}
+
+export interface PdfOcrOperation {
+  (filePath: string, pages: readonly number[], signal?: AbortSignal): Promise<readonly PdfOcrPage[]>;
+}
 export function isTabularSource(filePath: string, mime: string): boolean {
   const ext = path.extname(filePath).toLowerCase();
   void mime;
@@ -67,30 +92,147 @@ export function chunkText(text: string, size = 900, overlap = 120): string[] {
   return chunks;
 }
 
-async function extractPdf(buffer: Buffer): Promise<string> {
+/** Extract embedded text first and OCR only bounded pages without meaningful text. */
+export async function extractPdfText(
+  filePath: string,
+  buffer: Buffer,
+  recognize: PdfOcrOperation = recognizeLocalPdfPages,
+  signal?: AbortSignal
+): Promise<string> {
+  signal?.throwIfAborted();
   const doc = await getDocument({ data: new Uint8Array(buffer), useSystemFonts: true }).promise;
   try {
-    let text = "";
-    for (let i = 1; i <= Math.min(doc.numPages, MAX_PDF_PAGES) && text.length < config.maxExtractedChars; i += 1) {
+    const pageTexts: string[] = [];
+    const meaningfulPages: boolean[] = [];
+    const emptyPages: number[] = [];
+    let extractedCharacters = 0;
+    for (
+      let i = 1;
+      i <= Math.min(doc.numPages, MAX_PDF_PAGES) && extractedCharacters < config.maxExtractedChars;
+      i += 1
+    ) {
+      signal?.throwIfAborted();
       const page = await doc.getPage(i);
       try {
         const content = await page.getTextContent();
+        const viewport = page.getViewport({ scale: 1 });
+        const pageWidth = positiveFinite(viewport.width);
+        const pageHeight = positiveFinite(viewport.height);
+        const metrics: PdfPageTextMetrics = {
+          pageArea: Math.max(1, pageWidth * pageHeight),
+          alphanumericCharacters: 0,
+          interiorAlphanumericCharacters: 0,
+          wordCount: 0,
+          textArea: 0,
+          lineBands: new Set(),
+        };
+        let pageText = "";
         const maxItems = Math.min(content.items.length, 100_000);
-        for (let itemIndex = 0; itemIndex < maxItems && text.length < config.maxExtractedChars; itemIndex += 1) {
+        for (
+          let itemIndex = 0;
+          itemIndex < maxItems && extractedCharacters + pageText.length < config.maxExtractedChars;
+          itemIndex += 1
+        ) {
           const item = content.items[itemIndex] as any;
           if (!("str" in item) || typeof item.str !== "string" || !item.str) continue;
-          const remaining = config.maxExtractedChars - text.length;
-          text += `${item.str.slice(0, remaining)} `;
+          const remaining = config.maxExtractedChars - extractedCharacters - pageText.length;
+          const fragment = item.str.slice(0, remaining);
+          pageText += `${fragment} `;
+          accumulatePdfTextMetrics(metrics, item, fragment, pageWidth, pageHeight);
         }
-        if (text.length < config.maxExtractedChars) text += "\n\n";
+        pageTexts.push(pageText);
+        extractedCharacters += pageText.length + 2;
+        const meaningful = meaningfulPdfPageText(pageText, metrics);
+        meaningfulPages.push(meaningful);
+        if (!meaningful && emptyPages.length < config.ocrMaxPages) emptyPages.push(i);
       } finally {
         page.cleanup();
       }
     }
-    return text.slice(0, config.maxExtractedChars);
+
+    if (emptyPages.length) {
+      try {
+        const recognized = await recognize(filePath, emptyPages, signal);
+        signal?.throwIfAborted();
+        const byPage = new Map(recognized.map((entry) => [entry.page, entry.text]));
+        for (const pageNumber of emptyPages) {
+          const text = byPage.get(pageNumber);
+          if (text) pageTexts[pageNumber - 1] = `[Page ${pageNumber} — OCR]\n${text}`;
+        }
+      } catch (error) {
+        signal?.throwIfAborted();
+        if (
+          (error instanceof LocalOcrUnavailableError || error instanceof LocalOcrError) &&
+          meaningfulPages.some(Boolean)
+        ) {
+          // Mixed/text PDFs remain useful when the optional local capability is absent.
+        } else {
+          throw error;
+        }
+      }
+    }
+    signal?.throwIfAborted();
+    return pageTexts.join("\n\n").slice(0, config.maxExtractedChars);
   } finally {
     await doc.destroy();
   }
+}
+
+function positiveFinite(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0;
+}
+
+function accumulatePdfTextMetrics(
+  metrics: PdfPageTextMetrics,
+  item: Record<string, unknown>,
+  text: string,
+  pageWidth: number,
+  pageHeight: number
+): void {
+  const characters = text.match(/[\p{L}\p{N}]/gu)?.length ?? 0;
+  if (!characters) return;
+  metrics.alphanumericCharacters += characters;
+  metrics.wordCount += text.match(/[\p{L}\p{N}]+/gu)?.length ?? 0;
+
+  const transform = Array.isArray(item.transform) ? item.transform : [];
+  const x = positiveFinite(transform[4]);
+  const y = positiveFinite(transform[5]);
+  const width = Math.min(pageWidth, positiveFinite(item.width));
+  const height = Math.min(pageHeight, positiveFinite(item.height));
+  metrics.textArea += Math.min(metrics.pageArea, width * height);
+
+  if (
+    y >= pageHeight * PDF_PAGE_MARGIN_FRACTION &&
+    y <= pageHeight * (1 - PDF_PAGE_MARGIN_FRACTION) &&
+    x <= pageWidth
+  ) {
+    metrics.interiorAlphanumericCharacters += characters;
+  }
+  if (metrics.lineBands.size < MAX_PDF_TEXT_LINE_BANDS) {
+    const bandHeight = Math.max(4, height, pageHeight / 100);
+    metrics.lineBands.add(Math.round(y / bandHeight));
+  }
+}
+
+function meaningfulPdfPageText(value: string, metrics: PdfPageTextMetrics): boolean {
+  const characters = metrics.alphanumericCharacters;
+  if (characters < MIN_MEANINGFUL_PDF_PAGE_CHARACTERS || !value.trim()) return false;
+
+  // Sparse text layers often contain only a footer, page label, or watermark.
+  // Require actual interior text plus density relative to the PDF page instead
+  // of letting a handful of glyphs suppress OCR for the imaged page beneath.
+  const requiredInterior = Math.min(12, Math.ceil(characters / 2));
+  if (metrics.interiorAlphanumericCharacters < requiredInterior) return false;
+  if (characters >= HIGH_CONFIDENCE_PDF_PAGE_CHARACTERS && metrics.lineBands.size >= 2) return true;
+
+  const charactersPer100kPoints = characters / (metrics.pageArea / 100_000);
+  const textAreaRatio = Math.min(metrics.textArea, metrics.pageArea) / metrics.pageArea;
+  return (
+    characters >= MIN_DENSE_PDF_PAGE_CHARACTERS &&
+    metrics.wordCount >= MIN_PDF_PAGE_WORDS &&
+    charactersPer100kPoints >= MIN_PDF_CHARACTERS_PER_100K_POINTS &&
+    textAreaRatio >= MIN_PDF_TEXT_AREA_RATIO
+  );
 }
 
 async function extractDocx(buffer: Buffer): Promise<string> {
@@ -213,15 +355,28 @@ export function preflightDocxArchive(buffer: Buffer): void {
   }
 }
 
-export async function extractText(filePath: string, mime: string): Promise<string> {
+export async function extractText(filePath: string, mime: string, signal?: AbortSignal): Promise<string> {
+  signal?.throwIfAborted();
   const ext = path.extname(filePath).toLowerCase();
   if (ext === ".doc") {
     throw new Error("legacy .doc files are not supported; upload .docx instead");
   }
-  if (EXT_TEXT.has(ext)) return (await fs.readFile(filePath, "utf8")).slice(0, config.maxExtractedChars);
-  if (ext === ".pdf" || mime.includes("pdf")) return extractPdf(await fs.readFile(filePath));
+  if (EXT_TEXT.has(ext)) {
+    const text = await fs.readFile(filePath, "utf8");
+    signal?.throwIfAborted();
+    return text.slice(0, config.maxExtractedChars);
+  }
+  if (ext === ".pdf" || mime.includes("pdf")) {
+    const buffer = await fs.readFile(filePath);
+    signal?.throwIfAborted();
+    return extractPdfText(filePath, buffer, recognizeLocalPdfPages, signal);
+  }
   if (ext === ".docx" || mime.includes("officedocument.wordprocessingml")) {
-    return extractDocx(await fs.readFile(filePath));
+    const buffer = await fs.readFile(filePath);
+    signal?.throwIfAborted();
+    const text = await extractDocx(buffer);
+    signal?.throwIfAborted();
+    return text;
   }
   throw new Error("file format is not supported");
 }

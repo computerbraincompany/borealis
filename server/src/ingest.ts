@@ -1,18 +1,20 @@
 import { randomUUID } from "node:crypto";
 
 import { appLog } from "./appLogger.js";
-import { config } from "./config.js";
 import { decodeJson } from "./db/codecs.js";
-import type { IngestionJob } from "./db/stores/ingestionStore.js";
+import type { DatasetCleanupJob, IngestionJob } from "./db/stores/ingestionStore.js";
 import { DataServiceError, dataService } from "./dataService.js";
+import { embeddingMigrationCoordinator, EmbeddingMigrationError } from "./embeddingMigration.js";
 import {
   ConnectorRefreshActivatedError,
   IngestionExecutor,
   IngestionWorker,
   jobRequestContext,
+  processDurableDatasetCleanupJob,
   type IngestionExecutionInput,
 } from "./ingestionEngine.js";
 import { publicIngestionFailure } from "./ingestionFailures.js";
+import { createAuthorizedIngestionEmbeddingSession } from "./ingestionEmbedding.js";
 import {
   chunkText,
   datasetPreviewText,
@@ -20,7 +22,6 @@ import {
   extractText,
   isTabularSource,
 } from "./ingestSupport.js";
-import { embed } from "./llm.js";
 import { runWithRequestContext } from "./requestContext.js";
 import { completeSourceDeleteIntents } from "./sourceCleanup.js";
 import { resolveSourceArtifact } from "./storageArtifacts.js";
@@ -64,9 +65,11 @@ interface RegistryRow {
 let cachedEngine: CachedEngine | undefined;
 let ingestionPump: Promise<void> | undefined;
 let ingestionRepump = false;
+let ingestionAbortController: AbortController | undefined;
 let connectorPreparePump: Promise<void> | undefined;
 let connectorPrepareRepump = false;
 let workersStarted = false;
+let workersStopping = false;
 let leaseTimer: NodeJS.Timeout | undefined;
 let reconciliationTimer: NodeJS.Timeout | undefined;
 
@@ -77,8 +80,8 @@ function engine(): CachedEngine {
     store: runtime.ingestion,
     lifecycle: runtime.vectorLifecycle,
     data: dataService,
-    embeddingDimension: config.embeddingDim,
-    embed,
+    embeddingDimension: runtime.vectors.dimension,
+    createEmbeddingSession: createAuthorizedIngestionEmbeddingSession,
     resolveArtifact: resolveSourceArtifact,
     isTabular: isTabularSource,
     extractText,
@@ -106,17 +109,11 @@ export async function ingestSource(options: IngestSourceOptions): Promise<void> 
 
 /** Reserve a fresh generation for an existing upload and wake the in-process worker. */
 export async function enqueueIngestion(accountId: string, sourceId: string): Promise<number> {
-  const reservation = await storageRuntime().sourceIngestion.reserveSourceReingest(accountId, sourceId);
+  const reservation = await embeddingMigrationCoordinator().runSourceMutation(() =>
+    storageRuntime().sourceIngestion.reserveSourceReingest(accountId, sourceId)
+  );
   wakeIngestionWorkers();
   return reservation.generation;
-}
-
-export async function reserveDatasetCacheCleanup(
-  accountId: string,
-  name: string,
-  locations: readonly string[]
-): Promise<void> {
-  await storageRuntime().ingestion.reserveDatasetCleanup(accountId, name, locations);
 }
 
 export async function processDatasetCacheCleanup(accountId?: string, name?: string): Promise<number> {
@@ -124,20 +121,23 @@ export async function processDatasetCacheCleanup(accountId?: string, name?: stri
   const jobs = await runtime.ingestion.listDatasetCleanupJobs({ accountId, name });
   let completed = 0;
   for (const job of jobs) {
-    try {
-      await dataService.deactivateDatasetLocation(job.accountId, job.name, job.location);
-      await dataService.cleanupDatasetCache(job.accountId, job.name, job.location);
-      await runtime.ingestion.resolveDatasetCleanupJob(job, "complete");
-      completed += 1;
-    } catch {
-      await runtime.ingestion.resolveDatasetCleanupJob(job, "failed").catch(() => {});
-    }
+    if (await processDurableDatasetCleanupJob(runtime.ingestion, dataService, job)) completed += 1;
   }
   return completed;
 }
 
+async function reserveReconciliationDatasetCleanup(
+  accountId: string,
+  name: string,
+  location: string
+): Promise<DatasetCleanupJob | undefined> {
+  const reserved = await storageRuntime().ingestion.reserveReconciliationDatasetCleanup(accountId, name, location);
+  return reserved ? Object.freeze({ accountId, name, location, attempts: 0 }) : undefined;
+}
+
 export async function processOneJob(
-  runIngest: (input: IngestionExecutionInput) => Promise<void> = ingestSource
+  runIngest: (input: IngestionExecutionInput) => Promise<void> = ingestSource,
+  signal?: AbortSignal
 ): Promise<boolean> {
   const runtime = storageRuntime();
   const worker =
@@ -149,29 +149,34 @@ export async function processOneJob(
           lifecycle: runtime.vectorLifecycle,
           ingest: runIngest,
         });
-  return worker.processOne();
+  return runSourceMaintenance(() => worker.processOne(signal), false);
 }
 
 function scheduleIngestionPump(): void {
+  if (workersStopping) return;
   ingestionRepump = true;
   if (ingestionPump) return;
+  const controller = ingestionAbortController ?? new AbortController();
+  ingestionAbortController = controller;
+  const signal = controller.signal;
   ingestionPump = Promise.resolve()
     .then(async () => {
       do {
         ingestionRepump = false;
+        if (signal.aborted) return;
         await Promise.all(
           Array.from({ length: WORKER_CONCURRENCY }, async () => {
-            while (await processOneJob()) {
+            while (!signal.aborted && (await processOneJob(ingestSource, signal))) {
               // Drain every currently available durable job.
             }
           })
         );
-      } while (ingestionRepump);
+      } while (ingestionRepump && !signal.aborted);
     })
     .catch(() => appLog.warn({ error_code: "INGESTION_PUMP_FAILED" }, "ingestion worker pump failed"))
     .finally(() => {
       ingestionPump = undefined;
-      if (ingestionRepump) scheduleIngestionPump();
+      if (ingestionRepump && !signal.aborted && !workersStopping) scheduleIngestionPump();
     });
 }
 
@@ -180,6 +185,7 @@ export function wakeIngestionWorkers(): void {
 }
 
 function scheduleConnectorPreparePump(): void {
+  if (workersStopping) return;
   connectorPrepareRepump = true;
   if (connectorPreparePump) return;
   connectorPreparePump = Promise.resolve()
@@ -198,7 +204,7 @@ function scheduleConnectorPreparePump(): void {
     .catch(() => appLog.warn({ error_code: "CONNECTOR_PREPARE_PUMP_FAILED" }, "connector prepare worker pump failed"))
     .finally(() => {
       connectorPreparePump = undefined;
-      if (connectorPrepareRepump) scheduleConnectorPreparePump();
+      if (connectorPrepareRepump && !workersStopping) scheduleConnectorPreparePump();
     });
 }
 
@@ -214,6 +220,10 @@ export async function resumePreparingConnectorRefreshes(): Promise<number> {
 }
 
 export async function processOnePreparingConnectorRefresh(): Promise<boolean> {
+  return runSourceMaintenance(processOnePreparingConnectorRefreshUnlocked, false);
+}
+
+async function processOnePreparingConnectorRefreshUnlocked(): Promise<boolean> {
   const runtime = storageRuntime();
   const job = await runtime.ingestion.claimNext("preparing");
   if (!job?.leaseToken) return false;
@@ -317,21 +327,27 @@ async function failPreparingJob(job: IngestionJob, connectorId: string | undefin
 }
 
 export async function recoverExpiredIngestionLeases(startup = false): Promise<number> {
-  const runtime = storageRuntime();
-  const recovered = await runtime.ingestion.recoverRunningLeases({
-    startup,
-    expiredBefore: new Date(Date.now() - LEASE_TIMEOUT_MS),
-    maxAttempts: MAX_JOB_ATTEMPTS,
-  });
-  await runtime.vectorLifecycle.drainPendingVectorOperations();
-  return recovered.length;
+  return runSourceMaintenance(async () => {
+    const runtime = storageRuntime();
+    const recovered = await runtime.ingestion.recoverRunningLeases({
+      startup,
+      expiredBefore: new Date(Date.now() - LEASE_TIMEOUT_MS),
+      maxAttempts: MAX_JOB_ATTEMPTS,
+    });
+    await runtime.vectorLifecycle.drainPendingVectorOperations();
+    return recovered.length;
+  }, 0);
 }
 
 export async function recoverPreparingConnectorLeases(startup = false): Promise<number> {
-  return storageRuntime().ingestion.recoverPreparingLeases({
-    startup,
-    expiredBefore: new Date(Date.now() - LEASE_TIMEOUT_MS),
-  });
+  return runSourceMaintenance(
+    () =>
+      storageRuntime().ingestion.recoverPreparingLeases({
+        startup,
+        expiredBefore: new Date(Date.now() - LEASE_TIMEOUT_MS),
+      }),
+    0
+  );
 }
 
 async function repairPendingSourceDeletes(): Promise<number> {
@@ -353,8 +369,15 @@ export async function startIngestionWorkers(): Promise<void> {
   if (workersStarted) return;
   await recoverExpiredIngestionLeases(true);
   await recoverPreparingConnectorLeases(true);
-  await storageRuntime().vectorLifecycle.repair({ completePendingSourceDeletes: repairPendingSourceDeletes });
+  await runSourceMaintenance(
+    () => storageRuntime().vectorLifecycle.repair({ completePendingSourceDeletes: repairPendingSourceDeletes }),
+    undefined
+  );
   await processDatasetCacheCleanup();
+  workersStopping = false;
+  if (!ingestionAbortController || ingestionAbortController.signal.aborted) {
+    ingestionAbortController = new AbortController();
+  }
   workersStarted = true;
   wakeConnectorPrepareWorkers();
   wakeIngestionWorkers();
@@ -375,7 +398,10 @@ export async function startIngestionWorkers(): Promise<void> {
     if (reconciling) return;
     reconciling = true;
     void runWithRequestContext("storage-reconciliation.periodic", async () => {
-      await storageRuntime().vectorLifecycle.repair({ completePendingSourceDeletes: repairPendingSourceDeletes });
+      await runSourceMaintenance(
+        () => storageRuntime().vectorLifecycle.repair({ completePendingSourceDeletes: repairPendingSourceDeletes }),
+        undefined
+      );
       await restoreDatasets(1);
       await processDatasetCacheCleanup();
     })
@@ -393,8 +419,15 @@ export async function stopIngestionWorkers(): Promise<void> {
   leaseTimer = undefined;
   reconciliationTimer = undefined;
   workersStarted = false;
+  workersStopping = true;
+  ingestionRepump = false;
+  connectorPrepareRepump = false;
+  const controller = ingestionAbortController;
+  controller?.abort(new DOMException("ingestion workers stopped", "AbortError"));
   await Promise.allSettled([ingestionPump, connectorPreparePump].filter(Boolean) as Promise<void>[]);
+  if (ingestionAbortController === controller) ingestionAbortController = undefined;
   cachedEngine = undefined;
+  workersStopping = false;
 }
 
 export interface RestoreSummary {
@@ -457,8 +490,15 @@ export async function restoreDatasets(_attempts = 8): Promise<RestoreSummary> {
       staleAttempted += 1;
       try {
         if (typeof dataset.location !== "string" || !dataset.location) throw new Error("missing dataset identity");
-        await dataService.deactivateDatasetLocation(accountId, table, dataset.location);
-        if (dataset.kind === "url") await dataService.cleanupDatasetCache(accountId, table, dataset.location);
+        if (dataset.kind === "url") {
+          const job = await reserveReconciliationDatasetCleanup(accountId, table, dataset.location);
+          if (!job) continue;
+          if (!(await processDurableDatasetCleanupJob(runtime.ingestion, dataService, job))) {
+            throw new Error("dataset cache cleanup failed");
+          }
+        } else {
+          await dataService.deactivateDatasetLocation(accountId, table, dataset.location);
+        }
         removed += 1;
       } catch {
         removeFailed += 1;
@@ -500,9 +540,17 @@ export async function restoreDatasets(_attempts = 8): Promise<RestoreSummary> {
             })
           );
           const fresh = await runtime.sources.getSource(accountId, source.source_id!);
-          if (fresh?.status !== "ready" || fresh.filePath !== source.file_path) {
-            await dataService.deactivateDatasetLocation(accountId, source.name!, ownedLocation);
-            if (source.connector) await dataService.cleanupDatasetCache(accountId, source.name!, ownedLocation);
+          if (fresh?.filePath === source.file_path) {
+            if (fresh.status !== "ready") continue;
+          } else {
+            if (source.connector) {
+              const job = await reserveReconciliationDatasetCleanup(accountId, source.name!, ownedLocation);
+              if (job && !(await processDurableDatasetCleanupJob(runtime.ingestion, dataService, job))) {
+                throw new Error("dataset cache cleanup failed");
+              }
+            } else {
+              await dataService.deactivateDatasetLocation(accountId, source.name!, ownedLocation);
+            }
             continue;
           }
           if (
@@ -521,13 +569,8 @@ export async function restoreDatasets(_attempts = 8): Promise<RestoreSummary> {
         try {
           const fresh = await runtime.sources.getSource(accountId, source.source_id!);
           if (fresh?.status !== "ready" || fresh.filePath !== source.file_path) continue;
-          await dataService.cleanupDatasetCache(accountId, source.name!, cleanupLocation);
-          await runtime.ingestion.clearSourceMetaValue({
-            accountId,
-            sourceId: source.source_id!,
-            key: "connector_previous_location",
-            expectedValue: cleanupLocation,
-          });
+          const job = await reserveReconciliationDatasetCleanup(accountId, source.name!, cleanupLocation);
+          if (!job || !(await processDurableDatasetCleanupJob(runtime.ingestion, dataService, job))) continue;
         } catch {
           // The durable marker keeps cleanup retryable on the next reconciliation.
         }
@@ -550,3 +593,12 @@ export function requestContextForIngestionJob(job: IngestionJob): string {
 }
 
 export { ConnectorRefreshActivatedError };
+
+async function runSourceMaintenance<T>(operation: () => Promise<T>, paused: T): Promise<T> {
+  try {
+    return await embeddingMigrationCoordinator().runSourceMutation(operation);
+  } catch (error) {
+    if (error instanceof EmbeddingMigrationError && error.code === "SOURCE_MUTATION_BLOCKED") return paused;
+    throw error;
+  }
+}

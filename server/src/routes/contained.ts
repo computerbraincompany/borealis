@@ -9,6 +9,11 @@ import {
 } from "../contained/configStore.js";
 import { ContainedDownloadError } from "../contained/downloadManager.js";
 import { downloadManager, engineManager } from "../contained/runtime.js";
+import {
+  BODYLESS_MUTATION_LIMIT_BYTES,
+  CONTAINED_CONFIG_BODY_LIMIT_BYTES,
+  CONTAINED_DOWNLOAD_BODY_LIMIT_BYTES,
+} from "./bodyLimits.js";
 
 const containedConfigSchema = {
   type: "object",
@@ -57,7 +62,7 @@ function sendContainedError(reply: FastifyReply, error: unknown): boolean {
 }
 
 export async function containedRoutes(app: FastifyInstance): Promise<void> {
-  app.get("/api/contained", { preHandler: requireAuth }, async (_req, reply) => {
+  app.get("/api/contained", { onRequest: requireAuth }, async (_req, reply) => {
     try {
       return reply.send({
         config: await readContainedConfig(),
@@ -72,7 +77,11 @@ export async function containedRoutes(app: FastifyInstance): Promise<void> {
 
   app.put(
     "/api/contained/config",
-    { preHandler: requireAuth, schema: { body: containedConfigSchema } },
+    {
+      onRequest: requireAuth,
+      bodyLimit: CONTAINED_CONFIG_BODY_LIMIT_BYTES,
+      schema: { body: containedConfigSchema },
+    },
     async (req, reply) => {
       try {
         const body = req.body as { enabled: boolean; binary_path?: string; model_path?: string; extra_args?: string[] };
@@ -92,7 +101,11 @@ export async function containedRoutes(app: FastifyInstance): Promise<void> {
 
   app.post(
     "/api/contained/downloads",
-    { preHandler: requireAuth, schema: { body: containedDownloadSchema } },
+    {
+      onRequest: requireAuth,
+      bodyLimit: CONTAINED_DOWNLOAD_BODY_LIMIT_BYTES,
+      schema: { body: containedDownloadSchema },
+    },
     async (req, reply) => {
       try {
         const body = req.body as { url: string; filename: string; sha256: string };
@@ -105,28 +118,40 @@ export async function containedRoutes(app: FastifyInstance): Promise<void> {
     }
   );
 
-  app.post("/api/contained/engine/start", { preHandler: requireAuth }, async (_req, reply) => {
-    try {
-      const state = await engineManager.start();
-      return reply.code(202).send(state);
-    } catch (error) {
-      if (sendContainedError(reply, error)) return;
-      throw error;
+  app.post(
+    "/api/contained/engine/start",
+    { onRequest: requireAuth, bodyLimit: BODYLESS_MUTATION_LIMIT_BYTES },
+    async (_req, reply) => {
+      try {
+        const state = await engineManager.start();
+        return reply.code(202).send(state);
+      } catch (error) {
+        if (sendContainedError(reply, error)) return;
+        throw error;
+      }
     }
-  });
+  );
 
-  app.post("/api/contained/engine/stop", { preHandler: requireAuth }, async (_req, reply) => {
-    try {
-      return reply.send(await engineManager.stop());
-    } catch (error) {
-      if (sendContainedError(reply, error)) return;
-      throw error;
+  app.post(
+    "/api/contained/engine/stop",
+    { onRequest: requireAuth, bodyLimit: BODYLESS_MUTATION_LIMIT_BYTES },
+    async (_req, reply) => {
+      try {
+        return reply.send(await engineManager.stop());
+      } catch (error) {
+        if (sendContainedError(reply, error)) return;
+        throw error;
+      }
     }
-  });
+  );
 
   app.delete(
     "/api/contained/downloads/:filename",
-    { preHandler: requireAuth, schema: { params: containedFilenameParams } },
+    {
+      onRequest: requireAuth,
+      bodyLimit: BODYLESS_MUTATION_LIMIT_BYTES,
+      schema: { params: containedFilenameParams },
+    },
     async (req, reply) => {
       try {
         const canceled = await downloadManager.cancel((req.params as { filename: string }).filename);

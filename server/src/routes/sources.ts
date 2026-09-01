@@ -5,7 +5,9 @@ import path from "node:path";
 import { pipeline } from "node:stream/promises";
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { getAccountId, requireAuth } from "../auth.js";
+import { catalogPageQuerySchema, catalogResponse, parseCatalogPageQuery } from "../catalogPagination.js";
 import { config } from "../config.js";
+import { embeddingMigrationCoordinator, EmbeddingMigrationError } from "../embeddingMigration.js";
 import { SourceIngestionTransitionError } from "../db/stores/sourceIngestionTransitions.js";
 import { SourceStoreError, type SourceRecord } from "../db/stores/sourceStore.js";
 import { dataService } from "../dataService.js";
@@ -16,7 +18,8 @@ import { enforceRemoteEgressConsent } from "../egressPolicy.js";
 import { auditRemoteEgress } from "../egressAudit.js";
 import { storageRuntime } from "../storageRuntime.js";
 import { cleanupCreatedUploadResource, createUploadResourceDirectory } from "../storageArtifacts.js";
-import { idParamsSchema } from "./schemas.js";
+import { BODYLESS_MUTATION_LIMIT_BYTES, IDENTIFIER_LIST_JSON_BODY_LIMIT_BYTES } from "./bodyLimits.js";
+import { catalogStatusBodySchema, idParamsSchema } from "./schemas.js";
 
 const SUPPORTED_UPLOAD_EXTENSIONS = new Set([
   ".txt",
@@ -35,71 +38,102 @@ const SUPPORTED_UPLOAD_EXTENSIONS = new Set([
 ]);
 
 export async function sourceRoutes(app: FastifyInstance): Promise<void> {
-  app.get("/api/sources", { preHandler: requireAuth }, async (req, reply) => {
-    const accountId = getAccountId(req);
-    const runtime = storageRuntime();
-    const sources = await runtime.sources.listSources(accountId);
-    const ingestion = await runtime.sourceIngestion.ingestionSummaries(
-      accountId,
-      sources.map((source) => source.id)
-    );
-    let tabular: Array<{ table?: unknown; original_name?: unknown; rows?: unknown }> = [];
-    try {
-      tabular = await dataService.listDatasetSummaries(accountId);
-    } catch {
-      // The durable source ledger remains usable if the data worker is unavailable.
+  app.get(
+    "/api/sources",
+    { onRequest: requireAuth, schema: { querystring: catalogPageQuerySchema } },
+    async (req, reply) => {
+      const pageRequest = parseCatalogPageQuery("sources", req.query);
+      const accountId = getAccountId(req);
+      const runtime = storageRuntime();
+      const page = await runtime.sources.listSources(accountId, pageRequest);
+      const sources = page.items;
+      const ingestion = await runtime.sourceIngestion.ingestionSummaries(
+        accountId,
+        sources.map((source) => source.id)
+      );
+      let tabular: Array<{ table?: unknown; original_name?: unknown; rows?: unknown }> = [];
+      try {
+        tabular = await dataService.listDatasetSummaries(
+          accountId,
+          sources.map((source) => source.name)
+        );
+      } catch {
+        // The durable source ledger remains usable if the data worker is unavailable.
+      }
+      const tabularByName = new Map(
+        tabular.map((dataset) => [
+          String(dataset.table),
+          {
+            table: String(dataset.table || ""),
+            original_name: String(dataset.original_name || ""),
+            rows: Math.max(0, Number(dataset.rows || 0)),
+          },
+        ])
+      );
+      const items = sources.map((source) =>
+        sourceCatalogItem(source, ingestion.get(source.id), tabularByName.get(source.name))
+      );
+      return reply.send(catalogResponse("sources", { items, next: page.next }));
     }
-    const tabularByName = new Map(
-      tabular.map((dataset) => [
-        String(dataset.table),
-        {
-          table: String(dataset.table || ""),
-          original_name: String(dataset.original_name || ""),
-          rows: Math.max(0, Number(dataset.rows || 0)),
-        },
-      ])
-    );
-    return reply.send(
-      sources.map((source) => {
-        const rawMeta = isRecord(source.meta) ? source.meta : {};
-        const failure = source.status === "error" ? publicIngestionFailure(rawMeta.error_code) : null;
-        const job = ingestion.get(source.id);
-        return {
-          id: source.id,
-          name: source.name,
-          kind: source.kind,
-          display_name: source.displayName,
-          mime: source.mime,
-          size_bytes: source.sizeBytes,
-          status: source.status,
-          created_at: source.createdAt,
-          meta: failure
-            ? {
-                error: failure.summary,
-                error_code: failure.code,
-                error_detail: failure.detail,
-                error_stage: failure.stage,
-              }
-            : {},
-          ...(failure
-            ? {
-                ingestion: {
-                  attempts: Math.max(0, Math.min(100, job?.attempts ?? 0)),
-                  updated_at: job?.updatedAt ?? null,
-                },
-              }
-            : {}),
-          ...(tabularByName.has(source.name) ? { tabular: tabularByName.get(source.name) } : {}),
-        };
-      })
-    );
-  });
+  );
+
+  app.post(
+    "/api/sources/status",
+    {
+      onRequest: requireAuth,
+      bodyLimit: IDENTIFIER_LIST_JSON_BODY_LIMIT_BYTES,
+      schema: { body: catalogStatusBodySchema },
+    },
+    async (req, reply) => {
+      const accountId = getAccountId(req);
+      const requestedIds = (req.body as { ids: string[] }).ids;
+      const sources = await storageRuntime().sources.getSourcesByIds(accountId, requestedIds);
+      const ingestion = await storageRuntime().sourceIngestion.ingestionSummaries(
+        accountId,
+        sources.map((source) => source.id)
+      );
+      let tabular: Array<{ table?: unknown; original_name?: unknown; rows?: unknown }> = [];
+      const tabularSources = sources.filter(
+        (source) => source.filePath !== null && isTabularSource(source.filePath, source.mime ?? "")
+      );
+      try {
+        tabular = await dataService.listDatasetSummaries(
+          accountId,
+          tabularSources.map((source) => source.name)
+        );
+      } catch {
+        // Exact durable status remains available if the data worker is unavailable.
+      }
+      const tabularByName = new Map(
+        tabular.map((dataset) => [
+          String(dataset.table),
+          {
+            table: String(dataset.table || ""),
+            original_name: String(dataset.original_name || ""),
+            rows: Math.max(0, Number(dataset.rows || 0)),
+          },
+        ])
+      );
+      const foundIds = new Set(sources.map((source) => source.id));
+      return reply.send({
+        items: sources.map((source) =>
+          sourceCatalogItem(source, ingestion.get(source.id), tabularByName.get(source.name))
+        ),
+        missing_ids: requestedIds.filter((id) => !foundIds.has(id)),
+      });
+    }
+  );
 
   app.post(
     "/api/sources/upload",
-    { preHandler: requireAuth, bodyLimit: config.maxUploadBytes + 64 * 1024 },
+    { onRequest: requireAuth, bodyLimit: config.maxUploadBytes + 64 * 1024 },
     async (req, reply) => {
       const accountId = getAccountId(req);
+      try {
+        await embeddingMigrationCoordinator().assertSourceMutationAllowed();
+      } catch (error) {
+        return sendSourceError(reply, error);
+      }
       if (!(await enforceRemoteEgressConsent(reply, accountId))) return;
       void auditRemoteEgress("remote_ingest", accountId);
       const file = await req.file();
@@ -139,17 +173,20 @@ export async function sourceRoutes(app: FastifyInstance): Promise<void> {
 
       let reservation;
       try {
-        reservation = await storageRuntime().sourceIngestion.createUploadSource(accountId, {
-          id: sourceId,
-          baseName: sanitizeDatasetName(safeOriginal),
-          kind: mimeKind(file.mimetype, filePath),
-          displayName: safeOriginal,
-          filePath,
-          mime: file.mimetype,
-          sizeBytes,
-        });
+        reservation = await embeddingMigrationCoordinator().runSourceMutation(() =>
+          storageRuntime().sourceIngestion.createUploadSource(accountId, {
+            id: sourceId,
+            baseName: sanitizeDatasetName(safeOriginal),
+            kind: mimeKind(file.mimetype, filePath),
+            displayName: safeOriginal,
+            filePath,
+            mime: file.mimetype,
+            sizeBytes,
+          })
+        );
       } catch (error) {
         await cleanupCreatedUploadResource(accountId, sourceId, filePath);
+        if (error instanceof EmbeddingMigrationError) return sendSourceError(reply, error);
         throw error;
       }
       wakeIngestionWorkers();
@@ -159,14 +196,13 @@ export async function sourceRoutes(app: FastifyInstance): Promise<void> {
 
   app.post(
     "/api/sources/:id/reingest",
-    { preHandler: requireAuth, schema: { params: idParamsSchema } },
+    { onRequest: requireAuth, bodyLimit: BODYLESS_MUTATION_LIMIT_BYTES, schema: { params: idParamsSchema } },
     async (req, reply) => {
       if (!(await enforceRemoteEgressConsent(reply, getAccountId(req)))) return;
       void auditRemoteEgress("remote_ingest", getAccountId(req));
       try {
-        const reservation = await storageRuntime().sourceIngestion.reserveSourceReingest(
-          getAccountId(req),
-          (req.params as { id: string }).id
+        const reservation = await embeddingMigrationCoordinator().runSourceMutation(() =>
+          storageRuntime().sourceIngestion.reserveSourceReingest(getAccountId(req), (req.params as { id: string }).id)
         );
         wakeIngestionWorkers();
         return reply.send({ ...sourceToApi(reservation.source), processing: true });
@@ -178,14 +214,16 @@ export async function sourceRoutes(app: FastifyInstance): Promise<void> {
 
   app.delete(
     "/api/sources/:id",
-    { preHandler: requireAuth, schema: { params: idParamsSchema } },
+    { onRequest: requireAuth, bodyLimit: BODYLESS_MUTATION_LIMIT_BYTES, schema: { params: idParamsSchema } },
     async (req, reply) => {
       try {
-        const deletion = await storageRuntime().sources.deleteSource(
-          getAccountId(req),
-          (req.params as { id: string }).id
-        );
-        await completeSourceDeleteIntents([deletion.intent]);
+        await embeddingMigrationCoordinator().runSourceMutation(async () => {
+          const deletion = await storageRuntime().sources.deleteSource(
+            getAccountId(req),
+            (req.params as { id: string }).id
+          );
+          await completeSourceDeleteIntents([deletion.intent]);
+        });
         return reply.send({ ok: true });
       } catch (error) {
         return sendSourceError(reply, error);
@@ -213,7 +251,46 @@ function sourceToApi(source: SourceRecord): Record<string, unknown> {
   };
 }
 
+function sourceCatalogItem(
+  source: SourceRecord,
+  job?: { attempts: number; updatedAt: string | null },
+  tabular?: { table: string; original_name: string; rows: number }
+): Record<string, unknown> {
+  const rawMeta = isRecord(source.meta) ? source.meta : {};
+  const failure = source.status === "error" ? publicIngestionFailure(rawMeta.error_code) : null;
+  return {
+    id: source.id,
+    name: source.name,
+    kind: source.kind,
+    display_name: source.displayName,
+    mime: source.mime,
+    size_bytes: source.sizeBytes,
+    status: source.status,
+    created_at: source.createdAt,
+    meta: failure
+      ? {
+          error: failure.summary,
+          error_code: failure.code,
+          error_detail: failure.detail,
+          error_stage: failure.stage,
+        }
+      : {},
+    ...(failure
+      ? {
+          ingestion: {
+            attempts: Math.max(0, Math.min(100, job?.attempts ?? 0)),
+            updated_at: job?.updatedAt ?? null,
+          },
+        }
+      : {}),
+    ...(tabular ? { tabular } : {}),
+  };
+}
+
 function sendSourceError(reply: FastifyReply, error: unknown) {
+  if (error instanceof EmbeddingMigrationError) {
+    return reply.code(error.statusCode).send({ error: error.message, code: error.code });
+  }
   const code =
     error instanceof SourceStoreError || error instanceof SourceIngestionTransitionError ? error.code : undefined;
   if (code === "SOURCE_STORE_SOURCE_NOT_FOUND" || code === "SOURCE_TRANSITION_SOURCE_NOT_FOUND") {
