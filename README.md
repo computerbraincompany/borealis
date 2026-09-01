@@ -378,9 +378,12 @@ back to the workspace default when it is unset. For small teams on one Borealis
 instance, reports can be shared with sibling accounts as read-only snapshots,
 Settings shows a best-effort, content-free activity log for consent and selected
 remote-capable operation attempts, and **Automations** run scheduled connector
-refreshes and chat digest turns — five consecutive failures pause them. The
+refreshes and chat digest turns — five consecutive failures pause them.
+Shares grant recipients read-only detail/HTML/PDF access (the stored payload
+stays owner-only), and `connector_sync` automations apply the same
+remote-egress consent gate as human connector actions. The
 [API reference](docs/API.md#workspace-audit-shares-and-automations) records
-current sharing, audit, and connector-consent limitations. Chat history supports title
+the full sharing, audit, and automation contracts. Chat history supports title
 search, rename, and deletion; **Settings** also contains system readiness,
 Light/Dark/System appearance, and account controls.
 

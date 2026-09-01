@@ -4,12 +4,17 @@
 and audit plane that fits a desktop-and-cluster deployment. Automations with
 human review for work that already has artifacts and evidence.*
 
-**Status:** PARTIAL. Commits `4cb696a` (egress activity receipts), `a61e88e`
-(report snapshot shares), `212f861` (durable automations), and `f499808` (the
-workspace surfaces) shipped the three slices, but the current implementation
-does not yet satisfy two authorization contracts below.
+**Status:** DONE (2026-09-01). Commits `4cb696a` (egress activity receipts),
+`a61e88e` (report snapshot shares), `212f861` (durable automations), and
+`f499808` (the workspace surfaces) shipped the three slices; the
+authorization and wording defects below were closed by the 2026-09-01
+remediation commit: recipients get read-only detail/HTML/PDF with the stored
+payload owner-only, `connector_sync` automations apply the consent gate at
+creation/update and recheck it on every scheduled execution (recording a
+`skipped` run without consent), and Settings describes egress events as
+best-effort activity receipts rather than proof of delivery.
 
-## Current implementation drift (reviewed 2026-08-31)
+## Current implementation drift (reviewed 2026-08-31; resolved 2026-09-01)
 
 - Shared readers currently receive the report's stored payload from the detail
   route, while recipient HTML/PDF requests return `404`. The intended contract
@@ -23,8 +28,13 @@ does not yet satisfy two authorization contracts below.
   provider and are not an exhaustive network-egress audit. The current Settings
   description calls them work "sent" and therefore overstates the evidence.
 
-The specification below preserves the intended fail-closed contract; the gaps
-above are defects to close, not weaker replacement requirements.
+All three drift items were closed on 2026-09-01: recipients get read-only
+detail/HTML/PDF (payload owner-only), `connector_sync` creation/update gate
+the mutation and scheduled executions recheck consent (a `skipped` run
+records `remote egress consent is required`), and the Settings audit wording
+describes best-effort activity receipts. The list above is retained as the
+historical record of what was wrong; the specification below preserves the
+intended fail-closed contract the implementation now honors.
 
 **Verification record (2026-08-29):** server 598 tests, web 151 tests,
 desktop 13 tests, lint, format, builds, and native smokes green via

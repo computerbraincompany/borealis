@@ -101,14 +101,17 @@ unacknowledged remote switch, no provider request is made and the source records
 the stable asynchronous failure `REMOTE_EGRESS_CONSENT_REQUIRED`; a concurrent
 Settings edit cannot redirect an already authorized job between batches.
 
-Known implementation gap: `POST /api/automations` and
-`PATCH /api/automations/:id` do not currently apply the consent gate to
-`connector_sync` rows, and scheduled connector executions do not recheck it. A
-schedule created while the provider is local can therefore run after a switch
-to an unacknowledged remote provider. Agent-turn automations do recheck consent,
-and `PUT /api/connectors/:id/schedule` gates the schedule mutation itself. Treat
-the connector-automation behavior as a security defect and do not use
-`connector_sync` automations with a remote provider until it is fixed.
+`connector_sync` automations are consent-gated end to end, matching the
+human connector surfaces: `POST /api/automations` with
+`kind: "connector_sync"` and any `PATCH /api/automations/:id` on a
+`connector_sync` row refuse with the same `403
+REMOTE_EGRESS_CONSENT_REQUIRED` envelope while a remote provider is
+configured and unacknowledged, and a scheduled connector execution rechecks
+consent before every run — without consent it records a `skipped` run
+(`remote egress consent is required`) and makes no provider request.
+`agent_turn` creation and mutation stay ungated because those automations
+recheck consent at execution time like a human turn;
+`PUT /api/connectors/:id/schedule` gates the schedule mutation itself.
 
 ### Workspace: audit, shares, and automations
 
@@ -124,22 +127,20 @@ authentication and stay account-scoped.
 | `DELETE /api/reports/:id/shares/:recipient` | `{"ok":true}` — owner-only revocation.                                                                                 |
 | `GET /api/reports/shared`                   | Paginated reports shared with the caller: read-only snapshots with `owner_email`.                                      |
 | `GET /api/automations`                      | Paginated account automations with schedule, state, and failure counters.                                              |
-| `POST /api/automations`                     | `{name,kind,target_id,schedule_minutes,prompt?}`; returns `201` (15–10,080 minutes; prompt required for `agent_turn`). |
-| `PATCH /api/automations/:id`                | `{name?,state?,schedule_minutes?}`.                                                                                    |
+| `POST /api/automations`                     | `{name,kind,target_id,schedule_minutes,prompt?}`; returns `201` (15–10,080 minutes; prompt required for `agent_turn`; `connector_sync` creation is consent-gated). |
+| `PATCH /api/automations/:id`                | `{name?,state?,schedule_minutes?}`; mutations of a `connector_sync` row are consent-gated.                             |
 | `DELETE /api/automations/:id`               | `{"ok":true}`; run history cascades.                                                                                   |
 | `GET /api/automations/:id/runs`             | Run history `{id,outcome,detail,started_at,finished_at}`; newest first, default 20 and maximum 50.                     |
 | `GET /api/automations/_scheduler`           | `{running:boolean}` for the in-process scheduler.                                                                      |
 
 Shares exist only between accounts of this instance and are created for
-published reports. The intended authorization contract grants recipients
-read-only detail/HTML/PDF access while rename, delete, stored payload, and
-further sharing remain owner-only. The current implementation does not yet
-honor that boundary: shared readers receive the stored payload on
-`GET /api/reports/:id`, while the HTML and PDF routes remain owner-only and
-return `404` to recipients. The shared-report Preview and Download controls
-therefore fail. Do not treat report sharing as a safe owner-only payload
-boundary until this defect is fixed. Revocation of the detail access is
-immediate.
+published reports. Recipients get read-only access to the report detail, the
+self-contained HTML document, and the PDF — the HTML/PDF artifacts resolve in
+the owner's storage scope — while rename, delete, the stored normalized
+payload, and share management remain owner-only. Recipient detail responses
+carry `shared_by_account: true` and never include `payload`. Revocation of
+all recipient access is immediate; without a share row every recipient route
+returns `404`.
 
 Automation history records are content-free; details use generic phrases of at
 most 500 characters, and five consecutive failures pause the automation. Names
@@ -152,7 +153,8 @@ durable run records all apply — and a busy chat or missing consent records a
 `skipped` run. Cancellation also records exactly one `skipped` history row with
 the fixed detail `the run was cancelled`; it neither resets nor increments the
 consecutive-failure count, even when cancellation wins the assistant-persistence
-race. Connector-sync consent has the known gap described above.
+race. Scheduled connector executions recheck consent before every run and
+write the same best-effort `remote_ingest` receipt the connector routes write.
 
 Audit events never contain prompts, source text, SQL, or model output, and are
 best-effort: a failed audit write never fails the request that produced it.

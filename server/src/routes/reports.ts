@@ -74,7 +74,8 @@ export async function reportRoutes(app: FastifyInstance): Promise<void> {
       version: row.version,
       supersedes: row.supersedes,
       ...(sharedByAccount ? { shared_by_account: true } : {}),
-      ...(row.payload === undefined ? {} : { payload: row.payload }),
+      // The stored normalized payload stays owner-only; share recipients never see it.
+      ...(sharedByAccount || row.payload === undefined ? {} : { payload: row.payload }),
     });
   });
 
@@ -100,11 +101,19 @@ export async function reportRoutes(app: FastifyInstance): Promise<void> {
     "/api/reports/:id/html",
     { onRequest: requireAuth, schema: { params: idParamsSchema } },
     async (req, reply) => {
-      const row = await storageRuntime().runs.getPublishedReport(getAccountId(req), (req.params as any).id);
+      const accountId = getAccountId(req);
+      const reportId = (req.params as any).id;
+      let row = await storageRuntime().runs.getPublishedReport(accountId, reportId);
+      let ownerId = accountId;
+      if (!row) {
+        // Share recipients read through the owner's account scope, never their own.
+        ownerId = (await storageRuntime().runs.getReportShareOwner(accountId, reportId)) ?? "";
+        if (ownerId) row = await storageRuntime().runs.getPublishedReport(ownerId, reportId);
+      }
       if (!row) return reply.code(404).send({ error: "report not found" });
       const artifact = await resolveReportArtifact({
-        accountId: getAccountId(req),
-        reportId: (req.params as any).id,
+        accountId: ownerId,
+        reportId,
         filePath: row.html_path,
         kind: "html",
       });
@@ -121,11 +130,19 @@ export async function reportRoutes(app: FastifyInstance): Promise<void> {
     "/api/reports/:id/pdf",
     { onRequest: requireAuth, schema: { params: idParamsSchema } },
     async (req, reply) => {
-      const row = await storageRuntime().runs.getPublishedReport(getAccountId(req), (req.params as any).id);
+      const accountId = getAccountId(req);
+      const reportId = (req.params as any).id;
+      let row = await storageRuntime().runs.getPublishedReport(accountId, reportId);
+      let ownerId = accountId;
+      if (!row) {
+        // Share recipients read through the owner's account scope, never their own.
+        ownerId = (await storageRuntime().runs.getReportShareOwner(accountId, reportId)) ?? "";
+        if (ownerId) row = await storageRuntime().runs.getPublishedReport(ownerId, reportId);
+      }
       if (!row) return reply.code(404).send({ error: "report not found" });
       const artifact = await resolveReportArtifact({
-        accountId: getAccountId(req),
-        reportId: (req.params as any).id,
+        accountId: ownerId,
+        reportId,
         filePath: row.pdf_path,
         kind: "pdf",
       });

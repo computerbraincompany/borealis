@@ -3,6 +3,7 @@ import { getAccountId, requireAuth } from "../auth.js";
 import { catalogPageQuerySchema, catalogResponse, parseCatalogPageQuery } from "../catalogPagination.js";
 import { idParamsSchema } from "./schemas.js";
 import { AutomationValidationError, type Automation } from "../automationStore.js";
+import { enforceRemoteEgressConsent } from "../egressPolicy.js";
 import { storageRuntime } from "../storageRuntime.js";
 import { automationRunner } from "../automationRuntime.js";
 import {
@@ -81,8 +82,15 @@ export async function automationRoutes(app: FastifyInstance): Promise<void> {
           prompt?: string;
           schedule_minutes: number;
         };
+        const accountId = getAccountId(req);
+        // Scheduled connector refresh sends source text for embeddings, so it is
+        // payload-bearing remote egress. Agent-turn creation stays ungated: those
+        // automations recheck consent at execution time like a human turn.
+        if (body.kind === "connector_sync") {
+          if (!(await enforceRemoteEgressConsent(reply, accountId))) return;
+        }
         const automation = await storageRuntime().automations.create({
-          accountId: getAccountId(req),
+          accountId,
           name: body.name,
           kind: body.kind,
           targetId: body.target_id,
@@ -119,7 +127,17 @@ export async function automationRoutes(app: FastifyInstance): Promise<void> {
     async (req, reply) => {
       try {
         const body = req.body as { name?: string; state?: string; schedule_minutes?: number };
-        const automation = await storageRuntime().automations.update(getAccountId(req), (req.params as any).id, {
+        const accountId = getAccountId(req);
+        const id = (req.params as any).id;
+        const existing = await storageRuntime().automations.get(accountId, id);
+        if (!existing) return reply.code(404).send({ error: "automation not found" });
+        // Any connector_sync mutation is gated to match the connector schedule
+        // route; agent_turn mutations stay ungated for the same reason as
+        // agent_turn creation.
+        if (existing.kind === "connector_sync") {
+          if (!(await enforceRemoteEgressConsent(reply, accountId))) return;
+        }
+        const automation = await storageRuntime().automations.update(accountId, id, {
           name: body.name,
           state: body.state,
           scheduleMinutes: body.schedule_minutes,

@@ -24,6 +24,7 @@ import { createReportResourceDirectory } from "../storageArtifacts.js";
 
 const OWNER = "11111111-1111-4111-8111-111111111111";
 const FOREIGN = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+const THIRD = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 const OWNER_REPORT = "22222222-2222-4222-8222-222222222222";
 const FOREIGN_REPORT = "33333333-3333-4333-8333-333333333333";
 const PENDING_REPORT = "44444444-4444-4444-8444-444444444444";
@@ -41,6 +42,9 @@ const ownerAuth = {
 const foreignAuth = {
   authorization: `Bearer ${signToken({ userId: FOREIGN, email: "foreign@example.test" })}`,
 };
+const thirdAuth = {
+  authorization: `Bearer ${signToken({ userId: THIRD, email: "third@example.test" })}`,
+};
 
 const apps: FastifyInstance[] = [];
 let runtimeDirectory = "";
@@ -56,6 +60,7 @@ beforeEach(async () => {
   for (const [id, email] of [
     [OWNER, "owner@example.test"],
     [FOREIGN, "foreign@example.test"],
+    [THIRD, "third@example.test"],
   ] as const) {
     await runtime.ledger.run("INSERT INTO users (id,email,password_hash) VALUES (?,?,?)", [id, email, "hash"]);
   }
@@ -294,6 +299,100 @@ describe("published report and chart routes", () => {
     expect(afterRevoke.statusCode).toBe(404);
   });
 
+  it("gives a share recipient read-only detail, HTML, and PDF without the stored payload", async () => {
+    const directory = await createReportResourceDirectory(OWNER, OWNER_REPORT);
+    const htmlPath = path.join(directory, "report.html");
+    const pdfPath = path.join(directory, "report.pdf");
+    await fs.writeFile(htmlPath, "<!doctype html><title>Shared report</title>");
+    await fs.writeFile(pdfPath, Buffer.from("%PDF-1.7\nshared"));
+    await insertReport(OWNER_REPORT, OWNER, "published", "Shared report", htmlPath, pdfPath, {
+      normalized: true,
+      sections: ["recipient-must-not-see"],
+    });
+    const app = await buildApp();
+
+    const shared = await app.inject({
+      method: "POST",
+      url: `/api/reports/${OWNER_REPORT}/shares`,
+      headers: ownerAuth,
+      body: { recipient_account_id: FOREIGN },
+    });
+    expect(shared.statusCode).toBe(201);
+
+    const ownerDetail = await app.inject({ method: "GET", url: `/api/reports/${OWNER_REPORT}`, headers: ownerAuth });
+    expect(ownerDetail.statusCode).toBe(200);
+    const ownerBody = ownerDetail.json() as Record<string, unknown>;
+    expect("payload" in ownerBody).toBe(true);
+    expect(ownerBody.payload).toEqual({ normalized: true, sections: ["recipient-must-not-see"] });
+
+    const recipientDetail = await app.inject({
+      method: "GET",
+      url: `/api/reports/${OWNER_REPORT}`,
+      headers: foreignAuth,
+    });
+    expect(recipientDetail.statusCode).toBe(200);
+    expect(recipientDetail.json()).toMatchObject({
+      id: OWNER_REPORT,
+      title: "Shared report",
+      shared_by_account: true,
+      has_html: true,
+      has_pdf: true,
+    });
+    const recipientBody = recipientDetail.json() as Record<string, unknown>;
+    expect("payload" in recipientBody).toBe(false);
+    expect(recipientDetail.body).not.toContain("recipient-must-not-see");
+
+    const recipientHtml = await app.inject({
+      method: "GET",
+      url: `/api/reports/${OWNER_REPORT}/html`,
+      headers: foreignAuth,
+    });
+    expect(recipientHtml.statusCode).toBe(200);
+    expect(recipientHtml.headers["content-type"]).toContain("text/html");
+    expect(recipientHtml.headers["content-security-policy"]).toContain("default-src 'none'");
+    expect(recipientHtml.body).toContain("Shared report");
+
+    const recipientPdf = await app.inject({
+      method: "GET",
+      url: `/api/reports/${OWNER_REPORT}/pdf`,
+      headers: foreignAuth,
+    });
+    expect(recipientPdf.statusCode).toBe(200);
+    expect(recipientPdf.headers["content-type"]).toContain("application/pdf");
+    expect(recipientPdf.rawPayload.subarray(0, 4).toString()).toBe("%PDF");
+
+    // Mutations stay owner-only for the recipient.
+    const recipientRename = await app.inject({
+      method: "PATCH",
+      url: `/api/reports/${OWNER_REPORT}`,
+      headers: foreignAuth,
+      body: { title: "Hijack" },
+    });
+    expect(recipientRename.statusCode).toBe(404);
+    const recipientDelete = await app.inject({
+      method: "DELETE",
+      url: `/api/reports/${OWNER_REPORT}`,
+      headers: foreignAuth,
+    });
+    expect(recipientDelete.statusCode).toBe(404);
+
+    // A third, non-recipient account sees nothing anywhere.
+    await expectStatus(app, `/api/reports/${OWNER_REPORT}`, thirdAuth, 404);
+    await expectStatus(app, `/api/reports/${OWNER_REPORT}/html`, thirdAuth, 404);
+    await expectStatus(app, `/api/reports/${OWNER_REPORT}/pdf`, thirdAuth, 404);
+
+    // Revocation closes every read path for the recipient.
+    const revoked = await app.inject({
+      method: "DELETE",
+      url: `/api/reports/${OWNER_REPORT}/shares/${FOREIGN}`,
+      headers: ownerAuth,
+    });
+    expect(revoked.statusCode).toBe(200);
+    await expectStatus(app, `/api/reports/${OWNER_REPORT}`, foreignAuth, 404);
+    await expectStatus(app, `/api/reports/${OWNER_REPORT}/html`, foreignAuth, 404);
+    await expectStatus(app, `/api/reports/${OWNER_REPORT}/pdf`, foreignAuth, 404);
+  });
+
   it("lists the account's published chart registry without spec or bytes", async () => {
     await publishChartThroughCompletion(OWNER_CHART, OWNER_CHART_RUN, OWNER_CHART_CHAT);
     await insertChart(PENDING_CHART, OWNER, "pending", "pending", "pending-png");
@@ -336,11 +435,12 @@ async function insertReport(
   status: "pending" | "published",
   title: string,
   htmlPath: string | null = null,
-  pdfPath: string | null = null
+  pdfPath: string | null = null,
+  payload: unknown = null
 ): Promise<void> {
   await storageRuntime().ledger.run(
-    `INSERT INTO reports (id,account_id,status,title,html_path,pdf_path) VALUES (?,?,?,?,?,?)`,
-    [id, accountId, status, title, htmlPath, pdfPath]
+    `INSERT INTO reports (id,account_id,status,title,html_path,pdf_path,payload) VALUES (?,?,?,?,?,?,?)`,
+    [id, accountId, status, title, htmlPath, pdfPath, payload === null ? null : encodeJson(payload, "report payload")]
   );
 }
 

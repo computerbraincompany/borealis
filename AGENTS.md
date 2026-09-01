@@ -289,17 +289,15 @@ runtime startup alone republishes that matching marker.
   complete content-hashed lazy graph from the exact loopback origin.
 - Small-team surfaces (schema v7–v9) stay inside the local trust boundary:
   report shares link sibling accounts of one instance and grant exactly
-  read-only detail/HTML/PDF access with owner-only revoke; egress audit events
-  (`server/src/egressAudit.ts`) are content-free, best-effort, and never
-  logged; automations (`server/src/automationStore.ts`, `automationRunner.ts`)
-  reuse the consent gate and one-run-per-chat constraints, record bounded
+  read-only detail/HTML/PDF access with owner-only revoke — the stored
+  normalized payload never leaves the owner's detail route; egress audit
+  events (`server/src/egressAudit.ts`) are content-free, best-effort, and
+  never logged; automations (`server/src/automationStore.ts`,
+  `automationRunner.ts`) reuse the consent gate and one-run-per-chat
+  constraints — `connector_sync` creation/update gate the mutation and
+  scheduled executions recheck consent like agent turns — record bounded
   generic run details, pause after five consecutive failures, and their
   scheduler is unref'd and stopped during orderly shutdown.
-  **Known implementation drift (reviewed 2026-08-31):** shared detail currently
-  exposes stored payload while recipient HTML/PDF remains owner-only, and
-  `connector_sync` automation creation/execution does not consistently enforce
-  remote-egress consent. M07 tracks both defects. Preserve the intended
-  fail-closed contract above; do not normalize these behaviors as policy.
 - Connector schedules are a derived convenience surface over `connector_sync`
   automations (at most one per connector, enforced in the automation store);
   the Automations view stays authoritative. Connector deletion cascades the

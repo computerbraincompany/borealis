@@ -29,18 +29,21 @@ horizon, scoped so it can be verified without the next one.
 | [M04](M04-libraries.md)           | 2       | Libraries — governed collections above a pile of uploads                              | DONE    |
 | [M05](M05-named-agents.md)        | 2       | Named agents — versioned instructions with write-once chat bindings                   | DONE    |
 | [M06](M06-contained-models.md)    | 1       | Contained-model lifecycle on macOS as a first-class mode                              | PARTIAL |
-| [M07](M07-team-platform.md)       | 3       | Small-team platform — sharing snapshots, audit plane, automations                     | PARTIAL |
+| [M07](M07-team-platform.md)       | 3       | Small-team platform — sharing snapshots, audit plane, automations                     | DONE    |
 | [M08](M08-citations.md)           | 2       | Citations — numbered, clickable evidence that survives diligence review               | DONE    |
 | [M09](M09-connector-platform.md)  | 2       | Connector platform surface — schedules on the connector, sync history, clean teardown | DONE    |
 | [M10](M10-composer-instrument.md) | 1       | The composer as one instrument — libraries in the scope picker, answer typography     | DONE    |
 | [M11](M11-personal-defaults.md)   | 2       | Personal defaults — the account's own default chat model                              | DONE    |
 
-M06 and M07 have shipped cores but remain partial: M06 needs its Settings
-management panel and atomic config replacement plus engine-start hardening;
-M07 needs shared-report authorization, connector-sync consent remediation, and
-precise audit wording. M03 closed its remaining disclosure-consistency work on
-2026-09-01: the consent card, sidebar strip, and Settings privacy text now
-render one shared payload-class constant
+M06 has shipped its core but remains partial: it needs its Settings
+management panel and atomic config replacement plus engine-start hardening.
+M07 closed its remaining authorization and wording defects on 2026-09-01:
+share recipients get read-only detail/HTML/PDF with the stored payload kept
+owner-only, `connector_sync` automations gate creation/update and recheck
+consent on every scheduled execution, and Settings describes egress events as
+best-effort activity receipts. M03 closed its remaining disclosure-
+consistency work on 2026-09-01: the consent card, sidebar strip, and Settings
+privacy text now render one shared payload-class constant
 (`web/src/lib/egressDisclosure.ts`). The other written milestones are
 complete. New product scope receives M12
 rather than turning the vision or historical plan archive into an implicit

@@ -399,8 +399,8 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                         Egress audit
                       </h3>
                       <p className="mt-1 text-xs text-muted-foreground">
-                        Content-free record of work sent to remote model providers: what kind, which endpoint host,
-                        when. Nothing here contains prompts or data.
+                        Best-effort activity receipts for remote-capable work: what kind, which endpoint host, when.
+                        They do not prove that bytes reached the provider, and nothing here contains prompts or data.
                       </p>
                     </div>
                     <ol className="divide-y">

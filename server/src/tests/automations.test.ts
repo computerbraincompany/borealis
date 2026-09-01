@@ -10,8 +10,10 @@ vi.mock("../agent.js", () => ({ runAgent: vi.fn() }));
 import { runAgent, type AgentCompletion } from "../agent.js";
 import { signToken } from "../auth.js";
 import { createAutomationRunner } from "../automationRunner.js";
+import { listEgressEvents } from "../egressAudit.js";
 import { installHttpBoundary } from "../httpErrors.js";
 import { automationRoutes } from "../routes/automations.js";
+import { closeRuntimeSettings, initializeRuntimeSettings, runtimeSettingsStore } from "../runtimeSettings.js";
 import { closeStorageRuntime, initializeStorageRuntime, storageRuntime } from "../storageRuntime.js";
 import { LATEST_SQLITE_SCHEMA_VERSION } from "../db/migrations.js";
 import { SourceScopeError } from "../sourceScope.js";
@@ -40,11 +42,18 @@ beforeEach(async () => {
   ] as const) {
     await runtime.ledger.run("INSERT INTO users (id,email,password_hash) VALUES (?,?,?)", [id, email, "hash"]);
   }
+  // Defaults are loopback, so every preexisting test keeps a non-gating provider;
+  // consent tests patch the store below to a remote origin.
+  await initializeRuntimeSettings({
+    settingsFile: path.join(runtimeDirectory, "settings.json"),
+    env: {},
+  });
 });
 
 afterEach(async () => {
   vi.restoreAllMocks();
   await Promise.all(apps.splice(0).map((app) => app.close()));
+  closeRuntimeSettings();
   await closeStorageRuntime();
   if (runtimeDirectory) await fs.rm(runtimeDirectory, { recursive: true, force: true });
   runtimeDirectory = "";
@@ -91,6 +100,13 @@ function agentCompletion(): AgentCompletion {
       query_results: [],
     },
   };
+}
+
+async function acknowledgeRemoteEgress(accountId: string): Promise<void> {
+  await storageRuntime().ledger.run(
+    "UPDATE users SET remote_egress_ack_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?",
+    [accountId]
+  );
 }
 
 describe("automation store and schema", () => {
@@ -542,5 +558,187 @@ describe("automation runner", () => {
       consecutive_failures: 3,
     });
     expect(runAgentMock).toHaveBeenCalledOnce();
+  });
+});
+
+describe("remote egress consent for connector_sync automations", () => {
+  it("blocks connector_sync creation and update without acknowledgment", async () => {
+    await runtimeSettingsStore().patch({ llmBaseUrl: "https://api.provider.example" });
+    const app = await buildApp();
+    const connectorId = await insertConnector(OWNER);
+
+    const blockedCreate = await app.inject({
+      method: "POST",
+      url: "/api/automations",
+      headers: ownerAuth,
+      body: { name: "Gated sync", kind: "connector_sync", target_id: connectorId, schedule_minutes: 60 },
+    });
+    expect(blockedCreate.statusCode).toBe(403);
+    expect(blockedCreate.json()).toEqual({
+      error: "Acknowledgment is required before this workspace sends data to a remote model provider.",
+      code: "REMOTE_EGRESS_CONSENT_REQUIRED",
+    });
+    await expect(storageRuntime().ledger.all("SELECT 1 FROM automations")).resolves.toEqual([]);
+
+    // An existing connector_sync automation is gated on every mutation too.
+    const existing = await storageRuntime().automations.create({
+      accountId: OWNER,
+      name: "Existing sync",
+      kind: "connector_sync",
+      targetId: connectorId,
+      scheduleMinutes: 60,
+    });
+    const blockedPatch = await app.inject({
+      method: "PATCH",
+      url: `/api/automations/${existing.id}`,
+      headers: ownerAuth,
+      body: { name: "Renamed", state: "paused", schedule_minutes: 45 },
+    });
+    expect(blockedPatch.statusCode).toBe(403);
+    expect(blockedPatch.json()).toMatchObject({ code: "REMOTE_EGRESS_CONSENT_REQUIRED" });
+    await expect(storageRuntime().automations.get(OWNER, existing.id)).resolves.toMatchObject({
+      name: "Existing sync",
+      state: "active",
+      schedule_minutes: 60,
+    });
+  });
+
+  it("leaves agent_turn creation and update ungated under the same remote provider", async () => {
+    await runtimeSettingsStore().patch({ llmBaseUrl: "https://api.provider.example" });
+    const app = await buildApp();
+    const chatId = await insertChat(OWNER);
+
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/automations",
+      headers: ownerAuth,
+      body: {
+        name: "Digest",
+        kind: "agent_turn",
+        target_id: chatId,
+        prompt: "Summarize the attached sources for the team.",
+        schedule_minutes: 60,
+      },
+    });
+    expect(created.statusCode).toBe(201);
+    const automationId = created.json().id as string;
+
+    const patched = await app.inject({
+      method: "PATCH",
+      url: `/api/automations/${automationId}`,
+      headers: ownerAuth,
+      body: { state: "paused" },
+    });
+    expect(patched.statusCode).toBe(200);
+    expect(patched.json()).toMatchObject({ kind: "agent_turn", state: "paused" });
+  });
+
+  it("allows connector_sync creation and update after acknowledgment", async () => {
+    await runtimeSettingsStore().patch({ llmBaseUrl: "https://api.provider.example" });
+    const app = await buildApp();
+    const connectorId = await insertConnector(OWNER);
+    await acknowledgeRemoteEgress(OWNER);
+
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/automations",
+      headers: ownerAuth,
+      body: { name: "Allowed sync", kind: "connector_sync", target_id: connectorId, schedule_minutes: 60 },
+    });
+    expect(created.statusCode).toBe(201);
+    const automationId = created.json().id as string;
+
+    const patched = await app.inject({
+      method: "PATCH",
+      url: `/api/automations/${automationId}`,
+      headers: ownerAuth,
+      body: { name: "Renamed sync", schedule_minutes: 30 },
+    });
+    expect(patched.statusCode).toBe(200);
+    expect(patched.json()).toMatchObject({ name: "Renamed sync", schedule_minutes: 30 });
+  });
+
+  it("skips a due connector_sync automation without consent and never syncs", async () => {
+    await runtimeSettingsStore().patch({ llmBaseUrl: "https://api.provider.example" });
+    const app = await buildApp();
+    const connectorId = await insertConnector(OWNER);
+    const automation = await storageRuntime().automations.create({
+      accountId: OWNER,
+      name: "Unacknowledged sync",
+      kind: "connector_sync",
+      targetId: connectorId,
+      scheduleMinutes: 15,
+    });
+
+    const syncConnector = vi.fn();
+    const runner = createAutomationRunner({
+      store: storageRuntime().automations,
+      syncConnector,
+      tickIntervalMs: 10_000,
+      now: () => new Date(Date.now() + 60 * 60 * 1000),
+    });
+    await runner.tick();
+
+    expect(syncConnector).not.toHaveBeenCalled();
+    const runs = await app.inject({ method: "GET", url: `/api/automations/${automation.id}/runs`, headers: ownerAuth });
+    expect(runs.json()[0]).toMatchObject({ outcome: "skipped", detail: "remote egress consent is required" });
+    // The gate stops before any connector work: no sync history and no failure
+    // accumulation.
+    await expect(storageRuntime().ledger.all("SELECT 1 FROM connector_syncs")).resolves.toEqual([]);
+    await expect(storageRuntime().automations.get(OWNER, automation.id)).resolves.toMatchObject({
+      state: "active",
+      consecutive_failures: 0,
+    });
+  });
+
+  it("runs a due connector_sync automation after acknowledgment and audits remote ingest", async () => {
+    await runtimeSettingsStore().patch({ llmBaseUrl: "https://api.provider.example" });
+    const app = await buildApp();
+    const connectorId = await insertConnector(OWNER);
+    await acknowledgeRemoteEgress(OWNER);
+    const automation = await storageRuntime().automations.create({
+      accountId: OWNER,
+      name: "Audited sync",
+      kind: "connector_sync",
+      targetId: connectorId,
+      scheduleMinutes: 15,
+    });
+
+    const syncConnector = vi.fn().mockResolvedValue({});
+    const runner = createAutomationRunner({
+      store: storageRuntime().automations,
+      syncConnector,
+      tickIntervalMs: 10_000,
+      now: () => new Date(Date.now() + 60 * 60 * 1000),
+    });
+    await runner.tick();
+    expect(syncConnector).toHaveBeenCalledOnce();
+
+    const runs = await app.inject({ method: "GET", url: `/api/automations/${automation.id}/runs`, headers: ownerAuth });
+    expect(runs.json()[0]).toMatchObject({ outcome: "succeeded" });
+
+    // The scheduled path bypasses the connector routes that normally audit
+    // remote ingest, so the runner writes the content-free receipt itself; it
+    // is best effort and unawaited.
+    await vi.waitFor(async () => {
+      expect(await listEgressEvents(OWNER, 50)).toHaveLength(1);
+    });
+    const events = await listEgressEvents(OWNER, 50);
+    expect(events[0]).toMatchObject({ kind: "remote_ingest", endpoint_host: "api.provider.example" });
+  });
+
+  it("never gates connector_sync creation for a loopback provider", async () => {
+    await runtimeSettingsStore().patch({ llmBaseUrl: "http://127.0.0.1:1234" });
+    const app = await buildApp();
+    const connectorId = await insertConnector(OWNER);
+
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/automations",
+      headers: ownerAuth,
+      body: { name: "Local sync", kind: "connector_sync", target_id: connectorId, schedule_minutes: 60 },
+    });
+    expect(created.statusCode).toBe(201);
+    expect(created.json()).toMatchObject({ kind: "connector_sync", state: "active" });
   });
 });

@@ -55,6 +55,15 @@ export function createAutomationRunner(dependencies: AutomationRunnerDependencie
   }
 
   async function executeConnectorSync(automationId: string, accountId: string, connectorId: string): Promise<void> {
+    try {
+      await requireRemoteEgressConsent(accountId);
+    } catch {
+      await store.recordRun(automationId, accountId, "skipped", "remote egress consent is required");
+      return;
+    }
+    // The scheduled path bypasses the connector routes that normally audit
+    // remote ingest themselves; keep the receipt best effort like agent turns.
+    void auditRemoteEgress("remote_ingest", accountId);
     const startedAt = now().toISOString();
     const connector = await storageRuntime().sources.getConnector(accountId, connectorId);
     if (!connector) {
