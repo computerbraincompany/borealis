@@ -28,24 +28,27 @@ horizon, scoped so it can be verified without the next one.
 | [M03](M03-egress-consent.md)      | 1+2     | Egress consent cards — fail-closed gate and consent UI for direct payload routes      | DONE    |
 | [M04](M04-libraries.md)           | 2       | Libraries — governed collections above a pile of uploads                              | DONE    |
 | [M05](M05-named-agents.md)        | 2       | Named agents — versioned instructions with write-once chat bindings                   | DONE    |
-| [M06](M06-contained-models.md)    | 1       | Contained-model lifecycle on macOS as a first-class mode                              | PARTIAL |
+| [M06](M06-contained-models.md)    | 1       | Contained-model lifecycle on macOS as a first-class mode                              | DONE    |
 | [M07](M07-team-platform.md)       | 3       | Small-team platform — sharing snapshots, audit plane, automations                     | DONE    |
 | [M08](M08-citations.md)           | 2       | Citations — numbered, clickable evidence that survives diligence review               | DONE    |
 | [M09](M09-connector-platform.md)  | 2       | Connector platform surface — schedules on the connector, sync history, clean teardown | DONE    |
 | [M10](M10-composer-instrument.md) | 1       | The composer as one instrument — libraries in the scope picker, answer typography     | DONE    |
 | [M11](M11-personal-defaults.md)   | 2       | Personal defaults — the account's own default chat model                              | DONE    |
 
-M06 has shipped its core but remains partial: it needs its Settings
-management panel and atomic config replacement plus engine-start hardening.
-M07 closed its remaining authorization and wording defects on 2026-09-01:
-share recipients get read-only detail/HTML/PDF with the stored payload kept
-owner-only, `connector_sync` automations gate creation/update and recheck
-consent on every scheduled execution, and Settings describes egress events as
-best-effort activity receipts. M03 closed its remaining disclosure-
+M03, M06, and M07 are now DONE. M03 closed its remaining disclosure-
 consistency work on 2026-09-01: the consent card, sidebar strip, and Settings
-privacy text now render one shared payload-class constant
-(`web/src/lib/egressDisclosure.ts`). The other written milestones are
-complete. New product scope receives M12
+privacy text render one shared payload-class constant
+(`web/src/lib/egressDisclosure.ts`). M07 closed its remaining authorization
+and wording defects on 2026-09-01: share recipients get read-only
+detail/HTML/PDF with the stored payload kept owner-only, `connector_sync`
+automations gate creation/update and recheck consent on every scheduled
+execution, and Settings describes egress events as best-effort activity
+receipts. M06 closed its remaining Settings-panel and hardening work on
+2026-09-01: the Settings → Models contained panel ships with `containedApi`,
+`contained.json` uses same-directory atomic replacement preserving mode
+`0600`, and spawn failures enter the bounded engine state machine with
+deterministic path diagnostics. The other written milestones are complete.
+New product scope receives M12
 rather than turning the vision or historical plan archive into an implicit
 backlog; remediation may close the existing milestone that owns the contract.
 The operator-selected product slices in advisor plans 034–037 now ship as
@@ -81,6 +84,16 @@ Completed sequencing notes:
 
 ## Verification record
 
+- 2026-09-01: M07 closed — full server suite green (869 tests) after the
+  shared-report authorization fix (recipient detail/HTML/PDF, payload
+  owner-only) and the `connector_sync` consent gates; AGENTS.md drift
+  paragraph removed. M06 closed — contained config store/engine suites green,
+  Settings → Models panel shipped, and the live check passed on an isolated
+  `BOREALIS_DATA_DIR`: fixture download with SHA-256 verification into the
+  data directory (mode `0600`), stub engine start reached `healthy` with
+  `/api/status` reporting the contained section and the provider origin
+  auto-applied to the engine's loopback address, and stop restored the prior
+  origin (`http://127.0.0.1:1234`) with no stub-engine process left behind.
 - 2026-09-01: M03 closed — the consent card, sidebar strip, and Settings
   privacy text now render one shared payload-class constant
   (`web/src/lib/egressDisclosure.ts`); WorkspaceStatus, SettingsView, and

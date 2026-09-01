@@ -5,12 +5,17 @@ macOS as a first-class path beside "paste a cluster origin."* Plus the vision's
 model topology: contained mode is a first-class personality — offline-capable,
 zero token meter, honest about limits.
 
-**Status:** PARTIAL. Commits `af49681` (verified downloads and config storage),
-`05af22c` (engine lifecycle and endpoint switching), and `7adac79` (ambient
-status, shutdown, and desktop data paths) shipped the backend/API and chrome
-slices. The Settings management panel and atomic configuration replacement in
-this specification remain unimplemented. Engine spawn-error handling and
-deterministic missing-path diagnostics also remain open.
+**Status:** DONE (2026-09-01). Commits `af49681` (verified downloads and config
+storage), `05af22c` (engine lifecycle and endpoint switching), and `7adac79`
+(ambient status, shutdown, and desktop data paths) shipped the backend/API and
+chrome slices. The 2026-09-01 remediation closed the remainder: Settings →
+Models ships the contained-management panel (`ContainedConfig`/`ContainedDownloadState`
+client types and a `containedApi` wrapper in `web/src/lib/api.ts`,
+`useContained` + `ContainedPanel` with live 2-second polling),
+`contained.json` uses same-directory atomic replacement preserving mode `0600`
+with mode repair, spawn failures reach the child-process `error` listener and
+land in the bounded `crashed` state, and missing-path diagnostics are
+deterministic (binary before model).
 
 ## Problem
 

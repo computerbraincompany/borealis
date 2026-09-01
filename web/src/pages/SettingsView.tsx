@@ -16,6 +16,7 @@ import {
   UserRound,
 } from "lucide-react";
 import { useTheme, type ThemeChoice } from "@/components/ThemeProvider";
+import { ContainedPanel } from "@/components/ContainedPanel";
 import { SystemHealthPanel } from "@/components/SystemHealthPanel";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
@@ -1103,6 +1104,8 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                     </ul>
                   )}
                 </div>
+
+                <ContainedPanel />
               </section>
             )}
 

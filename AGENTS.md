@@ -399,8 +399,9 @@ files. Engine stop is part of the orderly shutdown path (`closeDb`).
 `contained.json` is replaced by a same-directory atomic rename that keeps mode
 `0600` and repairs a pre-existing widened mode; spawn failures reach the
 child-process `error` listener and land in the bounded `crashed` state, and
-missing-path diagnostics are deterministic (binary before model). The web app
-exposes ambient state but no contained-management panel yet.
+missing-path diagnostics are deterministic (binary before model). The Settings
+→ Models panel owns configuration, verified downloads, and engine
+start/stop through `containedApi`.
 
 The ambient chrome strip is fed by `GET /api/status`
 (`server/src/workspaceStatus.ts`). Keep its probe body-free, bounded, and

@@ -248,7 +248,7 @@ absolute `--user-data-dir` override):
 | `lancedb/`                 | Embedding vectors plus the mode-`0600` resolved-model/dimension marker and first-binding receipt paired with SQLite. |
 | `uploads/`                 | Account/source-scoped uploads and connector caches.                                                                  |
 | `reports/`                 | Generated HTML and PDF files.                                                                                        |
-| `models/`                  | Checksum-verified contained-model downloads and resumable `.part` files.                                             |
+| `models/`                  | Checksum-verified contained-model downloads and resumable `.part` files (`CONTAINED_DIR` resolves here under userData). |
 | `.lancedb-migrations/`     | Private staged/backup indexes for an active managed embedding migration.                                             |
 | `embedding-migration.json` | Mode-`0600` aggregate migration state; absent when no operation remains.                                             |
 | `contained.json`           | Contained-engine paths/arguments; atomically replaced with mode `0600`.                                              |

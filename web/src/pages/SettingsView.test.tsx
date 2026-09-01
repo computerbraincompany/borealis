@@ -3,6 +3,12 @@ import { ApiError, type ModelsResponse, type ProviderSettingsResponse, type Syst
 
 const mocks = vi.hoisted(() => ({
   clearSession: vi.fn(),
+  containedCancelDownload: vi.fn(),
+  containedGet: vi.fn(),
+  containedSaveConfig: vi.fn(),
+  containedStartDownload: vi.fn(),
+  containedStartEngine: vi.fn(),
+  containedStopEngine: vi.fn(),
   egressAudit: vi.fn(),
   migrationApply: vi.fn(),
   migrationCancel: vi.fn(),
@@ -58,6 +64,15 @@ vi.mock("@/lib/api", async () => {
       get: mocks.settingsGet,
       update: mocks.settingsUpdate,
       testConnection: mocks.settingsTest,
+    },
+    containedApi: {
+      ...actual.containedApi,
+      get: mocks.containedGet,
+      saveConfig: mocks.containedSaveConfig,
+      startDownload: mocks.containedStartDownload,
+      cancelDownload: mocks.containedCancelDownload,
+      startEngine: mocks.containedStartEngine,
+      stopEngine: mocks.containedStopEngine,
     },
     preferencesApi: {
       get: mocks.preferencesGet,
@@ -163,6 +178,15 @@ function deferred<T>() {
 describe("SettingsView", () => {
   beforeEach(() => {
     mocks.clearSession.mockReset();
+    mocks.containedCancelDownload.mockReset();
+    mocks.containedGet.mockReset();
+    mocks.containedSaveConfig.mockReset();
+    mocks.containedStartDownload.mockReset();
+    mocks.containedStartEngine.mockReset();
+    mocks.containedStopEngine.mockReset();
+    // The contained panel polls while Models is open; keeping its snapshot
+    // request pending prevents unrelated assertions from racing a form update.
+    mocks.containedGet.mockReturnValue(new Promise(() => undefined));
     mocks.egressAudit.mockReset();
     mocks.migrationApply.mockReset();
     mocks.migrationCancel.mockReset();

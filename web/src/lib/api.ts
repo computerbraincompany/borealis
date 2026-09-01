@@ -1148,6 +1148,71 @@ export const consentApi = {
   acknowledge: () => api<RemoteEgressState>("/api/consent/remote-egress", { method: "POST" }),
 };
 
+// ------------------------------------------------------------------ contained
+export interface ContainedConfig {
+  enabled: boolean;
+  binary_path: string;
+  model_path: string;
+  extra_args: string[];
+}
+
+export interface ContainedConfigInput {
+  enabled: boolean;
+  binary_path?: string;
+  model_path?: string;
+  extra_args?: string[];
+}
+
+export interface ContainedDownloadState {
+  filename: string;
+  url_host: string;
+  state: "downloading" | "verifying" | "complete" | "failed" | "canceled";
+  bytes_received: number;
+  total_bytes: number | null;
+  error?: string;
+}
+
+export interface ContainedDownloadInput {
+  url: string;
+  filename: string;
+  sha256: string;
+}
+
+/** Full engine status from the contained management surface. */
+export interface ContainedEngineStatus {
+  state: ContainedEngineState;
+  model: string | null;
+  endpoint_host: string | null;
+  endpoint_managed_by_env: boolean;
+  pid: number | null;
+  started_at: string | null;
+  error: string | null;
+}
+
+export interface ContainedResponse {
+  config: ContainedConfig | null;
+  engine: ContainedEngineStatus;
+  downloads: ContainedDownloadState[];
+}
+
+export const containedApi = {
+  get: (signal?: AbortSignal) => api<ContainedResponse>("/api/contained", { signal }),
+  saveConfig: (config: ContainedConfigInput, signal?: AbortSignal) =>
+    api<ContainedConfig>("/api/contained/config", { method: "PUT", body: JSON.stringify(config), signal }),
+  startDownload: (body: ContainedDownloadInput, signal?: AbortSignal) =>
+    api<ContainedDownloadState>("/api/contained/downloads", {
+      method: "POST",
+      body: JSON.stringify(body),
+      signal,
+    }),
+  cancelDownload: (filename: string, signal?: AbortSignal) =>
+    api<{ ok: true }>(`/api/contained/downloads/${encodeURIComponent(filename)}`, { method: "DELETE", signal }),
+  startEngine: (signal?: AbortSignal) =>
+    api<ContainedEngineStatus>("/api/contained/engine/start", { method: "POST", signal }),
+  stopEngine: (signal?: AbortSignal) =>
+    api<ContainedEngineStatus>("/api/contained/engine/stop", { method: "POST", signal }),
+};
+
 // ------------------------------------------------------------------ libraries
 export interface AgentSummary {
   id: string;

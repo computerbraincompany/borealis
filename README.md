@@ -151,10 +151,10 @@ it can download and SHA-256-verify into the app's own data directory), then use
 the [contained-model API](docs/API.md#contained-models) to start and stop the
 engine. Borealis health-checks and stops that process as part of the workspace,
 switches the provider to its loopback origin, and restores whatever was there
-before. Workspace chrome shows its state, but the Settings UI does not yet
-provide contained setup or lifecycle controls. When the endpoint is managed by
-an environment override, Borealis reports the stand-down instead of overriding
-it.
+before. **Settings → Models** provides the contained setup and lifecycle
+controls — configuration, verified downloads, and engine start/stop with live
+state. When the endpoint is managed by an environment override, Borealis
+reports the stand-down instead of overriding it.
 
 These model names are aliases defined in
 [server/src/llmAliases.ts](server/src/llmAliases.ts):
@@ -569,9 +569,8 @@ restore, and forward-version behavior.
 - Durable chat-turn and connector-sync automations, connector schedules, and
   content-free egress/sync audit history.
 - Ambient provider locality, direct-route remote-egress consent, and an
-  API-managed loopback `llama-server` lifecycle for contained models; current
-  disclosure, automation, and Settings-control gaps are recorded in the
-  milestone ledger.
+  API-managed loopback `llama-server` lifecycle for contained models with
+  Settings → Models lifecycle controls.
 - Synthetic model-pair qualification, managed crash-recoverable embedding-index
   migration, bounded local macOS PDF OCR, and encrypted verified workspace
   archives.
