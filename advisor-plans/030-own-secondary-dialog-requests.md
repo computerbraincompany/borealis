@@ -84,3 +84,19 @@ dialog. Report sharing can show A's state while buttons operate on B.
 
 - Fixing the race would require storing authorization state only in the client;
   server-side ownership remains authoritative and must not be weakened.
+
+## Implementation note (2026-09-04 audit follow-up)
+
+- A UI/UX audit follow-up found that the ownership guards left a user-reachable
+  silent-failure path for create/rename mutation dialogs: dismissing the dialog
+  mid-flight discarded a settling response whose error slot lived inside the
+  dialog, and a committed create row could stay invisible until the next
+  manual refresh. Agent, connector, automation, and library create/rename
+  dialogs now block dismissal while their request is in flight, matching the
+  `ConfirmDialog` busy contract, while keeping the original abort/sequence-token
+  guards for unmount and programmatic close. The close/switch-while-pending
+  ownership tests for those dialogs were rewritten to assert the stricter
+  "stays open until settle, then owns the result" contract. Report sharing and
+  library-detail/member dialogs intentionally keep close-while-pending because
+  both re-fetch authoritative state on open, so a dropped mutation cannot hide
+  committed server state.

@@ -282,7 +282,11 @@ runtime startup alone republishes that matching marker.
 - Web asynchronous surfaces must give each load/mutation an exact target plus
   request generation and, where supported, an `AbortController`; stale success,
   error, loading, navigation, and finalizer effects cannot mutate a newer or
-  closed target. Unexpected React `act` warnings fail the shared test harness.
+  closed target. A create/rename dialog whose failure slot or committed row
+  would go invisible when dismissed must block dismissal while its request is
+  in flight (the `ConfirmDialog` busy pattern); dialogs that re-fetch
+  authoritative state on open may close mid-flight. Unexpected React `act`
+  warnings fail the shared test harness.
 - Noninitial routes and ECharts stay lazy. The Vite manifest/bundle gate enforces
   the committed 240 KiB initial-gzip and 130 KiB maximum-lazy-gzip budgets plus
   separate route/chart entries; packaged static hosting must copy and serve the
