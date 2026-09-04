@@ -1,13 +1,65 @@
+import { createServer, type Server } from "node:http";
+import { AddressInfo } from "node:net";
 import { describe, expect, it, vi } from "vitest";
 import {
   explicitHttpUrls,
   fetchPublicText,
   fetchPublicTextWithTransport,
+  isUnsafeIp,
   normalizeHttpUrl,
+  requestPinned,
   resolveRedirectTarget,
 } from "../networkPolicy.js";
 
 describe("outbound URL policy", () => {
+  it("pins a single validated address for both lookup callback forms", async () => {
+    // Regression: Node's default autoSelectFamily invokes the pinned lookup
+    // with {all:true} and expects the array form; the old single-value answer
+    // made every pinned request fail with ERR_INVALID_IP_ADDRESS.
+    const server: Server = await new Promise((resolve) => {
+      const created = createServer((_request, response) => {
+        response.writeHead(200, { "content-type": "text/plain" });
+        response.end("pinned-ok");
+      });
+      created.listen(0, "127.0.0.1", () => resolve(created));
+    });
+    try {
+      const { port } = server.address() as AddressInfo;
+      const response = await requestPinned(
+        new URL(`http://127.0.0.1:${port}/`),
+        [{ address: "127.0.0.1", family: 4 }],
+        AbortSignal.timeout(5000)
+      );
+      const text = await new Promise<string>((resolve, reject) => {
+        let body = "";
+        response.setEncoding("utf8");
+        response.on("data", (chunk) => (body += chunk));
+        response.on("end", () => resolve(body));
+        response.on("error", reject);
+      });
+      expect(response.statusCode).toBe(200);
+      expect(text).toBe("pinned-ok");
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it("classifies addresses per family without the IPv4-mapped blocklist leaking into IPv4 checks", () => {
+    // Regression: Node's BlockList matches IPv4 input as IPv4-mapped IPv6, so a
+    // shared list holding "::ffff:0:0/96" marked every public IPv4 unsafe.
+    expect(isUnsafeIp("8.8.8.8")).toBe(false);
+    expect(isUnsafeIp("185.199.108.133")).toBe(false);
+    expect(isUnsafeIp("2606:50c0:8003::154")).toBe(false);
+    expect(isUnsafeIp("127.0.0.1")).toBe(true);
+    expect(isUnsafeIp("10.1.2.3")).toBe(true);
+    expect(isUnsafeIp("169.254.169.254")).toBe(true);
+    expect(isUnsafeIp("::1")).toBe(true);
+    expect(isUnsafeIp("::ffff:127.0.0.1")).toBe(true);
+    expect(isUnsafeIp("::ffff:8.8.8.8")).toBe(true);
+    expect(isUnsafeIp("fc00::1")).toBe(true);
+    expect(isUnsafeIp("not-an-ip")).toBe(true);
+  });
+
   it("extracts only explicit HTTP(S) URLs and normalizes fragments", () => {
     expect([...explicitHttpUrls("Read https://example.com/a#section, then answer")]).toEqual(["https://example.com/a"]);
     expect([...explicitHttpUrls("ignore ftp://example.com and javascript:alert(1)")]).toEqual([]);

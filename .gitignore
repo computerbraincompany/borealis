@@ -13,6 +13,7 @@ __pycache__/
 *.duckdb
 *.duckdb.wal
 .borealis/
+*.borealis-instance.lock/
 *.sqlite
 *.sqlite-shm
 *.sqlite-wal

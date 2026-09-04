@@ -242,15 +242,20 @@ export function ConnectorsView() {
             Pull CSV / JSON datasets straight from a URL — no file download needed.
           </p>
         </div>
-        <Button
-          size="sm"
-          onClick={() => {
-            setError(null);
-            setOpen(true);
-          }}
-        >
-          <Plus className="h-4 w-4" /> Add connector
-        </Button>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button variant="secondary" size="sm" onClick={() => void refresh(true)} disabled={loading}>
+            <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} /> Refresh
+          </Button>
+          <Button
+            size="sm"
+            onClick={() => {
+              setError(null);
+              setOpen(true);
+            }}
+          >
+            <Plus className="h-4 w-4" /> Add connector
+          </Button>
+        </div>
       </div>
 
       {catalogError && (

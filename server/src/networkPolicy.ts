@@ -7,7 +7,10 @@ const MAX_REDIRECTS = 3;
 const MAX_RESPONSE_BYTES = 1_000_000;
 const FETCH_TIMEOUT_MS = 15_000;
 
-const unsafeAddresses = new BlockList();
+// Node's BlockList compares IPv4 input as an IPv4-mapped IPv6 address, so a
+// shared list containing "::ffff:0:0/96" would mark every public IPv4 unsafe.
+// Keep one list per address family and check against the matching family only.
+const unsafeIpv4Addresses = new BlockList();
 for (const [network, prefix] of [
   ["0.0.0.0", 8],
   ["10.0.0.0", 8],
@@ -24,8 +27,9 @@ for (const [network, prefix] of [
   ["224.0.0.0", 4],
   ["240.0.0.0", 4],
 ] as const) {
-  unsafeAddresses.addSubnet(network, prefix, "ipv4");
+  unsafeIpv4Addresses.addSubnet(network, prefix, "ipv4");
 }
+const unsafeIpv6Addresses = new BlockList();
 for (const [network, prefix] of [
   ["::", 128],
   ["::1", 128],
@@ -47,7 +51,7 @@ for (const [network, prefix] of [
   ["fec0::", 10],
   ["ff00::", 8],
 ] as const) {
-  unsafeAddresses.addSubnet(network, prefix, "ipv6");
+  unsafeIpv6Addresses.addSubnet(network, prefix, "ipv6");
 }
 
 export class UrlPolicyError extends Error {
@@ -99,10 +103,11 @@ export function resolveRedirectTarget(current: URL, location: string): URL {
   return target;
 }
 
-function isUnsafeIp(address: string): boolean {
+/** Exported for tests: blocks private/loopback/reserved space per family. */
+export function isUnsafeIp(address: string): boolean {
   const family = isIP(address);
-  if (family === 4) return unsafeAddresses.check(address, "ipv4");
-  if (family === 6) return unsafeAddresses.check(address, "ipv6");
+  if (family === 4) return unsafeIpv4Addresses.check(address, "ipv4");
+  if (family === 6) return unsafeIpv6Addresses.check(address, "ipv6");
   return true;
 }
 
@@ -156,9 +161,14 @@ export function requestPinned(
         signal,
         headers,
         // Pin the validated DNS result so a second lookup cannot redirect the
-        // socket to a private address (DNS-rebinding TOCTOU).
-        lookup: ((_hostname: string, _options: unknown, callback: (...args: unknown[]) => void) => {
-          callback(null, selected.address, selected.family);
+        // socket to a private address (DNS-rebinding TOCTOU). Node's default
+        // autoSelectFamily asks with {all:true} and expects the array form.
+        lookup: ((_hostname: string, options: { all?: boolean }, callback: (...args: unknown[]) => void) => {
+          if (options?.all) {
+            callback(null, [{ address: selected.address, family: selected.family }]);
+          } else {
+            callback(null, selected.address, selected.family);
+          }
         }) as any,
       },
       resolve
