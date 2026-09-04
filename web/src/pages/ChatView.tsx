@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useReducer, useRef, useState } from "react";
+import { useCallback, useEffect, useReducer, useRef, useState, type UIEvent } from "react";
 import { Cpu, Loader2, Plus, Send, Square, Sparkles, X } from "lucide-react";
 import {
   ApiError,
@@ -62,6 +62,10 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
   const [olderMessagesLoading, setOlderMessagesLoading] = useState(false);
   const [olderMessagesError, setOlderMessagesError] = useState<string | null>(null);
   const [newChatError, setNewChatError] = useState<string | null>(null);
+  const [chatsLoading, setChatsLoading] = useState(true);
+  const [chatsError, setChatsError] = useState<string | null>(null);
+  const [detailError, setDetailError] = useState<string | null>(null);
+  const [agentCatalogError, setAgentCatalogError] = useState<string | null>(null);
   const [newChatModelSelection, setNewChatModelSelection] = useState<string | null>(null);
   const [newChatAgentSelection, setNewChatAgentSelection] = useState<string | null>(null);
   const [chatsNextCursor, setChatsNextCursor] = useState<string | null>(null);
@@ -87,6 +91,9 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
   const cancellationAcceptedByChatRef = useRef(new Map<string, string>());
   const cancellationByRunRef = useRef(new Map<string, Promise<void>>());
   const bottomRef = useRef<HTMLDivElement>(null);
+  // Auto-scroll stays pinned to the newest message unless the user scrolls up
+  // to re-read; the scroll handler keeps this flag current.
+  const stickToBottomRef = useRef(true);
   const stepKeyRef = useRef(0);
   const chatListRequestRef = useRef(0);
   const chatsNextCursorRef = useRef<string | null>(null);
@@ -133,13 +140,21 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
     const requestId = ++chatListRequestRef.current;
     chatsLoadingMoreRef.current = false;
     setChatsLoadingMore(false);
+    setChatsLoading(true);
     try {
       const page = await chatsApi.list();
       if (!isMounted() || requestId !== chatListRequestRef.current) return;
       setChats((current) => sortChatsByActivity(mergeCatalogHead(page.items, current)));
       chatsNextCursorRef.current = page.next_cursor;
       setChatsNextCursor(page.next_cursor);
-    } catch {}
+      setChatsError(null);
+    } catch (error: unknown) {
+      if (!isMounted() || requestId !== chatListRequestRef.current) return;
+      // A failed first load must not masquerade as an empty history.
+      setChatsError(formatApiError(error, "Could not load conversations"));
+    } finally {
+      if (isMounted() && requestId === chatListRequestRef.current) setChatsLoading(false);
+    }
   }, [isMounted]);
 
   const loadMoreChats = useCallback(async () => {
@@ -175,8 +190,13 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
       setAgentCatalog((current) => mergeCatalogHead(page.items, current));
       agentCatalogNextCursorRef.current = page.next_cursor;
       setAgentCatalogNextCursor(page.next_cursor);
-    } catch {
-      // Agent selection is optional; keep any previously loaded choices.
+      setAgentCatalogError(null);
+    } catch (error: unknown) {
+      // Agent selection is optional; keep any previously loaded choices but
+      // surface the failure so the picker can offer a retry.
+      if (isMounted() && requestId === agentCatalogRequestRef.current) {
+        setAgentCatalogError(formatApiError(error, "Could not load agents"));
+      }
     } finally {
       if (isMounted() && requestId === agentCatalogRequestRef.current) setAgentCatalogLoading(false);
     }
@@ -333,13 +353,14 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
         applyChatDetail(next);
         setOlderMessagesLoading(false);
         setOlderMessagesError(null);
+        setDetailError(null);
         window.location.hash = `/chat/${id}`;
         return next;
       } catch (error: unknown) {
         if (ownsDetailRequest(request)) {
-          console.error(formatApiError(error, "Could not open this chat"));
           appliedDetailChatIdRef.current = null;
           setDetail(null);
+          setDetailError(formatApiError(error, "Could not open this chat"));
         }
         return null;
       }
@@ -354,6 +375,7 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
   }, [loadChats]);
 
   useEffect(() => {
+    stickToBottomRef.current = true;
     if (chatId) {
       // `loadChat` updates the hash after applying an owned detail. The route
       // render that follows must not issue a duplicate request for that same
@@ -368,6 +390,7 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
       setDetail(null);
       setOlderMessagesLoading(false);
       setOlderMessagesError(null);
+      setDetailError(null);
     }
   }, [chatId, clearSelection, currentChatId, loadChat, newChatRequest, releaseFirstSubmit]);
 
@@ -417,14 +440,20 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
     };
   }, [applyChatDetail, beginDetailRequest, currentChatId, detail, ownsDetailRequest]);
 
-  // scroll to bottom on updates
+  // scroll to bottom on updates, unless the user scrolled up to re-read
   useEffect(() => {
     if (preserveScrollRef.current) {
       preserveScrollRef.current = false;
       return;
     }
+    if (!stickToBottomRef.current) return;
     bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [detail, stream]);
+
+  const handleMessagesScroll = useCallback((event: UIEvent<HTMLDivElement>) => {
+    const el = event.currentTarget;
+    stickToBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+  }, []);
 
   const openNewChat = useCallback(async () => {
     setNewChatError(null);
@@ -459,8 +488,10 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
       titleSavingByChat[id] ||
       streamsByChat[id]?.running ||
       abortByChatRef.current.has(id)
-    )
-      return;
+    ) {
+      // Surfaced by the delete confirmation dialog instead of failing silently.
+      throw new Error("Wait for this chat to finish its current activity.");
+    }
     await chatsApi.remove(id);
     if (!isMounted()) return;
     chatListRequestRef.current += 1;
@@ -722,6 +753,17 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
           }
         } catch (error: unknown) {
           stopRequestedByChatRef.current.delete(chatId);
+          if (error instanceof ApiError && error.status === 404) {
+            // The run already reached a terminal state, so there is nothing to
+            // cancel; the authoritative detail refresh reconciles the UI.
+            const isCurrent = controller
+              ? abortByChatRef.current.get(chatId) === controller
+              : currentChatId() === chatId && rehydratedRunByChatRef.current.get(chatId) === runId;
+            if (isCurrent) {
+              dispatchStream({ type: "patch", chatId, patch: { stopping: false, error: null } });
+            }
+            return;
+          }
           const isCurrent = controller
             ? abortByChatRef.current.get(chatId) === controller
             : currentChatId() === chatId && rehydratedRunByChatRef.current.get(chatId) === runId;
@@ -1092,6 +1134,9 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
         ? "No chat models advertised"
         : `${modelOptions.length} chat ${modelOptions.length === 1 ? "model" : "models"} available`;
   const answerCount = messages.filter((message) => message.role === "assistant").length;
+  // Offered as the retry target for a failed generation; only meaningful for
+  // the loaded page, which is also where the error banner lives.
+  const lastUserContent = [...messages].reverse().find((message) => message.role === "user")?.content ?? null;
 
   return (
     <div className="flex h-full">
@@ -1108,6 +1153,9 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
           activeChatId={detail?.id}
           hasMore={chatsNextCursor !== null}
           loadingMore={chatsLoadingMore}
+          loading={chatsLoading}
+          error={chatsError}
+          onRetry={() => void loadChats()}
           busyChatIds={
             new Set(
               chats
@@ -1143,13 +1191,33 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
         <header className="flex h-14 shrink-0 items-center justify-between border-b px-6">
           <h2 className="min-w-0 truncate text-[15px] font-semibold">{detail?.title || "Chat with Borealis"}</h2>
           <div className="text-xs text-muted-foreground">
-            {answerCount} {answerCount === 1 ? "answer" : "answers"}
+            {/* Older pages may hold more answers; only claim a total when the loaded page is complete. */}
+            {detail?.messages_page?.has_more ? null : `${answerCount} ${answerCount === 1 ? "answer" : "answers"}`}
           </div>
         </header>
 
         {/* messages */}
-        <div className="flex-1 overflow-y-auto">
+        <div className="flex-1 overflow-y-auto" onScroll={handleMessagesScroll}>
           <div className="mx-auto flex max-w-4xl flex-col gap-6 px-6 py-8">
+            {detailError && (
+              <div
+                className="flex flex-wrap items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+                role="alert"
+              >
+                <span className="min-w-0 flex-1">{detailError}</span>
+                {chatId && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="border-destructive/40 text-destructive hover:bg-destructive/10 hover:text-destructive"
+                    onClick={() => void loadChat(chatId)}
+                  >
+                    Retry
+                  </Button>
+                )}
+              </div>
+            )}
             {detail?.messages_page?.has_more && (
               <div className="flex flex-col items-center gap-2">
                 <Button
@@ -1222,10 +1290,21 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
             )}
             {stream.error && (
               <div
-                className="flex items-start gap-3 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+                className="flex flex-wrap items-start gap-3 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive"
                 role="alert"
               >
                 <span className="min-w-0 flex-1">{stream.error}</span>
+                {!stream.running && lastUserContent && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="border-destructive/40 text-destructive hover:bg-destructive/10 hover:text-destructive"
+                    onClick={() => void send(lastUserContent)}
+                  >
+                    Resend last message
+                  </Button>
+                )}
                 <Button
                   type="button"
                   variant="ghost"
@@ -1273,6 +1352,9 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
                   value={draft}
                   onChange={(e) => setDraft(e.target.value)}
                   onKeyDown={(e) => {
+                    // Let an IME composition confirm its candidate instead of
+                    // submitting the half-composed message.
+                    if (e.nativeEvent.isComposing) return;
                     if (e.key === "Enter" && !e.shiftKey) {
                       e.preventDefault();
                       void send();
@@ -1333,6 +1415,7 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
                             hasMessages={messages.length > 0}
                             onApply={saveSourceScope}
                             onUpload={uploadSource}
+                            onConsentError={handleConsentError}
                             onRetrySources={() => refreshSources(true)}
                             onLoadMoreSources={loadMoreSources}
                             libraries={libraries}
@@ -1372,6 +1455,8 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
                             agents={agentCatalog}
                             selection={newChatAgentSelection}
                             loading={agentCatalogLoading}
+                            error={agentCatalogError}
+                            onRetry={() => void loadAgents()}
                             hasMore={agentCatalogNextCursor !== null}
                             loadingMore={agentCatalogLoadingMore}
                             locked={false}
@@ -1392,6 +1477,7 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
                             hasMessages={false}
                             onApply={saveNewChatSourceScope}
                             onUpload={uploadSource}
+                            onConsentError={handleConsentError}
                             onRetrySources={() => refreshSources(true)}
                             onLoadMoreSources={loadMoreSources}
                             libraries={libraries}
@@ -1407,6 +1493,7 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
                           sources={newChatAttachedSources}
                           disabled={creatingChat}
                           error={null}
+                          showEmptyHint
                           onRemove={removeNewChatSource}
                           onDismissError={() => undefined}
                         />
@@ -1458,12 +1545,30 @@ interface ActiveSourceScopeProps {
   sources: AttachedSource[];
   disabled: boolean;
   error: string | null;
+  /** Explain an empty selection before the first turn (fail-closed scope default). */
+  showEmptyHint?: boolean;
   onRemove: (sourceId: string) => void;
   onDismissError: () => void;
 }
 
-function ActiveSourceScope({ sources, disabled, error, onRemove, onDismissError }: ActiveSourceScopeProps) {
-  if (sources.length === 0 && !error) return null;
+function ActiveSourceScope({
+  sources,
+  disabled,
+  error,
+  showEmptyHint = false,
+  onRemove,
+  onDismissError,
+}: ActiveSourceScopeProps) {
+  if (sources.length === 0 && !error) {
+    if (!showEmptyHint) return null;
+    return (
+      <div className="flex flex-col gap-1.5 px-2" role="group" aria-label="Active chat sources">
+        <p className="text-xs text-muted-foreground">
+          No sources attached — answers will not use your uploaded data. Pick sources in the selector above.
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col gap-1.5 px-2" role="group" aria-label="Active chat sources">

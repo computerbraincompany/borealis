@@ -10,7 +10,7 @@ import {
   ChevronDown,
   CircleAlert,
 } from "lucide-react";
-import { formatApiError, sourcesApi } from "@/lib/api";
+import { formatApiError, sourcesApi, type Source } from "@/lib/api";
 import { useSourceCatalog } from "@/hooks/useSourceCatalog";
 import { useEgressConsentGate } from "@/hooks/useEgressConsentGate";
 import { cn, formatDate } from "@/lib/utils";
@@ -18,12 +18,15 @@ import { SOURCE_FILE_ACCEPT } from "@/lib/sourceFiles";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 
 export function SourcesView() {
   const [busy, setBusy] = useState(false);
   const [uploading, setUploading] = useState<string | null>(null);
   const [retrying, setRetrying] = useState<string | null>(null);
   const [operationError, setOperationError] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<Source | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const {
     sources,
@@ -44,17 +47,25 @@ export function SourcesView() {
   }, [refresh]);
 
   const onFiles = async (files: FileList | null) => {
-    if (!files) return;
+    if (!files || files.length === 0) return;
+    await uploadBatch(Array.from(files));
+  };
+
+  const uploadBatch = async (files: File[]) => {
     setOperationError(null);
     setBusy(true);
+    const failures: string[] = [];
     try {
-      for (const f of Array.from(files)) {
-        setUploading(f.name);
+      for (let index = 0; index < files.length; index += 1) {
+        const file = files[index];
+        setUploading(file.name);
         try {
-          addPending(await sourcesApi.upload(f));
+          addPending(await sourcesApi.upload(file));
         } catch (error: unknown) {
-          if (handleConsentError(error, () => void onFiles(files))) continue;
-          setOperationError(formatApiError(error, `Upload failed for ${f.name}`));
+          // Consent takes over the flow: uploads halt and resume from the
+          // blocked file after acknowledgment, so nothing is uploaded twice.
+          if (handleConsentError(error, () => void uploadBatch(files.slice(index)))) return;
+          failures.push(`${file.name}: ${formatApiError(error, "upload failed")}`);
         }
       }
     } finally {
@@ -62,16 +73,24 @@ export function SourcesView() {
       setBusy(false);
       await refresh();
     }
+    if (failures.length > 0) setOperationError(failures.join("\n"));
   };
 
-  const remove = async (id: string) => {
+  const confirmRemove = async () => {
+    if (!deleteTarget || deletingId === deleteTarget.id) return;
+    const id = deleteTarget.id;
+    setDeletingId(id);
     setOperationError(null);
     try {
       await sourcesApi.remove(id);
       removeOne(id);
       await refresh();
+      setDeleteTarget(null);
     } catch (error: unknown) {
       setOperationError(formatApiError(error, "Could not delete the source"));
+      setDeleteTarget(null);
+    } finally {
+      setDeletingId(null);
     }
   };
 
@@ -95,6 +114,17 @@ export function SourcesView() {
   return (
     <div className="h-full overflow-y-auto">
       {consentDialog}
+      {deleteTarget && (
+        <ConfirmDialog
+          title={`Delete “${deleteTarget.display_name}”?`}
+          description="This removes the uploaded file, its extracted text, and its search index. This cannot be undone."
+          busy={deletingId === deleteTarget.id}
+          onConfirm={() => void confirmRemove()}
+          onCancel={() => {
+            if (deletingId !== deleteTarget.id) setDeleteTarget(null);
+          }}
+        />
+      )}
       <div className="mx-auto max-w-5xl px-4 py-6 sm:px-6 sm:py-10">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
           <div>
@@ -133,7 +163,7 @@ export function SourcesView() {
 
         {(operationError || catalogError) && (
           <div
-            className="mt-4 rounded-lg border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive"
+            className="mt-4 whitespace-pre-line rounded-lg border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive"
             role="alert"
           >
             {operationError || catalogError}
@@ -141,7 +171,16 @@ export function SourcesView() {
         )}
 
         <div className="mt-8 space-y-3">
-          {sources.length === 0 && !uploading && (
+          {sources.length === 0 && loading && !catalogError && (
+            <Card className="px-5 py-12" aria-hidden="true">
+              <div className="mx-auto flex max-w-md flex-col gap-3">
+                {[0, 1, 2].map((index) => (
+                  <div key={index} className="h-10 animate-pulse rounded-lg bg-accent/60" />
+                ))}
+              </div>
+            </Card>
+          )}
+          {sources.length === 0 && !loading && !uploading && (
             <Card className="flex flex-col items-center gap-3 px-5 py-12 text-center sm:py-16">
               <Inbox className="h-10 w-10 text-muted-foreground/50" />
               <p className="text-sm text-muted-foreground">
@@ -161,8 +200,10 @@ export function SourcesView() {
               <Button
                 variant="ghost"
                 size="icon"
-                onClick={() => remove(s.id)}
+                onClick={() => setDeleteTarget(s)}
+                disabled={deletingId === s.id}
                 title="Delete source"
+                aria-label={`Delete ${s.display_name}`}
                 className="absolute right-2 top-2 text-muted-foreground hover:text-destructive sm:right-3 sm:top-3"
               >
                 <Trash2 className="h-4 w-4" />
@@ -186,7 +227,7 @@ export function SourcesView() {
                     ) : s.status === "index" ? (
                       <Badge variant="pending">processing</Badge>
                     ) : (
-                      <Badge variant="destructive">{s.status}</Badge>
+                      <Badge variant="destructive">{s.status === "error" ? "Needs attention" : s.status}</Badge>
                     )}
                     <Badge variant="secondary">{s.kind}</Badge>
                   </div>

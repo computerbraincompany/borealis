@@ -43,6 +43,7 @@ vi.mock("@/components/ui/dialog", () => ({
       </div>
     ) : null,
   DialogContent: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+  DialogFooter: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
   DialogDescription: ({ children }: { children: React.ReactNode }) => <p>{children}</p>,
   DialogHeader: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
   DialogTitle: ({ children }: { children: React.ReactNode }) => <h2>{children}</h2>,
@@ -527,6 +528,7 @@ describe("LibrariesView", () => {
     render(<LibrariesView />);
 
     fireEvent.click(await screen.findByTitle("Delete library"));
+    fireEvent.click(await screen.findByRole("button", { name: "Delete" }));
 
     await waitFor(() => expect(apiMocks.remove).toHaveBeenCalledWith("lib1", expect.any(AbortSignal)));
     await waitFor(() => expect(screen.queryByText("Finance data room")).not.toBeInTheDocument());
@@ -542,6 +544,7 @@ describe("LibrariesView", () => {
     fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
     await waitFor(() => expect(apiMocks.list).toHaveBeenCalledTimes(2));
     fireEvent.click(screen.getByTitle("Delete library"));
+    fireEvent.click(await screen.findByRole("button", { name: "Delete" }));
     await waitFor(() => expect(screen.queryByText("Finance data room")).not.toBeInTheDocument());
 
     await act(async () => stale.resolve({ items: libraries, next_cursor: null }));
@@ -562,6 +565,7 @@ describe("LibrariesView", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Finance data room" }));
     expect(await screen.findByRole("heading", { name: "Finance data room" })).toBeInTheDocument();
     fireEvent.click(screen.getAllByTitle("Delete library")[0]!);
+    fireEvent.click(await screen.findByRole("button", { name: "Delete" }));
     await waitFor(() => expect(apiMocks.remove).toHaveBeenCalledWith("lib1", expect.any(AbortSignal)));
 
     fireEvent.click(screen.getByRole("button", { name: "Diligence room" }));

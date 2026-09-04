@@ -18,6 +18,15 @@ const ENGINE_STATE_CHIP: Record<ContainedEngineState, string> = {
   stopped: "border-border bg-secondary text-muted-foreground",
 };
 
+/** Human labels instead of raw engine-state enums. */
+const ENGINE_STATE_LABEL: Record<ContainedEngineState, string> = {
+  off: "Not running",
+  starting: "Starting…",
+  healthy: "Running",
+  crashed: "Crashed — see error below",
+  stopped: "Stopped",
+};
+
 const DOWNLOAD_STATE_CHIP: Record<ContainedDownloadState["state"], string> = {
   downloading: "border-primary/30 bg-primary/10 text-primary",
   verifying: "border-primary/30 bg-primary/10 text-primary",
@@ -271,7 +280,7 @@ export function ContainedPanel() {
               <span
                 className={cn("rounded-md border px-2 py-0.5 text-xs font-medium", ENGINE_STATE_CHIP[engine.state])}
               >
-                {engine.state}
+                {ENGINE_STATE_LABEL[engine.state]}
               </span>
               <div className="flex min-w-0 flex-wrap items-center gap-2 text-xs text-muted-foreground">
                 {engine.endpoint_managed_by_env && (

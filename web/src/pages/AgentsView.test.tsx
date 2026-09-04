@@ -23,6 +23,7 @@ vi.mock("@/lib/api", () => ({
 vi.mock("@/components/ui/dialog", () => ({
   Dialog: ({ open, children }: { open: boolean; children: React.ReactNode }) => (open ? <div>{children}</div> : null),
   DialogContent: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+  DialogFooter: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
   DialogDescription: ({ children }: { children: React.ReactNode }) => <p>{children}</p>,
   DialogHeader: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
   DialogTitle: ({ children }: { children: React.ReactNode }) => <h2>{children}</h2>,
@@ -151,6 +152,7 @@ describe("AgentsView", () => {
     render(<AgentsView />);
 
     fireEvent.click(await screen.findByTitle("Delete agent"));
+    fireEvent.click(await screen.findByRole("button", { name: "Delete" }));
 
     await waitFor(() => expect(apiMocks.remove).toHaveBeenCalledWith("agent-1"));
     await waitFor(() => expect(screen.queryByText("Finance analyst")).not.toBeInTheDocument());

@@ -88,7 +88,7 @@ describe("ContainedPanel", () => {
     expect(screen.getByRole("checkbox", { name: /enable contained engine/i })).toBeChecked();
     expect(screen.getByLabelText("Binary path")).toHaveValue("/opt/homebrew/bin/llama-server");
     expect(screen.getByLabelText("Model path")).toHaveValue("/Users/operator/Models/tinyllama.gguf");
-    expect(screen.getByText("healthy")).toBeInTheDocument();
+    expect(screen.getByText("Running")).toBeInTheDocument();
     const engineCard = screen.getByLabelText("Contained engine state");
     expect(within(engineCard).getByText("tinyllama.gguf")).toBeInTheDocument();
     expect(within(engineCard).getByText("127.0.0.1:54321")).toBeInTheDocument();
@@ -118,7 +118,7 @@ describe("ContainedPanel", () => {
       }),
     );
 
-    expect(screen.getByText("crashed")).toBeInTheDocument();
+    expect(screen.getByText("Crashed — see error below")).toBeInTheDocument();
     expect(screen.getByText("endpoint managed by environment")).toBeInTheDocument();
     expect(screen.getByText("the engine process exited unexpectedly")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Start engine" })).toBeEnabled();
@@ -226,13 +226,13 @@ describe("ContainedPanel", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Start engine" }));
     await waitFor(() => expect(mocks.containedStartEngine).toHaveBeenCalledWith(expect.any(AbortSignal)));
-    expect(await screen.findByText("starting")).toBeInTheDocument();
+    expect(await screen.findByText("Starting…")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Stop engine" })).toBeEnabled();
 
     mocks.containedStopEngine.mockResolvedValue({ ...engineOff, state: "stopped" });
     fireEvent.click(screen.getByRole("button", { name: "Stop engine" }));
     await waitFor(() => expect(mocks.containedStopEngine).toHaveBeenCalledWith(expect.any(AbortSignal)));
-    expect(await screen.findByText("stopped")).toBeInTheDocument();
+    expect(await screen.findByText("Stopped")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Start engine" })).toBeEnabled();
   });
 

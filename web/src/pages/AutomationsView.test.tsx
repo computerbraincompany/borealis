@@ -26,6 +26,7 @@ vi.mock("@/lib/api", () => ({
 vi.mock("@/components/ui/dialog", () => ({
   Dialog: ({ open, children }: { open: boolean; children: React.ReactNode }) => (open ? <div>{children}</div> : null),
   DialogContent: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+  DialogFooter: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
   DialogDescription: ({ children }: { children: React.ReactNode }) => <p>{children}</p>,
   DialogHeader: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
   DialogTitle: ({ children }: { children: React.ReactNode }) => <h2>{children}</h2>,
@@ -351,6 +352,7 @@ describe("AutomationsView", () => {
     render(<AutomationsView />);
 
     fireEvent.click(await screen.findByTitle("Delete automation"));
+    fireEvent.click(await screen.findByRole("button", { name: "Delete" }));
     await waitFor(() => expect(apiMocks.remove).toHaveBeenCalledWith("auto-1", expect.any(AbortSignal)));
     await waitFor(() => expect(screen.queryByText("Nightly ledger")).not.toBeInTheDocument());
   });
@@ -365,6 +367,7 @@ describe("AutomationsView", () => {
     fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
     await waitFor(() => expect(apiMocks.list).toHaveBeenCalledTimes(2));
     fireEvent.click(screen.getByTitle("Delete automation"));
+    fireEvent.click(await screen.findByRole("button", { name: "Delete" }));
     await waitFor(() => expect(screen.queryByText("Nightly ledger")).not.toBeInTheDocument());
 
     await act(async () => stale.resolve({ items: [automation], next_cursor: null }));
@@ -385,6 +388,7 @@ describe("AutomationsView", () => {
       await waitFor(() => expect(apiMocks.update).toHaveBeenCalledTimes(1));
       const olderSignal = apiMocks.update.mock.calls[0][2] as AbortSignal;
       fireEvent.click(screen.getByTitle("Delete automation"));
+      fireEvent.click(await screen.findByRole("button", { name: "Delete" }));
       await waitFor(() => expect(apiMocks.remove).toHaveBeenCalledTimes(1));
       expect(olderSignal.aborted).toBe(true);
 
@@ -413,6 +417,7 @@ describe("AutomationsView", () => {
     const deleteButtons = screen.getAllByTitle("Delete automation");
     fireEvent.click(pauseButtons[0]);
     fireEvent.click(deleteButtons[1]);
+    fireEvent.click(await screen.findByRole("button", { name: "Delete" }));
     await waitFor(() => expect(apiMocks.update).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(apiMocks.remove).toHaveBeenCalledTimes(1));
     const toggleSignal = apiMocks.update.mock.calls[0][2] as AbortSignal;

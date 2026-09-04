@@ -113,7 +113,7 @@ function validateUrl(value: string, label: string): string | null {
   }
 
   const loopback = isLoopbackHostname(parsed.hostname);
-  if (!loopback && parsed.protocol !== "https:") return "Remote model endpoints must use HTTPS.";
+  if (!loopback && parsed.protocol !== "https:") return "Non-loopback endpoints must use HTTPS.";
   return null;
 }
 

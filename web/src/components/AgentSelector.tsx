@@ -23,6 +23,9 @@ interface AgentSelectorProps {
   loadingMore: boolean;
   /** True for existing chats: the chip displays the binding read-only. */
   locked: boolean;
+  /** Catalog load failure surfaced inside the picker with a retry affordance. */
+  error?: string | null;
+  onRetry?: () => void;
   onSelect: (agentId: string | null) => void;
   onLoadMore: () => void | Promise<void>;
 }
@@ -35,6 +38,8 @@ export function AgentSelector({
   hasMore,
   loadingMore,
   locked,
+  error = null,
+  onRetry,
   onSelect,
   onLoadMore,
 }: AgentSelectorProps) {
@@ -85,6 +90,19 @@ export function AgentSelector({
             ))
           )}
         </DropdownMenuRadioGroup>
+        {error && !loading && (
+          <DropdownMenuItem
+            className="text-destructive"
+            disabled={!onRetry}
+            onSelect={(event) => {
+              event.preventDefault();
+              onRetry?.();
+            }}
+          >
+            {error}
+            {onRetry ? " — Retry" : ""}
+          </DropdownMenuItem>
+        )}
         {hasMore && (
           <>
             <DropdownMenuSeparator />

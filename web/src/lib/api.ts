@@ -918,6 +918,9 @@ export interface Report {
   chat_id: string | null;
   version: number;
   supersedes: string | null;
+  /** Artifact presence from the list/detail endpoints; rename responses omit them. */
+  has_html?: boolean;
+  has_pdf?: boolean;
 }
 
 export interface ChartArtifactSummary {

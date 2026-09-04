@@ -36,6 +36,7 @@ vi.mock("@/lib/api", () => ({
 vi.mock("@/components/ui/dialog", () => ({
   Dialog: ({ open, children }: { open: boolean; children: React.ReactNode }) => (open ? <div>{children}</div> : null),
   DialogContent: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+  DialogFooter: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
   DialogDescription: ({ children }: { children: React.ReactNode }) => <p>{children}</p>,
   DialogHeader: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
   DialogTitle: ({ children }: { children: React.ReactNode }) => <h2>{children}</h2>,
@@ -343,30 +344,31 @@ describe("ReportsView preview", () => {
   });
 
   it.each(["resolve", "reject"] as const)(
-    "keeps the newest same-report deletion owned when the older request later %ss",
+    "blocks a second same-report deletion while the first is pending and settles the %s cleanly",
     async (settlement) => {
       const older = deferred<{ ok: true }>();
-      const newer = deferred<{ ok: true }>();
-      apiMocks.remove.mockReturnValueOnce(older.promise).mockReturnValueOnce(newer.promise);
+      apiMocks.remove.mockReturnValueOnce(older.promise);
       render(<ReportsView />);
 
       const deleteButton = (await screen.findAllByTitle("Delete report"))[0];
       fireEvent.click(deleteButton);
+      fireEvent.click(await screen.findByRole("button", { name: "Delete" }));
       await waitFor(() => expect(apiMocks.remove).toHaveBeenCalledTimes(1));
-      const olderSignal = apiMocks.remove.mock.calls[0][1] as AbortSignal;
+      // The pending deletion keeps the dialog busy and the row guard closed:
+      // a second trigger must not start another request for the same report.
       fireEvent.click(deleteButton);
-      await waitFor(() => expect(apiMocks.remove).toHaveBeenCalledTimes(2));
-      expect(olderSignal.aborted).toBe(true);
+      expect(apiMocks.remove).toHaveBeenCalledTimes(1);
 
       await act(async () => {
         if (settlement === "resolve") older.resolve({ ok: true });
         else older.reject(new Error("stale deletion failed"));
       });
 
-      expect(screen.getByText("First")).toBeInTheDocument();
-      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
-      await act(async () => newer.resolve({ ok: true }));
-      expect(screen.queryByText("First")).not.toBeInTheDocument();
+      if (settlement === "resolve") {
+        await waitFor(() => expect(screen.queryByText("First")).not.toBeInTheDocument());
+      } else {
+        expect(screen.getByText("First")).toBeInTheDocument();
+      }
     },
   );
 
@@ -378,7 +380,10 @@ describe("ReportsView preview", () => {
 
     const deleteButtons = await screen.findAllByTitle("Delete report");
     fireEvent.click(deleteButtons[0]);
+    fireEvent.click(await screen.findByRole("button", { name: "Delete" }));
     fireEvent.click(deleteButtons[1]);
+    await screen.findByText("Delete “Second”?");
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
     await waitFor(() => expect(apiMocks.remove).toHaveBeenCalledTimes(2));
     const firstSignal = apiMocks.remove.mock.calls[0][1] as AbortSignal;
     const secondSignal = apiMocks.remove.mock.calls[1][1] as AbortSignal;
@@ -404,6 +409,7 @@ describe("ReportsView preview", () => {
     fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
     await waitFor(() => expect(apiMocks.list).toHaveBeenCalledTimes(2));
     fireEvent.click(screen.getAllByTitle("Delete report")[0]!);
+    fireEvent.click(await screen.findByRole("button", { name: "Delete" }));
     await waitFor(() => expect(screen.queryByText("First")).not.toBeInTheDocument());
 
     await act(async () => stale.resolve({ items: reports, next_cursor: null }));

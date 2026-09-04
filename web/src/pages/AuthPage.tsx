@@ -123,6 +123,7 @@ export function AuthPage() {
                   id="password"
                   type="password"
                   required
+                  minLength={mode === "register" ? 6 : undefined}
                   autoComplete={mode === "login" ? "current-password" : "new-password"}
                   placeholder="••••••••"
                   value={password}

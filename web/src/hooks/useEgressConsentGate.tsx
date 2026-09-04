@@ -2,17 +2,19 @@ import { useCallback, useState } from "react";
 import { AlertTriangle, ExternalLink } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { consentApi, isRemoteEgressConsentError, type RemoteEgressState } from "@/lib/api";
+import { consentApi, formatApiError, isRemoteEgressConsentError, type RemoteEgressState } from "@/lib/api";
 import { EGRESS_PAYLOAD_CLASSES as PAYLOAD_CLASSES } from "@/lib/egressDisclosure";
 
 function EgressConsentDialog({
   state,
   busy,
+  error,
   onAcknowledge,
   onClose,
 }: {
   state: RemoteEgressState | null;
   busy: boolean;
+  error: string | null;
   onAcknowledge: () => void;
   onClose: () => void;
 }) {
@@ -36,6 +38,11 @@ function EgressConsentDialog({
             policy. Parsing, SQL, storage, and report rendering stay on this machine.
           </DialogDescription>
         </DialogHeader>
+        {error ? (
+          <p role="alert" className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
+            {error}
+          </p>
+        ) : null}
         <div className="flex flex-wrap justify-end gap-2">
           <Button type="button" variant="ghost" size="sm" onClick={onClose} disabled={busy}>
             Cancel
@@ -65,9 +72,11 @@ export function useEgressConsentGate() {
   const [state, setState] = useState<RemoteEgressState | null>(null);
   const [retryAction, setRetryAction] = useState<(() => void) | null>(null);
   const [busy, setBusy] = useState(false);
+  const [ackError, setAckError] = useState<string | null>(null);
 
   const handleConsentError = useCallback((error: unknown, onRetry: () => void): boolean => {
     if (!isRemoteEgressConsentError(error)) return false;
+    setAckError(null);
     setRetryAction(() => onRetry);
     consentApi
       .get()
@@ -80,13 +89,15 @@ export function useEgressConsentGate() {
 
   const acknowledge = useCallback(async (): Promise<boolean> => {
     setBusy(true);
+    setAckError(null);
     try {
       setState(await consentApi.acknowledge());
       const retry = retryAction;
       setRetryAction(null);
       retry?.();
       return true;
-    } catch {
+    } catch (failure) {
+      setAckError(formatApiError(failure, "Could not record your acknowledgment. Try again."));
       return false;
     } finally {
       setBusy(false);
@@ -94,7 +105,13 @@ export function useEgressConsentGate() {
   }, [retryAction]);
 
   const dialog = retryAction ? (
-    <EgressConsentDialog state={state} busy={busy} onAcknowledge={() => void acknowledge()} onClose={close} />
+    <EgressConsentDialog
+      state={state}
+      busy={busy}
+      error={ackError}
+      onAcknowledge={() => void acknowledge()}
+      onClose={close}
+    />
   ) : null;
 
   return { handleConsentError, acknowledge, dialog };

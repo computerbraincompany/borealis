@@ -10,13 +10,14 @@ import {
   type Source,
 } from "@/lib/api";
 import { mergeCatalogContinuation, mergeCatalogHead } from "@/lib/catalogMerge";
-import { formatDate } from "@/lib/utils";
+import { cn, formatDate } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 
 interface LibraryDetailState {
   summary: LibrarySummary;
@@ -43,6 +44,11 @@ export function LibrariesView() {
   const [renamingTarget, setRenamingTarget] = useState<LibrarySummary | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [renaming, setRenaming] = useState(false);
+  // Mutations that fail while a dialog is open must surface inside that dialog;
+  // the page banner is hidden behind the modal overlay.
+  const [dialogError, setDialogError] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<LibrarySummary | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
   const createRequestRef = useRef(0);
   const createAbortRef = useRef<AbortController | null>(null);
   const attachRequestRef = useRef(0);
@@ -157,6 +163,7 @@ export function LibrariesView() {
     const abort = new AbortController();
     detailAbortRef.current = abort;
     setPageError(null);
+    setDialogError(null);
     setOpen({ summary: library, members: [] });
     setAvailableSources([]);
     setSourcesNextCursor(null);
@@ -177,7 +184,7 @@ export function LibrariesView() {
       }
     } catch (error: unknown) {
       if (requestId === detailRequestRef.current && !abort.signal.aborted) {
-        setPageError(formatError(error, "Could not load the library"));
+        setDialogError(formatError(error, "Could not load the library"));
       }
     } finally {
       if (requestId === detailRequestRef.current && !abort.signal.aborted) setDetailLoading(false);
@@ -205,6 +212,7 @@ export function LibrariesView() {
     setDetailLoading(false);
     setMembersBusy(false);
     setAttaching(false);
+    setDialogError(null);
   };
 
   const loadMoreSources = async () => {
@@ -227,7 +235,7 @@ export function LibrariesView() {
         !abort.signal.aborted &&
         openLibraryIdRef.current === targetId
       ) {
-        setPageError(formatError(error, "Could not load older sources"));
+        setDialogError(formatError(error, "Could not load older sources"));
       }
     } finally {
       if (requestId === sourcePageRequestRef.current && !abort.signal.aborted && openLibraryIdRef.current === targetId)
@@ -240,6 +248,7 @@ export function LibrariesView() {
     renameAbortRef.current?.abort();
     renameAbortRef.current = null;
     renameTargetIdRef.current = library.id;
+    setDialogError(null);
     setRenaming(false);
     setRenamingTarget(library);
     setRenameValue(library.name);
@@ -250,6 +259,7 @@ export function LibrariesView() {
     renameRequestRef.current += 1;
     renameAbortRef.current?.abort();
     renameAbortRef.current = null;
+    setDialogError(null);
     setRenaming(false);
     setRenamingTarget(null);
   };
@@ -258,6 +268,7 @@ export function LibrariesView() {
     createRequestRef.current += 1;
     createAbortRef.current?.abort();
     createAbortRef.current = null;
+    setDialogError(null);
     setCreateBusy(false);
     setCreating(true);
   };
@@ -266,6 +277,7 @@ export function LibrariesView() {
     createRequestRef.current += 1;
     createAbortRef.current?.abort();
     createAbortRef.current = null;
+    setDialogError(null);
     setCreateBusy(false);
     setCreating(false);
   };
@@ -293,7 +305,7 @@ export function LibrariesView() {
       closeCreateDialog();
     } catch (error: unknown) {
       if (requestId === createRequestRef.current && !abort.signal.aborted) {
-        setPageError(formatError(error, "Could not create the library"));
+        setDialogError(formatError(error, "Could not create the library"));
       }
     } finally {
       if (requestId === createRequestRef.current && !abort.signal.aborted) {
@@ -328,7 +340,7 @@ export function LibrariesView() {
       closeRenameDialog();
     } catch (error: unknown) {
       if (requestId === renameRequestRef.current && !abort.signal.aborted && renameTargetIdRef.current === targetId) {
-        setPageError(formatError(error, "Could not rename the library"));
+        setDialogError(formatError(error, "Could not rename the library"));
       }
     } finally {
       if (requestId === renameRequestRef.current && !abort.signal.aborted && renameTargetIdRef.current === targetId)
@@ -359,6 +371,19 @@ export function LibrariesView() {
     }
   };
 
+  const confirmRemove = async () => {
+    if (!deleteTarget || deletingId === deleteTarget.id) return;
+    const library = deleteTarget;
+    setDeletingId(library.id);
+    setPageError(null);
+    try {
+      await remove(library);
+      setDeleteTarget(null);
+    } finally {
+      setDeletingId(null);
+    }
+  };
+
   const saveMembers = async (libraryId: string, memberIds: string[]) => {
     const requestId = ++detailRequestRef.current;
     detailAbortRef.current?.abort();
@@ -384,7 +409,7 @@ export function LibrariesView() {
       }
     } catch (error: unknown) {
       if (requestId === detailRequestRef.current && !abort.signal.aborted) {
-        setPageError(formatError(error, "Could not update library members"));
+        setDialogError(formatError(error, "Could not update library members"));
       }
     } finally {
       if (requestId === detailRequestRef.current && !abort.signal.aborted) setMembersBusy(false);
@@ -440,7 +465,7 @@ export function LibrariesView() {
         attachTargetIdRef.current === targetId &&
         openLibraryIdRef.current === targetId
       ) {
-        setPageError(formatError(error, "Could not attach the library to a new chat"));
+        setDialogError(formatError(error, "Could not attach the library to a new chat"));
       }
     } finally {
       if (requestId === attachRequestRef.current && !abort.signal.aborted && attachTargetIdRef.current === targetId) {
@@ -465,8 +490,8 @@ export function LibrariesView() {
             </p>
           </div>
           <div className="flex items-center gap-2">
-            <Button variant="secondary" size="sm" onClick={() => void load()}>
-              <RefreshCw className="h-4 w-4" /> Refresh
+            <Button variant="secondary" size="sm" onClick={() => void load()} disabled={loading}>
+              <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} /> Refresh
             </Button>
             <Button size="sm" onClick={openCreateDialog}>
               <Plus className="h-4 w-4" /> New library
@@ -529,8 +554,13 @@ export function LibrariesView() {
                     variant="ghost"
                     size="icon"
                     title="Delete library"
+                    aria-label={`Delete ${library.name}`}
                     className="text-muted-foreground hover:text-destructive"
-                    onClick={() => void remove(library)}
+                    disabled={deletingId === library.id}
+                    onClick={() => {
+                      setPageError(null);
+                      setDeleteTarget(library);
+                    }}
                   >
                     <Trash2 className="h-4 w-4" />
                   </Button>
@@ -558,6 +588,11 @@ export function LibrariesView() {
               Members reference your existing sources. Attaching a library to a new chat selects its ready members.
             </DialogDescription>
           </DialogHeader>
+          {dialogError && (
+            <p role="alert" className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
+              {dialogError}
+            </p>
+          )}
           {open && detailLoading ? (
             <div className="space-y-3" aria-label="Loading library" aria-busy="true">
               <Skeleton className="h-16 w-full rounded-lg" />
@@ -645,6 +680,11 @@ export function LibrariesView() {
             <DialogTitle>New library</DialogTitle>
             <DialogDescription>Group related sources under one governed name.</DialogDescription>
           </DialogHeader>
+          {dialogError && (
+            <p role="alert" className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
+              {dialogError}
+            </p>
+          )}
           <form
             className="space-y-3"
             onSubmit={(event) => {
@@ -679,6 +719,11 @@ export function LibrariesView() {
             <DialogTitle>Rename library</DialogTitle>
             <DialogDescription>Give this library a name you can recognize later.</DialogDescription>
           </DialogHeader>
+          {dialogError && (
+            <p role="alert" className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
+              {dialogError}
+            </p>
+          )}
           <form
             className="space-y-3"
             onSubmit={(event) => {
@@ -704,6 +749,18 @@ export function LibrariesView() {
           </form>
         </DialogContent>
       </Dialog>
+
+      {deleteTarget && (
+        <ConfirmDialog
+          title={`Delete “${deleteTarget.name}”?`}
+          description="This removes the library and its member list. Your sources and their data are kept. This cannot be undone."
+          busy={deletingId === deleteTarget.id}
+          onConfirm={() => void confirmRemove()}
+          onCancel={() => {
+            if (deletingId !== deleteTarget.id) setDeleteTarget(null);
+          }}
+        />
+      )}
     </div>
   );
 }

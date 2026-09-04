@@ -390,6 +390,14 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                     embedded
                   />
                 </div>
+                {egressAudit.loadError && (
+                  <p
+                    className="mt-6 rounded-lg border border-destructive/25 bg-destructive/5 px-4 py-2.5 text-xs text-destructive"
+                    role="alert"
+                  >
+                    Egress audit unavailable: {egressAudit.loadError}
+                  </p>
+                )}
                 {egressAudit.events.length > 0 && (
                   <section
                     aria-labelledby="settings-egress-audit-heading"
@@ -1213,6 +1221,7 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                         id="settings-personal-default-model"
                         value={personalDefault ?? ""}
                         disabled={personalDefaultSaving}
+                        aria-busy={personalDefaultSaving}
                         onChange={(event) =>
                           void savePersonalDefault(event.target.value === "" ? null : event.target.value)
                         }

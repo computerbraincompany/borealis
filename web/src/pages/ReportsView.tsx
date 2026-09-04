@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { BarChart3, Trash2, FileText, Eye, Download, MessageSquare, Pencil, Loader2 } from "lucide-react";
+import { BarChart3, Trash2, FileText, Eye, Download, MessageSquare, Pencil, Loader2, RefreshCw } from "lucide-react";
 import {
   api,
   reportsApi,
@@ -13,13 +13,14 @@ import {
   openProtected,
 } from "@/lib/api";
 import { mergeCatalogContinuation, mergeCatalogHead } from "@/lib/catalogMerge";
-import { formatDate } from "@/lib/utils";
+import { cn, formatDate } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 
 const GALLERY_LIMIT = 24;
 
@@ -86,16 +87,22 @@ export function ReportsView() {
   const [previewHtml, setPreviewHtml] = useState<string | null>(null);
   const [previewErr, setPreviewErr] = useState<string | null>(null);
   const [pageError, setPageError] = useState<string | null>(null);
+  // Mutations that fail while a dialog is open must surface inside that dialog;
+  // the page banner is hidden behind the modal overlay.
+  const [dialogError, setDialogError] = useState<string | null>(null);
   const [renameTarget, setRenameTarget] = useState<Report | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [renaming, setRenaming] = useState(false);
   const [sharedReports, setSharedReports] = useState<SharedReport[]>([]);
+  const [sharedError, setSharedError] = useState<string | null>(null);
   const [sharedNextCursor, setSharedNextCursor] = useState<string | null>(null);
   const [sharedLoadingMore, setSharedLoadingMore] = useState(false);
   const [shareTarget, setShareTarget] = useState<Report | null>(null);
   const [shareAccounts, setShareAccounts] = useState<Array<{ id: string; email: string }>>([]);
   const [shareList, setShareList] = useState<ReportShare[]>([]);
   const [sharing, setSharing] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<Report | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
   const previewRequestRef = useRef(0);
   const previewAbortRef = useRef<AbortController | null>(null);
   const shareRequestRef = useRef(0);
@@ -161,7 +168,13 @@ export function ReportsView() {
       setSharedReports((current) => mergeCatalogHead(sharedPage.items, current));
       sharedNextCursorRef.current = sharedPage.next_cursor;
       setSharedNextCursor(sharedPage.next_cursor);
-    } catch {}
+      setSharedError(null);
+    } catch (failure: unknown) {
+      // The "Shared with me" section must not silently disappear on failure.
+      if (mountedRef.current && sharedRequestId === sharedCatalogRequestRef.current) {
+        setSharedError(formatApiError(failure, "Could not load shared reports"));
+      }
+    }
   }, []);
 
   const loadMoreReports = async () => {
@@ -240,6 +253,7 @@ export function ReportsView() {
     renameAbortRef.current?.abort();
     renameAbortRef.current = null;
     renameTargetIdRef.current = report.id;
+    setDialogError(null);
     setRenaming(false);
     setRenameTarget(report);
     setRenameValue(report.title);
@@ -250,8 +264,22 @@ export function ReportsView() {
     renameRequestRef.current += 1;
     renameAbortRef.current?.abort();
     renameAbortRef.current = null;
+    setDialogError(null);
     setRenaming(false);
     setRenameTarget(null);
+  };
+
+  const confirmRemove = async () => {
+    if (!deleteTarget || deletingId === deleteTarget.id) return;
+    const report = deleteTarget;
+    setDeletingId(report.id);
+    setPageError(null);
+    try {
+      await remove(report);
+      setDeleteTarget(null);
+    } finally {
+      setDeletingId(null);
+    }
   };
 
   const remove = async (r: Report) => {
@@ -297,7 +325,7 @@ export function ReportsView() {
       closeRenameDialog();
     } catch (failure: unknown) {
       if (requestId === renameRequestRef.current && !abort.signal.aborted && renameTargetIdRef.current === targetId) {
-        setPageError(formatApiError(failure, "Could not rename the report"));
+        setDialogError(formatApiError(failure, "Could not rename the report"));
       }
     } finally {
       if (requestId === renameRequestRef.current && !abort.signal.aborted && renameTargetIdRef.current === targetId)
@@ -314,6 +342,7 @@ export function ReportsView() {
     setShareAccounts([]);
     setShareList([]);
     setSharing(true);
+    setDialogError(null);
     setPageError(null);
     try {
       const [accounts, shares] = await Promise.all([
@@ -326,7 +355,7 @@ export function ReportsView() {
       }
     } catch (failure: unknown) {
       if (requestId === shareRequestRef.current && !abort.signal.aborted) {
-        setPageError(formatApiError(failure, "Could not load sharing state"));
+        setDialogError(formatApiError(failure, "Could not load sharing state"));
       }
     } finally {
       if (requestId === shareRequestRef.current && !abort.signal.aborted) setSharing(false);
@@ -341,14 +370,14 @@ export function ReportsView() {
     const abort = new AbortController();
     shareAbortRef.current = abort;
     setSharing(true);
-    setPageError(null);
+    setDialogError(null);
     try {
       await reportsApi.share(reportId, recipientAccountId, abort.signal);
       const shares = await reportsApi.listShares(reportId, abort.signal);
       if (requestId === shareRequestRef.current && !abort.signal.aborted) setShareList(shares);
     } catch (failure: unknown) {
       if (requestId === shareRequestRef.current && !abort.signal.aborted) {
-        setPageError(formatApiError(failure, "Could not share the report"));
+        setDialogError(formatApiError(failure, "Could not share the report"));
       }
     } finally {
       if (requestId === shareRequestRef.current && !abort.signal.aborted) setSharing(false);
@@ -363,14 +392,14 @@ export function ReportsView() {
     const abort = new AbortController();
     shareAbortRef.current = abort;
     setSharing(true);
-    setPageError(null);
+    setDialogError(null);
     try {
       await reportsApi.revoke(reportId, recipientAccountId, abort.signal);
       const shares = await reportsApi.listShares(reportId, abort.signal);
       if (requestId === shareRequestRef.current && !abort.signal.aborted) setShareList(shares);
     } catch (failure: unknown) {
       if (requestId === shareRequestRef.current && !abort.signal.aborted) {
-        setPageError(formatApiError(failure, "Could not revoke the share"));
+        setDialogError(formatApiError(failure, "Could not revoke the share"));
       }
     } finally {
       if (requestId === shareRequestRef.current && !abort.signal.aborted) setSharing(false);
@@ -385,6 +414,7 @@ export function ReportsView() {
     setShareAccounts([]);
     setShareList([]);
     setSharing(false);
+    setDialogError(null);
   };
 
   const download = async (report: Report) => {
@@ -428,6 +458,17 @@ export function ReportsView() {
 
   return (
     <div className="mx-auto max-w-5xl px-6 py-10">
+      {deleteTarget && (
+        <ConfirmDialog
+          title={`Delete “${deleteTarget.title}”?`}
+          description="This permanently removes the report, its HTML export, and its PDF. The source chat stays. This cannot be undone."
+          busy={deletingId === deleteTarget.id}
+          onConfirm={() => void confirmRemove()}
+          onCancel={() => {
+            if (deletingId !== deleteTarget.id) setDeleteTarget(null);
+          }}
+        />
+      )}
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Reports</h1>
@@ -435,8 +476,8 @@ export function ReportsView() {
             Self-contained HTML and PDF reports generated by Borealis from your chats.
           </p>
         </div>
-        <Button variant="secondary" size="sm" onClick={load}>
-          Refresh
+        <Button variant="secondary" size="sm" onClick={() => void load()} disabled={loading}>
+          <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} /> Refresh
         </Button>
       </div>
 
@@ -466,6 +507,14 @@ export function ReportsView() {
         <div className="mt-8 space-y-3">
           {reports.map((r) => {
             const previous = versionOf(r.supersedes);
+            const artifactsLabel =
+              r.has_html === false && r.has_pdf === false
+                ? "Artifacts unavailable"
+                : r.has_html === false
+                  ? "PDF only"
+                  : r.has_pdf === false
+                    ? "HTML only"
+                    : "HTML + PDF";
             return (
               <Card key={r.id} className="flex items-center gap-4 p-4 transition-colors hover:border-foreground/20">
                 <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
@@ -475,7 +524,9 @@ export function ReportsView() {
                   <div className="flex items-center gap-2">
                     <span className="truncate font-medium text-foreground">{r.title}</span>
                     <Badge variant="secondary">v{r.version}</Badge>
-                    <Badge variant="secondary">HTML + PDF</Badge>
+                    <Badge variant={r.has_html === false && r.has_pdf === false ? "destructive" : "secondary"}>
+                      {artifactsLabel}
+                    </Badge>
                   </div>
                   <div className="mt-1 truncate text-xs text-muted-foreground">{r.subtitle || "No subtitle"}</div>
                   <div className="mt-1.5 flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
@@ -489,15 +540,18 @@ export function ReportsView() {
                         {r.chat_title || "source chat"}
                       </a>
                     )}
-                    {previous && (
-                      <button
-                        type="button"
-                        onClick={() => void openPreview(previous)}
-                        className="text-muted-foreground underline underline-offset-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                      >
-                        supersedes v{previous.version}
-                      </button>
-                    )}
+                    {r.supersedes &&
+                      (previous ? (
+                        <button
+                          type="button"
+                          onClick={() => void openPreview(previous)}
+                          className="text-muted-foreground underline underline-offset-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        >
+                          supersedes v{previous.version}
+                        </button>
+                      ) : (
+                        <span>supersedes an earlier version</span>
+                      ))}
                   </div>
                 </div>
                 <div className="flex shrink-0 items-center gap-1.5">
@@ -520,7 +574,9 @@ export function ReportsView() {
                     variant="ghost"
                     size="icon"
                     onClick={() => void download(r)}
-                    title="Download PDF"
+                    disabled={r.has_pdf === false}
+                    title={r.has_pdf === false ? "PDF artifact is not available" : "Download PDF"}
+                    aria-label={`Download PDF of ${r.title}`}
                     className="text-muted-foreground hover:text-primary"
                   >
                     <Download className="h-4 w-4" />
@@ -528,8 +584,13 @@ export function ReportsView() {
                   <Button
                     variant="ghost"
                     size="icon"
-                    onClick={() => void remove(r)}
+                    onClick={() => {
+                      setPageError(null);
+                      setDeleteTarget(r);
+                    }}
+                    disabled={deletingId === r.id}
                     title="Delete report"
+                    aria-label={`Delete ${r.title}`}
                     className="text-muted-foreground hover:text-destructive"
                   >
                     <Trash2 className="h-4 w-4" />
@@ -549,7 +610,7 @@ export function ReportsView() {
         </div>
       )}
 
-      {sharedReports.length > 0 && (
+      {(sharedReports.length > 0 || sharedError) && (
         <section className="mt-12" aria-labelledby="shared-with-me-heading">
           <h2 id="shared-with-me-heading" className="text-lg font-semibold tracking-tight">
             Shared with me
@@ -557,6 +618,18 @@ export function ReportsView() {
           <p className="mt-1 text-sm text-muted-foreground">
             Read-only report snapshots other workspace accounts shared with you.
           </p>
+          {sharedError && (
+            <p className="mt-3 text-sm text-destructive" role="alert">
+              {sharedError}
+              <button
+                type="button"
+                onClick={() => void load()}
+                className="ml-2 rounded-md font-medium text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                Retry
+              </button>
+            </p>
+          )}
           <div className="mt-4 space-y-3">
             {sharedReports.map((shared) => (
               <Card key={shared.id} className="flex items-center gap-4 p-4">
@@ -598,8 +671,9 @@ export function ReportsView() {
                     title="Download PDF"
                     className="text-muted-foreground hover:text-primary"
                     onClick={() =>
-                      void openProtected("pdf", `/api/reports/${shared.id}/pdf`, `${shared.title}.pdf`).catch(() =>
-                        setPageError("Could not download the shared report PDF"),
+                      void openProtected("pdf", `/api/reports/${shared.id}/pdf`, `${shared.title}.pdf`).catch(
+                        (failure: unknown) =>
+                          setPageError(formatApiError(failure, "Could not download the shared report PDF")),
                       )
                     }
                   >
@@ -653,6 +727,11 @@ export function ReportsView() {
             <DialogTitle>Rename report</DialogTitle>
             <DialogDescription>Give this report a title you can recognize later.</DialogDescription>
           </DialogHeader>
+          {dialogError && (
+            <p role="alert" className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
+              {dialogError}
+            </p>
+          )}
           <form
             className="space-y-3"
             onSubmit={(event) => {
@@ -689,6 +768,11 @@ export function ReportsView() {
               Preview and PDF access; you can revoke at any time.
             </DialogDescription>
           </DialogHeader>
+          {dialogError && (
+            <p role="alert" className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
+              {dialogError}
+            </p>
+          )}
           <div className="space-y-2">
             {shareAccounts
               .filter((account) => account.id !== undefined)
@@ -715,6 +799,11 @@ export function ReportsView() {
             {sharing && shareAccounts.length === 0 && (
               <p className="rounded-md border border-dashed px-3 py-4 text-center text-sm text-muted-foreground">
                 Loading workspace accounts…
+              </p>
+            )}
+            {!sharing && shareAccounts.length === 0 && !dialogError && (
+              <p className="rounded-md border border-dashed px-3 py-4 text-center text-sm text-muted-foreground">
+                No other accounts on this instance to share with.
               </p>
             )}
           </div>

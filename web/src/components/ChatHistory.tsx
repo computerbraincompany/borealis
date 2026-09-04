@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { Check, LoaderCircle, MessageSquareText, Pencil, Search, Trash2, X } from "lucide-react";
 import { formatApiError, type Chat } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 
 const GROUPS = ["Today", "Yesterday", "Previous 7 days", "Older"] as const;
 type GroupName = (typeof GROUPS)[number];
@@ -12,6 +13,11 @@ interface ChatHistoryProps {
   busyChatIds: ReadonlySet<string>;
   hasMore: boolean;
   loadingMore: boolean;
+  /** True while the first page is still loading and no chats are known yet. */
+  loading?: boolean;
+  /** Load failure for the visible list; distinct from a genuinely empty history. */
+  error?: string | null;
+  onRetry?: () => void;
   onOpen: (id: string) => void;
   onDelete: (id: string) => void | Promise<void>;
   onRename: (id: string, title: string) => Promise<void>;
@@ -53,6 +59,9 @@ export function ChatHistory({
   busyChatIds,
   hasMore,
   loadingMore,
+  loading = false,
+  error = null,
+  onRetry,
   onOpen,
   onDelete,
   onRename,
@@ -60,6 +69,9 @@ export function ChatHistory({
 }: ChatHistoryProps) {
   const [search, setSearch] = useState("");
   const [rename, setRename] = useState<RenameState | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<Chat | null>(null);
+  const [deleteBusyId, setDeleteBusyId] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const normalizedSearch = search.trim().toLocaleLowerCase();
   const filteredChats = useMemo(
     () => chats.filter((chat) => chat.title.toLocaleLowerCase().includes(normalizedSearch)),
@@ -79,6 +91,21 @@ export function ChatHistory({
 
   const cancelRename = () => {
     if (!rename?.pending) setRename(null);
+  };
+
+  const confirmDelete = async () => {
+    if (!deleteTarget || deleteBusyId) return;
+    const chatId = deleteTarget.id;
+    setDeleteBusyId(chatId);
+    setDeleteError(null);
+    try {
+      await onDelete(chatId);
+      setDeleteTarget((current) => (current?.id === chatId ? null : current));
+    } catch (failure: unknown) {
+      setDeleteError(formatApiError(failure, "Could not delete this conversation. Try again."));
+    } finally {
+      setDeleteBusyId((current) => (current === chatId ? null : current));
+    }
   };
 
   const saveRename = async () => {
@@ -107,6 +134,14 @@ export function ChatHistory({
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="px-3 pb-2">
+        {deleteError && (
+          <p
+            role="alert"
+            className="mb-2 rounded-md bg-destructive/10 px-2 py-1.5 text-[11px] leading-relaxed text-destructive"
+          >
+            {deleteError}
+          </p>
+        )}
         <label htmlFor="chat-history-search" className="sr-only">
           Search conversations
         </label>
@@ -137,7 +172,26 @@ export function ChatHistory({
       </div>
 
       <div className="flex-1 overflow-y-auto px-2 pb-4">
-        {chats.length === 0 ? (
+        {chats.length === 0 && error ? (
+          <div className="px-3 py-8 text-center text-xs leading-relaxed text-muted-foreground" role="alert">
+            <p className="text-destructive">{error}</p>
+            {onRetry && (
+              <button
+                type="button"
+                onClick={onRetry}
+                className="mt-2 block w-full rounded-md font-medium text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                Retry
+              </button>
+            )}
+          </div>
+        ) : chats.length === 0 && loading ? (
+          <div className="space-y-1 px-2 py-3" aria-hidden="true">
+            {["72%", "88%", "60%", "80%", "68%"].map((width, index) => (
+              <div key={index} className="h-9 animate-pulse rounded-lg bg-accent/60" style={{ width }} />
+            ))}
+          </div>
+        ) : chats.length === 0 ? (
           <div className="px-3 py-8 text-center text-xs leading-relaxed text-muted-foreground">
             No conversations yet.
             <br />
@@ -194,6 +248,7 @@ export function ChatHistory({
                                 readOnly={rename.pending}
                                 onChange={(event) => setRename({ ...rename, draft: event.target.value, error: null })}
                                 onKeyDown={(event) => {
+                                  if (event.nativeEvent.isComposing) return;
                                   if (event.key === "Enter") {
                                     event.preventDefault();
                                     void saveRename();
@@ -277,8 +332,11 @@ export function ChatHistory({
                             </button>
                             <button
                               type="button"
-                              onClick={() => void onDelete(chat.id)}
-                              disabled={busy || Boolean(rename?.pending)}
+                              onClick={() => {
+                                setDeleteError(null);
+                                setDeleteTarget(chat);
+                              }}
+                              disabled={busy || Boolean(rename?.pending) || Boolean(deleteBusyId)}
                               className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground opacity-70 hover:bg-destructive/10 hover:text-destructive focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-30"
                               aria-label={`Delete ${chat.title}`}
                             >
@@ -306,6 +364,17 @@ export function ChatHistory({
           </button>
         )}
       </div>
+      {deleteTarget && (
+        <ConfirmDialog
+          title={`Delete “${deleteTarget.title}”?`}
+          description="This permanently removes the conversation and all of its messages. This cannot be undone."
+          busy={deleteBusyId === deleteTarget.id}
+          onConfirm={() => void confirmDelete()}
+          onCancel={() => {
+            if (deleteBusyId !== deleteTarget.id) setDeleteTarget(null);
+          }}
+        />
+      )}
     </div>
   );
 }

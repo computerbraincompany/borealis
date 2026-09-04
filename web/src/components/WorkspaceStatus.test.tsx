@@ -65,7 +65,7 @@ describe("WorkspaceStatus", () => {
     render(<WorkspaceStatus />);
 
     expect(screen.getByText("Checking locality…")).toBeInTheDocument();
-    expect(screen.getByText("Endpoint status unavailable")).toBeInTheDocument();
+    expect(screen.getByText("Status unavailable — retrying")).toBeInTheDocument();
   });
 
   it("shows the contained engine state when healthy", () => {

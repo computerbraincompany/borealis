@@ -16,6 +16,7 @@ import { validateConnectorDraft } from "@/lib/connectorDraft";
 import { isConnectorTransitioning, useConnectorCatalog } from "@/hooks/useConnectorCatalog";
 import { useEgressConsentGate } from "@/hooks/useEgressConsentGate";
 import { cn, formatDate } from "@/lib/utils";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
@@ -77,6 +78,8 @@ export function ConnectorsView() {
   const [historyTarget, setHistoryTarget] = useState<Connector | null>(null);
   const [history, setHistory] = useState<ConnectorSyncRecord[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<Connector | null>(null);
   const {
     connectors,
     loading,
@@ -221,12 +224,16 @@ export function ConnectorsView() {
     const request = ++historyRequestRef.current;
     setHistoryTarget(c);
     setHistory([]);
+    setHistoryError(null);
     setHistoryLoading(true);
     try {
       const rows = await connectorsApi.listConnectorSyncs(c.id);
       if (historyRequestRef.current === request) setHistory(rows);
-    } catch {
-      if (historyRequestRef.current === request) setHistory([]);
+    } catch (failure: unknown) {
+      // A failed load must not read as "never synced".
+      if (historyRequestRef.current === request) {
+        setHistoryError(formatApiError(failure, "Could not load sync history"));
+      }
     } finally {
       if (historyRequestRef.current === request) setHistoryLoading(false);
     }
@@ -359,7 +366,7 @@ export function ConnectorsView() {
                 <Button
                   variant="ghost"
                   size="icon"
-                  onClick={() => remove(c)}
+                  onClick={() => setDeleteTarget(c)}
                   disabled={deleting === c.id || syncing === c.id || isConnectorTransitioning(c)}
                   aria-label={`Delete ${c.name}`}
                   className="text-muted-foreground hover:text-destructive"
@@ -401,13 +408,21 @@ export function ConnectorsView() {
               Register a remote dataset. Borealis downloads it, registers it as a DuckDB table and makes it searchable.
             </DialogDescription>
           </DialogHeader>
-          <div className="space-y-4">
+          <form
+            className="space-y-4"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void create();
+            }}
+          >
             <div className="space-y-2">
               <Label htmlFor="connType">Dataset type</Label>
               <div className="grid grid-cols-2 gap-2">
                 {(["url_csv", "url_json"] as const).map((t) => (
                   <button
                     key={t}
+                    type="button"
+                    aria-pressed={type === t}
                     onClick={() => setType(t)}
                     className={cn(
                       "flex items-center justify-center gap-2 rounded-lg border px-3 py-2.5 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
@@ -475,12 +490,12 @@ export function ConnectorsView() {
                 {error}
               </div>
             )}
-          </div>
+          </form>
           <DialogFooter>
-            <Button variant="ghost" onClick={() => setOpen(false)}>
+            <Button type="button" variant="ghost" onClick={() => setOpen(false)}>
               Cancel
             </Button>
-            <Button onClick={create} disabled={creating || !url.trim() || !name.trim() || !targetTable.trim()}>
+            <Button type="submit" disabled={creating || !url.trim() || !name.trim() || !targetTable.trim()}>
               {creating && <Loader2 className="animate-spin" />} Connect
             </Button>
           </DialogFooter>
@@ -488,13 +503,22 @@ export function ConnectorsView() {
       </Dialog>
 
       {/* sync history dialog */}
-      <Dialog open={!!historyTarget} onOpenChange={(open) => !open && setHistoryTarget(null)}>
+      <Dialog
+        open={!!historyTarget}
+        onOpenChange={(open) => {
+          if (!open) {
+            historyRequestRef.current += 1;
+            setHistoryTarget(null);
+            setHistoryError(null);
+          }
+        }}
+      >
         <DialogContent className="max-w-lg">
           <DialogHeader>
             <DialogTitle>{historyTarget?.name} sync history</DialogTitle>
             <DialogDescription>Durable sync runs, newest first. Details stay content-free.</DialogDescription>
           </DialogHeader>
-          <ol className="max-h-72 space-y-2 overflow-y-auto" aria-label="Connector syncs">
+          <ol className="max-h-72 space-y-2 overflow-y-auto" aria-label="Connector syncs" aria-busy={historyLoading}>
             {history.map((run) => (
               <li key={run.id} className="rounded-md border px-3 py-2 text-sm">
                 <div className="flex items-center justify-between gap-2">
@@ -518,7 +542,22 @@ export function ConnectorsView() {
                 <Loader2 className="h-4 w-4 animate-spin" /> Loading sync history…
               </li>
             )}
-            {!historyLoading && history.length === 0 && (
+            {!historyLoading && historyError && (
+              <li
+                className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-3 text-sm text-destructive"
+                role="alert"
+              >
+                {historyError}
+                <button
+                  type="button"
+                  onClick={() => historyTarget && void openHistory(historyTarget)}
+                  className="mt-2 block w-full rounded-md font-medium text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  Retry
+                </button>
+              </li>
+            )}
+            {!historyLoading && !historyError && history.length === 0 && (
               <li className="rounded-md border border-dashed px-3 py-4 text-center text-sm text-muted-foreground">
                 No syncs yet.
               </li>
@@ -526,6 +565,20 @@ export function ConnectorsView() {
           </ol>
         </DialogContent>
       </Dialog>
+
+      {deleteTarget && (
+        <ConfirmDialog
+          title={`Delete “${deleteTarget.name}”?`}
+          description="This removes the connector, its downloaded table, its refresh schedule, and its sync history. Uploaded sources are unaffected. This cannot be undone."
+          busy={deleting === deleteTarget.id}
+          onConfirm={() => {
+            void remove(deleteTarget).then(() => setDeleteTarget(null));
+          }}
+          onCancel={() => {
+            if (deleting !== deleteTarget.id) setDeleteTarget(null);
+          }}
+        />
+      )}
     </div>
   );
 }

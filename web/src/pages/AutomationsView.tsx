@@ -10,19 +10,24 @@ import {
   type Connector,
 } from "@/lib/api";
 import { mergeCatalogContinuation, mergeCatalogHead } from "@/lib/catalogMerge";
-import { formatDate } from "@/lib/utils";
+import { cn, formatDate } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { useEgressConsentGate } from "@/hooks/useEgressConsentGate";
 
 const OUTCOME_STYLING: Record<AutomationRun["outcome"], string> = {
   succeeded: "border-success/30 bg-success/10 text-success",
   failed: "border-destructive/30 bg-destructive/10 text-destructive",
   skipped: "border-warning/30 bg-warning/10 text-warning",
 };
+
+const SCHEDULE_MIN_MINUTES = 15;
+const SCHEDULE_MAX_MINUTES = 10_080;
 
 export function AutomationsView() {
   const [automations, setAutomations] = useState<Automation[]>([]);
@@ -35,17 +40,23 @@ export function AutomationsView() {
   const [chatsNextCursor, setChatsNextCursor] = useState<string | null>(null);
   const [targetsLoadingMore, setTargetsLoadingMore] = useState(false);
   const [pageError, setPageError] = useState<string | null>(null);
+  // Mutations that fail while a dialog is open must surface inside that dialog;
+  // the page banner is hidden behind the modal overlay.
+  const [dialogError, setDialogError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState("");
   const [kind, setKind] = useState<"connector_sync" | "agent_turn">("connector_sync");
   const [targetId, setTargetId] = useState("");
   const [prompt, setPrompt] = useState("");
-  const [schedule, setSchedule] = useState(60);
+  const [scheduleDraft, setScheduleDraft] = useState("60");
   const [busy, setBusy] = useState(false);
   const [runsTarget, setRunsTarget] = useState<Automation | null>(null);
   const [runs, setRuns] = useState<AutomationRun[]>([]);
   const [runsLoading, setRunsLoading] = useState(false);
   const [runsError, setRunsError] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<Automation | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [togglingId, setTogglingId] = useState<string | null>(null);
   const createRequestRef = useRef(0);
   const createAbortRef = useRef<AbortController | null>(null);
   const rowMutationRequestRef = useRef(0);
@@ -62,6 +73,7 @@ export function AutomationsView() {
   const chatsNextCursorRef = useRef<string | null>(null);
   const targetsLoadingMoreOwnerRef = useRef<number | null>(null);
   const mountedRef = useRef(false);
+  const { handleConsentError, dialog: consentDialog } = useEgressConsentGate();
 
   const invalidateCatalog = () => {
     catalogRequestRef.current += 1;
@@ -89,42 +101,52 @@ export function AutomationsView() {
     setLoadingMore(false);
     setTargetsLoadingMore(false);
     setPageError(null);
-    try {
-      const [rows, connectorRows, chatRows] = await Promise.all([
-        automationsApi.list(),
-        connectorsApi.list(),
-        chatsApi.list(),
-      ]);
-      if (!mountedRef.current) return;
+    // Independent lists: a target-list failure should not discard successfully
+    // loaded automations, and vice versa.
+    const [rowsResult, connectorsResult, chatsResult] = await Promise.allSettled([
+      automationsApi.list(),
+      connectorsApi.list(),
+      chatsApi.list(),
+    ]);
+    if (!mountedRef.current) return;
+    let automationsError: string | null = null;
+    if (rowsResult.status === "fulfilled") {
       if (catalogRequestId === catalogRequestRef.current) {
-        setAutomations((current) => mergeCatalogHead(rows.items, current));
-        catalogNextCursorRef.current = rows.next_cursor;
-        setNextCursor(rows.next_cursor);
+        setAutomations((current) => mergeCatalogHead(rowsResult.value.items, current));
+        catalogNextCursorRef.current = rowsResult.value.next_cursor;
+        setNextCursor(rowsResult.value.next_cursor);
       }
+    } else {
+      automationsError = formatApiError(rowsResult.reason, "Could not load automations");
+    }
+    let targetsError: string | null = null;
+    if (connectorsResult.status === "fulfilled" && chatsResult.status === "fulfilled") {
       if (targetsRequestId === targetsRequestRef.current) {
-        setConnectors((current) => mergeCatalogHead(connectorRows.items, current));
+        setConnectors((current) => mergeCatalogHead(connectorsResult.value.items, current));
         setChats((current) =>
           mergeCatalogHead(
-            chatRows.items.map((chat) => ({ id: chat.id, title: chat.title })),
+            chatsResult.value.items.map((chat) => ({ id: chat.id, title: chat.title })),
             current,
           ),
         );
-        connectorsNextCursorRef.current = connectorRows.next_cursor;
-        chatsNextCursorRef.current = chatRows.next_cursor;
-        setConnectorsNextCursor(connectorRows.next_cursor);
-        setChatsNextCursor(chatRows.next_cursor);
+        connectorsNextCursorRef.current = connectorsResult.value.next_cursor;
+        chatsNextCursorRef.current = chatsResult.value.next_cursor;
+        setConnectorsNextCursor(connectorsResult.value.next_cursor);
+        setChatsNextCursor(chatsResult.value.next_cursor);
       }
-    } catch (failure: unknown) {
-      if (
-        mountedRef.current &&
-        catalogRequestId === catalogRequestRef.current &&
-        targetsRequestId === targetsRequestRef.current
-      ) {
-        setPageError(formatApiError(failure, "Could not load automations"));
-      }
-    } finally {
-      if (mountedRef.current && catalogRequestId === catalogRequestRef.current) setLoading(false);
+    } else {
+      const failure =
+        connectorsResult.status === "rejected"
+          ? connectorsResult.reason
+          : chatsResult.status === "rejected"
+            ? chatsResult.reason
+            : new Error("Could not load automation targets");
+      targetsError = formatApiError(failure, "Could not load automation targets");
     }
+    if (mountedRef.current && (automationsError || targetsError)) {
+      setPageError([automationsError, targetsError].filter(Boolean).join(" "));
+    }
+    if (mountedRef.current && catalogRequestId === catalogRequestRef.current) setLoading(false);
   }, []);
 
   const loadMore = async () => {
@@ -193,7 +215,9 @@ export function AutomationsView() {
       }
     } catch (failure: unknown) {
       if (mountedRef.current && requestId === targetsRequestRef.current && !abort.signal.aborted) {
-        setPageError(formatApiError(failure, "Could not load older automation targets"));
+        // Target pagination only happens inside the create dialog; keep the
+        // message visible instead of hiding it behind the modal overlay.
+        setDialogError(formatApiError(failure, "Could not load older automation targets"));
       }
     } finally {
       if (targetsLoadingMoreOwnerRef.current === requestId) {
@@ -231,6 +255,7 @@ export function AutomationsView() {
     createRequestRef.current += 1;
     createAbortRef.current?.abort();
     createAbortRef.current = null;
+    setDialogError(null);
     setBusy(false);
     setCreating(true);
   };
@@ -240,17 +265,27 @@ export function AutomationsView() {
     createRequestRef.current += 1;
     createAbortRef.current?.abort();
     createAbortRef.current = null;
+    setDialogError(null);
     setBusy(false);
     setCreating(false);
   };
 
   const create = async () => {
+    const parsedSchedule = Number.parseInt(scheduleDraft, 10);
+    if (
+      !Number.isInteger(parsedSchedule) ||
+      parsedSchedule < SCHEDULE_MIN_MINUTES ||
+      parsedSchedule > SCHEDULE_MAX_MINUTES
+    ) {
+      setDialogError(`Schedule must be between ${SCHEDULE_MIN_MINUTES} and ${SCHEDULE_MAX_MINUTES} minutes.`);
+      return;
+    }
     const createInput = {
       name: name.trim(),
       kind,
       target_id: targetId,
       ...(kind === "agent_turn" ? { prompt: prompt.trim() } : {}),
-      schedule_minutes: schedule,
+      schedule_minutes: parsedSchedule,
     };
     if (!createInput.name || !createInput.target_id) return;
     const requestId = ++createRequestRef.current;
@@ -258,7 +293,7 @@ export function AutomationsView() {
     const abort = new AbortController();
     createAbortRef.current = abort;
     setBusy(true);
-    setPageError(null);
+    setDialogError(null);
     try {
       const created = await automationsApi.create(createInput, abort.signal);
       if (requestId !== createRequestRef.current || abort.signal.aborted) return;
@@ -268,12 +303,15 @@ export function AutomationsView() {
       setName("");
       setTargetId("");
       setPrompt("");
+      setScheduleDraft("60");
       createAbortRef.current = null;
       closeCreateDialog();
     } catch (failure: unknown) {
-      if (requestId === createRequestRef.current && !abort.signal.aborted) {
-        setPageError(formatApiError(failure, "Could not create the automation"));
-      }
+      if (requestId !== createRequestRef.current || abort.signal.aborted) return;
+      // A connector refresh automation needs remote-egress consent like any
+      // other sync; the consent card resumes this exact create on approval.
+      if (handleConsentError(failure, () => void create())) return;
+      setDialogError(formatApiError(failure, "Could not create the automation"));
     } finally {
       if (requestId === createRequestRef.current && !abort.signal.aborted) {
         createAbortRef.current = null;
@@ -284,12 +322,14 @@ export function AutomationsView() {
 
   const toggleState = async (automation: Automation) => {
     const targetId = automation.id;
+    if (togglingId === targetId || deletingId === targetId) return;
     const patch = { state: automation.state === "active" ? ("paused" as const) : ("active" as const) };
     const requestId = ++rowMutationRequestRef.current;
     rowMutationRequestsRef.current.get(targetId)?.abort.abort();
     const abort = new AbortController();
     rowMutationRequestsRef.current.set(targetId, { requestId, abort });
     setPageError(null);
+    setTogglingId(targetId);
     try {
       const updated = await automationsApi.update(targetId, patch, abort.signal);
       if (rowMutationRequestsRef.current.get(targetId)?.requestId !== requestId || abort.signal.aborted) return;
@@ -303,6 +343,7 @@ export function AutomationsView() {
       if (rowMutationRequestsRef.current.get(targetId)?.requestId === requestId) {
         rowMutationRequestsRef.current.delete(targetId);
       }
+      setTogglingId((current) => (current === targetId ? null : current));
     }
   };
 
@@ -326,6 +367,19 @@ export function AutomationsView() {
       if (rowMutationRequestsRef.current.get(targetId)?.requestId === requestId) {
         rowMutationRequestsRef.current.delete(targetId);
       }
+    }
+  };
+
+  const confirmRemove = async () => {
+    if (!deleteTarget || deletingId === deleteTarget.id) return;
+    const automation = deleteTarget;
+    setDeletingId(automation.id);
+    setPageError(null);
+    try {
+      await remove(automation);
+      setDeleteTarget(null);
+    } finally {
+      setDeletingId(null);
     }
   };
 
@@ -367,6 +421,18 @@ export function AutomationsView() {
 
   return (
     <div className="h-full overflow-y-auto">
+      {consentDialog}
+      {deleteTarget && (
+        <ConfirmDialog
+          title={`Delete “${deleteTarget.name}”?`}
+          description="This removes the automation and stops its schedule. Recorded run history stays available in sync history where applicable. This cannot be undone."
+          busy={deletingId === deleteTarget.id}
+          onConfirm={() => void confirmRemove()}
+          onCancel={() => {
+            if (deletingId !== deleteTarget.id) setDeleteTarget(null);
+          }}
+        />
+      )}
       <div className="mx-auto max-w-5xl px-4 py-6 sm:px-6 sm:py-10">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
           <div>
@@ -377,8 +443,8 @@ export function AutomationsView() {
             </p>
           </div>
           <div className="flex items-center gap-2">
-            <Button variant="secondary" size="sm" onClick={() => void load()}>
-              <RefreshCw className="h-4 w-4" /> Refresh
+            <Button variant="secondary" size="sm" onClick={() => void load()} disabled={loading}>
+              <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} /> Refresh
             </Button>
             <Button size="sm" onClick={openCreateDialog}>
               <Plus className="h-4 w-4" /> New automation
@@ -443,18 +509,40 @@ export function AutomationsView() {
                   <Button
                     variant="ghost"
                     size="icon"
-                    title={automation.state === "active" ? "Pause automation" : "Resume automation"}
+                    title={
+                      togglingId === automation.id
+                        ? "Saving…"
+                        : automation.state === "active"
+                          ? "Pause automation"
+                          : "Resume automation"
+                    }
+                    aria-label={
+                      automation.state === "active" ? `Pause ${automation.name}` : `Resume ${automation.name}`
+                    }
+                    aria-busy={togglingId === automation.id}
                     className="text-muted-foreground hover:text-primary"
+                    disabled={togglingId === automation.id || deletingId === automation.id}
                     onClick={() => void toggleState(automation)}
                   >
-                    {automation.state === "active" ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
+                    {togglingId === automation.id ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : automation.state === "active" ? (
+                      <Pause className="h-4 w-4" />
+                    ) : (
+                      <Play className="h-4 w-4" />
+                    )}
                   </Button>
                   <Button
                     variant="ghost"
                     size="icon"
                     title="Delete automation"
+                    aria-label={`Delete ${automation.name}`}
                     className="text-muted-foreground hover:text-destructive"
-                    onClick={() => void remove(automation)}
+                    disabled={deletingId === automation.id}
+                    onClick={() => {
+                      setPageError(null);
+                      setDeleteTarget(automation);
+                    }}
                   >
                     <Trash2 className="h-4 w-4" />
                   </Button>
@@ -482,6 +570,11 @@ export function AutomationsView() {
               Runs every interval through the same gates as a manual action. Agent turns are reviewable in their chat.
             </DialogDescription>
           </DialogHeader>
+          {dialogError && (
+            <p role="alert" className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
+              {dialogError}
+            </p>
+          )}
           <form
             className="space-y-3"
             onSubmit={(event) => {
@@ -551,11 +644,12 @@ export function AutomationsView() {
               Every
               <Input
                 type="number"
-                min={15}
-                max={10_080}
-                value={schedule}
-                onChange={(event) => setSchedule(Number(event.target.value) || 15)}
+                min={SCHEDULE_MIN_MINUTES}
+                max={SCHEDULE_MAX_MINUTES}
+                value={scheduleDraft}
+                onChange={(event) => setScheduleDraft(event.target.value)}
                 aria-label="Schedule minutes"
+                aria-invalid={Boolean(dialogError && dialogError.startsWith("Schedule"))}
                 className="w-24"
               />
               minutes

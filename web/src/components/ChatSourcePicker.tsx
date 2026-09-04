@@ -52,6 +52,12 @@ interface ChatSourcePickerProps {
   hasMessages: boolean;
   onApply: (scope: SourceScopeInput) => Promise<void>;
   onUpload: (file: File) => Promise<Source>;
+  /**
+   * Optional fail-closed egress-consent gate (from `useEgressConsentGate`).
+   * Returning true means the consent card took over and will re-run the
+   * upload after acknowledgment, so no upload error is shown.
+   */
+  onConsentError?: (error: unknown, retry: () => void) => boolean;
   onRetrySources: () => Promise<void>;
   onLoadMoreSources?: () => void | Promise<void>;
   libraries?: LibrarySummary[] | null;
@@ -76,6 +82,7 @@ export function ChatSourcePicker({
   hasMessages,
   onApply,
   onUpload,
+  onConsentError,
   onRetrySources,
   onLoadMoreSources,
   libraries = null,
@@ -94,14 +101,14 @@ export function ChatSourcePicker({
   const [error, setError] = useState<string | null>(null);
   const [uploadingFileName, setUploadingFileName] = useState<string | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
-  const [attachingLibraryName, setAttachingLibraryName] = useState<string | null>(null);
+  const [attachingLibraryId, setAttachingLibraryId] = useState<string | null>(null);
 
   const selectedIds = useMemo(
     () => new Set(sourceMode === "selected" ? attachedSources.map((source) => source.id) : []),
     [attachedSources, sourceMode],
   );
   const isUploading = uploadingFileName !== null;
-  const isAttachingLibrary = attachingLibraryName !== null;
+  const isAttachingLibrary = attachingLibraryId !== null;
   const busy = disabled || saving || pending || isUploading || isAttachingLibrary;
   const hasLibraries = (libraries?.length ?? 0) > 0;
 
@@ -163,7 +170,7 @@ export function ChatSourcePicker({
   const attachLibrary = async (library: LibrarySummary) => {
     if (busy) return;
     setError(null);
-    setAttachingLibraryName(library.name);
+    setAttachingLibraryId(library.id);
     try {
       const detail = await librariesApi.get(library.id);
       const readyIds = detail.members.filter((member) => member.status === "ready").map((member) => member.id);
@@ -181,7 +188,7 @@ export function ChatSourcePicker({
     } catch (reason: unknown) {
       setError(formatApiError(reason, `Could not attach “${library.name}”`));
     } finally {
-      setAttachingLibraryName(null);
+      setAttachingLibraryId((current) => (current === library.id ? null : current));
     }
   };
 
@@ -205,6 +212,9 @@ export function ChatSourcePicker({
         }
       }
     } catch (reason: unknown) {
+      // A fail-closed remote-egress consent rejection opens the consent card
+      // and resumes this exact upload after acknowledgment.
+      if (onConsentError?.(reason, () => void uploadFile(file))) return;
       setUploadError(
         formatApiError(reason, `Could not upload ${file.name}. Check the file type and size, then try again.`),
       );
@@ -390,7 +400,7 @@ export function ChatSourcePicker({
                         {library.member_count} {library.member_count === 1 ? "member" : "members"}
                       </span>
                     </span>
-                    {attachingLibraryName === library.name && (
+                    {attachingLibraryId === library.id && (
                       <LoaderCircle className="animate-spin text-primary" aria-label={`Attaching ${library.name}`} />
                     )}
                   </DropdownMenuItem>

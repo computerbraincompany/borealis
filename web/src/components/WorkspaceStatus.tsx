@@ -29,10 +29,19 @@ function localityHint(locality: ProviderLocality, containedManaged: boolean): st
 }
 
 export function WorkspaceStatus() {
-  const { status, checking } = useWorkspaceStatus();
+  const { status, checking, error } = useWorkspaceStatus();
 
   const reachability = !status
-    ? { label: checking ? "Checking endpoint…" : "Endpoint status unavailable", dot: "bg-muted-foreground/40" }
+    ? {
+        // Distinguish "the status fetch failed" from "the model endpoint is
+        // down" so users do not misread a UI probe failure as an outage.
+        label: checking
+          ? "Checking endpoint…"
+          : error
+            ? "Status unavailable — retrying"
+            : "Endpoint status unavailable",
+        dot: checking ? "bg-muted-foreground/40" : error ? "bg-warning" : "bg-muted-foreground/40",
+      }
     : status.endpoint_reachable
       ? { label: `Endpoint reachable · ${status.latency_ms} ms`, dot: "bg-success" }
       : { label: "Endpoint unreachable", dot: "bg-destructive" };

@@ -1,14 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Bot, Plus, RefreshCw, Trash2, History, Loader2 } from "lucide-react";
+import { Bot, Plus, RefreshCw, Trash2, History, Loader2, Pencil } from "lucide-react";
 import { agentsApi, formatApiError, type AgentDetail, type AgentSummary } from "@/lib/api";
 import { mergeCatalogContinuation, mergeCatalogHead } from "@/lib/catalogMerge";
-import { formatDate } from "@/lib/utils";
+import { cn, formatDate } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 
 const EMPTY_INSTRUCTIONS = "";
 
@@ -22,33 +23,47 @@ export function AgentsView() {
   const [newName, setNewName] = useState("");
   const [newInstructions, setNewInstructions] = useState(EMPTY_INSTRUCTIONS);
   const [busy, setBusy] = useState(false);
+  // Mutations that fail while a dialog is open must surface inside that dialog;
+  // the page banner is hidden behind the modal overlay.
+  const [dialogError, setDialogError] = useState<string | null>(null);
   const [reviseTarget, setReviseTarget] = useState<AgentSummary | null>(null);
   const [reviseInstructions, setReviseInstructions] = useState("");
   const [renameTarget, setRenameTarget] = useState<AgentSummary | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [historyTarget, setHistoryTarget] = useState<AgentSummary | null>(null);
   const [historyDetail, setHistoryDetail] = useState<AgentDetail | null>(null);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<AgentSummary | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
   const catalogRequestRef = useRef(0);
   const nextCursorRef = useRef<string | null>(null);
   const loadingMoreOwnerRef = useRef<number | null>(null);
   const mountedRef = useRef(false);
 
+  const loadHistory = useCallback(async (agent: AgentSummary) => {
+    setHistoryLoading(true);
+    setHistoryError(null);
+    try {
+      const detail = await agentsApi.get(agent.id);
+      if (!mountedRef.current) return;
+      setHistoryDetail(detail);
+    } catch (error: unknown) {
+      if (mountedRef.current) setHistoryError(formatApiError(error, "Could not load revisions"));
+    } finally {
+      if (mountedRef.current) setHistoryLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     if (!historyTarget) {
       setHistoryDetail(null);
+      setHistoryError(null);
+      setHistoryLoading(false);
       return;
     }
-    let cancelled = false;
-    agentsApi
-      .get(historyTarget.id)
-      .then((detail) => {
-        if (!cancelled) setHistoryDetail(detail);
-      })
-      .catch(() => undefined);
-    return () => {
-      cancelled = true;
-    };
-  }, [historyTarget]);
+    void loadHistory(historyTarget);
+  }, [historyTarget, loadHistory]);
 
   const load = useCallback(async () => {
     const requestId = ++catalogRequestRef.current;
@@ -110,7 +125,7 @@ export function AgentsView() {
     const instructions = newInstructions.trim();
     if (!name || !instructions) return;
     setBusy(true);
-    setPageError(null);
+    setDialogError(null);
     try {
       await agentsApi.create(name, newInstructions);
       setCreating(false);
@@ -118,7 +133,7 @@ export function AgentsView() {
       setNewInstructions(EMPTY_INSTRUCTIONS);
       await load();
     } catch (error: unknown) {
-      setPageError(formatApiError(error, "Could not create the agent"));
+      setDialogError(formatApiError(error, "Could not create the agent"));
     } finally {
       setBusy(false);
     }
@@ -128,13 +143,13 @@ export function AgentsView() {
     if (!reviseTarget) return;
     if (!reviseInstructions.trim() || reviseInstructions === reviseTarget.instructions) return;
     setBusy(true);
-    setPageError(null);
+    setDialogError(null);
     try {
       await agentsApi.update(reviseTarget.id, { instructions: reviseInstructions });
       setReviseTarget(null);
       await load();
     } catch (error: unknown) {
-      setPageError(formatApiError(error, "Could not revise the agent"));
+      setDialogError(formatApiError(error, "Could not revise the agent"));
     } finally {
       setBusy(false);
     }
@@ -145,13 +160,13 @@ export function AgentsView() {
     const name = renameValue.trim();
     if (!name || name === renameTarget.name) return;
     setBusy(true);
-    setPageError(null);
+    setDialogError(null);
     try {
       await agentsApi.update(renameTarget.id, { name });
       setRenameTarget(null);
       await load();
     } catch (error: unknown) {
-      setPageError(formatApiError(error, "Could not rename the agent"));
+      setDialogError(formatApiError(error, "Could not rename the agent"));
     } finally {
       setBusy(false);
     }
@@ -167,6 +182,18 @@ export function AgentsView() {
     }
   };
 
+  const confirmRemove = async () => {
+    if (!deleteTarget || deletingId === deleteTarget.id) return;
+    const agent = deleteTarget;
+    setDeletingId(agent.id);
+    try {
+      await remove(agent);
+      setDeleteTarget(null);
+    } finally {
+      setDeletingId(null);
+    }
+  };
+
   return (
     <div className="h-full overflow-y-auto">
       <div className="mx-auto max-w-5xl px-4 py-6 sm:px-6 sm:py-10">
@@ -179,8 +206,8 @@ export function AgentsView() {
             </p>
           </div>
           <div className="flex items-center gap-2">
-            <Button variant="secondary" size="sm" onClick={() => void load()}>
-              <RefreshCw className="h-4 w-4" /> Refresh
+            <Button variant="secondary" size="sm" onClick={() => void load()} disabled={loading}>
+              <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} /> Refresh
             </Button>
             <Button size="sm" onClick={() => setCreating(true)}>
               <Plus className="h-4 w-4" /> New agent
@@ -233,7 +260,9 @@ export function AgentsView() {
                     <Button
                       variant="outline"
                       size="sm"
+                      disabled={busy || deletingId !== null}
                       onClick={() => {
+                        setDialogError(null);
                         setReviseTarget(agent);
                         setReviseInstructions(agent.instructions);
                       }}
@@ -244,7 +273,9 @@ export function AgentsView() {
                       variant="ghost"
                       size="icon"
                       title="Revision history"
+                      aria-label={`Revision history for ${agent.name}`}
                       className="text-muted-foreground hover:text-primary"
+                      disabled={busy || deletingId !== null}
                       onClick={() => setHistoryTarget(agent)}
                     >
                       <History className="h-4 w-4" />
@@ -253,20 +284,28 @@ export function AgentsView() {
                       variant="ghost"
                       size="icon"
                       title="Rename agent"
+                      aria-label={`Rename ${agent.name}`}
                       className="text-muted-foreground hover:text-primary"
+                      disabled={busy || deletingId !== null}
                       onClick={() => {
+                        setDialogError(null);
                         setRenameTarget(agent);
                         setRenameValue(agent.name);
                       }}
                     >
-                      <RefreshCw className="h-4 w-4 rotate-90" />
+                      <Pencil className="h-4 w-4" />
                     </Button>
                     <Button
                       variant="ghost"
                       size="icon"
                       title="Delete agent"
+                      aria-label={`Delete ${agent.name}`}
                       className="text-muted-foreground hover:text-destructive"
-                      onClick={() => void remove(agent)}
+                      disabled={busy || deletingId === agent.id}
+                      onClick={() => {
+                        setPageError(null);
+                        setDeleteTarget(agent);
+                      }}
                     >
                       <Trash2 className="h-4 w-4" />
                     </Button>
@@ -295,6 +334,11 @@ export function AgentsView() {
               Instructions are versioned: revising an agent later never changes chats already underway.
             </DialogDescription>
           </DialogHeader>
+          {dialogError && (
+            <p role="alert" className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
+              {dialogError}
+            </p>
+          )}
           <form
             className="space-y-3"
             onSubmit={(event) => {
@@ -340,6 +384,11 @@ export function AgentsView() {
               chats keep the revision they started with.
             </DialogDescription>
           </DialogHeader>
+          {dialogError && (
+            <p role="alert" className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
+              {dialogError}
+            </p>
+          )}
           <form
             className="space-y-3"
             onSubmit={(event) => {
@@ -377,6 +426,11 @@ export function AgentsView() {
             <DialogTitle>Rename agent</DialogTitle>
             <DialogDescription>Give this agent a name you can recognize later.</DialogDescription>
           </DialogHeader>
+          {dialogError && (
+            <p role="alert" className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
+              {dialogError}
+            </p>
+          )}
           <form
             className="space-y-3"
             onSubmit={(event) => {
@@ -410,7 +464,7 @@ export function AgentsView() {
             <DialogTitle>{historyTarget?.name} revisions</DialogTitle>
             <DialogDescription>Instructions are immutable per version; the newest one runs next.</DialogDescription>
           </DialogHeader>
-          <ol className="max-h-72 space-y-2 overflow-y-auto" aria-label="Agent revisions">
+          <ol className="max-h-72 space-y-2 overflow-y-auto" aria-label="Agent revisions" aria-busy={historyLoading}>
             {(historyDetail?.revisions ?? []).map((revision) => (
               <li key={revision.version} className="rounded-md border px-3 py-2 text-sm">
                 <div className="flex items-center justify-between gap-2">
@@ -422,14 +476,44 @@ export function AgentsView() {
                 <p className="mt-1.5 whitespace-pre-wrap text-xs text-muted-foreground">{revision.instructions}</p>
               </li>
             ))}
-            {historyTarget && !historyDetail && (
+            {historyError ? (
+              <li
+                className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-3 text-center text-sm text-destructive"
+                role="alert"
+              >
+                {historyError}
+                <button
+                  type="button"
+                  onClick={() => historyTarget && void loadHistory(historyTarget)}
+                  className="mt-2 block w-full rounded-md font-medium text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  Retry
+                </button>
+              </li>
+            ) : historyLoading && !historyDetail ? (
               <li className="rounded-md border border-dashed px-3 py-4 text-center text-sm text-muted-foreground">
                 Loading revisions…
               </li>
-            )}
+            ) : historyDetail && historyDetail.revisions.length === 0 ? (
+              <li className="rounded-md border border-dashed px-3 py-4 text-center text-sm text-muted-foreground">
+                No revisions yet.
+              </li>
+            ) : null}
           </ol>
         </DialogContent>
       </Dialog>
+
+      {deleteTarget && (
+        <ConfirmDialog
+          title={`Delete “${deleteTarget.name}”?`}
+          description="Chats bound to this agent keep the instruction revision they started with, but the agent and its history are removed. This cannot be undone."
+          busy={deletingId === deleteTarget.id}
+          onConfirm={() => void confirmRemove()}
+          onCancel={() => {
+            if (deletingId !== deleteTarget.id) setDeleteTarget(null);
+          }}
+        />
+      )}
     </div>
   );
 }
