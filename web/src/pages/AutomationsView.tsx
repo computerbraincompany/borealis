@@ -562,7 +562,13 @@ export function AutomationsView() {
       </div>
 
       {/* create dialog */}
-      <Dialog open={creating} onOpenChange={(open) => (open ? openCreateDialog() : closeCreateDialog())}>
+      <Dialog
+        open={creating}
+        onOpenChange={(open) => {
+          if (open) openCreateDialog();
+          else if (!busy) closeCreateDialog();
+        }}
+      >
         <DialogContent className="max-w-lg">
           <DialogHeader>
             <DialogTitle>New automation</DialogTitle>
@@ -655,7 +661,7 @@ export function AutomationsView() {
               minutes
             </label>
             <div className="flex justify-end gap-2">
-              <Button type="button" variant="ghost" size="sm" onClick={closeCreateDialog}>
+              <Button type="button" variant="ghost" size="sm" disabled={busy} onClick={closeCreateDialog}>
                 Cancel
               </Button>
               <Button type="submit" size="sm" disabled={busy || !name.trim() || !targetId}>
@@ -684,7 +690,15 @@ export function AutomationsView() {
                 className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-3 text-sm text-destructive"
                 role="alert"
               >
-                {runsError}
+                {runsError}{" "}
+                <Button
+                  variant="link"
+                  size="sm"
+                  className="h-auto p-0"
+                  onClick={() => runsTarget && void openRuns(runsTarget)}
+                >
+                  Retry
+                </Button>
               </li>
             )}
             {!runsLoading &&

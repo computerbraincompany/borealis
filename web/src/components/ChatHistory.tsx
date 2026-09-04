@@ -17,6 +17,8 @@ interface ChatHistoryProps {
   loading?: boolean;
   /** Load failure for the visible list; distinct from a genuinely empty history. */
   error?: string | null;
+  /** Failure of the most recent "load older" attempt; the button doubles as the retry. */
+  loadMoreError?: string | null;
   onRetry?: () => void;
   onOpen: (id: string) => void;
   onDelete: (id: string) => void | Promise<void>;
@@ -61,6 +63,7 @@ export function ChatHistory({
   loadingMore,
   loading = false,
   error = null,
+  loadMoreError = null,
   onRetry,
   onOpen,
   onDelete,
@@ -103,6 +106,9 @@ export function ChatHistory({
       setDeleteTarget((current) => (current?.id === chatId ? null : current));
     } catch (failure: unknown) {
       setDeleteError(formatApiError(failure, "Could not delete this conversation. Try again."));
+      // The banner renders outside the dialog, so close the modal to keep the
+      // failure reachable (the overlay hides and aria-hides the sidebar).
+      setDeleteTarget((current) => (current?.id === chatId ? null : current));
     } finally {
       setDeleteBusyId((current) => (current === chatId ? null : current));
     }
@@ -351,6 +357,11 @@ export function ChatHistory({
               </section>
             ))}
           </div>
+        )}
+        {hasMore && loadMoreError && (
+          <p role="alert" className="mt-3 px-2 text-center text-[11px] leading-relaxed text-destructive">
+            {loadMoreError} Press the button below to retry.
+          </p>
         )}
         {hasMore && (
           <button

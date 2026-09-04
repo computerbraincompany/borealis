@@ -31,6 +31,7 @@ vi.mock("@/lib/api", () => ({
   apiText: apiMocks.apiText,
   formatApiError: (_error: unknown, fallback: string) => fallback,
   openProtected: apiMocks.openProtected,
+  getUser: () => ({ id: "self-account", email: "owner@example.test" }),
 }));
 
 vi.mock("@/components/ui/dialog", () => ({

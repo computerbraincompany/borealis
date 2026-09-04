@@ -326,7 +326,7 @@ export function AgentsView() {
       </div>
 
       {/* create dialog */}
-      <Dialog open={creating} onOpenChange={setCreating}>
+      <Dialog open={creating} onOpenChange={(value) => !value && !busy && setCreating(false)}>
         <DialogContent className="max-w-lg">
           <DialogHeader>
             <DialogTitle>New agent</DialogTitle>
@@ -363,7 +363,7 @@ export function AgentsView() {
               className="min-h-40 w-full rounded-md border bg-background px-3 py-2 text-sm"
             />
             <div className="flex justify-end gap-2">
-              <Button type="button" variant="ghost" size="sm" onClick={() => setCreating(false)}>
+              <Button type="button" variant="ghost" size="sm" disabled={busy} onClick={() => setCreating(false)}>
                 Cancel
               </Button>
               <Button type="submit" size="sm" disabled={busy || !newName.trim() || !newInstructions.trim()}>
@@ -375,7 +375,12 @@ export function AgentsView() {
       </Dialog>
 
       {/* revise dialog */}
-      <Dialog open={!!reviseTarget} onOpenChange={(value) => !value && setReviseTarget(null)}>
+      <Dialog
+        open={!!reviseTarget}
+        onOpenChange={(value) => {
+          if (!value && !busy) setReviseTarget(null);
+        }}
+      >
         <DialogContent className="max-w-lg">
           <DialogHeader>
             <DialogTitle>Revise {reviseTarget?.name}</DialogTitle>
@@ -404,7 +409,7 @@ export function AgentsView() {
               className="min-h-40 w-full rounded-md border bg-background px-3 py-2 text-sm"
             />
             <div className="flex justify-end gap-2">
-              <Button type="button" variant="ghost" size="sm" onClick={() => setReviseTarget(null)}>
+              <Button type="button" variant="ghost" size="sm" disabled={busy} onClick={() => setReviseTarget(null)}>
                 Cancel
               </Button>
               <Button
@@ -420,7 +425,12 @@ export function AgentsView() {
       </Dialog>
 
       {/* rename dialog */}
-      <Dialog open={!!renameTarget} onOpenChange={(value) => !value && setRenameTarget(null)}>
+      <Dialog
+        open={!!renameTarget}
+        onOpenChange={(value) => {
+          if (!value && !busy) setRenameTarget(null);
+        }}
+      >
         <DialogContent className="max-w-md">
           <DialogHeader>
             <DialogTitle>Rename agent</DialogTitle>
@@ -446,7 +456,7 @@ export function AgentsView() {
               autoFocus
             />
             <div className="flex justify-end gap-2">
-              <Button type="button" variant="ghost" size="sm" onClick={() => setRenameTarget(null)}>
+              <Button type="button" variant="ghost" size="sm" disabled={busy} onClick={() => setRenameTarget(null)}>
                 Cancel
               </Button>
               <Button type="submit" size="sm" disabled={busy || !renameValue.trim()}>

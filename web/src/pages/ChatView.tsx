@@ -70,6 +70,7 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
   const [newChatAgentSelection, setNewChatAgentSelection] = useState<string | null>(null);
   const [chatsNextCursor, setChatsNextCursor] = useState<string | null>(null);
   const [chatsLoadingMore, setChatsLoadingMore] = useState(false);
+  const [chatsLoadMoreError, setChatsLoadMoreError] = useState<string | null>(null);
   const [agentCatalog, setAgentCatalog] = useState<AgentSummary[]>([]);
   const [agentCatalogLoading, setAgentCatalogLoading] = useState(false);
   const [agentCatalogNextCursor, setAgentCatalogNextCursor] = useState<string | null>(null);
@@ -140,6 +141,7 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
     const requestId = ++chatListRequestRef.current;
     chatsLoadingMoreRef.current = false;
     setChatsLoadingMore(false);
+    setChatsLoadMoreError(null);
     setChatsLoading(true);
     try {
       const page = await chatsApi.list();
@@ -163,14 +165,19 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
     const requestId = ++chatListRequestRef.current;
     chatsLoadingMoreRef.current = true;
     setChatsLoadingMore(true);
+    setChatsLoadMoreError(null);
     try {
       const page = await chatsApi.list({ cursor });
       if (!isMounted() || requestId !== chatListRequestRef.current) return;
       chatsNextCursorRef.current = page.next_cursor;
       setChatsNextCursor(page.next_cursor);
       setChats((current) => sortChatsByActivity(mergeCatalogContinuation(current, page.items)));
-    } catch {
-      // Keep the cursor available so the user can retry the same page.
+    } catch (error: unknown) {
+      // Keep the cursor available so the user can retry the same page, but
+      // never swallow the failure silently.
+      if (isMounted() && requestId === chatListRequestRef.current) {
+        setChatsLoadMoreError(formatApiError(error, "Could not load older conversations"));
+      }
     } finally {
       if (isMounted() && requestId === chatListRequestRef.current) {
         chatsLoadingMoreRef.current = false;
@@ -214,8 +221,12 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
       agentCatalogNextCursorRef.current = page.next_cursor;
       setAgentCatalogNextCursor(page.next_cursor);
       setAgentCatalog((current) => mergeCatalogContinuation(current, page.items));
-    } catch {
-      // Keep the cursor available so the user can retry the same page.
+    } catch (error: unknown) {
+      // Keep the cursor available so the user can retry the same page, but
+      // surface the failure through the picker's retryable error slot.
+      if (isMounted() && requestId === agentCatalogRequestRef.current) {
+        setAgentCatalogError(formatApiError(error, "Could not load more agents"));
+      }
     } finally {
       if (isMounted() && requestId === agentCatalogRequestRef.current) {
         agentCatalogLoadingMoreRef.current = false;
@@ -1155,6 +1166,7 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
           loadingMore={chatsLoadingMore}
           loading={chatsLoading}
           error={chatsError}
+          loadMoreError={chatsLoadMoreError}
           onRetry={() => void loadChats()}
           busyChatIds={
             new Set(
@@ -1329,7 +1341,7 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
         {/* composer */}
         <div className="border-t bg-background px-6 pb-5 pt-3">
           <div className="mx-auto max-w-4xl">
-            {isEmpty && (
+            {isEmpty && !detailError && (
               <div className="mb-6 grid gap-2 sm:grid-cols-2">
                 {SUGGESTIONS.map((s) => (
                   <button

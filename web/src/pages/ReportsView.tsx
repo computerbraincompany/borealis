@@ -11,6 +11,7 @@ import {
   apiText,
   formatApiError,
   openProtected,
+  getUser,
 } from "@/lib/api";
 import { mergeCatalogContinuation, mergeCatalogHead } from "@/lib/catalogMerge";
 import { cn, formatDate } from "@/lib/utils";
@@ -26,15 +27,19 @@ const GALLERY_LIMIT = 24;
 
 function ChartArtifactCard({ chart }: { chart: ChartArtifactSummary }) {
   const [png, setPng] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
+    setFailed(false);
     chartsApi
       .get(chart.id)
       .then((payload) => {
         if (!cancelled && payload.png_base64) setPng(payload.png_base64);
       })
-      .catch(() => undefined);
+      .catch(() => {
+        if (!cancelled) setFailed(true);
+      });
     return () => {
       cancelled = true;
     };
@@ -49,6 +54,10 @@ function ChartArtifactCard({ chart }: { chart: ChartArtifactSummary }) {
             alt={`Chart ${chart.title || chart.id}`}
             className="max-h-28 w-auto object-contain"
           />
+        ) : failed ? (
+          <span className="px-3 text-center text-xs text-destructive" role="status">
+            Chart preview unavailable
+          </span>
         ) : (
           <BarChart3 className="h-8 w-8 text-muted-foreground/40" aria-hidden />
         )}
@@ -119,6 +128,9 @@ export function ReportsView() {
   const sharedNextCursorRef = useRef<string | null>(null);
   const sharedLoadingMoreOwnerRef = useRef<number | null>(null);
   const mountedRef = useRef(false);
+
+  // The server rejects self-shares, so never offer the signed-in account.
+  const shareableAccounts = shareAccounts.filter((account) => account.id !== undefined && account.id !== getUser()?.id);
 
   const invalidateReportsCatalog = () => {
     reportsCatalogRequestRef.current += 1;
@@ -712,6 +724,12 @@ export function ReportsView() {
               <ChartArtifactCard key={chart.id} chart={chart} />
             ))}
           </div>
+          {charts.length > GALLERY_LIMIT && (
+            <p className="mt-3 text-xs text-muted-foreground">
+              Showing the newest {GALLERY_LIMIT} of {charts.length} charts. Older charts stay available in their source
+              chats.
+            </p>
+          )}
         </section>
       )}
       {chartsError && (
@@ -721,7 +739,12 @@ export function ReportsView() {
       )}
 
       {/* rename dialog */}
-      <Dialog open={!!renameTarget} onOpenChange={(open) => !open && closeRenameDialog()}>
+      <Dialog
+        open={!!renameTarget}
+        onOpenChange={(open) => {
+          if (!open && !renaming) closeRenameDialog();
+        }}
+      >
         <DialogContent className="max-w-md">
           <DialogHeader>
             <DialogTitle>Rename report</DialogTitle>
@@ -747,7 +770,7 @@ export function ReportsView() {
               autoFocus
             />
             <div className="flex justify-end gap-2">
-              <Button type="button" variant="ghost" size="sm" onClick={closeRenameDialog}>
+              <Button type="button" variant="ghost" size="sm" disabled={renaming} onClick={closeRenameDialog}>
                 Cancel
               </Button>
               <Button type="submit" size="sm" disabled={renaming || !renameValue.trim()}>
@@ -759,7 +782,12 @@ export function ReportsView() {
       </Dialog>
 
       {/* share dialog */}
-      <Dialog open={!!shareTarget} onOpenChange={(open) => !open && closeShareDialog()}>
+      <Dialog
+        open={!!shareTarget}
+        onOpenChange={(open) => {
+          if (!open) closeShareDialog();
+        }}
+      >
         <DialogContent className="max-w-md">
           <DialogHeader>
             <DialogTitle>Share "{shareTarget?.title}"</DialogTitle>
@@ -774,34 +802,32 @@ export function ReportsView() {
             </p>
           )}
           <div className="space-y-2">
-            {shareAccounts
-              .filter((account) => account.id !== undefined)
-              .map((account) => {
-                const existing = shareList.find((share) => share.recipient_account_id === account.id);
-                return (
-                  <div
-                    key={account.id}
-                    className="flex items-center justify-between gap-2 rounded-md border px-3 py-2 text-sm"
-                  >
-                    <span className="min-w-0 truncate">{account.email}</span>
-                    {existing ? (
-                      <Button variant="ghost" size="sm" onClick={() => void revokeShare(account.id)} disabled={sharing}>
-                        Revoke
-                      </Button>
-                    ) : (
-                      <Button variant="outline" size="sm" onClick={() => void shareWith(account.id)} disabled={sharing}>
-                        Share
-                      </Button>
-                    )}
-                  </div>
-                );
-              })}
-            {sharing && shareAccounts.length === 0 && (
+            {shareableAccounts.map((account) => {
+              const existing = shareList.find((share) => share.recipient_account_id === account.id);
+              return (
+                <div
+                  key={account.id}
+                  className="flex items-center justify-between gap-2 rounded-md border px-3 py-2 text-sm"
+                >
+                  <span className="min-w-0 truncate">{account.email}</span>
+                  {existing ? (
+                    <Button variant="ghost" size="sm" onClick={() => void revokeShare(account.id)} disabled={sharing}>
+                      Revoke
+                    </Button>
+                  ) : (
+                    <Button variant="outline" size="sm" onClick={() => void shareWith(account.id)} disabled={sharing}>
+                      Share
+                    </Button>
+                  )}
+                </div>
+              );
+            })}
+            {sharing && shareableAccounts.length === 0 && (
               <p className="rounded-md border border-dashed px-3 py-4 text-center text-sm text-muted-foreground">
                 Loading workspace accounts…
               </p>
             )}
-            {!sharing && shareAccounts.length === 0 && !dialogError && (
+            {!sharing && shareableAccounts.length === 0 && !dialogError && (
               <p className="rounded-md border border-dashed px-3 py-4 text-center text-sm text-muted-foreground">
                 No other accounts on this instance to share with.
               </p>

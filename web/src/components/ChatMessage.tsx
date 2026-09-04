@@ -189,7 +189,7 @@ export const ChatMessage = memo(function ChatMessage({
       )}
       <div className={cn("max-w-[78%] md:max-w-[70%]", isUser ? "items-end text-right" : "items-start")}>
         {isUser ? (
-          <div className="inline-block whitespace-pre-wrap rounded-lg rounded-tr-sm bg-secondary px-4 py-3 text-[15px] leading-relaxed text-secondary-foreground">
+          <div className="inline-block break-words whitespace-pre-wrap rounded-lg rounded-tr-sm bg-secondary px-4 py-3 text-[15px] leading-relaxed text-secondary-foreground">
             {content}
           </div>
         ) : (

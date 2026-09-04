@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 const apiMocks = vi.hoisted(() => ({
   list: vi.fn(),
@@ -145,11 +145,10 @@ describe("LibrariesView", () => {
   });
 
   it.each(["resolve", "reject"] as const)(
-    "keeps a reopened create form owned when the older request later %ss",
+    "holds the create dialog open until the in-flight request settles as %s",
     async (settlement) => {
-      const older = deferred<(typeof libraries)[number]>();
-      const newer = deferred<(typeof libraries)[number]>();
-      apiMocks.create.mockReturnValueOnce(older.promise).mockReturnValueOnce(newer.promise);
+      const pending = deferred<(typeof libraries)[number]>();
+      apiMocks.create.mockReturnValue(pending.promise);
       render(<LibrariesView />);
 
       fireEvent.click(await screen.findByRole("button", { name: /New library/i }));
@@ -158,35 +157,32 @@ describe("LibrariesView", () => {
 
       await waitFor(() => expect(apiMocks.create).toHaveBeenCalledTimes(1));
       expect(apiMocks.create.mock.calls[0][0]).toBe("First library");
-      const olderSignal = apiMocks.create.mock.calls[0][1] as AbortSignal;
+      expect(apiMocks.create.mock.calls[0][1]).toBeInstanceOf(AbortSignal);
 
+      // Mid-flight the dialog cannot be dismissed: a committed library must
+      // never be left invisible, so both dismiss controls stay disabled.
+      expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
+      expect(screen.getByRole("button", { name: "Create" })).toBeDisabled();
       fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
-      expect(olderSignal.aborted).toBe(true);
-      fireEvent.click(screen.getByRole("button", { name: /New library/i }));
-      fireEvent.change(screen.getByLabelText("Library name"), { target: { value: "Second library" } });
-      fireEvent.click(screen.getByRole("button", { name: "Create" }));
-
-      await waitFor(() => expect(apiMocks.create).toHaveBeenCalledTimes(2));
-      expect(apiMocks.create.mock.calls[1][0]).toBe("Second library");
-      expect(apiMocks.create.mock.calls[1][1]).toBeInstanceOf(AbortSignal);
+      expect(screen.getByRole("heading", { name: "New library" })).toBeInTheDocument();
 
       await act(async () => {
         if (settlement === "resolve") {
-          older.resolve({ ...libraries[0], id: "lib-stale", name: "Stale library" });
+          pending.resolve({ ...libraries[0], id: "lib2", name: "First library" });
         } else {
-          older.reject(new Error("stale create failed"));
+          pending.reject(new Error("create failed"));
         }
       });
 
-      expect(screen.getByRole("heading", { name: "New library" })).toBeInTheDocument();
-      expect(screen.getByLabelText("Library name")).toHaveValue("Second library");
-      expect(screen.getByRole("button", { name: "Create" })).toBeDisabled();
-      expect(screen.queryByText("Stale library")).not.toBeInTheDocument();
-      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
-
-      await act(async () => newer.resolve({ ...libraries[0], id: "lib2", name: "Second library" }));
-      await waitFor(() => expect(screen.queryByRole("heading", { name: "New library" })).not.toBeInTheDocument());
-      expect(screen.getByText("Second library")).toBeInTheDocument();
+      if (settlement === "resolve") {
+        await waitFor(() => expect(screen.queryByRole("heading", { name: "New library" })).not.toBeInTheDocument());
+        expect(screen.getByText("First library")).toBeInTheDocument();
+      } else {
+        // The failure is kept inside the still-open dialog, never silent.
+        expect(await screen.findByRole("alert")).toBeInTheDocument();
+        expect(screen.getByRole("heading", { name: "New library" })).toBeInTheDocument();
+        expect(screen.getByRole("button", { name: "Cancel" })).toBeEnabled();
+      }
     },
   );
 
@@ -369,16 +365,11 @@ describe("LibrariesView", () => {
     expect(screen.queryByRole("option", { name: "archive.csv" })).not.toBeInTheDocument();
   });
 
-  it("keeps a newer rename dialog owned when an older rename resolves late", async () => {
+  it("holds the rename dialog open until the in-flight rename settles, then updates every surface it owns", async () => {
     const firstRename = deferred<(typeof libraries)[number]>();
-    const secondLibrary = { ...libraries[0], id: "lib2", name: "Diligence room" };
-    apiMocks.list.mockResolvedValue({ items: [libraries[0], secondLibrary], next_cursor: null });
-    apiMocks.get.mockImplementation((id: string) =>
-      Promise.resolve(id === "lib1" ? detail : { ...secondLibrary, members: [] }),
-    );
-    apiMocks.rename.mockImplementation((id: string) =>
-      id === "lib1" ? firstRename.promise : Promise.resolve({ ...secondLibrary, name: "Diligence archive" }),
-    );
+    apiMocks.list.mockResolvedValue({ items: [libraries[0]], next_cursor: null });
+    apiMocks.get.mockImplementation((id: string) => Promise.resolve(id === "lib1" ? detail : { ...detail, id }));
+    apiMocks.rename.mockReturnValue(firstRename.promise);
     render(<LibrariesView />);
 
     fireEvent.click(await screen.findByRole("button", { name: "Finance data room" }));
@@ -388,23 +379,17 @@ describe("LibrariesView", () => {
     await waitFor(() =>
       expect(apiMocks.rename).toHaveBeenCalledWith("lib1", "Finance archive", expect.any(AbortSignal)),
     );
-    const firstSignal = apiMocks.rename.mock.calls[0][2] as AbortSignal;
 
+    // Mid-flight the dialog cannot be dismissed, so the settling response
+    // always lands in the surface that owns it — never silently dropped.
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
-    expect(firstSignal.aborted).toBe(true);
-    await waitFor(() => expect(screen.queryByRole("heading", { name: "Rename library" })).not.toBeInTheDocument());
-
-    fireEvent.click(screen.getByRole("button", { name: "Diligence room" }));
-    await waitFor(() => expect(apiMocks.get).toHaveBeenCalledWith("lib2", expect.any(AbortSignal)));
-    const libraryHeading = await screen.findByRole("heading", { name: "Diligence room" });
-    const memberDialog = libraryHeading.parentElement?.parentElement;
-    expect(memberDialog).not.toBeNull();
-    fireEvent.click(within(memberDialog!).getByRole("button", { name: "Rename" }));
-    await waitFor(() => expect(screen.getByLabelText("Library name")).toHaveValue("Diligence room"));
+    expect(screen.getByRole("heading", { name: "Rename library" })).toBeInTheDocument();
 
     await act(async () => firstRename.resolve({ ...libraries[0], name: "Finance archive" }));
-    expect(screen.getByRole("heading", { name: "Rename library" })).toBeInTheDocument();
-    expect(screen.getByLabelText("Library name")).toHaveValue("Diligence room");
+    await waitFor(() => expect(screen.queryByRole("heading", { name: "Rename library" })).not.toBeInTheDocument());
+    expect(screen.getByRole("button", { name: "Finance archive" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Finance archive" })).toBeInTheDocument();
   });
 
   it("attaches ready members to a new chat by explicit expansion", async () => {

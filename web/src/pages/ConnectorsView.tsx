@@ -400,7 +400,7 @@ export function ConnectorsView() {
         )}
       </div>
 
-      <Dialog open={open} onOpenChange={setOpen}>
+      <Dialog open={open} onOpenChange={(next) => !next && !creating && setOpen(false)}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Add URL connector</DialogTitle>
@@ -416,8 +416,10 @@ export function ConnectorsView() {
             }}
           >
             <div className="space-y-2">
-              <Label htmlFor="connType">Dataset type</Label>
-              <div className="grid grid-cols-2 gap-2">
+              <span id="connType" className="text-sm font-medium leading-none">
+                Dataset type
+              </span>
+              <div role="group" aria-labelledby="connType" className="grid grid-cols-2 gap-2">
                 {(["url_csv", "url_json"] as const).map((t) => (
                   <button
                     key={t}
@@ -490,15 +492,15 @@ export function ConnectorsView() {
                 {error}
               </div>
             )}
+            <DialogFooter>
+              <Button type="button" variant="ghost" disabled={creating} onClick={() => setOpen(false)}>
+                Cancel
+              </Button>
+              <Button type="submit" disabled={creating || !url.trim() || !name.trim() || !targetTable.trim()}>
+                {creating && <Loader2 className="animate-spin" />} Connect
+              </Button>
+            </DialogFooter>
           </form>
-          <DialogFooter>
-            <Button type="button" variant="ghost" onClick={() => setOpen(false)}>
-              Cancel
-            </Button>
-            <Button type="submit" disabled={creating || !url.trim() || !name.trim() || !targetTable.trim()}>
-              {creating && <Loader2 className="animate-spin" />} Connect
-            </Button>
-          </DialogFooter>
         </DialogContent>
       </Dialog>
 

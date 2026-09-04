@@ -46,9 +46,9 @@ export function SourcesView() {
     void refresh(true);
   }, [refresh]);
 
-  const onFiles = async (files: FileList | null) => {
-    if (!files || files.length === 0) return;
-    await uploadBatch(Array.from(files));
+  const onFiles = async (files: File[]) => {
+    if (files.length === 0) return;
+    await uploadBatch(files);
   };
 
   const uploadBatch = async (files: File[]) => {
@@ -144,7 +144,13 @@ export function SourcesView() {
               multiple
               accept={SOURCE_FILE_ACCEPT}
               className="hidden"
-              onChange={(e) => onFiles(e.target.files)}
+              onChange={(e) => {
+                const files = Array.from(e.target.files ?? []);
+                // Reset the value so re-selecting the same file (e.g. after a
+                // failed upload) still fires a change event.
+                e.target.value = "";
+                void onFiles(files);
+              }}
             />
             <Button size="sm" onClick={() => fileRef.current?.click()} disabled={busy}>
               <UploadCloud className="h-4 w-4" />
@@ -186,13 +192,15 @@ export function SourcesView() {
               <p className="text-sm text-muted-foreground">
                 No sources yet. Upload CSVs, spreadsheets, PDFs or documents so Borealis can answer grounded questions.
               </p>
-              <p className="text-xs text-muted-foreground/70">
-                Tip: run{" "}
-                <code className="rounded bg-secondary px-1.5 py-0.5 font-mono text-[11px]">
-                  npx --prefix server --no-install tsx data/generate_sample.ts
-                </code>{" "}
-                for sample personal-finance data.
-              </p>
+              {import.meta.env.DEV && (
+                <p className="text-xs text-muted-foreground/70">
+                  Tip (development builds): run{" "}
+                  <code className="rounded bg-secondary px-1.5 py-0.5 font-mono text-[11px]">
+                    pnpm --filter borealis-server exec tsx ../data/generate_sample.ts
+                  </code>{" "}
+                  for sample personal-finance data.
+                </p>
+              )}
             </Card>
           )}
           {sources.map((s) => (

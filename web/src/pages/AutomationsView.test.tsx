@@ -12,6 +12,8 @@ const apiMocks = vi.hoisted(() => ({
 
 vi.mock("@/lib/api", () => ({
   formatApiError: (_error: unknown, fallback: string) => fallback,
+  isRemoteEgressConsentError: () => false,
+  consentApi: { get: vi.fn(), acknowledge: vi.fn() },
   automationsApi: {
     list: apiMocks.list,
     create: apiMocks.create,
@@ -134,11 +136,10 @@ describe("AutomationsView", () => {
   });
 
   it.each(["resolve", "reject"] as const)(
-    "keeps a reopened create form owned when the older request later %ss",
+    "holds the create dialog open until the in-flight request settles as %s",
     async (settlement) => {
-      const older = deferred<typeof automation>();
-      const newer = deferred<typeof automation>();
-      apiMocks.create.mockReturnValueOnce(older.promise).mockReturnValueOnce(newer.promise);
+      const pending = deferred<typeof automation>();
+      apiMocks.create.mockReturnValue(pending.promise);
       render(<AutomationsView />);
 
       fireEvent.click(await screen.findByRole("button", { name: /New automation/i }));
@@ -153,40 +154,32 @@ describe("AutomationsView", () => {
         target_id: "conn-1",
         schedule_minutes: 60,
       });
-      const olderSignal = apiMocks.create.mock.calls[0][1] as AbortSignal;
+      expect(apiMocks.create.mock.calls[0][1]).toBeInstanceOf(AbortSignal);
 
+      // Mid-flight the dialog cannot be dismissed: a committed automation must
+      // never be left invisible, so both dismiss controls stay disabled.
+      expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
+      expect(screen.getByRole("button", { name: "Create" })).toBeDisabled();
       fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
-      expect(olderSignal.aborted).toBe(true);
-      fireEvent.click(screen.getByRole("button", { name: /New automation/i }));
-      fireEvent.change(screen.getByLabelText("Automation name"), { target: { value: "Second automation" } });
-      fireEvent.click(screen.getByRole("button", { name: "Create" }));
-
-      await waitFor(() => expect(apiMocks.create).toHaveBeenCalledTimes(2));
-      expect(apiMocks.create.mock.calls[1][0]).toEqual({
-        name: "Second automation",
-        kind: "connector_sync",
-        target_id: "conn-1",
-        schedule_minutes: 60,
-      });
-      expect(apiMocks.create.mock.calls[1][1]).toBeInstanceOf(AbortSignal);
+      expect(screen.getByRole("heading", { name: "New automation" })).toBeInTheDocument();
 
       await act(async () => {
         if (settlement === "resolve") {
-          older.resolve({ ...automation, id: "auto-stale", name: "Stale automation" });
+          pending.resolve({ ...automation, id: "auto-2", name: "First automation" });
         } else {
-          older.reject(new Error("stale create failed"));
+          pending.reject(new Error("create failed"));
         }
       });
 
-      expect(screen.getByRole("heading", { name: "New automation" })).toBeInTheDocument();
-      expect(screen.getByLabelText("Automation name")).toHaveValue("Second automation");
-      expect(screen.getByRole("button", { name: "Create" })).toBeDisabled();
-      expect(screen.queryByText("Stale automation")).not.toBeInTheDocument();
-      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
-
-      await act(async () => newer.resolve({ ...automation, id: "auto-2", name: "Second automation" }));
-      await waitFor(() => expect(screen.queryByRole("heading", { name: "New automation" })).not.toBeInTheDocument());
-      expect(screen.getByText("Second automation")).toBeInTheDocument();
+      if (settlement === "resolve") {
+        await waitFor(() => expect(screen.queryByRole("heading", { name: "New automation" })).not.toBeInTheDocument());
+        expect(screen.getByText("First automation")).toBeInTheDocument();
+      } else {
+        // The failure is kept inside the still-open dialog, never silent.
+        expect(await screen.findByRole("alert")).toBeInTheDocument();
+        expect(screen.getByRole("heading", { name: "New automation" })).toBeInTheDocument();
+        expect(screen.getByRole("button", { name: "Cancel" })).toBeEnabled();
+      }
     },
   );
 

@@ -197,3 +197,33 @@ describe("ConnectorsView sync history", () => {
     expect(await screen.findByText("No syncs yet.")).toBeInTheDocument();
   });
 });
+
+describe("ConnectorsView create dialog", () => {
+  it("creates a connector when the Connect button is clicked with a valid draft", async () => {
+    const created: Connector = { ...connector("idle"), id: "connector-2", name: "Ledger feed" };
+    const create = vi.spyOn(connectorsApi, "create").mockResolvedValue(created);
+    vi.spyOn(connectorsApi, "list")
+      .mockResolvedValueOnce(page([]))
+      .mockResolvedValue(page([created]));
+
+    render(<ConnectorsView />);
+    fireEvent.click(await screen.findByRole("button", { name: /Add connector/i }));
+
+    fireEvent.change(screen.getByLabelText("Dataset URL"), { target: { value: "https://example.test/data.csv" } });
+    fireEvent.change(screen.getByLabelText("Display name"), { target: { value: "Ledger feed" } });
+    fireEvent.change(screen.getByLabelText("DuckDB table"), { target: { value: "ledger_feed" } });
+    // The footer submit button must stay associated with the form: a mouse
+    // click on "Connect" has to reach create(), not just Enter in a field.
+    fireEvent.click(screen.getByRole("button", { name: "Connect" }));
+
+    await waitFor(() =>
+      expect(create).toHaveBeenCalledWith({
+        display_name: "Ledger feed",
+        target_table: "ledger_feed",
+        type: "url_csv",
+        config: { url: "https://example.test/data.csv" },
+      }),
+    );
+    expect(await screen.findByText("Ledger feed")).toBeInTheDocument();
+  });
+});

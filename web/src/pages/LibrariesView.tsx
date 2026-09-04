@@ -674,7 +674,13 @@ export function LibrariesView() {
       </Dialog>
 
       {/* create dialog */}
-      <Dialog open={creating} onOpenChange={(open) => (open ? openCreateDialog() : closeCreateDialog())}>
+      <Dialog
+        open={creating}
+        onOpenChange={(open) => {
+          if (open) openCreateDialog();
+          else if (!createBusy) closeCreateDialog();
+        }}
+      >
         <DialogContent className="max-w-md">
           <DialogHeader>
             <DialogTitle>New library</DialogTitle>
@@ -701,7 +707,7 @@ export function LibrariesView() {
               autoFocus
             />
             <div className="flex justify-end gap-2">
-              <Button type="button" variant="ghost" size="sm" onClick={closeCreateDialog}>
+              <Button type="button" variant="ghost" size="sm" disabled={createBusy} onClick={closeCreateDialog}>
                 Cancel
               </Button>
               <Button type="submit" size="sm" disabled={createBusy || !newName.trim()}>
@@ -713,7 +719,12 @@ export function LibrariesView() {
       </Dialog>
 
       {/* rename dialog */}
-      <Dialog open={!!renamingTarget} onOpenChange={(value) => !value && closeRenameDialog()}>
+      <Dialog
+        open={!!renamingTarget}
+        onOpenChange={(value) => {
+          if (!value && !renaming) closeRenameDialog();
+        }}
+      >
         <DialogContent className="max-w-md">
           <DialogHeader>
             <DialogTitle>Rename library</DialogTitle>
@@ -739,7 +750,7 @@ export function LibrariesView() {
               autoFocus
             />
             <div className="flex justify-end gap-2">
-              <Button type="button" variant="ghost" size="sm" onClick={closeRenameDialog}>
+              <Button type="button" variant="ghost" size="sm" disabled={renaming} onClick={closeRenameDialog}>
                 Cancel
               </Button>
               <Button type="submit" size="sm" disabled={renaming || !renameValue.trim()}>
