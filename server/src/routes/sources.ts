@@ -37,6 +37,26 @@ const SUPPORTED_UPLOAD_EXTENSIONS = new Set([
   ".json",
 ]);
 
+/**
+ * Human-readable byte budget for the bounded upload-limit disclosure:
+ * whole units at or above 10, one decimal below that, plain bytes under 1 KiB.
+ */
+export function formatByteLimit(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0 bytes";
+  for (const [scale, unit] of [
+    [1024 ** 3, "GB"],
+    [1024 ** 2, "MB"],
+    [1024, "KB"],
+  ] as const) {
+    if (bytes >= scale) {
+      const value = bytes / scale;
+      const rounded = value >= 10 ? Math.round(value) : Math.round(value * 10) / 10;
+      return `${rounded} ${unit}`;
+    }
+  }
+  return `${Math.round(bytes)} bytes`;
+}
+
 export async function sourceRoutes(app: FastifyInstance): Promise<void> {
   app.get(
     "/api/sources",
@@ -164,7 +184,9 @@ export async function sourceRoutes(app: FastifyInstance): Promise<void> {
       const sizeBytes = await fs.stat(filePath).then((stat) => stat.size);
       if (file.file.truncated || sizeBytes > config.maxUploadBytes) {
         await cleanupCreatedUploadResource(accountId, sourceId, filePath);
-        return reply.code(413).send({ error: "upload exceeds the configured size limit" });
+        return reply.code(413).send({
+          error: `upload exceeds the configured size limit (limit ${formatByteLimit(config.maxUploadBytes)})`,
+        });
       }
       if (await hasOleCompoundFileSignature(filePath)) {
         await cleanupCreatedUploadResource(accountId, sourceId, filePath);

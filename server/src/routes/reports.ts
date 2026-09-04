@@ -33,16 +33,32 @@ function publicReport(row: PublishedReport) {
   };
 }
 
+/**
+ * Artifact availability from the same provenance resolution the detail endpoint
+ * uses, so list rows and detail responses cannot disagree.
+ */
+async function reportArtifactPresence(accountId: string, row: PublishedReport) {
+  const [htmlArtifact, pdfArtifact] = await Promise.all([
+    resolveReportArtifact({ accountId, reportId: row.id, filePath: row.html_path, kind: "html" }),
+    resolveReportArtifact({ accountId, reportId: row.id, filePath: row.pdf_path, kind: "pdf" }),
+  ]);
+  return { has_html: Boolean(htmlArtifact), has_pdf: Boolean(pdfArtifact) } as const;
+}
+
 export async function reportRoutes(app: FastifyInstance): Promise<void> {
   app.get(
     "/api/reports",
     { onRequest: requireAuth, schema: { querystring: catalogPageQuerySchema } },
     async (req, reply) => {
+      const accountId = getAccountId(req);
       const page = await storageRuntime().runs.listPublishedReports(
-        getAccountId(req),
+        accountId,
         parseCatalogPageQuery("reports", req.query)
       );
-      return reply.send(catalogResponse("reports", { items: page.items.map(publicReport), next: page.next }));
+      const items = await Promise.all(
+        page.items.map(async (row) => ({ ...publicReport(row), ...(await reportArtifactPresence(accountId, row)) }))
+      );
+      return reply.send(catalogResponse("reports", { items, next: page.next }));
     }
   );
 
@@ -59,18 +75,13 @@ export async function reportRoutes(app: FastifyInstance): Promise<void> {
       }
     }
     if (!row) return reply.code(404).send({ error: "report not found" });
-    const [htmlArtifact, pdfArtifact] = await Promise.all([
-      resolveReportArtifact({ accountId: ownerId, reportId: row.id, filePath: row.html_path, kind: "html" }),
-      resolveReportArtifact({ accountId: ownerId, reportId: row.id, filePath: row.pdf_path, kind: "pdf" }),
-    ]);
     return reply.send({
       id: row.id,
       title: row.title,
       subtitle: row.subtitle,
       created_at: row.created_at,
       updated_at: row.updated_at,
-      has_html: Boolean(htmlArtifact),
-      has_pdf: Boolean(pdfArtifact),
+      ...(await reportArtifactPresence(ownerId, row)),
       version: row.version,
       supersedes: row.supersedes,
       ...(sharedByAccount ? { shared_by_account: true } : {}),

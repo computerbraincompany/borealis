@@ -87,7 +87,16 @@ describe("published report and chart routes", () => {
     const ownerReports = await app.inject({ method: "GET", url: "/api/reports", headers: ownerAuth });
     expect(ownerReports.statusCode).toBe(200);
     expect(ownerReports.json()).toEqual({
-      items: [expect.objectContaining({ id: OWNER_REPORT, title: "Owner report", version: 1, supersedes: null })],
+      items: [
+        expect.objectContaining({
+          id: OWNER_REPORT,
+          title: "Owner report",
+          version: 1,
+          supersedes: null,
+          has_html: false,
+          has_pdf: false,
+        }),
+      ],
       next_cursor: null,
     });
     expect(ownerReports.body).not.toContain("html_path");
@@ -131,6 +140,16 @@ describe("published report and chart routes", () => {
     const detail = await app.inject({ method: "GET", url: `/api/reports/${OWNER_REPORT}`, headers: ownerAuth });
     expect(detail.statusCode).toBe(200);
     expect(detail.json()).toMatchObject({ id: OWNER_REPORT, has_html: true, has_pdf: true });
+
+    const list = await app.inject({ method: "GET", url: "/api/reports", headers: ownerAuth });
+    expect(list.statusCode).toBe(200);
+    const listed = (list.json() as { items: Array<Record<string, unknown>> }).items;
+    expect(listed).toHaveLength(2);
+    // List rows resolve artifacts through the same provenance check as detail.
+    expect(listed.find((row) => row.id === OWNER_REPORT)).toMatchObject({ has_html: true, has_pdf: true });
+    expect(listed.find((row) => row.id === DRIFTED_REPORT)).toMatchObject({ has_html: false, has_pdf: false });
+    expect(list.body).not.toContain("html_path");
+    expect(list.body).not.toContain("pdf_path");
 
     const html = await app.inject({ method: "GET", url: `/api/reports/${OWNER_REPORT}/html`, headers: ownerAuth });
     expect(html.statusCode).toBe(200);

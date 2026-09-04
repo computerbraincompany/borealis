@@ -101,7 +101,9 @@ export function createSettingsRoutes(options: SettingsRoutesOptions): FastifyPlu
         try {
           const snapshot = await resolveEffectiveSettingsDraft(options.store, req.body);
           const result = await probeSettingsConnection(snapshot.settings, { fetch: fetchImpl, timeoutMs, now });
-          if (!result.ok) return reply.code(503).send({ ok: false });
+          if (!result.ok) {
+            return reply.code(503).send({ ok: false, error: "the configured endpoint could not be reached" });
+          }
           return reply.send(result);
         } catch (error) {
           return sendSettingsError(req, reply, error);
@@ -152,7 +154,12 @@ export async function probeSettingsConnection(
 function sendSettingsError(req: FastifyRequest, reply: FastifyReply, error: unknown) {
   const requestId = String(reply.getHeader("X-Request-ID") || req.id);
   if (error instanceof SettingsValidationError) {
-    return reply.code(400).send({ error: "invalid settings", request_id: requestId });
+    // The field name is a bounded enum value; the offending input is never reflected.
+    return reply.code(400).send({
+      error: "invalid settings",
+      ...(error.field === undefined ? {} : { field: error.field }),
+      request_id: requestId,
+    });
   }
   if (error instanceof SettingsEnvironmentOverrideError) {
     return reply.code(409).send({ error: "setting is managed by environment", request_id: requestId });

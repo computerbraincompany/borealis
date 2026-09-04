@@ -11,7 +11,12 @@ import { qualifyModelPair, type ModelPairQualificationResult, type ModelQualific
 import { resolveLlmModelId } from "../llmAliases.js";
 import { SETTINGS_DRAFT_JSON_BODY_LIMIT_BYTES } from "../routes/bodyLimits.js";
 import { createModelRoutes, DRAFT_REMOTE_EGRESS_ACK_CODE, type ModelRoutesOptions } from "../routes/models.js";
-import { createSettingsStore, DEFAULT_LLM_SETTINGS, type SettingsStore } from "../settingsStore.js";
+import {
+  createSettingsStore,
+  DEFAULT_LLM_SETTINGS,
+  SettingsValidationError,
+  type SettingsStore,
+} from "../settingsStore.js";
 import { closeStorageRuntime, initializeStorageRuntime, storageRuntime } from "../storageRuntime.js";
 
 const ACCOUNT_ID = "11111111-1111-4111-8111-111111111111";
@@ -696,6 +701,61 @@ describe("model qualification route", () => {
       payload: { expected_dimension: 0 },
     });
     expect(invalid.statusCode).toBe(400);
+    expect(qualify).not.toHaveBeenCalled();
+  });
+
+  it("names the offending settings field on qualification and omits it when validation has none", async () => {
+    const { store } = await temporaryStore();
+    const qualify = vi.fn(async () => successfulQualification);
+    const app = await buildApp(store, { qualify, audit: vi.fn(async () => undefined) });
+
+    const mismatched = await app.inject({
+      method: "POST",
+      url: "/api/models/qualify",
+      headers: { ...auth, "x-request-id": "qualification.dimension" },
+      payload: { expected_dimension: 3, embedding_dimension: 4 },
+    });
+    expect(mismatched.statusCode).toBe(400);
+    expect(mismatched.json()).toEqual({
+      error: "invalid settings",
+      field: "embedding_dimension",
+      request_id: "qualification.dimension",
+    });
+
+    const identical = await app.inject({
+      method: "POST",
+      url: "/api/models/qualify",
+      headers: { ...auth, "x-request-id": "qualification.identical" },
+      payload: { expected_dimension: 3, default_chat_model: "same", default_embed_model: "same" },
+    });
+    expect(identical.statusCode).toBe(400);
+    expect(identical.json()).toEqual({
+      error: "invalid settings",
+      field: "default_embed_model",
+      request_id: "qualification.identical",
+    });
+    expect(qualify).not.toHaveBeenCalled();
+
+    const fieldlessApp = await buildApp(
+      {
+        read: async () => {
+          throw new SettingsValidationError();
+        },
+        patch: (patch) => store.patch(patch),
+        preview: (patch) => store.preview(patch),
+        subscribe: (listener) => store.subscribe(listener),
+      },
+      { qualify, audit: vi.fn(async () => undefined) }
+    );
+    const fieldless = await fieldlessApp.inject({
+      method: "POST",
+      url: "/api/models/qualify",
+      headers: { ...auth, "x-request-id": "qualification.fieldless" },
+      payload: { expected_dimension: 3 },
+    });
+    expect(fieldless.statusCode).toBe(400);
+    expect(fieldless.json()).toEqual({ error: "invalid settings", request_id: "qualification.fieldless" });
+    expect(fieldless.json()).not.toHaveProperty("field");
     expect(qualify).not.toHaveBeenCalled();
   });
 

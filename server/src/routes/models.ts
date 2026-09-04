@@ -125,7 +125,12 @@ export function createModelRoutes(options: ModelRoutesOptions): FastifyPluginAsy
 function sendModelSettingsError(req: FastifyRequest, reply: FastifyReply, error: unknown) {
   const requestId = String(reply.getHeader("X-Request-ID") || req.id);
   if (error instanceof SettingsValidationError) {
-    return reply.code(400).send({ error: "invalid settings", request_id: requestId });
+    // The field name is a bounded enum value; the offending input is never reflected.
+    return reply.code(400).send({
+      error: "invalid settings",
+      ...(error.field === undefined ? {} : { field: error.field }),
+      request_id: requestId,
+    });
   }
   if (error instanceof SettingsEnvironmentOverrideError) {
     return reply.code(409).send({ error: "setting is managed by environment", request_id: requestId });

@@ -66,6 +66,17 @@ export const modelQualificationErrorResponseSchema = {
   additionalProperties: false,
   properties: {
     error: { type: "string" },
+    field: {
+      type: "string",
+      enum: [
+        "llm_base_url",
+        "llm_api_key",
+        "lm_studio_base_url",
+        "default_chat_model",
+        "default_embed_model",
+        "embedding_dimension",
+      ],
+    },
     code: { type: "string" },
     request_id: { type: "string" },
   },
@@ -219,6 +230,8 @@ export const chatPatchBodySchema = {
   propertyNames: { enum: ["title", "model"] },
   description: "Exactly one of title (1-80 characters) or model (1-256 characters).",
   properties: {
+    // Runtime validation owns type checking so Fastify's coercion cannot turn
+    // a numeric title/model into a valid string before the exact-shape parser.
     title: { minLength: 1, maxLength: CHAT_TITLE_MAX_CHARS, pattern: "\\S" },
     model: { minLength: 1, maxLength: CHAT_MODEL_MAX_CHARS, pattern: "\\S" },
   },

@@ -38,7 +38,9 @@ export async function authRoutes(app: FastifyInstance) {
     additionalProperties: false,
     properties: {
       email: { type: "string", minLength: 3, maxLength: 254 },
-      password: { type: "string", minLength: 6, maxLength: 72 },
+      // Length bounds are enforced in the handlers so over-length passwords
+      // get an actionable message instead of a generic schema rejection.
+      password: { type: "string", minLength: 6 },
     },
   } as const;
   app.post(
@@ -54,7 +56,7 @@ export async function authRoutes(app: FastifyInstance) {
       if (email.length > 254 || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email))
         return reply.code(400).send({ error: "invalid email" });
       if (password.length < 6 || Buffer.byteLength(password, "utf8") > 72)
-        return reply.code(400).send({ error: "password must contain between 6 and 72 bytes" });
+        return reply.code(400).send({ error: "password must contain between 6 and 72 characters" });
       const hash = await bcrypt.hash(password, 10);
       let user;
       try {
@@ -79,8 +81,13 @@ export async function authRoutes(app: FastifyInstance) {
           : {};
       const email = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
       const password = typeof body.password === "string" ? body.password : "";
-      if (email.length > 254 || Buffer.byteLength(password, "utf8") > 72) {
+      if (email.length > 254) {
         return reply.code(401).send({ error: "invalid credentials" });
+      }
+      // An over-length password is a request-shape problem, not a credential
+      // mismatch; it stays account-agnostic and never reaches the user lookup.
+      if (Buffer.byteLength(password, "utf8") > 72) {
+        return reply.code(400).send({ error: "password must contain at most 72 characters" });
       }
       const user = await storageRuntime().chats.findUserByEmail(email);
       if (!user || !(await bcrypt.compare(password, user.password_hash)))

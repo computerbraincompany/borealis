@@ -58,6 +58,7 @@ import { encodeJson } from "../db/codecs.js";
 import { dataService } from "../dataService.js";
 import { closeEmbeddingMigrationCoordinator } from "../embeddingMigration.js";
 import { wakeIngestionWorkers } from "../ingest.js";
+import { formatByteLimit } from "../routes/sources.js";
 import { routes } from "../routes.js";
 import { closeStorageRuntime, initializeStorageRuntime, storageRuntime } from "../storageRuntime.js";
 import {
@@ -322,6 +323,7 @@ describe("source upload boundaries", () => {
       ...multipart("too-large.csv", Buffer.from("12345678901234567")),
     });
     expect(response.statusCode).toBe(413);
+    expect(response.json()).toEqual({ error: "upload exceeds the configured size limit (limit 16 bytes)" });
     await expect(storageRuntime().sources.listSources(ACCOUNT)).resolves.toEqual({ items: [], next: null });
     const accountEntries = await fs.readdir(path.join(testState.uploadDir, ACCOUNT)).catch(() => []);
     expect(accountEntries).toEqual([]);
@@ -456,6 +458,31 @@ describe("source upload boundaries", () => {
     expect(reingest.statusCode).toBe(409);
     await expect(storageRuntime().sources.getSource(ACCOUNT, sourceId)).resolves.toBeDefined();
     await expect(storageRuntime().sources.listPendingSourceDeletes(ACCOUNT)).resolves.toEqual([]);
+  });
+});
+
+describe("upload limit disclosure", () => {
+  it("formats the configured byte budget without a new dependency", () => {
+    expect(formatByteLimit(0)).toBe("0 bytes");
+    expect(formatByteLimit(16)).toBe("16 bytes");
+    expect(formatByteLimit(1024)).toBe("1 KB");
+    expect(formatByteLimit(1536)).toBe("1.5 KB");
+    expect(formatByteLimit(25 * 1024 * 1024)).toBe("25 MB");
+    expect(formatByteLimit(250 * 1024 * 1024)).toBe("250 MB");
+    expect(formatByteLimit(1.5 * 1024 ** 3)).toBe("1.5 GB");
+    expect(formatByteLimit(5 * 1024 ** 3)).toBe("5 GB");
+  });
+
+  it("keeps the upload rejection bounded to the limit, never the upload contents", async () => {
+    const app = await buildApp();
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/sources/upload",
+      ...multipart("secret.csv", Buffer.from("12345678901234567")),
+    });
+    expect(response.statusCode).toBe(413);
+    expect(response.body).not.toContain("12345678901234567");
+    expect(response.body).not.toContain("secret");
   });
 });
 

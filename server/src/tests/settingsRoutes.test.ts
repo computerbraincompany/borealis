@@ -11,6 +11,7 @@ import { createSettingsRoutes, probeSettingsConnection } from "../routes/setting
 import {
   createSettingsStore,
   type LlmSettingsPatch,
+  SettingsValidationError,
   type SettingsSnapshot,
   type SettingsStore,
 } from "../settingsStore.js";
@@ -183,7 +184,11 @@ describe("authenticated settings routes", () => {
       payload: { lm_studio_base_url: unsafeUrl },
     });
     expect(invalid.statusCode).toBe(400);
-    expect(invalid.json()).toEqual({ error: "invalid settings", request_id: "settings.invalid" });
+    expect(invalid.json()).toEqual({
+      error: "invalid settings",
+      field: "lm_studio_base_url",
+      request_id: "settings.invalid",
+    });
     expect(invalid.body).not.toContain(unsafeUrl);
     expect(invalid.body).not.toContain("do-not-reflect");
 
@@ -200,6 +205,42 @@ describe("authenticated settings routes", () => {
     });
     expect(managed.body).not.toContain("environment.example.test");
     expect(managed.body).not.toContain("ignored.example.test");
+  });
+
+  it("omits the invalid-settings field when the validation error carries none", async () => {
+    const { store } = await temporaryStore();
+    const patch = vi.fn(async (_input: LlmSettingsPatch): Promise<SettingsSnapshot> => {
+      throw new SettingsValidationError();
+    });
+    const app = await buildApp(store, { patch });
+
+    const response = await app.inject({
+      method: "PATCH",
+      url: "/api/settings",
+      headers: { ...auth, "x-request-id": "settings.fieldless" },
+      payload: { default_chat_model: "next-chat" },
+    });
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toEqual({ error: "invalid settings", request_id: "settings.fieldless" });
+    expect(response.json()).not.toHaveProperty("field");
+  });
+
+  it("names the offending field when a settings/test draft fails validation", async () => {
+    const { store } = await temporaryStore();
+    const app = await buildApp(store);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/settings/test",
+      headers: { ...auth, "x-request-id": "settings.test.invalid" },
+      payload: { default_chat_model: "duplicate", default_embed_model: "duplicate" },
+    });
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toEqual({
+      error: "invalid settings",
+      field: "default_embed_model",
+      request_id: "settings.test.invalid",
+    });
   });
 
   it("tests a draft with a body-free authenticated GET /v1/models without persisting it", async () => {
@@ -266,7 +307,7 @@ describe("authenticated settings routes", () => {
     const response = await app.inject({ method: "POST", url: "/api/settings/test", headers: auth });
 
     expect(response.statusCode).toBe(503);
-    expect(response.json()).toEqual({ ok: false });
+    expect(response.json()).toEqual({ ok: false, error: "the configured endpoint could not be reached" });
     expect(response.body).not.toContain("private provider diagnostic");
     expect(response.body).not.toContain("stored-secret");
     expect(response.body).not.toContain(origin);
