@@ -5,22 +5,32 @@ unimplemented remediation migrations. Applied migrations v1–v12 stay unchanged
 The reserved remediation work is valuable independently, but is not a runtime
 prerequisite for agent identity, instruction editing, skills, or tool allowlists.
 
-## Sequence
+## Shipped foundation and remaining integration sequence
 
 1. **Editor foundation (v13), complete in `0987170`:** shared create/edit modal; persisted description,
    icon and color; atomic prompt/capability revisions; account-owned Markdown
    skills; built-in tool selection and immutable accepted-turn snapshots.
-2. **MCP runtime and editor, pending:** official TypeScript client, Streamable HTTP and
+2. **Remediation migrations, pending:** provider-bound consent in v14, automation
+   target ownership in v15, typed connector refresh/repair in v16. Complete the
+   handoff's prerequisite closure before integrating new product migrations;
+   no placeholder migrations or changes to applied history.
+3. **MCP runtime and editor, pending:** official TypeScript client, Streamable HTTP and
    stdio connections, discovery and explicit tool selection, isolated secret
    storage, OAuth sign-in/refresh, cancellation and process cleanup. MCP access
    remains absent until its entire execution path is implemented and verified.
-3. **Remediation migrations:** provider-bound consent in v14, automation target
-   ownership in v15, typed connector refresh/repair in v16. These remain separate
-   work; no placeholder migrations or changes to applied history.
 
 MCP storage must be allocated only when its implementation is ready; do not
 silently claim one of the reserved remediation versions. Reconcile the sequence
 against the ledger before introducing the next migration.
+
+The [selected functional roadmap](../milestones/README.md#selected-functional-wave)
+keeps this pending MCP scope visible and includes reusable job setup. The full
+[connected-agent specification](MCP_CONNECTIONS.md) and
+[development handoff](DEVELOPMENT_HANDOFF.md) supply implementation and acceptance
+details, including the prerequisite closure before new durable schema work.
+Suggested libraries and output templates are not part of the shipped v13
+editor. Suggested library members must become an explicit chat source
+selection, never a dynamic agent-to-library authorization path.
 
 ## Editor contract
 

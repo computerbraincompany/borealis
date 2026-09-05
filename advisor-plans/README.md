@@ -72,6 +72,13 @@ requests it.
 Status values: `TODO`, `IN PROGRESS`, `DONE`, `BLOCKED` (with a one-line
 reason), or `REJECTED` (with a one-line rationale).
 
+Documentation reconciliation, 2026-09-06: plan 010's user-visible shared-report
+defect was fixed by M07 in `b54b0e3`; its TODO now refers to the remaining
+resolver consolidation and plan-specific verification. Its dated note separates
+that work from the historical broken-read description. Plan 035's original
+restart-only apply design was superseded by live apply in `e2e6a78`. This is not
+a full reconciliation of the other outstanding remediation plans.
+
 ### Second-wave completion record
 
 Plans 024–037 landed as one coordinated implementation wave. Evidence is kept
@@ -138,8 +145,8 @@ probe also passed against loopback LM Studio with the local Qwen 3.8/Nomic
 - Plan 019 runs after the desktop command cleanup in 002 and the runtime
   ownership work in 014 so it verifies the intended final lifecycle. It must
   exercise Plan 032's fuse/environment/entitlement policy, Plan 033's complete
-  lazy graph and budgets, Plan 035's restart-required migration state, Plan
-  036's packaged raster OCR, and Plan 037's workspace lock.
+  lazy graph and budgets, Plan 035's live migration apply and startup crash
+  recovery, Plan 036's packaged raster OCR, and Plan 037's workspace lock.
 - Plan 020 owns schema v16 after 003/006/012/031 and consumes the final application,
   promotion, and bounded-reconciliation contracts from 014–016.
 - Plan 022 follows contained/API redaction in 007, shared-report authorization

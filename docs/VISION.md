@@ -2,6 +2,10 @@
 
 _The local data-intelligence platform._
 
+Current-product inventory reviewed against `e2e6a78` on 2026-09-06. The
+[milestone roadmap](../milestones/README.md#selected-functional-wave)
+separates recommended next work from completed and already planned slices.
+
 Borealis is the northern lights of private AI: a local, open-source workspace
 that treats an organization’s files, tables, and reports as first-class
 intelligence — not as attachments to a chatbot.
@@ -59,11 +63,13 @@ interface grammar was unapologetically local — a “you are working locally”
 state, task progress, hardware presence, file-and-page citations, consent
 cards before anything left the device, and receipts when work returned.
 
-Portable Computer launched as Linux software for NVIDIA DGX Spark. It is a
-consumer-grade local _computer_: files, code, research, connectors, sandboxed
-actions. It is not a data-intelligence platform. It does not make tabular
-truth, citation-grade retrieval, and board-ready artifacts the center of the
-product. That absence is our opening.
+Portable Computer launched as Linux software for NVIDIA DGX Spark. Its public
+positioning emphasizes a general local _computer_: files, code, research,
+connectors, and sandboxed actions. Borealis's intended distinction is a sharper
+focus on tabular analysis, inspectable evidence, and reusable business artifacts.
+That is our product bet, not a claim that Portable Computer cannot analyze data
+or produce reports. The dated [functional comparison](PRODUCT_REVIEW.md)
+separates current public vendor claims from archived research.
 
 Borealis takes North’s job and Portable Computer’s presence, then refuses
 both vendors’ locks: no Kubernetes tax to get started, no subscription to
@@ -105,14 +111,16 @@ deny-by-default.
 Model calls already go to an OpenAI-compatible endpoint. The default is
 loopback LM Studio. Settings persist the origin, optional key, and chat /
 embedding model IDs and dimension, qualify a draft pair with fixed synthetic
-tool/embedding calls, and manage a separate-index embedding migration without
-mixing retrieval identities. Each account may choose a personal default chat
-model. Contained mode can download and SHA-256-verify a model file, manage an
+tool/embedding calls, and manage a separate-index embedding migration with
+verified live activation after draining active turns, without restarting the
+app or mixing retrieval identities. Each account may choose a personal default
+chat model. Contained mode can download and SHA-256-verify a model file, manage an
 operator-supplied `llama-server` on loopback, switch the live provider to it,
 and restore the previous origin on stop. The app still does not bundle an
-engine binary or model weights. A remote provider is allowed only over HTTPS;
-loopback may use HTTP. Parsing, SQL, storage, and rendering stay on the
-machine. Ingestion text, retrieval queries, prompts, chat history, and selected
+engine binary or model weights. Provider origins require HTTPS except for
+validated loopback and `.local` hostnames, which may use HTTP. Parsing, SQL,
+storage, and rendering stay on the machine. Ingestion text, retrieval queries,
+prompts, chat history, and selected
 source/tool context follow whichever provider is configured. The normal
 payload-bearing entry points are fail-closed until the account acknowledges
 remote egress; the consent UI names the current destination and payload classes,
@@ -302,7 +310,8 @@ Three rules will not move:
    rots.
 3. **Changing the embedding model is a data event.** Same- or
    different-dimension changes build and verify a separate index, then perform
-   a journaled restart swap; they are never an in-place Settings toggle.
+   a journaled live swap after active turns drain; startup recovers interrupted
+   swaps. They are never an in-place Settings toggle.
 
 ---
 
@@ -359,9 +368,10 @@ and refuses to make the company’s memory a SaaS tenant.
 need shared evidence, named agents, scheduled work, and a reviewable log of
 remote-capable activity — without standing up North’s cluster. Borealis already
 provides the first same-instance slice through report snapshots, content-free
-activity receipts, and reviewable automation output, with the M07 ledger naming
-the authorization gaps still to close. Desktop-first does not mean
-single-player; it means the first ten users should not require a platform team.
+activity receipts, and reviewable automation output. The original M07 contract
+is complete; broader team workflows and the separate advisor remediation remain
+future work. Desktop-first does not mean single-player; it means the first ten
+users should not require a platform team.
 
 **Not the target, yet:** a hyperscaler IT org buying a Kubernetes
 estate; a consumer who wants a general computer agent to file Slack
@@ -411,17 +421,19 @@ personal-finance fixture end to end is fiction.
 Keep making the Electron app feel like the product we just described.
 Locality, model presence, and egress state now live in the chrome. The
 composer treats library, model, and scope as one instrument. macOS has an
-API-managed contained-model path and ambient status beside “paste a cluster
-origin,” but the Settings management panel is still outstanding. The enduring
-bar is visual and operational: the whole application should sit next to Portable
+API-managed contained-model path, a Settings → Local engine management panel,
+and ambient status beside “paste a cluster origin.” Curated engine/model setup
+is still future work. The enduring bar is visual and operational: the whole
+application should sit next to Portable
 Computer without looking or behaving like an admin console.
 
 ### Horizon 2 — the intelligence layer
 
-Reports and charts now have versions, lineage, and registry surfaces; query
-receipts survive in chat. Libraries sit above uploads. Named agents bind
-versioned instructions without widening authorization, and numbered citations
-connect claims to frozen evidence. Connector schedules and history make the
+Reports now have versions and supersession lineage; charts have a durable
+registry and originating-run links. Query receipts survive in chat. Libraries
+sit above uploads. Named agents bind versioned instructions, Markdown skills,
+and built-in tool selections without widening authorization, and numbered
+citations connect claims to frozen evidence. Connector schedules and history make the
 bounded public-URL catalog feel like part of a platform. The destination
 continues beyond this first layer: more artifact kinds, governed agent tool and
 source policy, regeneration from provenance, and citation-grade exports.
@@ -429,10 +441,11 @@ source policy, regeneration from provenance, and citation-grade exports.
 ### Horizon 3 — the small-team platform
 
 Same-instance report snapshots, content-free activity receipts, and interval
-automations establish the first small-team slice, but M07 remains incomplete
-until shared-report authorization and connector-sync consent match their
-fail-closed contracts. The destination is a fuller administration and audit
-plane for desktop-and-cluster deployment, plus automations with explicit human
+automations complete M07's first small-team slice, including shared-report
+reads and connector-sync consent. Scheduled answers are reviewable chat output;
+there is no separate approval inbox or multi-step workflow yet. The destination
+is a fuller administration and audit plane for desktop-and-cluster deployment,
+plus automations with explicit human
 review for work that already has artifacts and evidence. Optional contained or
 cluster-local sandboxes for code are deferred until they have a hard process
 boundary with no network or filesystem and bounded CPU, time, and memory. Other
@@ -453,6 +466,7 @@ minute — that this is the private North they were told did not exist.
 | [Desktop guide](../desktop/README.md)             | Electron packaging, profiles, and native checks                                            |
 | [Contributor instructions](../AGENTS.md)          | Architecture and security invariants for people who change the code                        |
 | [Milestone ledger](../milestones/README.md)       | Active implementation ledger and completed slices toward this vision                       |
+| [Functional product review](PRODUCT_REVIEW.md) | Dated competitive evidence and rationale for proposed functional milestones |
 | [Advisor remediation](../advisor-plans/README.md) | Active engineering-remediation ledger from the 2026-08-30 audit, not product direction     |
 | [North research archive](cohere-north/README.md)  | Dated external research (2026-08-22). Comparative evidence, not a Borealis spec or roadmap |
 | [Completed plans](../plans/README.md)             | Historical implementation, not an active backlog                                           |

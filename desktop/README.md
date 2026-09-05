@@ -226,8 +226,12 @@ For PDFs, embedded text is extracted first. Empty pages can use the fixed local
 PDFKit/Vision OCR helper copied into the server runtime; it is invoked directly
 through `/usr/bin/osascript`, has page/raster/time/output limits, and never uses
 the network or renderer privileges. Managed embedding migrations build a
-separate verified index while the old index remains live; selecting apply makes
-restart mandatory so startup can perform and verify the journaled swap.
+separate verified index while the old index remains live. **Apply now** drains
+active turns for up to 60 seconds and performs the verified journaled swap
+without restarting the app. Only vector handles are closed and reopened;
+SQLite and the backend stay open. If active turns cannot drain in time, the
+migration returns to ready-to-apply for another attempt. Startup still recovers
+an interrupted swap after a process crash.
 
 ## Local profile and storage
 

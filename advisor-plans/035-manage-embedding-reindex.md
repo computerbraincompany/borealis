@@ -1,5 +1,12 @@
 # Plan 035: Manage embedding-model reindexing as a durable workspace operation
 
+> **Current-behavior update (2026-09-05, `e2e6a78`):** this completed plan
+> records the original startup-apply design. Normal apply now drains active
+> turns for up to 60 seconds and performs the journaled swap live, reopening
+> only vectors while SQLite and the server remain open. Startup still recovers
+> interrupted swaps. References below to mandatory restart or startup-owned
+> normal apply are superseded by the [current API contract](../docs/API.md#provider-settings).
+
 ## Status
 
 - **State**: DONE (2026-09-01)

@@ -1,6 +1,7 @@
 # Milestone ledger
 
-**Ledger reviewed:** 2026-09-05 after the rich agent editor foundation.
+**Ledger reviewed:** 2026-09-06 against `e2e6a78`, including the rich agent
+editor, live embedding migration apply, and the functional product review.
 
 The M05 extension now ships in `0987170`: identity, Markdown skills, atomic
 configuration revisions, and built-in tool allowlists. MCP/OAuth is still pending.
@@ -20,11 +21,18 @@ The separate [advisor remediation ledger](../advisor-plans/README.md) tracks
 audited engineering fixes. It does not replace this product milestone ledger or
 turn the vision into a backlog.
 
+**Coding-agent entry point:** [development handoff](../docs/DEVELOPMENT_HANDOFF.md),
+[acceptance matrix](../docs/END_TO_END_ACCEPTANCE.md), and
+[execution evidence](EXECUTION.md). The September 6 user request selected the
+complete functional wave below for implementation; this commit supplies the
+specifications, not the implementation. The
+[copyable goal](../docs/IMPLEMENTATION_GOAL.md) delegates that complete scope.
+
 Milestones implement [docs/VISION.md](../docs/VISION.md). That document is the
 destination, not a backlog; each milestone below is one concrete step of one
 horizon, scoped so it can be verified without the next one.
 
-## Roadmap
+## Completed product baseline
 
 | Milestone                         | Horizon | Title                                                                                 | Status  |
 | --------------------------------- | ------- | ------------------------------------------------------------------------------------- | ------- |
@@ -53,9 +61,10 @@ receipts. M06 closed its remaining Settings-panel and hardening work on
 `contained.json` uses same-directory atomic replacement preserving mode
 `0600`, and spawn failures enter the bounded engine state machine with
 deterministic path diagnostics. The other written milestones are complete.
-New product scope receives M12
-rather than turning the vision or historical plan archive into an implicit
-backlog; remediation may close the existing milestone that owns the contract.
+M12–M16 now specify the selected new product scope. The pending connected-agent
+work remains the M05 extension with its own complete implementation spec.
+These selections do not reopen completed M01–M11 or claim any new feature ships.
+Remediation may close the existing milestone that owns the contract.
 The operator-selected product slices in advisor plans 034–037 now ship as
 bounded extensions of existing contracts: synthetic model-pair qualification,
 managed embedding-index migration, local macOS PDF OCR, and offline portable
@@ -67,16 +76,17 @@ Completed sequencing notes:
 - M01 is deliberately small and unblocks the chrome work in M03.
 - M02 (artifact substrate) comes before M04/M05 because libraries and agents
   attach to and produce artifacts; "earn platform features" ordering.
-- M06's shipped contained-model backend was heavy and independent of M02–M05;
-  its missing Settings controls, atomic config replacement, and engine-start
-  hardening remain recorded in that milestone.
+- M06's contained-model backend was independent of M02–M05. Settings controls,
+  atomic config replacement, and engine-start hardening completed the milestone
+  on 2026-09-01. Curated engine/model installation is a separate future scope.
 - Horizon 0 (honor what already works) has no milestone: it is the continuous
   obligation that `pnpm verify` and the personal-finance end-to-end fixture
   keep passing. M01–M11 established the product baseline, and completed advisor
   plans 024–037 hardened or extended it without replacing that obligation.
-- M07 delivered the first Horizon 3 substrate (same-instance report shares,
-  content-free activity receipts, and interval automations), but its current
-  authorization gaps keep the milestone partial. The remaining sandbox
+- M07 completed the first Horizon 3 substrate: same-instance report shares,
+  content-free activity receipts, and interval automations. An explicit review
+  inbox and workflows that refresh inputs before analysis remain future scope.
+  The remaining sandbox
   clause — _optional contained or cluster-local sandboxes for code that earns
   the privilege_ — is deliberately **deferred**, not forgotten: Borealis has
   no arbitrary-code-execution surface today, and adding one without an
@@ -87,7 +97,57 @@ Completed sequencing notes:
   CPU/time/memory) that survives review. _Other desktops_ stays conditional
   on the same strictness bar.
 
+## Selected functional wave
+
+The selected direction is **repeatable, evidence-backed work over a living
+corpus**. All six slices are now specified for implementation. The MCP rollout
+remains pending and saved analyses is M12. This is a dependency order, not a
+delivery calendar. Detailed rationale and dated competitive evidence live in the
+[September product review](../docs/PRODUCT_REVIEW.md).
+
+| Order | Functional slice | First useful outcome | Status / dependency |
+| ----- | ---------------- | -------------------- | ------------------- |
+| 1 | [Connected agents](../docs/MCP_CONNECTIONS.md), M05 extension | HTTP/stdio MCP, OAuth, selected tools and reusable job setup | TODO; schema/runtime prerequisite gate |
+| 2 | [M12 saved analyses](M12-saved-analyses.md) | Parameterized SQL, preserved results, comparison and export outside chat | TODO; prerequisite gate; independent of MCP |
+| 3 | [M13 report/document workbench](M13-report-workbench.md) | Edit/rewrite, review changes and export a new evidence-bearing version | TODO; M12 for data refresh |
+| 4 | [M14 living libraries/search](M14-living-libraries.md) | Selected folders, watch/refresh, indexed WebDAV, source search/inspection | TODO; prerequisite gate and connection secret custody |
+| 5 | [M15 local research](M15-local-research.md) | Question plan, dossier, cited memo and reviewed comparison table | TODO; M13/M14 and M12 provenance patterns |
+| 6 | [M16 reviewed briefs](M16-reviewed-briefs.md) | Refresh, wait, analyze, compare, draft and review on a calendar schedule | TODO; M12/M13/M14 and drained scheduler |
+
+MCP is an integration mechanism; each connection still needs a useful end-to-end
+job. It does not by itself create indexed sources, a research mode, or a
+workflow engine. Ship one knowledge integration before expanding a catalog.
+Keep the already recorded MCP runtime/OAuth scope intact; staging individual
+connectors is not permission to ship an incomplete execution path.
+
+Saved analyses and report revisions are separate slices of an eventual artifact
+workbench. Start with the deterministic data workflow and a simple section
+editor, then add richer document export and reviewable extraction tables. A
+general spreadsheet editor, a visual automation graph, broad implicit memory,
+and general computer control are later options, not the next milestones.
+
+The cross-cutting remediation ledger remains separate. Schema v13 ships;
+v14–v16 stay reserved for the existing remediation work. The
+[handoff prerequisite gate](../docs/DEVELOPMENT_HANDOFF.md#resolve-the-reserved-schema-sequence-first)
+lists the exact dependency closure required before product migrations v17+.
+No skipped versions, placeholders, renumbering, or assumed remediation completion.
+
+Suggested release proof: use the personal-finance fixtures to save a monthly
+analysis, revise its report, refresh the inputs, and produce a second version
+whose changed numbers and evidence can be inspected. Add a second proof using
+a small document corpus and a cited comparison table. Measure whether users can
+repeat those jobs without reconstructing chat history, not how many new pages
+or integrations were added. These scenarios are required by the acceptance
+matrix; they were not executed in this documentation review.
+
 ## Verification record
+
+- 2026-09-06: documentation/product review against `e2e6a78`; reconciled
+  completed M03/M06/M07 prose, shared-report route descriptions, and live
+  embedding-apply guidance. The follow-up selected all six functional slices;
+  complete implementation specs, prerequisite closure, a copyable coding goal
+  and an end-to-end acceptance/evidence ledger are now present. No new runtime
+  functionality or milestone completion is claimed by this documentation pass.
 
 - 2026-09-01: M07 closed — full server suite green (869 tests) after the
   shared-report authorization fix (recipient detail/HTML/PDF, payload

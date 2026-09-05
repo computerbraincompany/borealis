@@ -20,7 +20,10 @@ to LM Studio or another OpenAI-compatible endpoint.
 | [Contributor instructions](AGENTS.md)        | Architecture, commands, and security invariants                             |
 | [Configuration example](server/.env.example) | Optional environment overrides, defaults, and valid ranges                  |
 | [Milestones](milestones/README.md)           | Active implementation ledger toward the product vision                      |
+| [Functional product review](docs/PRODUCT_REVIEW.md) | Current capability gaps, North/Portable Computer comparison, and roadmap rationale |
 | [Advisor plans](advisor-plans/README.md)     | Active engineering-remediation ledger from the 2026-08-30 audit             |
+| [Coding-agent handoff](docs/DEVELOPMENT_HANDOFF.md) | Selected scope, implementation specs, dependencies and completion rules |
+| [End-to-end acceptance](docs/END_TO_END_ACCEPTANCE.md) | Required browser, packaged desktop and live-model proof for the selected wave |
 
 [Milestones](milestones/README.md) are the active product implementation ledger
 toward the vision. [Advisor plans](advisor-plans/README.md) track the separate
@@ -29,6 +32,15 @@ plans](plans/README.md) and the dated [product research
 archive](docs/cohere-north/README.md) preserve historical decisions and
 proposals; they are not current setup instructions or a list of unimplemented
 requirements.
+
+The completed baseline is M01–M11 plus the agent-editor foundation and later
+bounded extensions. MCP/OAuth remains pending. The
+[selected functional wave](milestones/README.md#selected-functional-wave)
+specifies connected agents, saved analyses, editable reports, living libraries,
+scoped research, and reviewed recurring briefs for implementation. These are
+not shipping features. Coding agents should start with the
+[development handoff](docs/DEVELOPMENT_HANDOFF.md) and keep
+[execution evidence](milestones/EXECUTION.md) current.
 
 ## Architecture
 
@@ -89,10 +101,10 @@ Durable files live under:
   jwt.secret
 ```
 
-The JWT secret is generated once with mode `0600`; provider settings are
-written atomically with mode `0600`, and contained-engine configuration is
-created with mode `0600` but currently updated by direct overwrite. No `.env`
-file is required.
+The JWT secret is generated once with mode `0600`; provider settings and
+contained-engine configuration are written by same-directory atomic replacement
+with mode `0600`. Replacing contained configuration also repairs a pre-existing
+widened mode. No `.env` file is required.
 
 Install dependencies and launch a development build:
 

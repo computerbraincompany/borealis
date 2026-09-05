@@ -14,12 +14,12 @@ holds the canonical constant consumed by the consent card, the sidebar strip,
 and the Settings privacy text, with tests asserting the identical list on all
 three surfaces.
 
-**Current wording drift (reviewed 2026-08-31):** the consent dialog names
-upload/ingestion text, prompts, chat history, retrieval queries, and selected
-tool context; the sidebar omits chat history; Settings mentions only prompts
-and retrieved document/data context. The full consent-dialog list is the
-canonical boundary. M07 separately tracks the connector-automation path that
-does not recheck this gate.
+**Historical wording drift (reviewed 2026-08-31, resolved 2026-09-01):** the
+sidebar omitted chat history and Settings named only prompts and retrieved
+context. All three surfaces now consume the shared payload-class constant.
+M07 also closed the connector-automation consent gap. Provider-bound consent
+remains separate advisor remediation; this milestone's account-wide
+acknowledgment has not changed into a per-provider grant.
 
 ## Problem
 

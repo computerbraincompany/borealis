@@ -9,9 +9,10 @@ zero token meter, honest about limits.
 storage), `05af22c` (engine lifecycle and endpoint switching), and `7adac79`
 (ambient status, shutdown, and desktop data paths) shipped the backend/API and
 chrome slices. The 2026-09-01 remediation closed the remainder: Settings →
-Models ships the contained-management panel (`ContainedConfig`/`ContainedDownloadState`
+Local engine now contains the management panel (`ContainedConfig`/`ContainedDownloadState`
 client types and a `containedApi` wrapper in `web/src/lib/api.ts`,
-`useContained` + `ContainedPanel` with live 2-second polling),
+`useContained` + `ContainedPanel` with visibility-aware polling starting at
+2 seconds and widening on consecutive failures),
 `contained.json` uses same-directory atomic replacement preserving mode `0600`
 with mode repair, spawn failures reach the child-process `error` listener and
 land in the bounded `crashed` state, and missing-path diagnostics are
@@ -69,9 +70,8 @@ Directories and config (read `config.ts`, `settingsStore.ts`,
   tiny store `server/src/contained/configStore.ts`: `{ enabled: boolean,
   binary_path: string, model_path: string, extra_args: string[] }`. Paths must
   be absolute without `~`; `extra_args` is bounded (32 items × 200 chars), and
-  invalid config fails closed on read. The current writer uses a direct
-  mode-`0600` `writeFile`; the specified same-directory atomic replacement is
-  still outstanding, and overwriting an existing file does not repair its mode.
+  invalid config fails closed on read. The writer uses same-directory atomic
+  replacement with mode `0600`, repairing a pre-existing widened mode.
 
 Download manager (`server/src/contained/downloadManager.ts`):
 
@@ -100,10 +100,9 @@ Engine manager (`server/src/contained/engineManager.ts`):
   `endpointProbe`) polled every 500 ms up to 180 s; states: `off` → `starting`
   → `healthy` | `crashed` (process exit) | `stopped`. One engine at a time;
   `stop()` sends SIGTERM with a bounded kill timeout. Early exits are captured
-  and never logged with contents. The current manager does not listen for the
-  child's `error` event, so non-executable or raced-away binaries can escape the
-  bounded state machine. Its concurrent binary/model existence checks also make
-  the missing-field error nondeterministic when both paths are absent.
+  and never logged with contents. A child-process `error` listener sends spawn
+  failures into the bounded `crashed` state. Existence checks run in order:
+  binary first, then model, so missing-path diagnostics are deterministic.
 - **Auto-apply**: on first `healthy`, if the effective `llm_base_url` is not
   environment-managed, the manager records the previous origin and patches
   `llmBaseUrl` to `http://127.0.0.1:<port>` via `runtimeSettingsStore().patch`
@@ -153,21 +152,21 @@ Tests:
 - Orderly shutdown already runs through the backend; the engine stop hook
   lives server-side, so no desktop code changes beyond the env value.
 
-## Web spec — partial
+## Web spec — shipped
 
 - **Shipped:** `WorkspaceStatusResponse.contained` and the `WorkspaceStatus`
   strip. When `contained.state === "healthy"`, the locality
   row reads **"On this Mac · contained"** with the model filename in the
   tooltip; `endpoint_managed_by_env` appends "endpoint managed by environment"
   to the hint.
-- **Outstanding:** full `ContainedConfig`/`DownloadState` client types and a
+- **Shipped:** `ContainedConfig`/`ContainedDownloadState` client types and a
   `containedApi` wrapper for get/config/download/cancel/start/stop.
-- **Outstanding:** contained management under Settings → Models as a bounded panel:
+- **Shipped:** contained management under Settings → Local engine as a bounded panel:
   enable toggle, binary/model paths, download form (URL, filename, SHA-256)
   with per-download state, start/stop buttons with live state. Out of scope:
   download progress percentages in the sidebar.
-- **Tests:** the strip's healthy/managed states ship; panel create-config,
-  download, start, and stop flows remain outstanding with the panel.
+- **Tests:** the strip's healthy/managed states and panel configuration,
+  download, start, and stop flows are covered by the contained UI suites.
 
 ## Documentation tasks
 
@@ -185,10 +184,9 @@ Tests:
 
 ## Done criteria
 
-- The milestone remains partial until the Settings control surface above ships
-  and configuration writes use an atomic replacement that preserves mode
-  `0600`; engine spawn errors must enter a bounded state, and path diagnostics
-  must be deterministic (or their test must not assume an ordering).
+- Completed: the Settings control surface ships, configuration replacement
+  preserves mode `0600`, engine spawn errors enter a bounded state, and path
+  diagnostics are deterministic. See the ledger's dated verification record.
 - `pnpm verify` green including the new suites.
 - Live check: download a fixture model file with checksum verification into
   the data directory, start the stub engine, see `/api/status` report

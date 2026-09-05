@@ -14,19 +14,19 @@ creation/update and recheck it on every scheduled execution (recording a
 `skipped` run without consent), and Settings describes egress events as
 best-effort activity receipts rather than proof of delivery.
 
-## Current implementation drift (reviewed 2026-08-31; resolved 2026-09-01)
+## Historical implementation drift (reviewed 2026-08-31; resolved 2026-09-01)
 
-- Shared readers currently receive the report's stored payload from the detail
-  route, while recipient HTML/PDF requests return `404`. The intended contract
+- Shared readers received the report's stored payload from the detail
+  route, while recipient HTML/PDF requests returned `404`. The intended contract
   is recipient detail/HTML/PDF with payload owner-only.
 - Generic `connector_sync` automation creation/update and scheduled execution
-  do not apply or recheck remote-egress consent. Agent-turn automations do, and
-  connector schedule changes made through the connector route gate the mutation
+  did not apply or recheck remote-egress consent. Agent-turn automations did, and
+  connector schedule changes made through the connector route gated the mutation
   itself.
 - Egress rows are best-effort activity receipts written for consent and selected
   gate-passed remote-capable attempts. They do not prove that bytes reached a
-  provider and are not an exhaustive network-egress audit. The current Settings
-  description calls them work "sent" and therefore overstates the evidence.
+  provider and are not an exhaustive network-egress audit. The former Settings
+  description called them work "sent" and therefore overstated the evidence.
 
 All three drift items were closed on 2026-09-01: recipients get read-only
 detail/HTML/PDF (payload owner-only), `connector_sync` creation/update gate
@@ -61,8 +61,9 @@ remembering to click.
 3. **Durable automations with review** — bounded, account-scoped automations
    of two kinds: scheduled connector refresh, and scheduled agent turns into a
    bound chat (reusing the M05 binding and run machinery) whose output lands
-   as an ordinary reviewable chat turn — nothing publishes without a human
-   reading it. Runs are durable; failures pause the automation.
+   as an ordinary reviewable chat turn. Completed runs can publish artifacts
+   into the owner's workspace automatically; external delivery and an explicit
+   approval state are not part of M07. Runs are durable; failures pause the automation.
 
 ## Non-goals
 
@@ -70,9 +71,9 @@ remembering to click.
   boundary is accounts of this Borealis instance.
 - No multi-step automation graphs, triggers beyond intervals, or notification
   channels.
-- No automatic publication of automation output: an agent-turn automation only
-  ever appends a turn to its bound chat, subject to the same one-run-per-chat
-  and consent gates as a human turn.
+- No automatic external delivery of automation output: an agent-turn automation
+  appends to its bound chat and publishes successful run artifacts within the
+  workspace, subject to the same one-run-per-chat and consent gates as a human turn.
 - Audit events never contain prompts, source text, SQL, or model output.
 
 ## Backend spec

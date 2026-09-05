@@ -447,8 +447,9 @@ first embedding transport and bind every batch to that one authorized immutable
 runtime-settings snapshot. A queued local job resumed under an unacknowledged
 remote provider makes no transport call and records
 `REMOTE_EGRESS_CONSENT_REQUIRED`; a mid-job Settings edit must not redirect it.
-The current three surfaces are not yet identical; treat that as an outstanding
-consent-disclosure defect rather than precedent for further divergence.
+The three surfaces use the shared `web/src/lib/egressDisclosure.ts` payload-class
+constant. Preserve that shared wording; provider-bound acknowledgment remains
+separate planned remediation and is not implied by disclosure consistency.
 
 Canonical operator overrides are `LLM_BASE_URL`, `LLM_API_KEY`,
 `LLM_CHAT_MODEL`, and `LLM_EMBED_MODEL`. The corresponding `LITELLM_*` names
@@ -549,6 +550,17 @@ bootstrap, exact loopback/same-origin hosting, offline Electron rendering, and
 clean utility-process shutdown.
 
 ## Documentation maintenance
+
+The selected September 6 functional wave is specified in
+[docs/DEVELOPMENT_HANDOFF.md](docs/DEVELOPMENT_HANDOFF.md),
+[docs/MCP_CONNECTIONS.md](docs/MCP_CONNECTIONS.md), and milestones M12–M16.
+These are future implementation contracts, not shipping behavior. The handoff
+defines the prerequisite closure for reserved schema v14–v16, coordination of
+subagents, and the narrow future desktop capability additions. Keep
+[milestones/EXECUTION.md](milestones/EXECUTION.md) and
+[docs/END_TO_END_ACCEPTANCE.md](docs/END_TO_END_ACCEPTANCE.md) aligned with actual
+implementation and evidence. Do not claim completion from specification-only
+changes or skip required packaged/live-model validation.
 
 Keep [README.md](README.md), [docs/API.md](docs/API.md),
 [docs/VISION.md](docs/VISION.md), [desktop/README.md](desktop/README.md),

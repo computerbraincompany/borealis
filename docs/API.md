@@ -783,11 +783,13 @@ Public phases are `idle`, `snapshotting`, `building`, `ready_to_apply`,
 `apply_pending`, and `failed`. Retry is available only for a failed operation;
 cancel removes only the positively owned staging directory and is unavailable
 after the swap starts. Apply is accepted only from `ready_to_apply` and moves to
-`apply_pending`, where new chat turns are gated. Restart Borealis to execute the
-journaled startup swap, pair the new model/dimension settings with the staged
-index, reopen storage, verify its dimension and exact row count, and run a scoped
-retrieval smoke when the snapshot is nonempty. Crash recovery rolls forward or
-restores the old matched pair; every recovery phase revalidates the persisted
+`apply_pending`, where new chat turns are gated. Borealis drains active turns
+and executes the journaled swap live, pairs the new model/dimension settings
+with the staged index, reopens vector storage, verifies its dimension and exact
+row count, and runs a scoped retrieval smoke when the snapshot is nonempty.
+SQLite and the HTTP server remain open; no restart is required for normal apply.
+Startup crash recovery rolls forward or restores the old matched pair; every
+recovery phase revalidates the persisted
 provider identity and the resolved-model/dimension marker on every live,
 staged, or backup index, and an embedding-model or dimension environment
 override prevents acceptance of the installed target. No live index contains
@@ -948,10 +950,10 @@ contain aggregate counts, never connector IDs, paths, or raw filesystem errors.
 | Endpoint                    | Response                                                                                                                                                                                                                        |
 | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `GET /api/reports`          | Paginated `{items,next_cursor}` of `{id,title,subtitle,chat_id,chat_title,created_at,updated_at,version,supersedes}`, newest first; no filesystem paths or payloads.                                                            |
-| `GET /api/reports/:id`      | `{id,title,subtitle,created_at,updated_at,has_html,has_pdf,version,supersedes}`; owner detail adds `payload` when available. Shared detail currently adds both `shared_by_account:true` and `payload` — the known defect above. |
+| `GET /api/reports/:id`      | `{id,title,subtitle,created_at,updated_at,has_html,has_pdf,version,supersedes}`; owner detail adds `payload` when available. Shared detail adds `shared_by_account:true` and never includes `payload`. |
 | `PATCH /api/reports/:id`    | Body `{title}` (1–200 chars); returns the renamed report DTO.                                                                                                                                                                   |
-| `GET /api/reports/:id/html` | Owner-only today: self-contained `text/html`; shared recipients currently receive `404`.                                                                                                                                        |
-| `GET /api/reports/:id/pdf`  | Owner-only today: `application/pdf` attachment with a `%PDF-` signature; shared recipients currently receive `404`.                                                                                                             |
+| `GET /api/reports/:id/html` | Self-contained `text/html`, readable by the owner and current share recipients through the owner's storage scope. |
+| `GET /api/reports/:id/pdf`  | `application/pdf` attachment with a `%PDF-` signature, readable by the owner and current share recipients through the owner's storage scope. |
 | `DELETE /api/reports/:id`   | `{"ok":true}`, or `503 {"error":"report cleanup deferred"}` if physical cleanup must retry.                                                                                                                                     |
 | `GET /api/charts`           | Array of `{id,run_id,chat_id,title,kind,created_at}` for published charts, newest first, bounded to 200; no spec echo or PNG bytes.                                                                                             |
 | `GET /api/charts/:id`       | `{id,spec,echarts,png_base64}`.                                                                                                                                                                                                 |

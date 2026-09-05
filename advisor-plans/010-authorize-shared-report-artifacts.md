@@ -1,5 +1,14 @@
 # Plan 010: Authorize shared report artifacts consistently
 
+> **Reconciliation (2026-09-06):** M07 fixed the user-visible shared-read and
+> payload-disclosure defects in `b54b0e3`. Current report routes authorize
+> recipient detail/HTML/PDF under the owner's storage scope and keep the stored
+> payload owner-only; `reportChartRoutes.test.ts` covers this behavior. The
+> resolver consolidation specified below remains separate work. The pre-fix
+> excerpts are historical: re-scope this plan to remaining consolidation and
+> verification rather than treating shared reads as broken or weakening the
+> existing recipient regression. This review does not mark the full plan DONE.
+
 > **Executor instructions**: Follow this plan step by step. Run every verification command and confirm the expected result before moving to the next step. If a STOP condition occurs, stop and report; do not improvise. When complete, update this plan's row in `advisor-plans/README.md` unless the reviewer owns index maintenance.
 >
 > **Drift check (run first)**: `git diff --stat f1b9293..HEAD -- server/src/routes/reports.ts server/src/tests/reportChartRoutes.test.ts`
