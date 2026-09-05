@@ -100,3 +100,48 @@ dialog. Report sharing can show A's state while buttons operate on B.
   library-detail/member dialogs intentionally keep close-while-pending because
   both re-fetch authoritative state on open, so a dropped mutation cannot hide
   committed server state.
+
+## Implementation note (2026-09-04 second UI/UX audit follow-up)
+
+- A second full-surface audit closed the remaining request-ownership gaps in
+  this plan's scope and its adjacent state surfaces:
+  - `AgentsView.remove` now invalidates the in-flight catalog request before
+    filtering locally, matching the delete-then-invalidate contract every other
+    catalog view already followed; a `load()` resolving after a DELETE can no
+    longer resurrect the deleted agent. Agent revision history gained the same
+    generation guard, so switching agents during a slow fetch can never show
+    the previous agent's revisions.
+  - The contained-engine and embedding-migration status polls switched from
+    fixed `setInterval` to generation-guarded `setTimeout` chains that widen
+    the interval on consecutive failures (capped at 15 s) instead of producing
+    a request/error flicker every 1–2 s while a failing endpoint is open; both
+    stayed visibility-aware. The Automations list gained a visibility-aware
+    45 s refresh while any automation is active, ending a permanently stale
+    Last run/next run display.
+  - The `q=` welcome parameter decode is try/catch-guarded so a malformed hand
+    edit can no longer crash `ChatView` into its reload-loop error boundary, and
+    the Reports/Charts catalog load collapsed from a double-fetch on partial
+    failure to a single `Promise.allSettled` pass.
+  - Same-pass UI/UX polish (kept brief, matching the ledger's convention of
+    recording non-remediation polish in the nearest owning plan): Reports and
+    Connectors page bodies gained the standard owned scroll container they were
+    missing (content below the fold was unreachable under Shell's
+    `overflow-hidden` main); chat streaming output gained a `role="log"` live
+    region plus accessible names for send/stop/composer; the source ingestion
+    status now renders one shared label/tone via
+    `web/src/lib/sourceStatus.ts` across Sources, the chat picker, and library
+    members; the chat source-mode toggle became a proper
+    `DropdownMenuRadioGroup`; the chat sidebar surfaces a refresh failure
+    alongside cached rows; connector first paint no longer flashes a false
+    empty state; Preview is disabled for HTML-less reports; and several
+    literal-enum/placeholder artifacts ("No subtitle", "_no response_", raw
+    download states, "no dimension dimensions", "Invalid Date") were removed.
+    The chat SSE stream now emits a `: ping` comment keepalive every 20 s so
+    silent provider waits survive buffering proxies (documented in
+    [docs/API.md](../docs/API.md)). End-to-end runs against the configured
+    local engine exposed a mid-stream `server_error` crash class (llama.cpp
+    speculative-batch bug) that failed whole durable turns; `streamingChat`
+    now absorbs that with exactly one retry for transient stream failures
+    (connection errors, 5xx, and status-less engine crash frames), while
+    caller aborts and every bounded-budget failure still fail immediately
+    without a retry.

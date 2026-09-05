@@ -387,7 +387,9 @@ fewer messages than requested. Oversized message content is marked with
 `POST /api/chats/:id/messages` accepts `{"content":"..."}` and returns
 `text/event-stream`. Content is trimmed and must be nonempty, with a default
 maximum of 32,000 Unicode characters. Every frame is JSON in an SSE `data:` field
-(there are no SSE `event:` or `id:` fields). Event types are:
+(there are no SSE `event:` or `id:` fields). While a run is active the server
+also writes an SSE comment keepalive (`: ping`) every 20 seconds; comment blocks
+are not events and clients must continue to ignore them. Event types are:
 
 | Type          | Stable fields                            | Meaning                                                                               |
 | ------------- | ---------------------------------------- | ------------------------------------------------------------------------------------- |

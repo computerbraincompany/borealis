@@ -285,8 +285,17 @@ runtime startup alone republishes that matching marker.
   closed target. A create/rename dialog whose failure slot or committed row
   would go invisible when dismissed must block dismissal while its request is
   in flight (the `ConfirmDialog` busy pattern); dialogs that re-fetch
-  authoritative state on open may close mid-flight. Unexpected React `act`
-  warnings fail the shared test harness.
+  authoritative state on open may close mid-flight. A local delete must bump the
+  catalog request generation before filtering, so a still-in-flight list
+  response cannot resurrect the deleted row (as in `AgentsView`). Unexpected
+  React `act` warnings fail the shared test harness.
+- Shell `main` is `overflow-hidden`, so every page view root owns its own scroll
+  (`h-full overflow-y-auto` around the `mx-auto max-w-5xl …` content wrapper).
+  The source ingestion status label/tone comes only from
+  `web/src/lib/sourceStatus.ts` — never hand-render the `ready|index|error` enum
+  per surface. Long-running status polls (contained engine, embedding
+  migration) must be visibility-aware and widen their interval on consecutive
+  failures rather than hammering a failing endpoint.
 - Noninitial routes and ECharts stay lazy. The Vite manifest/bundle gate enforces
   the committed 240 KiB initial-gzip and 130 KiB maximum-lazy-gzip budgets plus
   separate route/chart entries; packaged static hosting must copy and serve the
