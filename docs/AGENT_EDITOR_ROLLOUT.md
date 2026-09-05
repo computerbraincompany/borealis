@@ -7,10 +7,10 @@ prerequisite for agent identity, instruction editing, skills, or tool allowlists
 
 ## Sequence
 
-1. **Editor foundation (v13):** shared create/edit modal; persisted description,
+1. **Editor foundation (v13), complete in `0987170`:** shared create/edit modal; persisted description,
    icon and color; atomic prompt/capability revisions; account-owned Markdown
    skills; built-in tool selection and immutable accepted-turn snapshots.
-2. **MCP runtime and editor:** official TypeScript client, Streamable HTTP and
+2. **MCP runtime and editor, pending:** official TypeScript client, Streamable HTTP and
    stdio connections, discovery and explicit tool selection, isolated secret
    storage, OAuth sign-in/refresh, cancellation and process cleanup. MCP access
    remains absent until its entire execution path is implemented and verified.

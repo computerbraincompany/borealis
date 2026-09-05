@@ -102,10 +102,10 @@ probe also passed against loopback LM Studio with the local Qwen 3.8/Nomic
   recommended early; urgent independent security fixes 005 and 009 need not
   wait for the larger vertical harness, while 007 deliberately consumes plan
   004's route test. Plan 003 now follows completed plan 031 so its historical
-  inventory includes the shipped v12 catalog-index migration.
-- Schema work is serialized. Completed plan 031 owns schema v12, plan 006 adds
+  inventory includes the shipped v12 catalog-index and v13 agent-editor migrations.
+- Schema work is serialized. Completed plan 031 owns schema v12, the agent editor owns v13, plan 006 adds
   v14, plan 012 adds v15, and plan 020 adds v16. Plan 003 must capture the
-  contiguous history through v12 before plan 006; an executor must STOP instead
+  contiguous history through v13 before plan 006; an executor must STOP instead
   of renumbering or combining migrations when the expected predecessor is absent.
 - Plan 005 establishes canonical provider identity. Plan 006 reuses that exact
   identity for stored consent and last-mile outbound authorization while

@@ -1,5 +1,12 @@
 # M05 — Named agents: versioned instructions with write-once chat bindings
 
+**September 5 extension:** the original completed milestone below is historical.
+Commit `0987170` adds the shared rich editor, identity, Markdown skills, atomic
+configuration revisions, and enforced built-in tool selections in schema v13.
+See the [current rollout and verification record](../docs/AGENT_EDITOR_ROLLOUT.md).
+The original “no per-agent tool policy” non-goal no longer describes current behavior.
+
+
 **Horizon:** 2 ("the intelligence layer") — *Named agents — versioned
 instructions, tools, and source bindings for a job: "finance analyst,"
 "diligence," "ops brief." They do not grant data the runner cannot already

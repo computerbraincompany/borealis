@@ -318,7 +318,7 @@ runtime startup alone republishes that matching marker.
   the Automations view stays authoritative. Connector deletion cascades the
   linked automations and sync-history rows; history entries are content-free
   and best-effort, never load-bearing.
-- Agents (`server/src/db/stores/agentStore.ts`, schema v6) are named,
+- Agents (`server/src/db/stores/agentStore.ts`, schemas v6 and v13) are named,
   versioned instruction sets. The chat binding is write-once at creation
   (`chats.agent_id`, `SET NULL` on agent deletion) and cannot change
   afterwards. `acceptChatTurn` snapshots the agent's current revision onto
@@ -417,7 +417,7 @@ files. Engine stop is part of the orderly shutdown path (`closeDb`).
 `0600` and repairs a pre-existing widened mode; spawn failures reach the
 child-process `error` listener and land in the bounded `crashed` state, and
 missing-path diagnostics are deterministic (binary before model). The Settings
-→ Models panel owns configuration, verified downloads, and engine
+→ Local engine panel owns configuration, verified downloads, and engine
 start/stop through `containedApi`.
 
 The ambient chrome strip is fed by `GET /api/status`

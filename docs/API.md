@@ -226,27 +226,54 @@ workspace chrome can say "On this Mac · contained".
 
 ### Agents
 
-| Endpoint                 | Response                                                                                                                            |
-| ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------- |
-| `GET /api/agents`        | Paginated `{items,next_cursor}` of `{id,name,current_version,instructions,instructions_chars,created_at,updated_at}`, newest first. |
-| `POST /api/agents`       | Body `{name,instructions}` (name 1–80 chars unique per account; instructions 1–8,000 chars); returns `201`.                         |
-| `GET /api/agents/:id`    | `{...summary,revisions}` with every immutable revision, newest first.                                                               |
-| `PATCH /api/agents/:id`  | Body `{name?}`, `{instructions?}`, or both; new instructions become the next immutable revision.                                    |
-| `DELETE /api/agents/:id` | `{"ok":true}`; bound chats keep running and become unbound (`agent_id` is `SET NULL`).                                              |
+| Endpoint | Response |
+| --- | --- |
+| `GET /api/agents` | Paginated `{items,next_cursor}` of account-owned summaries, newest first; includes identity, instructions, and capability selections. |
+| `POST /api/agents` | Required `{name,instructions}` plus optional configuration below; name 1–80 characters unique per account; returns `201`. |
+| `GET /api/agents/:id` | `{...summary,revisions}` with immutable prompt/configuration revisions, newest first. |
+| `PATCH /api/agents/:id` | Partial identity, name, instructions, or capability fields; every successful patch creates one atomic revision. |
+| `DELETE /api/agents/:id` | `{"ok":true}`; active runs retain their snapshots and later messages continue unbound. |
 
-A chat may bind one agent when it is created: `POST /api/chats` accepts an
-optional `agent_id` (must reference an owned agent; unknown or foreign ids
-return `400`). The binding is write-once — it cannot be changed or removed
-while the chat exists, and chat DTOs carry `agent: {id,name} | null`. At turn
-acceptance the server resolves the agent's _current_ revision inside the
-accept transaction and stores its instructions on the durable run
-(`chat_runs.agent_instructions`); later agent edits or deletion never change a
-running or completed turn. During the run, the instructions are appended to
-the system prompt in a bounded `Workspace agent instructions` section that
-states the platform's operating rules stay fixed workspace policy. Agents
-never change the tool set, retrieval scope, or any authorization: everything
-the runner may do is server policy exactly as for unbound chats. Instructions
-are never logged.
+A chat may bind one owned agent at creation using `agent_id`. Unknown or foreign
+IDs return `400`. This binding cannot be edited; agent deletion sets it to null.
+Chat DTOs carry `agent: {id,name,icon,color} | null`. Each accepted message uses the
+current agent revision and selected skill contents, captured within the acceptance
+transaction. Existing chats therefore pick up edits on their next message, while
+running messages retain their exact prompt and tool selection. Agent instructions
+are never logged and cannot override fixed workspace policy or source and account
+authorization. Unbound chats retain the default seven built-in tools.
+
+#### Configuration and skills
+
+Agent create and patch bodies accept `description` (up to 240 characters), `icon`,
+`color`, `tools`, and `skill_ids` alongside `name` and `instructions`. Patches save
+one atomic revision. Instructions retain the 8,000-character limit. Omitted
+capability fields preserve defaults on creation and existing values on edits;
+`tools: []` explicitly disables every built-in tool. Agent list/detail responses
+include this configuration, and revisions include their original configuration.
+Bound chat responses include the agent's icon and color.
+
+`GET /api/agent-capabilities` returns the seven supported built-in tool IDs.
+Selected skills belong to the authenticated account. Up to eight skills may be
+assigned, each with at most 8,000 characters; the combined agent prompt, skill
+contents, and section labels must fit 32,000 characters. Missing skills or an
+oversized combination produce an actionable configuration error. Message
+acceptance captures skill text and the tool allowlist in the same transaction as
+the run, so later edits cannot change an active run. The model receives only
+enabled tool definitions, and dispatch independently rejects disabled tools.
+
+| Endpoint | Behavior |
+| --- | --- |
+| `GET /api/agent-skills` | Account-owned skill library, maximum 200 records; numeric versions |
+| `POST /api/agent-skills` | Create `{name, description?, content}` and revision 1 |
+| `PUT /api/agent-skills/:id` | Replace skill fields and append a revision atomically |
+| `DELETE /api/agent-skills/:id` | Remove an owned skill; agents retaining its ID fail configuration validation |
+
+All endpoints authenticate before body parsing. Create/update bodies use the
+bounded long-text JSON ceiling. Markdown import in the editor extracts simple
+`name`/`description` front matter and submits the remaining instructions through
+the same skill-create endpoint. It does not install packages or execute files.
+MCP is a separate rollout stage described in `docs/AGENT_EDITOR_ROLLOUT.md`.
 
 ### Libraries
 
@@ -473,7 +500,7 @@ when no separate LM Studio health endpoint is configured. Latency is bounded to
 `{state,model,endpoint_host,endpoint_managed_by_env}`. The snapshot is
 informational chrome state, not an authorization surface.
 
-`GET /api/models` includes `display_name` (the resolved provider model ID) on each option, while `id` preserves stable aliases for selection. `available_models` includes the complete advertised catalog for the Settings embedding selector; `/v1/models` does not standardize model capabilities, so embedding choices require qualification before migration. Settings uses dropdowns, refreshes discovery after saving a provider connection, and retains an unadvertised current value when discovery is unavailable.
+`GET /api/models` includes `display_name` (the resolved provider model ID) on each option, while `id` preserves stable aliases for selection. `available_models` includes the complete advertised catalog for the Settings embedding selector; `/v1/models` does not standardize model capabilities, so embedding choices require qualification before migration. Settings uses dropdowns, refreshes discovery after saving a provider connection, and shows only models advertised by that provider. Unavailable discovery does not insert a synthetic current-model option. Changing the provider origin clears the workspace default chat model unless the patch explicitly supplies one; environment-managed defaults still take precedence. Account model preferences are separate. The UI requires an available selection for a new chat. Existing chat models remain unchanged.
 
 `GET /api/models` returns, for example:
 
@@ -1194,35 +1221,3 @@ Asynchronous ingestion failures appear in source status/metadata after the
 initial successful upload. Once SSE starts, agent failures use its `error` and
 `run-ended` events instead of changing the HTTP status. Treat public messages as
 stable categories, not as a substitute for the correlated server logs.
-
-### Agent editor configuration
-
-Agent create and patch bodies accept `description` (up to 240 characters), `icon`,
-`color`, `tools`, and `skill_ids` alongside `name` and `instructions`. Patches save
-one atomic revision. Instructions retain the 8,000-character limit. Omitted
-capability fields preserve defaults on creation and existing values on edits;
-`tools: []` explicitly disables every built-in tool. Agent list/detail responses
-include this configuration, and revisions include their original configuration.
-Bound chat responses include the agent's icon and color.
-
-`GET /api/agent-capabilities` returns the seven supported built-in tool IDs.
-Selected skills belong to the authenticated account. Up to eight skills may be
-assigned, each with at most 8,000 characters; the combined agent prompt, skill
-contents, and section labels must fit 32,000 characters. Missing skills or an
-oversized combination produce an actionable configuration error. Message
-acceptance captures skill text and the tool allowlist in the same transaction as
-the run, so later edits cannot change an active run. The model receives only
-enabled tool definitions, and dispatch independently rejects disabled tools.
-
-| Endpoint | Behavior |
-| --- | --- |
-| `GET /api/agent-skills` | Account-owned skill library, maximum 200 records; numeric versions |
-| `POST /api/agent-skills` | Create `{name, description?, content}` and revision 1 |
-| `PUT /api/agent-skills/:id` | Replace skill fields and append a revision atomically |
-| `DELETE /api/agent-skills/:id` | Remove an owned skill; agents retaining its ID fail configuration validation |
-
-All endpoints authenticate before body parsing. Create/update bodies use the
-bounded long-text JSON ceiling. Markdown import in the editor extracts simple
-`name`/`description` front matter and submits the remaining instructions through
-the same skill-create endpoint. It does not install packages or execute files.
-MCP is a separate rollout stage described in `docs/AGENT_EDITOR_ROLLOUT.md`.

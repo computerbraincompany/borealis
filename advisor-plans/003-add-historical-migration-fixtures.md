@@ -126,6 +126,7 @@ Do not install, build, format, or generate binary database files.
 - `server/src/tests/sqliteMigrationFixture.ts` (create)
 - `server/src/tests/fixtures/sqlite/v001.sql` through
   `server/src/tests/fixtures/sqlite/v012.sql` (create)
+- `server/src/tests/fixtures/sqlite/v013.sql` (create; agent editor delta)
 
 **Out of scope**:
 
@@ -141,15 +142,19 @@ Do not install, build, format, or generate binary database files.
 - Commit: `test(server): cover historical sqlite migrations`
 - Do not push, open a PR, edit the plan index, or commit generated databases.
 
+September 5 dependency update: schema v13 now contains the agent editor
+configuration, skills, and run tool snapshot migration. Include its exact shipped
+SQL in the fixture inventory and preserve its columns in every upgrade test.
+
 ## Steps
 
 ### Step 1: Capture each shipped migration as an immutable SQL delta
 
-Create `server/src/tests/fixtures/sqlite/v001.sql` through `v012.sql`. After one
+Create `server/src/tests/fixtures/sqlite/v001.sql` through `v013.sql`. After one
 short header comment naming the version and declaring the fixture immutable,
 each file must contain the exact SQL body of the matching `SCHEMA_Vn` constant
 in the live tree (v1-v11 remain the planned-at SQL; v12 is plan 031's shipped
-catalog-index delta), in the same statement order. Do not add `BEGIN`, `COMMIT`,
+catalog-index delta; v13 is the shipped agent-editor delta), in the same statement order. Do not add `BEGIN`, `COMMIT`,
 or `PRAGMA user_version`; the fixture loader owns those mechanics.
 
 Review the long v1/v2 files carefully; do not derive old schemas by deleting
@@ -157,7 +162,7 @@ columns from the latest schema.
 
 **Verify**:
 `find server/src/tests/fixtures/sqlite -maxdepth 1 -type f -name 'v*.sql' | sort`
-→ exactly twelve paths, `v001.sql` through `v012.sql`, with no database artifacts.
+→ exactly thirteen paths, `v001.sql` through `v013.sql`, with no database artifacts.
 
 ### Step 2: Build a raw historical-ledger helper
 
@@ -224,8 +229,8 @@ idempotent-reopen, and future-version tests.
 
 ## Done criteria
 
-- [ ] Twelve textual fixtures exactly represent shipped schema deltas v1-v12.
-- [ ] Every historical start v1-v11 upgrades to v12 through production code.
+- [ ] Thirteen textual fixtures exactly represent shipped schema deltas v1-v13.
+- [ ] Every historical start v1-v12 upgrades to v13 through production code.
 - [ ] Seeded data survives and `PRAGMA foreign_key_check` is empty for each case.
 - [ ] Fixture inventory is mechanically tied to `LATEST_SQLITE_SCHEMA_VERSION`.
 - [ ] Integration, typecheck, lint, and format gates pass.
@@ -235,7 +240,7 @@ idempotent-reopen, and future-version tests.
 
 Stop and report if:
 
-- `LATEST_SQLITE_SCHEMA_VERSION` is not exactly `12`, or v12 is not exclusively
+- `LATEST_SQLITE_SCHEMA_VERSION` is not exactly `13`, or v12 is not exclusively
   the catalog-index migration completed by plan 031, before this plan starts;
 - a historical fixture exposes an actual migration failure or foreign-key
   violation; do not repair production SQL under this plan;

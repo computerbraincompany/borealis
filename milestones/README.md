@@ -1,6 +1,11 @@
 # Milestone ledger
 
-**Ledger reviewed:** 2026-09-01 after advisor plan wave 024–037.
+**Ledger reviewed:** 2026-09-05 after the rich agent editor foundation.
+
+The M05 extension now ships in `0987170`: identity, Markdown skills, atomic
+configuration revisions, and built-in tool allowlists. MCP/OAuth is still pending.
+The [agent rollout plan](../docs/AGENT_EDITOR_ROLLOUT.md) records this authorized
+extension and its verification separately from M05’s original completion.
 
 This directory holds **active** implementation milestones. Each milestone is a
 self-contained specification (`Mnn-<slug>.md`) with tasks and done criteria;
@@ -44,7 +49,7 @@ detail/HTML/PDF with the stored payload kept owner-only, `connector_sync`
 automations gate creation/update and recheck consent on every scheduled
 execution, and Settings describes egress events as best-effort activity
 receipts. M06 closed its remaining Settings-panel and hardening work on
-2026-09-01: the Settings → Models contained panel ships with `containedApi`,
+2026-09-01: the Settings → Local engine panel ships with `containedApi`,
 `contained.json` uses same-directory atomic replacement preserving mode
 `0600`, and spawn failures enter the bounded engine state machine with
 deterministic path diagnostics. The other written milestones are complete.

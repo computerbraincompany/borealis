@@ -132,7 +132,7 @@ design.
 
 Borealis does not bundle model weights. Start LM Studio with a chat model that
 supports streaming tool calls and a separate embedding model, or configure a
-remote OpenAI-compatible provider under **Settings → Provider**. The agent needs
+remote OpenAI-compatible provider under **Settings → Provider**. Agents with enabled tools need
 **native** tool calling: a model that answers tool calls as plain text (for
 example `Action: list_sources()`) cannot drive the loop — pick a model whose
 runtime emits OpenAI `tool_calls`. The same provider
@@ -378,9 +378,12 @@ surface lists the account's chart artifacts. **Libraries** group sources into
 named, account-scoped collections you can curate and attach to a new chat as
 an explicit selected scope — from the Libraries surface or directly in the
 chat composer's source picker, which expands a library's ready members into
-the chat's selection at attach time. **Agents** are named, versioned instruction sets
-you bind to a chat at creation; they shape how the grounded loop works but
-never widen what the runner can see or do. Each account can set a **personal
+the chat's selection at attach time. **Agents** use a shared create/edit modal with a name, description, icon, color,
+system prompt, reusable Markdown skills, and individual built-in tool controls.
+Bind an agent when creating a chat; edits apply to its next message while running
+messages retain their original configuration. Source scope and account
+authorization remain enforced. MCP connections and OAuth are not implemented yet;
+see the [agent rollout plan](docs/AGENT_EDITOR_ROLLOUT.md). Each account can set a **personal
 default chat model** in Settings → Account; new chats start from it and fall
 back to the workspace default when it is unset. For small teams on one Borealis
 instance, reports can be shared with sibling accounts as read-only snapshots,
@@ -392,7 +395,7 @@ stays owner-only), and `connector_sync` automations apply the same
 remote-egress consent gate as human connector actions. The
 [API reference](docs/API.md#workspace-audit-shares-and-automations) records
 the full sharing, audit, and automation contracts. Chat history supports title
-search, rename, and deletion; **Settings** also contains system readiness,
+search, rename, and deletion; Open **Settings** from the account menu for system readiness,
 Light/Dark/System appearance, and account controls.
 
 ## Verify end to end
@@ -573,7 +576,8 @@ restore, and forward-version behavior.
   report PDF renderers.
 - Durable artifact lineage, chart and query receipts, and read-only report
   sharing inside one Borealis instance.
-- Account-scoped libraries, versioned agent instructions, and personal model
+- Account-scoped libraries, versioned agent identity, Markdown skills and tool
+  selections, and personal model
   defaults that never widen a chat's source scope or authorization.
 - Durable chat-turn and connector-sync automations, connector schedules, and
   content-free egress/sync audit history.

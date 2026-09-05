@@ -117,18 +117,19 @@ source/tool context follow whichever provider is configured. The normal
 payload-bearing entry points are fail-closed until the account acknowledges
 remote egress; the consent UI names the current destination and payload classes,
 but the acknowledgment is per account rather than per host. The UI keeps the
-boundary ambient after consent. Scheduled connector execution still has a known
-consent-enforcement defect tracked in M07 and must not be mistaken for the
-intended contract.
+boundary ambient after consent. Scheduled connector execution rechecks the account’s remote-egress consent
+before synchronization, as completed in M07. Provider-bound acknowledgment is
+still planned remediation; current acknowledgment remains account-wide.
 
 The current surfaces are Chat, Sources, Libraries, Agents, Automations,
 Connectors, Reports, and Settings. Libraries are account-scoped source
-collections that expand into an explicit chat scope. Named agents keep
-versioned instructions and bind to a chat at creation without changing its
-tools or authorization. Reports can be shared read-only with sibling accounts
+collections that expand into an explicit chat scope. Named agents have configurable identity, versioned system prompts, reusable
+Markdown skills, and built-in tool allowlists. They bind at chat creation; the
+next message uses the latest configuration, while active messages keep their
+snapshot. Selections can restrict tools but never widen source scope or account
+authorization. MCP connections and OAuth remain planned. Reports can be shared read-only with sibling accounts
 on the same instance. Interval automations run connector refreshes and agent
-turns; agent turns reuse the normal consent and run gates, while the outstanding
-connector-sync gate defect remains documented in M07. Settings exposes a
+turns; agent turns reuse the normal consent and run gates, and scheduled connector refreshes recheck the same consent gate. Settings exposes a
 best-effort, content-free activity log for selected remote-capable attempts,
 not proof of completed network egress.
 
