@@ -697,6 +697,7 @@ export function parseSourceListPayload(payload: unknown): Source[] {
       typeof rawIngestion === "object" &&
       !Array.isArray(rawIngestion) &&
       typeof (rawIngestion as Record<string, unknown>).attempts === "number" &&
+      Number.isFinite((rawIngestion as Record<string, unknown>).attempts) &&
       typeof (rawIngestion as Record<string, unknown>).updated_at === "string"
         ? {
             attempts: Math.max(
@@ -712,9 +713,12 @@ export function parseSourceListPayload(payload: unknown): Source[] {
       typeof rawTabular === "object" &&
       !Array.isArray(rawTabular) &&
       typeof (rawTabular as Record<string, unknown>).rows === "number" &&
+      Number.isFinite((rawTabular as Record<string, unknown>).rows) &&
       typeof (rawTabular as Record<string, unknown>).table === "string"
         ? {
-            rows: Number((rawTabular as Record<string, unknown>).rows),
+            // JSON.stringify can emit a literal NaN through untrusted
+            // providers; never let a non-finite row count reach rendering.
+            rows: Math.max(0, Math.trunc(Number((rawTabular as Record<string, unknown>).rows))),
             table: String((rawTabular as Record<string, unknown>).table),
             original_name:
               typeof (rawTabular as Record<string, unknown>).original_name === "string"

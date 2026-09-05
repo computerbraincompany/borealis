@@ -11,6 +11,7 @@ import {
 } from "@/lib/api";
 import { mergeCatalogContinuation, mergeCatalogHead } from "@/lib/catalogMerge";
 import { cn, formatDate } from "@/lib/utils";
+import { sourceStatusPresentation } from "@/lib/sourceStatus";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
@@ -604,11 +605,14 @@ export function LibrariesView() {
                 {open.members.map((member) => (
                   <li key={member.id} className="flex items-center gap-2 rounded-md border px-3 py-2 text-sm">
                     <span className="min-w-0 flex-1 truncate">{member.display_name || member.name}</span>
-                    <Badge variant="secondary">{member.status}</Badge>
+                    <Badge variant={sourceStatusPresentation(member.status).tone}>
+                      {sourceStatusPresentation(member.status).label}
+                    </Badge>
                     <Button
                       variant="ghost"
                       size="icon"
                       title={`Remove ${member.display_name || member.name}`}
+                      aria-label={`Remove ${member.display_name || member.name} from library`}
                       disabled={membersBusy}
                       className="text-muted-foreground hover:text-destructive"
                       onClick={() => void removeMember(member.id)}

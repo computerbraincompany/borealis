@@ -30,7 +30,7 @@ import { useEgressAudit } from "@/hooks/useEgressAudit";
 import { clearSession, formatApiError, getUser, preferencesApi } from "@/lib/api";
 import { hasDesktopBridge } from "@/lib/desktopBootstrap";
 import { EGRESS_PAYLOAD_CLASSES } from "@/lib/egressDisclosure";
-import { cn } from "@/lib/utils";
+import { cn, formatDate } from "@/lib/utils";
 
 type SettingsSection = "system" | "models" | "appearance" | "account";
 
@@ -427,7 +427,7 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                           </span>
                           <span className="font-mono text-muted-foreground">{event.endpoint_host ?? "—"}</span>
                           <time dateTime={event.created_at} className="text-muted-foreground">
-                            {new Date(event.created_at).toLocaleString()}
+                            {formatDate(event.created_at)}
                           </time>
                         </li>
                       ))}
@@ -786,8 +786,10 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                                   )}
                                 >
                                   {qualificationReason(provider.qualification.embedding.reason_code)} ·{" "}
-                                  {provider.qualification.embedding.dimension ?? "no dimension"} dimensions ·{" "}
-                                  {Math.round(provider.qualification.embedding.latency_ms)} ms
+                                  {provider.qualification.embedding.dimension === null
+                                    ? "no dimension returned"
+                                    : `${provider.qualification.embedding.dimension} dimensions`}{" "}
+                                  · {Math.round(provider.qualification.embedding.latency_ms)} ms
                                 </dd>
                               </div>
                             </dl>
@@ -1069,7 +1071,7 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                 )}
 
                 <div className="pt-5">
-                  <h3 className="text-sm font-medium text-foreground">Available chat models</h3>
+                  <h3 className="text-sm font-semibold text-foreground">Available chat models</h3>
                   {loading && !catalog ? (
                     <div className="mt-3 space-y-2" aria-label="Loading model catalog">
                       <div className="h-10 animate-pulse rounded-md bg-secondary" />

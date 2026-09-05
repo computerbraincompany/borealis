@@ -18,7 +18,9 @@ export function connectorPollDelay(attempt: number): number {
 /** Own connector list responses and poll only while server state is transitional. */
 export function useConnectorCatalog() {
   const [connectors, setConnectors] = useState<Connector[]>([]);
-  const [loading, setLoading] = useState(false);
+  // Start loading so the first paint never flashes the empty state before the
+  // mount-time refresh begins (matches useSourceCatalog).
+  const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);

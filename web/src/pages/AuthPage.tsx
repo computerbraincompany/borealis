@@ -5,13 +5,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent } from "@/components/ui/card";
 import { ThemeMenu } from "@/components/ThemeMenu";
-import { authApi, formatApiError, setSession, getUser } from "@/lib/api";
-
-const SUGGESTED_PROMPTS = [
-  { title: "Personal finance analysis", prompt: "Analyze my spending and produce a financial report with charts" },
-  { title: "Ask about a document", prompt: "Summarize the uploaded documents and give key takeaways" },
-  { title: "Build a report", prompt: "Create a professional report with charts from my data" },
-];
+import { authApi, formatApiError, setSession } from "@/lib/api";
 
 export function AuthPage() {
   const [mode, setMode] = useState<"login" | "register">("login");
@@ -19,7 +13,6 @@ export function AuthPage() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const user = getUser();
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -160,23 +153,6 @@ export function AuthPage() {
           </CardContent>
         </Card>
       </div>
-
-      {/* strip of quick prompts for signed-in demos */}
-      {user && (
-        <div className="fixed bottom-5 left-1/2 flex -translate-x-1/2 gap-2">
-          {SUGGESTED_PROMPTS.map((p) => (
-            <button
-              key={p.title}
-              onClick={() => {
-                window.location.hash = `/chat?q=${encodeURIComponent(p.prompt)}`;
-              }}
-              className="rounded-md border bg-card px-3 py-1.5 text-xs text-muted-foreground shadow-sm transition-colors hover:border-primary/40 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            >
-              {p.title}
-            </button>
-          ))}
-        </div>
-      )}
     </div>
   );
 }

@@ -51,7 +51,14 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
   const [detail, setDetail] = useState<ChatDetail | null>(null);
   const [draft, setDraft] = useState(() => {
     const m = window.location.hash.match(/[?&]q=([^&]*)/);
-    return m ? decodeURIComponent(m[1]) : "";
+    if (!m) return "";
+    // A hand-edited link can carry a malformed % escape; that must not
+    // crash the whole view, so fall back to the raw text.
+    try {
+      return decodeURIComponent(m[1]);
+    } catch {
+      return m[1];
+    }
   });
   const [streamsByChat, dispatchStream] = useReducer(streamsByChatReducer, {});
   const [modelSavingByChat, setModelSavingByChat] = useState<Record<string, boolean>>({});
@@ -1209,7 +1216,12 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
         </header>
 
         {/* messages */}
-        <div className="flex-1 overflow-y-auto" onScroll={handleMessagesScroll}>
+        <div
+          className="flex-1 overflow-y-auto"
+          onScroll={handleMessagesScroll}
+          tabIndex={0}
+          aria-label="Message history"
+        >
           <div className="mx-auto flex max-w-4xl flex-col gap-6 px-6 py-8">
             {detailError && (
               <div
@@ -1268,7 +1280,7 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
             )}
 
             {(stream.running || hasStreamActivity) && (
-              <>
+              <div className="contents" role="log" aria-live="polite" aria-label="Answer in progress">
                 {hasStreamMessage ? (
                   <ChatMessage
                     role="assistant"
@@ -1298,7 +1310,7 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
                   </div>
                 ) : null}
                 {stream.steps.length > 0 && <ToolActivity steps={stream.steps} className="max-w-[360px]" />}
-              </>
+              </div>
             )}
             {stream.error && (
               <div
@@ -1373,6 +1385,7 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
                     }
                   }}
                   placeholder="Ask Borealis about your data…"
+                  aria-label="Ask Borealis about your data"
                   rows={1}
                   disabled={creatingChat}
                   className="max-h-40 min-h-[44px] w-full resize-none border-0 bg-transparent px-3 py-2.5 text-[15px] shadow-none focus-visible:ring-0"
@@ -1520,6 +1533,7 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
                       onClick={() => void stop()}
                       disabled={stream.stopping}
                       title={stream.stopping ? "Stopping…" : "Stop generating"}
+                      aria-label={stream.stopping ? "Stopping…" : "Stop generating"}
                     >
                       <Square className="fill-current" />
                     </Button>
@@ -1531,6 +1545,7 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
                       disabled={creatingChat || !draft.trim() || isModelSaving || isSourceSaving || isTitleSaving}
                       onClick={() => void send()}
                       title={creatingChat ? "Creating chat…" : "Send"}
+                      aria-label={creatingChat ? "Creating chat…" : "Send message"}
                     >
                       {creatingChat ? <Loader2 className="animate-spin" /> : <Send />}
                     </Button>

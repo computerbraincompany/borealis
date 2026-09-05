@@ -43,6 +43,9 @@ export function useEmbeddingMigration(enabled: boolean) {
   const statusController = useRef<AbortController | null>(null);
   const statusRequest = useRef<Promise<EmbeddingMigrationStatus | null> | null>(null);
   const actionRef = useRef<EmbeddingMigrationAction>(null);
+  // Consecutive poll failures widen the next interval so a failing endpoint
+  // does not produce one request/error flicker per second while open.
+  const pollFailuresRef = useRef(0);
 
   useEffect(() => {
     mounted.current = true;
@@ -65,6 +68,7 @@ export function useEmbeddingMigration(enabled: boolean) {
       .embeddingMigrationStatus(controller.signal)
       .then((next) => {
         if (!controller.signal.aborted && mounted.current) {
+          pollFailuresRef.current = 0;
           setStatus(next);
           setLoadError(null);
         }
@@ -72,6 +76,7 @@ export function useEmbeddingMigration(enabled: boolean) {
       })
       .catch((failure: unknown) => {
         if (!controller.signal.aborted && mounted.current) {
+          pollFailuresRef.current = Math.min(pollFailuresRef.current + 1, 14);
           setLoadError(formatApiError(failure, "Embedding migration status is temporarily unavailable."));
         }
         return null;
@@ -95,10 +100,21 @@ export function useEmbeddingMigration(enabled: boolean) {
 
   useEffect(() => {
     if (!enabled || (status?.phase !== "snapshotting" && status?.phase !== "building")) return;
-    const interval = window.setInterval(() => {
-      if (document.visibilityState === "visible") void refresh();
-    }, ACTIVE_POLL_INTERVAL_MS);
-    return () => window.clearInterval(interval);
+    let timer = 0;
+    let active = true;
+    const schedule = () => {
+      const delay = Math.min(ACTIVE_POLL_INTERVAL_MS * (pollFailuresRef.current + 1), 15_000);
+      timer = window.setTimeout(() => {
+        if (!active) return;
+        if (document.visibilityState === "visible") void refresh();
+        schedule();
+      }, delay);
+    };
+    schedule();
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+    };
   }, [enabled, refresh, status?.phase]);
 
   const runAction = useCallback(

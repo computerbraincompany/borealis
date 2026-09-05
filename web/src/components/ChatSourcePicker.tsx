@@ -1,7 +1,6 @@
 import { useId, useMemo, useRef, useState } from "react";
 import {
   ArrowUpRight,
-  Check,
   ChevronDown,
   CircleAlert,
   Database,
@@ -34,9 +33,12 @@ import {
   DropdownMenuGroup,
   DropdownMenuItem,
   DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { sourceStatusPresentation } from "@/lib/sourceStatus";
 import { Input } from "@/components/ui/input";
 
 interface ChatSourcePickerProps {
@@ -315,45 +317,33 @@ export function ChatSourcePicker({
             </div>
           )}
 
-          <DropdownMenuGroup className="p-1.5">
-            <DropdownMenuItem
-              disabled={busy}
-              onSelect={(event) => {
-                event.preventDefault();
-                if (sourceMode !== "all") void commit({ source_mode: "all" });
-              }}
-              className={cn("min-h-11 px-2.5 py-2", sourceMode === "all" && "bg-primary/5")}
-            >
+          <DropdownMenuRadioGroup
+            className="p-1.5"
+            value={
+              sourceMode === "all" ? "all" : sourceMode === "selected" && selectedIds.size === 0 ? "none" : "scoped"
+            }
+            onValueChange={(value) => {
+              if (value === "all" && sourceMode !== "all") void commit({ source_mode: "all" });
+              if (value === "none" && (sourceMode !== "selected" || selectedIds.size > 0)) {
+                void commit({ source_mode: "selected", source_ids: [] });
+              }
+            }}
+          >
+            <DropdownMenuRadioItem value="all" disabled={busy} className="min-h-11 px-2.5 py-2">
               <Database />
               <span className="min-w-0 flex-1">
                 <span className="block text-sm font-medium text-foreground">All sources</span>
                 <span className="block text-[11px] text-muted-foreground">Include current and future uploads</span>
               </span>
-              {sourceMode === "all" && <Check className="text-primary" aria-label="Selected" />}
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              disabled={busy}
-              onSelect={(event) => {
-                event.preventDefault();
-                if (sourceMode !== "selected" || selectedIds.size > 0) {
-                  void commit({ source_mode: "selected", source_ids: [] });
-                }
-              }}
-              className={cn(
-                "min-h-11 px-2.5 py-2",
-                sourceMode === "selected" && selectedIds.size === 0 && "bg-primary/5",
-              )}
-            >
+            </DropdownMenuRadioItem>
+            <DropdownMenuRadioItem value="none" disabled={busy} className="min-h-11 px-2.5 py-2">
               <X />
               <span className="min-w-0 flex-1">
                 <span className="block text-sm font-medium text-foreground">No sources</span>
                 <span className="block text-[11px] text-muted-foreground">Answer without stored data</span>
               </span>
-              {sourceMode === "selected" && selectedIds.size === 0 && (
-                <Check className="text-primary" aria-label="Selected" />
-              )}
-            </DropdownMenuItem>
-          </DropdownMenuGroup>
+            </DropdownMenuRadioItem>
+          </DropdownMenuRadioGroup>
 
           {(hasLibraries || librariesLoading || librariesHasMore || librariesError) && (
             <>
@@ -556,23 +546,24 @@ export function ChatSourcePicker({
 }
 
 function SourceStatus({ status }: { status: string }) {
-  if (status === "ready") {
+  const { label, tone } = sourceStatusPresentation(status);
+  if (tone === "pending") {
     return (
-      <span className="mt-0.5 flex items-center gap-1 text-[11px] text-success">
-        <span className="size-1.5 rounded-full bg-success" /> Ready
+      <span className="mt-0.5 flex items-center gap-1 text-[11px] text-warning">
+        <LoaderCircle className="size-3 animate-spin" /> {label}
       </span>
     );
   }
-  if (status === "index") {
+  if (tone === "success") {
     return (
-      <span className="mt-0.5 flex items-center gap-1 text-[11px] text-warning">
-        <LoaderCircle className="size-3 animate-spin" /> Processing
+      <span className="mt-0.5 flex items-center gap-1 text-[11px] text-success">
+        <span className="size-1.5 rounded-full bg-success" /> {label}
       </span>
     );
   }
   return (
     <span className="mt-0.5 flex items-center gap-1 text-[11px] text-destructive">
-      <CircleAlert className="size-3" /> {status === "error" ? "Needs attention" : status}
+      <CircleAlert className="size-3" /> {label}
     </span>
   );
 }

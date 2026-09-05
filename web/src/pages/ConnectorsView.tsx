@@ -240,347 +240,350 @@ export function ConnectorsView() {
   };
 
   return (
-    <div className="mx-auto max-w-5xl px-6 py-10">
-      {consentDialog}
-      <div className="flex flex-wrap items-end justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight">Connectors</h1>
-          <p className="mt-1 text-sm text-muted-foreground">
-            Pull CSV / JSON datasets straight from a URL — no file download needed.
-          </p>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <Button variant="secondary" size="sm" onClick={() => void refresh(true)} disabled={loading}>
-            <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} /> Refresh
-          </Button>
-          <Button
-            size="sm"
-            onClick={() => {
-              setError(null);
-              setOpen(true);
-            }}
-          >
-            <Plus className="h-4 w-4" /> Add connector
-          </Button>
-        </div>
-      </div>
-
-      {catalogError && (
-        <div
-          className="mt-4 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive"
-          role="alert"
-        >
-          {catalogError}
-        </div>
-      )}
-
-      <div className="mt-8 grid gap-4 md:grid-cols-2">
-        {connectors.map((c) => {
-          const cfg = parseConfig(c.config);
-          return (
-            <Card key={c.id} className="flex flex-col gap-3 p-5 transition-colors hover:border-foreground/20">
-              <div className="flex items-center gap-3">
-                <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
-                  {c.type === "url_csv" ? <Database className="h-5 w-5" /> : <Globe className="h-5 w-5" />}
-                </div>
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2">
-                    <span className="truncate font-medium text-foreground">{c.name}</span>
-                    <Badge variant="secondary">{c.type === "url_csv" ? "URL · CSV" : "URL · JSON"}</Badge>
-                    <ConnectorStatus status={c.sync_status} />
-                  </div>
-                  <div className="mt-0.5 truncate text-xs text-muted-foreground">
-                    table <span className="font-mono text-primary">{c.target_table}</span>
-                  </div>
-                </div>
-              </div>
-              {cfg.url && (
-                <div className="flex items-center gap-2 truncate rounded-lg bg-secondary/60 px-3 py-2 text-xs text-muted-foreground">
-                  <LinkIcon className="h-3.5 w-3.5 shrink-0 text-primary" />
-                  <span className="truncate font-mono">{cfg.url}</span>
-                </div>
-              )}
-              {(operationErrors[c.id] || (c.sync_status === "error" && c.sync_error)) && (
-                <div
-                  role="alert"
-                  className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive"
-                >
-                  {operationErrors[c.id] || safeConnectorError(c.sync_error || "Connector sync failed.")}
-                </div>
-              )}
-              <div className="flex items-center justify-between text-xs text-muted-foreground">
-                <span>Last sync: {c.last_sync ? formatDate(c.last_sync) : "never"}</span>
-                <span className="flex items-center gap-0.5">
-                  <Plug className="h-3 w-3" /> created {formatDate(c.created_at)}
-                </span>
-              </div>
-              <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
-                <div className="flex items-center gap-2">
-                  <CalendarClock className="h-3.5 w-3.5 shrink-0 text-primary" />
-                  <select
-                    aria-label={`Refresh schedule for ${c.name}`}
-                    value={scheduleSelectValue(c.schedule)}
-                    disabled={savingSchedule === c.id || deleting === c.id}
-                    onChange={(event) => {
-                      const raw = event.target.value;
-                      if (raw === SCHEDULE_OFF) {
-                        void changeSchedule(c, null);
-                        return;
-                      }
-                      const minutes = Number(raw);
-                      if (Number.isSafeInteger(minutes) && minutes > 0) void changeSchedule(c, minutes);
-                    }}
-                    className="h-7 rounded-md border bg-background px-1.5 text-xs"
-                  >
-                    {scheduleSelectOptions(c.schedule).map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                  {c.schedule?.state === "paused" && <Badge variant="pending">paused</Badge>}
-                  {savingSchedule === c.id && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-                </div>
-                {c.schedule?.state === "active" && c.schedule.next_run_at && (
-                  <span>next {formatDate(c.schedule.next_run_at)}</span>
-                )}
-              </div>
-              <div className="flex items-center gap-2">
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  className="flex-1"
-                  onClick={() => sync(c)}
-                  disabled={syncing === c.id || deleting === c.id || isConnectorTransitioning(c)}
-                >
-                  {syncing === c.id || isConnectorTransitioning(c) ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : (
-                    <RefreshCw className="h-4 w-4" />
-                  )}
-                  {isConnectorTransitioning(c) ? "Syncing…" : "Sync now"}
-                </Button>
-                <Button variant="outline" size="sm" onClick={() => void openHistory(c)}>
-                  <History className="h-4 w-4" /> Sync history
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  onClick={() => setDeleteTarget(c)}
-                  disabled={deleting === c.id || syncing === c.id || isConnectorTransitioning(c)}
-                  aria-label={`Delete ${c.name}`}
-                  className="text-muted-foreground hover:text-destructive"
-                >
-                  <Trash2 className="h-4 w-4" />
-                </Button>
-              </div>
-            </Card>
-          );
-        })}
-        {connectors.length === 0 && !loading && (
-          <Card className="flex flex-col items-center gap-3 py-16 text-center md:col-span-2">
-            <Plug className="h-10 w-10 text-muted-foreground/40" />
-            <p className="text-sm text-muted-foreground">
-              No connectors yet. Point one at a public CSV to start querying remote data.
+    <div className="h-full overflow-y-auto">
+      <div className="mx-auto max-w-5xl px-4 py-6 sm:px-6 sm:py-10">
+        {consentDialog}
+        <div className="flex flex-wrap items-end justify-between gap-4">
+          <div>
+            <h1 className="text-2xl font-bold tracking-tight">Connectors</h1>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Pull CSV / JSON datasets straight from a URL — no file download needed.
             </p>
-          </Card>
-        )}
-        {connectors.length === 0 && loading && (
-          <Card className="flex items-center justify-center gap-2 py-16 text-sm text-muted-foreground md:col-span-2">
-            <Loader2 className="h-4 w-4 animate-spin" /> Loading connectors…
-          </Card>
-        )}
-        {hasMore && (
-          <div className="flex justify-center pt-2 md:col-span-2">
-            <Button variant="outline" onClick={() => void loadMore()} disabled={loadingMore}>
-              {loadingMore && <Loader2 className="h-4 w-4 animate-spin" />}
-              Load older connectors
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button variant="secondary" size="sm" onClick={() => void refresh(true)} disabled={loading}>
+              <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} /> Refresh
+            </Button>
+            <Button
+              size="sm"
+              onClick={() => {
+                setError(null);
+                setOpen(true);
+              }}
+            >
+              <Plus className="h-4 w-4" /> New connector
             </Button>
           </div>
-        )}
-      </div>
+        </div>
 
-      <Dialog open={open} onOpenChange={(next) => !next && !creating && setOpen(false)}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Add URL connector</DialogTitle>
-            <DialogDescription>
-              Register a remote dataset. Borealis downloads it, registers it as a DuckDB table and makes it searchable.
-            </DialogDescription>
-          </DialogHeader>
-          <form
-            className="space-y-4"
-            onSubmit={(event) => {
-              event.preventDefault();
-              void create();
-            }}
+        {catalogError && (
+          <div
+            className="mt-4 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+            role="alert"
           >
-            <div className="space-y-2">
-              <span id="connType" className="text-sm font-medium leading-none">
-                Dataset type
-              </span>
-              <div role="group" aria-labelledby="connType" className="grid grid-cols-2 gap-2">
-                {(["url_csv", "url_json"] as const).map((t) => (
-                  <button
-                    key={t}
-                    type="button"
-                    aria-pressed={type === t}
-                    onClick={() => setType(t)}
-                    className={cn(
-                      "flex items-center justify-center gap-2 rounded-lg border px-3 py-2.5 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                      type === t
-                        ? "border-primary bg-primary/5 text-primary ring-1 ring-primary/20"
-                        : "border-input text-muted-foreground hover:border-foreground/30 hover:text-foreground",
-                    )}
+            {catalogError}
+          </div>
+        )}
+
+        <div className="mt-8 grid gap-4 md:grid-cols-2">
+          {connectors.map((c) => {
+            const cfg = parseConfig(c.config);
+            return (
+              <Card key={c.id} className="flex flex-col gap-3 p-5 transition-colors hover:border-foreground/20">
+                <div className="flex items-center gap-3">
+                  <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                    {c.type === "url_csv" ? <Database className="h-5 w-5" /> : <Globe className="h-5 w-5" />}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2">
+                      <span className="truncate font-medium text-foreground">{c.name}</span>
+                      <Badge variant="secondary">{c.type === "url_csv" ? "URL · CSV" : "URL · JSON"}</Badge>
+                      <ConnectorStatus status={c.sync_status} />
+                    </div>
+                    <div className="mt-0.5 truncate text-xs text-muted-foreground">
+                      table <span className="font-mono text-primary">{c.target_table}</span>
+                    </div>
+                  </div>
+                </div>
+                {cfg.url && (
+                  <div className="flex items-center gap-2 truncate rounded-lg bg-secondary/60 px-3 py-2 text-xs text-muted-foreground">
+                    <LinkIcon className="h-3.5 w-3.5 shrink-0 text-primary" />
+                    <span className="truncate font-mono">{cfg.url}</span>
+                  </div>
+                )}
+                {(operationErrors[c.id] || (c.sync_status === "error" && c.sync_error)) && (
+                  <div
+                    role="alert"
+                    className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive"
                   >
-                    {t === "url_csv" ? <Database className="h-4 w-4" /> : <Globe className="h-4 w-4" />}
-                    {t === "url_csv" ? "CSV" : "JSON"}
-                  </button>
-                ))}
-              </div>
+                    {operationErrors[c.id] || safeConnectorError(c.sync_error || "Connector sync failed.")}
+                  </div>
+                )}
+                <div className="flex items-center justify-between text-xs text-muted-foreground">
+                  <span>Last sync: {c.last_sync ? formatDate(c.last_sync) : "never"}</span>
+                  <span className="flex items-center gap-0.5">
+                    <Plug className="h-3 w-3" /> created {formatDate(c.created_at)}
+                  </span>
+                </div>
+                <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
+                  <div className="flex items-center gap-2">
+                    <CalendarClock className="h-3.5 w-3.5 shrink-0 text-primary" />
+                    <select
+                      aria-label={`Refresh schedule for ${c.name}`}
+                      value={scheduleSelectValue(c.schedule)}
+                      disabled={savingSchedule === c.id || deleting === c.id}
+                      onChange={(event) => {
+                        const raw = event.target.value;
+                        if (raw === SCHEDULE_OFF) {
+                          void changeSchedule(c, null);
+                          return;
+                        }
+                        const minutes = Number(raw);
+                        if (Number.isSafeInteger(minutes) && minutes > 0) void changeSchedule(c, minutes);
+                      }}
+                      className="h-7 rounded-md border bg-background px-1.5 text-xs"
+                    >
+                      {scheduleSelectOptions(c.schedule).map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                    {c.schedule?.state === "paused" && <Badge variant="pending">paused</Badge>}
+                    {savingSchedule === c.id && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                  </div>
+                  {c.schedule?.state === "active" && c.schedule.next_run_at && (
+                    <span>next {formatDate(c.schedule.next_run_at)}</span>
+                  )}
+                </div>
+                <div className="flex items-center gap-2">
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    className="flex-1"
+                    onClick={() => sync(c)}
+                    disabled={syncing === c.id || deleting === c.id || isConnectorTransitioning(c)}
+                  >
+                    {syncing === c.id || isConnectorTransitioning(c) ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <RefreshCw className="h-4 w-4" />
+                    )}
+                    {isConnectorTransitioning(c) ? "Syncing…" : "Sync now"}
+                  </Button>
+                  <Button variant="outline" size="sm" onClick={() => void openHistory(c)}>
+                    <History className="h-4 w-4" /> Sync history
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => setDeleteTarget(c)}
+                    disabled={deleting === c.id || syncing === c.id || isConnectorTransitioning(c)}
+                    aria-label={`Delete ${c.name}`}
+                    className="text-muted-foreground hover:text-destructive"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </Button>
+                </div>
+              </Card>
+            );
+          })}
+          {connectors.length === 0 && !loading && !catalogError && (
+            <Card className="flex flex-col items-center gap-3 py-16 text-center md:col-span-2">
+              <Plug className="h-10 w-10 text-muted-foreground/40" />
+              <p className="text-sm text-muted-foreground">
+                No connectors yet. Point one at a public CSV to start querying remote data.
+              </p>
+            </Card>
+          )}
+          {connectors.length === 0 && loading && (
+            <Card className="flex items-center justify-center gap-2 py-16 text-sm text-muted-foreground md:col-span-2">
+              <Loader2 className="h-4 w-4 animate-spin" /> Loading connectors…
+            </Card>
+          )}
+          {hasMore && (
+            <div className="flex justify-center pt-2 md:col-span-2">
+              <Button variant="outline" onClick={() => void loadMore()} disabled={loadingMore}>
+                {loadingMore && <Loader2 className="h-4 w-4 animate-spin" />}
+                Load older connectors
+              </Button>
             </div>
-            <div className="space-y-2">
-              <Label htmlFor="url">Dataset URL</Label>
-              <Input
-                id="url"
-                placeholder="https://example.com/data.csv"
-                value={url}
-                onChange={(e) => {
-                  setUrl(e.target.value);
-                  setError(null);
-                }}
-                className="h-10 bg-background/60 font-mono text-[13px]"
-              />
-            </div>
-            <div className="grid grid-cols-2 gap-3">
+          )}
+        </div>
+
+        <Dialog open={open} onOpenChange={(next) => !next && !creating && setOpen(false)}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>New URL connector</DialogTitle>
+              <DialogDescription>
+                Register a remote dataset. Borealis downloads it, registers it as a DuckDB table and makes it
+                searchable.
+              </DialogDescription>
+            </DialogHeader>
+            <form
+              className="space-y-4"
+              onSubmit={(event) => {
+                event.preventDefault();
+                void create();
+              }}
+            >
               <div className="space-y-2">
-                <Label htmlFor="name">Display name</Label>
+                <span id="connType" className="text-sm font-medium leading-none">
+                  Dataset type
+                </span>
+                <div role="group" aria-labelledby="connType" className="grid grid-cols-2 gap-2">
+                  {(["url_csv", "url_json"] as const).map((t) => (
+                    <button
+                      key={t}
+                      type="button"
+                      aria-pressed={type === t}
+                      onClick={() => setType(t)}
+                      className={cn(
+                        "flex items-center justify-center gap-2 rounded-lg border px-3 py-2.5 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                        type === t
+                          ? "border-primary bg-primary/5 text-primary ring-1 ring-primary/20"
+                          : "border-input text-muted-foreground hover:border-foreground/30 hover:text-foreground",
+                      )}
+                    >
+                      {t === "url_csv" ? <Database className="h-4 w-4" /> : <Globe className="h-4 w-4" />}
+                      {t === "url_csv" ? "CSV" : "JSON"}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="url">Dataset URL</Label>
                 <Input
-                  id="name"
-                  placeholder="My dataset"
-                  value={name}
+                  id="url"
+                  placeholder="https://example.com/data.csv"
+                  value={url}
                   onChange={(e) => {
-                    setName(e.target.value);
+                    setUrl(e.target.value);
                     setError(null);
                   }}
-                  className="h-10 bg-background/60"
-                />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="table">DuckDB table</Label>
-                <Input
-                  id="table"
-                  placeholder="transactions_2026"
-                  value={targetTable}
-                  onChange={(e) => {
-                    setTargetTable(e.target.value);
-                    setError(null);
-                  }}
-                  aria-describedby="table-help"
                   className="h-10 bg-background/60 font-mono text-[13px]"
                 />
-                <p id="table-help" className="text-[11px] text-muted-foreground">
-                  Starts with a letter; letters, digits and underscores only. Saved lowercase.
-                </p>
               </div>
-            </div>
-            {error && (
-              <div
-                className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive"
-                role="alert"
-              >
-                {error}
-              </div>
-            )}
-            <DialogFooter>
-              <Button type="button" variant="ghost" disabled={creating} onClick={() => setOpen(false)}>
-                Cancel
-              </Button>
-              <Button type="submit" disabled={creating || !url.trim() || !name.trim() || !targetTable.trim()}>
-                {creating && <Loader2 className="animate-spin" />} Connect
-              </Button>
-            </DialogFooter>
-          </form>
-        </DialogContent>
-      </Dialog>
-
-      {/* sync history dialog */}
-      <Dialog
-        open={!!historyTarget}
-        onOpenChange={(open) => {
-          if (!open) {
-            historyRequestRef.current += 1;
-            setHistoryTarget(null);
-            setHistoryError(null);
-          }
-        }}
-      >
-        <DialogContent className="max-w-lg">
-          <DialogHeader>
-            <DialogTitle>{historyTarget?.name} sync history</DialogTitle>
-            <DialogDescription>Durable sync runs, newest first. Details stay content-free.</DialogDescription>
-          </DialogHeader>
-          <ol className="max-h-72 space-y-2 overflow-y-auto" aria-label="Connector syncs" aria-busy={historyLoading}>
-            {history.map((run) => (
-              <li key={run.id} className="rounded-md border px-3 py-2 text-sm">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="flex items-center gap-1.5">
-                    <Badge variant="secondary">{run.trigger}</Badge>
-                    <span
-                      className={`inline-flex items-center rounded-md border px-2 py-0.5 text-[11px] font-semibold ${SYNC_OUTCOME_STYLING[run.outcome]}`}
-                    >
-                      {run.outcome}
-                    </span>
-                  </span>
-                  <time dateTime={run.started_at} className="text-xs text-muted-foreground">
-                    {formatDate(run.started_at)}
-                  </time>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-2">
+                  <Label htmlFor="name">Display name</Label>
+                  <Input
+                    id="name"
+                    placeholder="My dataset"
+                    value={name}
+                    onChange={(e) => {
+                      setName(e.target.value);
+                      setError(null);
+                    }}
+                    className="h-10 bg-background/60"
+                  />
                 </div>
-                {run.detail && <p className="mt-1.5 text-xs text-muted-foreground">{run.detail}</p>}
-              </li>
-            ))}
-            {historyLoading && (
-              <li className="flex items-center justify-center gap-2 rounded-md border border-dashed px-3 py-4 text-center text-sm text-muted-foreground">
-                <Loader2 className="h-4 w-4 animate-spin" /> Loading sync history…
-              </li>
-            )}
-            {!historyLoading && historyError && (
-              <li
-                className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-3 text-sm text-destructive"
-                role="alert"
-              >
-                {historyError}
-                <button
-                  type="button"
-                  onClick={() => historyTarget && void openHistory(historyTarget)}
-                  className="mt-2 block w-full rounded-md font-medium text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                <div className="space-y-2">
+                  <Label htmlFor="table">DuckDB table</Label>
+                  <Input
+                    id="table"
+                    placeholder="transactions_2026"
+                    value={targetTable}
+                    onChange={(e) => {
+                      setTargetTable(e.target.value);
+                      setError(null);
+                    }}
+                    aria-describedby="table-help"
+                    className="h-10 bg-background/60 font-mono text-[13px]"
+                  />
+                  <p id="table-help" className="text-[11px] text-muted-foreground">
+                    Starts with a letter; letters, digits and underscores only. Saved lowercase.
+                  </p>
+                </div>
+              </div>
+              {error && (
+                <div
+                  className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+                  role="alert"
                 >
-                  Retry
-                </button>
-              </li>
-            )}
-            {!historyLoading && !historyError && history.length === 0 && (
-              <li className="rounded-md border border-dashed px-3 py-4 text-center text-sm text-muted-foreground">
-                No syncs yet.
-              </li>
-            )}
-          </ol>
-        </DialogContent>
-      </Dialog>
+                  {error}
+                </div>
+              )}
+              <DialogFooter>
+                <Button type="button" variant="ghost" disabled={creating} onClick={() => setOpen(false)}>
+                  Cancel
+                </Button>
+                <Button type="submit" disabled={creating || !url.trim() || !name.trim() || !targetTable.trim()}>
+                  {creating && <Loader2 className="animate-spin" />} Connect
+                </Button>
+              </DialogFooter>
+            </form>
+          </DialogContent>
+        </Dialog>
 
-      {deleteTarget && (
-        <ConfirmDialog
-          title={`Delete “${deleteTarget.name}”?`}
-          description="This removes the connector, its downloaded table, its refresh schedule, and its sync history. Uploaded sources are unaffected. This cannot be undone."
-          busy={deleting === deleteTarget.id}
-          onConfirm={() => {
-            void remove(deleteTarget).then(() => setDeleteTarget(null));
+        {/* sync history dialog */}
+        <Dialog
+          open={!!historyTarget}
+          onOpenChange={(open) => {
+            if (!open) {
+              historyRequestRef.current += 1;
+              setHistoryTarget(null);
+              setHistoryError(null);
+            }
           }}
-          onCancel={() => {
-            if (deleting !== deleteTarget.id) setDeleteTarget(null);
-          }}
-        />
-      )}
+        >
+          <DialogContent className="max-w-lg">
+            <DialogHeader>
+              <DialogTitle>{historyTarget?.name} sync history</DialogTitle>
+              <DialogDescription>Durable sync runs, newest first. Details stay content-free.</DialogDescription>
+            </DialogHeader>
+            <ol className="max-h-72 space-y-2 overflow-y-auto" aria-label="Connector syncs" aria-busy={historyLoading}>
+              {history.map((run) => (
+                <li key={run.id} className="rounded-md border px-3 py-2 text-sm">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="flex items-center gap-1.5">
+                      <Badge variant="secondary">{run.trigger}</Badge>
+                      <span
+                        className={`inline-flex items-center rounded-md border px-2 py-0.5 text-[11px] font-semibold ${SYNC_OUTCOME_STYLING[run.outcome]}`}
+                      >
+                        {run.outcome}
+                      </span>
+                    </span>
+                    <time dateTime={run.started_at} className="text-xs text-muted-foreground">
+                      {formatDate(run.started_at)}
+                    </time>
+                  </div>
+                  {run.detail && <p className="mt-1.5 text-xs text-muted-foreground">{run.detail}</p>}
+                </li>
+              ))}
+              {historyLoading && (
+                <li className="flex items-center justify-center gap-2 rounded-md border border-dashed px-3 py-4 text-center text-sm text-muted-foreground">
+                  <Loader2 className="h-4 w-4 animate-spin" /> Loading sync history…
+                </li>
+              )}
+              {!historyLoading && historyError && (
+                <li
+                  className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-3 text-sm text-destructive"
+                  role="alert"
+                >
+                  {historyError}
+                  <button
+                    type="button"
+                    onClick={() => historyTarget && void openHistory(historyTarget)}
+                    className="mt-2 block w-full rounded-md font-medium text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  >
+                    Retry
+                  </button>
+                </li>
+              )}
+              {!historyLoading && !historyError && history.length === 0 && (
+                <li className="rounded-md border border-dashed px-3 py-4 text-center text-sm text-muted-foreground">
+                  No syncs yet.
+                </li>
+              )}
+            </ol>
+          </DialogContent>
+        </Dialog>
+
+        {deleteTarget && (
+          <ConfirmDialog
+            title={`Delete “${deleteTarget.name}”?`}
+            description="This removes the connector, its downloaded table, its refresh schedule, and its sync history. Uploaded sources are unaffected. This cannot be undone."
+            busy={deleting === deleteTarget.id}
+            onConfirm={() => {
+              void remove(deleteTarget).then(() => setDeleteTarget(null));
+            }}
+            onCancel={() => {
+              if (deleting !== deleteTarget.id) setDeleteTarget(null);
+            }}
+          />
+        )}
+      </div>
     </div>
   );
 }

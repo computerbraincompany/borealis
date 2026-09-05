@@ -72,6 +72,15 @@ export function ChartCard({ chartId, className }: { chartId: string; className?:
       </div>
     );
   }
+  // A row without any renderable option (corrupt or legacy payload) must not
+  // leave an empty 280px box; say so, matching the gallery card's wording.
+  if (!(data.echarts ?? (data.spec ? optionFromCanonicalSpec(data.spec) : null))) {
+    return (
+      <div className="embedded-chart py-4 text-center text-sm text-muted-foreground" role="status">
+        Chart preview unavailable
+      </div>
+    );
+  }
 
   const title = data.spec?.title || "Chart";
   return (
@@ -87,7 +96,7 @@ export function ChartCard({ chartId, className }: { chartId: string; className?:
               href={`data:image/png;base64,${data.png_base64}`}
               download={`${title.replace(/\s+/g, "_")}.png`}
             >
-              PNG ↓
+              Download PNG
             </a>
           </div>
         )}

@@ -250,6 +250,20 @@ export function AutomationsView() {
     };
   }, [load]);
 
+  // Schedules fire in the background, so keep Last run/next run and the
+  // failure badge fresh while anything is active. Visibility-aware and
+  // request-guarded, mirroring the other live surfaces.
+  const hasActiveAutomation = automations.some((automation) => automation.state === "active");
+  const loadRef = useRef(load);
+  loadRef.current = load;
+  useEffect(() => {
+    if (!hasActiveAutomation) return;
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === "visible") void loadRef.current();
+    }, 45_000);
+    return () => window.clearInterval(timer);
+  }, [hasActiveAutomation]);
+
   const openCreateDialog = () => {
     invalidateTargetPagination();
     createRequestRef.current += 1;
@@ -492,9 +506,9 @@ export function AutomationsView() {
                     </Badge>
                     <Badge variant="secondary">every {automation.schedule_minutes} min</Badge>
                     {automation.state === "paused" ? (
-                      <Badge variant="secondary">paused</Badge>
+                      <Badge variant="pending">paused</Badge>
                     ) : automation.consecutive_failures > 0 ? (
-                      <Badge variant="secondary">{automation.consecutive_failures} recent failures</Badge>
+                      <Badge variant="destructive">{automation.consecutive_failures} recent failures</Badge>
                     ) : null}
                   </div>
                   <div className="mt-1 text-xs text-muted-foreground">

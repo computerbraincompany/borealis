@@ -109,8 +109,9 @@ describe("ChatSourcePicker", () => {
     );
     expect(screen.getByRole("menu")).toBeVisible();
 
-    await user.click(screen.getByRole("menuitem", { name: /All sources/ }));
+    await user.click(screen.getByRole("menuitemradio", { name: /All sources/ }));
     await waitFor(() => expect(onApply).toHaveBeenLastCalledWith({ source_mode: "all" }));
+
     expect(screen.getByRole("menu")).toBeVisible();
   });
 
@@ -178,7 +179,7 @@ describe("ChatSourcePicker", () => {
     onApply.mockRejectedValueOnce(new Error("save rejected"));
     await user.click(screen.getByRole("button", { name: "Chat sources: No sources" }));
 
-    await user.click(screen.getByRole("menuitem", { name: /All sources/ }));
+    await user.click(screen.getByRole("menuitemradio", { name: /All sources/ }));
 
     expect(await screen.findByText(/Source selection unchanged:/)).toHaveTextContent(
       "Could not update this chat's sources",

@@ -39,24 +39,31 @@ export function AgentsView() {
   const catalogRequestRef = useRef(0);
   const nextCursorRef = useRef<string | null>(null);
   const loadingMoreOwnerRef = useRef<number | null>(null);
+  const historyRequestRef = useRef(0);
   const mountedRef = useRef(false);
 
   const loadHistory = useCallback(async (agent: AgentSummary) => {
+    // Generation guard: switching agents while a slow fetch is in flight must
+    // never render the previous agent's revisions under the new selection.
+    const requestId = ++historyRequestRef.current;
     setHistoryLoading(true);
     setHistoryError(null);
     try {
       const detail = await agentsApi.get(agent.id);
-      if (!mountedRef.current) return;
+      if (!mountedRef.current || requestId !== historyRequestRef.current) return;
       setHistoryDetail(detail);
     } catch (error: unknown) {
-      if (mountedRef.current) setHistoryError(formatApiError(error, "Could not load revisions"));
+      if (mountedRef.current && requestId === historyRequestRef.current) {
+        setHistoryError(formatApiError(error, "Could not load revisions"));
+      }
     } finally {
-      if (mountedRef.current) setHistoryLoading(false);
+      if (mountedRef.current && requestId === historyRequestRef.current) setHistoryLoading(false);
     }
   }, []);
 
   useEffect(() => {
     if (!historyTarget) {
+      historyRequestRef.current += 1;
       setHistoryDetail(null);
       setHistoryError(null);
       setHistoryLoading(false);
@@ -176,6 +183,12 @@ export function AgentsView() {
     setPageError(null);
     try {
       await agentsApi.remove(agent.id);
+      // Invalidate any in-flight list request before filtering locally, so a
+      // stale response cannot resurrect the deleted agent via mergeCatalogHead.
+      catalogRequestRef.current += 1;
+      loadingMoreOwnerRef.current = null;
+      setLoadingMore(false);
+      setLoading(false);
       setAgents((current) => current.filter((entry) => entry.id !== agent.id));
     } catch (error: unknown) {
       setPageError(formatApiError(error, "Could not delete the agent"));

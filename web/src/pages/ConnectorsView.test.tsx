@@ -207,7 +207,7 @@ describe("ConnectorsView create dialog", () => {
       .mockResolvedValue(page([created]));
 
     render(<ConnectorsView />);
-    fireEvent.click(await screen.findByRole("button", { name: /Add connector/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /New connector/i }));
 
     fireEvent.change(screen.getByLabelText("Dataset URL"), { target: { value: "https://example.test/data.csv" } });
     fireEvent.change(screen.getByLabelText("Display name"), { target: { value: "Ledger feed" } });

@@ -15,6 +15,7 @@ import { useSourceCatalog } from "@/hooks/useSourceCatalog";
 import { useEgressConsentGate } from "@/hooks/useEgressConsentGate";
 import { cn, formatDate } from "@/lib/utils";
 import { SOURCE_FILE_ACCEPT } from "@/lib/sourceFiles";
+import { sourceStatusPresentation } from "@/lib/sourceStatus";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
@@ -160,7 +161,10 @@ export function SourcesView() {
         </div>
 
         {uploading && (
-          <div className="mt-4 rounded-lg border border-primary/25 bg-primary/5 px-4 py-3 text-sm text-foreground">
+          <div
+            role="status"
+            className="mt-4 rounded-lg border border-primary/25 bg-primary/5 px-4 py-3 text-sm text-foreground"
+          >
             <Loader2 className="mr-2 inline h-4 w-4 animate-spin text-primary" />
             Uploading <span className="font-mono text-foreground">{uploading}</span> — chunking and embedding in
             progress…
@@ -186,7 +190,7 @@ export function SourcesView() {
               </div>
             </Card>
           )}
-          {sources.length === 0 && !loading && !uploading && (
+          {sources.length === 0 && !loading && !uploading && !catalogError && (
             <Card className="flex flex-col items-center gap-3 px-5 py-12 text-center sm:py-16">
               <Inbox className="h-10 w-10 text-muted-foreground/50" />
               <p className="text-sm text-muted-foreground">
@@ -230,13 +234,9 @@ export function SourcesView() {
                 <div className="min-w-0">
                   <div className="flex min-w-0 flex-wrap items-center gap-2">
                     <span className="min-w-0 break-all font-medium leading-5 text-foreground">{s.display_name}</span>
-                    {s.status === "ready" ? (
-                      <Badge variant="success">ready</Badge>
-                    ) : s.status === "index" ? (
-                      <Badge variant="pending">processing</Badge>
-                    ) : (
-                      <Badge variant="destructive">{s.status === "error" ? "Needs attention" : s.status}</Badge>
-                    )}
+                    <Badge variant={sourceStatusPresentation(s.status).tone}>
+                      {sourceStatusPresentation(s.status).label}
+                    </Badge>
                     <Badge variant="secondary">{s.kind}</Badge>
                   </div>
                   <div className="mt-2 flex min-w-0 flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">

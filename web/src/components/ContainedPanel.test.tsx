@@ -99,7 +99,7 @@ describe("ContainedPanel", () => {
     const rows = screen.getByRole("list", { name: "Contained download progress" });
     expect(rows).toHaveTextContent("tinyllama.gguf");
     expect(rows).toHaveTextContent("model.example.test");
-    expect(rows).toHaveTextContent("downloading");
+    expect(rows).toHaveTextContent("Downloading…");
     expect(rows).toHaveTextContent("1.5 KB of 4.0 KB");
     expect(screen.getByRole("button", { name: "Cancel" })).toBeEnabled();
   });
@@ -195,7 +195,7 @@ describe("ContainedPanel", () => {
     await waitFor(() =>
       expect(mocks.containedCancelDownload).toHaveBeenCalledWith("tinyllama.gguf", expect.any(AbortSignal)),
     );
-    expect(await screen.findByText("Download canceled for tinyllama.gguf.")).toBeInTheDocument();
+    expect(await screen.findByText("Download cancelled for tinyllama.gguf.")).toBeInTheDocument();
   });
 
   it("validates the download form before any request", async () => {

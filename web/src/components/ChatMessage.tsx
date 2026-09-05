@@ -4,6 +4,7 @@ import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
 import { Bot, User, FileText, ExternalLink } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
 import {
   openProtected,
   formatApiError,
@@ -77,22 +78,27 @@ function ReportLink({ reportId }: { reportId: string }) {
         </div>
       </div>
       {info?.hasHtml && (
-        <button
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
           onClick={() => void openReport("html")}
           disabled={busyKind !== null}
-          className="inline-flex h-8 items-center gap-1.5 rounded-md border bg-card px-3 text-xs font-medium text-foreground transition-colors hover:border-primary/50 hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-wait disabled:opacity-60"
+          aria-label={`View HTML of ${title}`}
         >
           <ExternalLink className="h-3.5 w-3.5" /> View HTML
-        </button>
+        </Button>
       )}
       {info?.hasPdf && (
-        <button
+        <Button
+          type="button"
+          size="sm"
           onClick={() => void openReport("pdf")}
           disabled={busyKind !== null}
-          className="inline-flex h-8 items-center gap-1.5 rounded-md bg-primary px-3 text-xs font-semibold text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:cursor-wait disabled:opacity-60"
+          aria-label={`Download PDF of ${title}`}
         >
           Download PDF
-        </button>
+        </Button>
       )}
       {error && (
         <span className="w-full text-xs text-destructive" role="alert">
@@ -181,10 +187,14 @@ export const ChatMessage = memo(function ChatMessage({
   };
 
   return (
-    <div className={cn("group flex w-full gap-3", isUser ? "justify-end" : "justify-start", className)}>
+    <div
+      role="article"
+      aria-label={isUser ? "Your message" : "Borealis reply"}
+      className={cn("group flex w-full gap-3", isUser ? "justify-end" : "justify-start", className)}
+    >
       {!isUser && (
         <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary shadow-sm">
-          <Bot className="h-[18px] w-[18px] text-primary-foreground" />
+          <Bot className="h-[18px] w-[18px] text-primary-foreground" aria-hidden />
         </div>
       )}
       <div className={cn("max-w-[78%] md:max-w-[70%]", isUser ? "items-end text-right" : "items-start")}>
@@ -206,7 +216,7 @@ export const ChatMessage = memo(function ChatMessage({
                 }
                 components={{ a: renderAnchor }}
               >
-                {displayContent || (streaming ? "" : "_no response_")}
+                {displayContent || (streaming ? "" : "_(The model returned no text response.)_")}
               </ReactMarkdown>
             </div>
             {evidence && evidence.length > 0 && (
@@ -260,7 +270,7 @@ export const ChatMessage = memo(function ChatMessage({
       </div>
       {isUser && (
         <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-secondary">
-          <User className="h-[16px] w-[16px] text-muted-foreground" />
+          <User className="h-[16px] w-[16px] text-muted-foreground" aria-hidden />
         </div>
       )}
     </div>

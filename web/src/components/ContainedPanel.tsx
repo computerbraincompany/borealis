@@ -35,6 +35,15 @@ const DOWNLOAD_STATE_CHIP: Record<ContainedDownloadState["state"], string> = {
   canceled: "border-border bg-secondary text-muted-foreground",
 };
 
+/** Human labels instead of raw download-state enums (matches ENGINE_STATE_LABEL). */
+const DOWNLOAD_STATE_LABEL: Record<ContainedDownloadState["state"], string> = {
+  downloading: "Downloading…",
+  verifying: "Verifying…",
+  complete: "Complete",
+  failed: "Failed",
+  canceled: "Cancelled",
+};
+
 interface ContainedConfigDraft {
   enabled: boolean;
   binary_path: string;
@@ -413,7 +422,7 @@ export function ContainedPanel() {
                             DOWNLOAD_STATE_CHIP[download.state],
                           )}
                         >
-                          {download.state}
+                          {DOWNLOAD_STATE_LABEL[download.state]}
                         </span>
                         <span className="text-muted-foreground">
                           {formatBytes(download.bytes_received)}

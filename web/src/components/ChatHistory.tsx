@@ -178,6 +178,24 @@ export function ChatHistory({
       </div>
 
       <div className="flex-1 overflow-y-auto px-2 pb-4">
+        {error && chats.length > 0 && (
+          // Cached rows stay visible, but a failed refresh must not go silent.
+          <p
+            role="alert"
+            className="mx-1 mb-1 rounded-md bg-destructive/10 px-2 py-1.5 text-[11px] leading-relaxed text-destructive"
+          >
+            {error}
+            {onRetry && (
+              <button
+                type="button"
+                onClick={onRetry}
+                className="ml-1 rounded-md font-medium text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                Retry
+              </button>
+            )}
+          </p>
+        )}
         {chats.length === 0 && error ? (
           <div className="px-3 py-8 text-center text-xs leading-relaxed text-muted-foreground" role="alert">
             <p className="text-destructive">{error}</p>

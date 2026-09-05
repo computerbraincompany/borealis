@@ -35,7 +35,7 @@ export interface ContainedSnapshot {
 const ACTION_FALLBACKS: Record<Exclude<ContainedAction, null>, string> = {
   "saving-config": "The contained configuration could not be saved.",
   "starting-download": "The download could not be started.",
-  "cancelling-download": "The download could not be canceled.",
+  "cancelling-download": "The download could not be cancelled.",
   "starting-engine": "The contained engine could not be started.",
   "stopping-engine": "The contained engine could not be stopped.",
 };
@@ -58,6 +58,9 @@ export function useContained(enabled: boolean) {
   const mounted = useRef(false);
   const enabledRef = useRef(enabled);
   const loadRequestRef = useRef(0);
+  // Consecutive poll failures widen the next interval so a failing endpoint
+  // stops producing a request/error flicker every two seconds.
+  const pollFailuresRef = useRef(0);
   const loadAbortRef = useRef<AbortController | null>(null);
   const actionRef = useRef<ContainedAction>(null);
   const actionRequestRef = useRef(0);
@@ -98,6 +101,7 @@ export function useContained(enabled: boolean) {
     try {
       const next = await containedApi.get(abort.signal);
       if (ownsResponse()) {
+        pollFailuresRef.current = 0;
         setConfig(next.config);
         setEngine(next.engine);
         setDownloads(next.downloads);
@@ -106,6 +110,7 @@ export function useContained(enabled: boolean) {
       return next;
     } catch (failure: unknown) {
       if (ownsResponse()) {
+        pollFailuresRef.current = Math.min(pollFailuresRef.current + 1, 6);
         setLoadError(formatApiError(failure, "Contained engine status is temporarily unavailable."));
       }
       return null;
@@ -126,12 +131,21 @@ export function useContained(enabled: boolean) {
       return;
     }
     void refresh();
-    const interval = window.setInterval(() => {
-      if (document.visibilityState === "visible") void refresh();
-    }, POLL_INTERVAL_MS);
+    let timer = 0;
+    let active = true;
+    const schedule = () => {
+      const delay = Math.min(POLL_INTERVAL_MS * (pollFailuresRef.current + 1), 15_000);
+      timer = window.setTimeout(() => {
+        if (!active) return;
+        if (document.visibilityState === "visible") void refresh();
+        schedule();
+      }, delay);
+    };
+    schedule();
     return () => {
+      active = false;
       invalidateRequests();
-      window.clearInterval(interval);
+      window.clearTimeout(timer);
     };
   }, [enabled, refresh, invalidateRequests]);
 
@@ -211,7 +225,7 @@ export function useContained(enabled: boolean) {
                 : entry,
             ),
           ),
-        `Download canceled for ${filename}.`,
+        `Download cancelled for ${filename}.`,
       ),
     [runAction],
   );
