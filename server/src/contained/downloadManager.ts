@@ -195,7 +195,7 @@ export function createContainedDownloadManager() {
       if (state.state === "canceled") return;
       if (abort.signal.aborted) {
         state.state = "canceled";
-        state.error = "download canceled";
+        state.error = "download cancelled";
         return;
       }
       state.state = "failed";
@@ -208,7 +208,7 @@ export function createContainedDownloadManager() {
     const entry = downloads.get(filename);
     if (!entry) return false;
     entry.state.state = "canceled";
-    entry.state.error = "download canceled";
+    entry.state.error = "download cancelled";
     entry.abort?.abort();
     await fs.rm(partPath(filename), { force: true });
     return true;

@@ -3,7 +3,15 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { chatOnce, embed, getLlmClient, mergeStreamedToolName, streamingChat } from "../llm.js";
+import OpenAI from "openai";
+import {
+  chatOnce,
+  embed,
+  getLlmClient,
+  isTransientStreamFailure,
+  mergeStreamedToolName,
+  streamingChat,
+} from "../llm.js";
 import { resolveLlmModelId } from "../llmAliases.js";
 import { closeRuntimeSettings, initializeRuntimeSettings, runtimeSettingsStore } from "../runtimeSettings.js";
 import { TOOL_DEFS } from "../tools.js";
@@ -220,5 +228,68 @@ describe("streamed tool-name merging", () => {
         function: { name: "render_chart", arguments: '{"spec":{}}' },
       },
     ]);
+  });
+});
+
+describe("transient stream retry", () => {
+  it("retries a 5xx stream crash exactly once and returns the second attempt", async () => {
+    const client = await getLlmClient();
+    async function* chunks() {
+      yield { choices: [{ delta: { content: "recovered" } }] };
+    }
+    const create = vi
+      .spyOn(client.chat.completions, "create")
+      .mockRejectedValueOnce(
+        new OpenAI.APIError(500, undefined as any, "engine protocol predict stream error", {} as any)
+      )
+      .mockReturnValueOnce(chunks() as any);
+
+    const result = await streamingChat([], { model: "selected-chat-b" }, () => {});
+
+    expect(result.choices[0].message.content).toBe("recovered");
+    expect(create).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not retry a 4xx stream failure", async () => {
+    const client = await getLlmClient();
+    const create = vi
+      .spyOn(client.chat.completions, "create")
+      .mockRejectedValueOnce(new OpenAI.APIError(400, undefined as any, "bad request", {} as any));
+
+    await expect(streamingChat([], { model: "selected-chat-b" }, () => {})).rejects.toThrow(/bad request/);
+    expect(create).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not retry when the caller signal is already aborted", async () => {
+    const client = await getLlmClient();
+    const controller = new AbortController();
+    controller.abort();
+    const create = vi
+      .spyOn(client.chat.completions, "create")
+      .mockRejectedValueOnce(
+        new OpenAI.APIError(500, undefined as any, "engine protocol predict stream error", {} as any)
+      );
+
+    await expect(streamingChat([], { model: "selected-chat-b", signal: controller.signal }, () => {})).rejects.toThrow(
+      /engine protocol/
+    );
+    expect(create).toHaveBeenCalledTimes(1);
+  });
+
+  it("classifies failures for retry safety", () => {
+    expect(isTransientStreamFailure(new OpenAI.APIError(503, undefined as any, "unavailable", {} as any))).toBe(true);
+    expect(
+      isTransientStreamFailure(
+        new OpenAI.APIError(
+          undefined as any,
+          undefined as any,
+          "Engine protocol predict stream error: server_error",
+          {} as any
+        )
+      )
+    ).toBe(true);
+    expect(isTransientStreamFailure(new OpenAI.APIError(400, undefined as any, "bad request", {} as any))).toBe(false);
+    expect(isTransientStreamFailure(new OpenAI.APIUserAbortError())).toBe(false);
+    expect(isTransientStreamFailure(new Error("model stream budget exceeded"))).toBe(false);
   });
 });

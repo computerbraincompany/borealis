@@ -686,6 +686,24 @@ export async function chatOnce(messages: ChatMessage[], opts: ChatOptions): Prom
   });
 }
 
+// One bounded retry for a transient provider stream failure (local engines
+// such as llama.cpp/LM Studio can crash a stream mid-flight with a 500 while
+// the very next request succeeds). Budget and caller-abort failures are never
+// retried.
+const TRANSIENT_STREAM_RETRY_LIMIT = 1;
+const TRANSIENT_STREAM_RETRY_DELAY_MS = 1_000;
+
+export function isTransientStreamFailure(error: unknown): boolean {
+  if (error instanceof OpenAI.APIConnectionError) return true; // includes timeouts
+  if (error instanceof OpenAI.APIError) {
+    if (typeof error.status === "number") return error.status >= 500;
+    // Mid-stream error frames can arrive without a parsed status; only
+    // engine/server_error wording is retryable. Aborts say "aborted".
+    return /server_error|engine protocol|internal server error/i.test(String(error.message));
+  }
+  return false;
+}
+
 export async function streamingChat(
   messages: ChatMessage[],
   opts: StreamingChatOptions,
@@ -700,6 +718,36 @@ export async function streamingChat(
     ...(opts.tools ? { tools: opts.tools } : {}),
     stream: true,
   } as const;
+
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await streamOnce(client, body, opts, onDelta);
+    } catch (error: unknown) {
+      if (attempt >= TRANSIENT_STREAM_RETRY_LIMIT || opts.signal?.aborted || !isTransientStreamFailure(error)) {
+        throw error;
+      }
+      const aborted = await new Promise<boolean>((resolve) => {
+        const timer = setTimeout(() => resolve(false), TRANSIENT_STREAM_RETRY_DELAY_MS);
+        opts.signal?.addEventListener(
+          "abort",
+          () => {
+            clearTimeout(timer);
+            resolve(true);
+          },
+          { once: true }
+        );
+      });
+      if (aborted) throw error;
+    }
+  }
+}
+
+async function streamOnce(
+  client: OpenAI,
+  body: OpenAI.Chat.ChatCompletionCreateParamsStreaming,
+  opts: StreamingChatOptions,
+  onDelta: (text: string) => void
+): Promise<OpenAI.Chat.ChatCompletion> {
   const streamController = new AbortController();
   const requestSignal = opts.signal ? AbortSignal.any([opts.signal, streamController.signal]) : streamController.signal;
   const stream = await client.chat.completions.create(body, {

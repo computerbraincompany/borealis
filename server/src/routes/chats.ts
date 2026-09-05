@@ -286,6 +286,11 @@ export async function chatRoutes(app: FastifyInstance): Promise<void> {
       const emit = (event: any) => {
         if (!reply.raw.destroyed && !reply.raw.writableEnded) reply.raw.write(`data: ${JSON.stringify(event)}\n\n`);
       };
+      // SSE comment keepalives keep a silent provider/tool wait from being
+      // dropped by an intermediate proxy; clients ignore comment blocks.
+      const heartbeat = setInterval(() => {
+        if (!reply.raw.destroyed && !reply.raw.writableEnded) reply.raw.write(": ping\n\n");
+      }, 20_000);
       emit({ type: "run-started", run_id: turn.runId });
       emit({ type: "user-saved", message_id: turn.userMessage.id });
       try {
@@ -321,6 +326,7 @@ export async function chatRoutes(app: FastifyInstance): Promise<void> {
           emit({ type: "run-ended", run_id: turn.runId, status: terminal });
         }
       } finally {
+        clearInterval(heartbeat);
         reply.raw.end();
       }
     }
