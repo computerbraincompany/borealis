@@ -23,6 +23,7 @@ import {
   SqliteTransactionUsageError,
   type SqliteLedger,
 } from "../db/types.js";
+import { createHistoricalSqliteFixture, listHistoricalFixtureVersions } from "./sqliteMigrationFixture.js";
 import { createTempSqliteLedger, type TempSqliteLedger } from "./sqliteTestHarness.js";
 
 const temporaryLedgers: TempSqliteLedger[] = [];
@@ -156,6 +157,130 @@ describe("SQLite ledger foundation", () => {
     future.close();
     await expect(openSqliteLedger({ path: resource.filename })).rejects.toBeInstanceOf(SqliteMigrationError);
   });
+
+  it("ships exactly one immutable historical fixture for every schema version", async () => {
+    await expect(listHistoricalFixtureVersions()).resolves.toEqual(
+      Array.from({ length: LATEST_SQLITE_SCHEMA_VERSION }, (_, index) => index + 1)
+    );
+  });
+
+  for (let startVersion = 1; startVersion < LATEST_SQLITE_SCHEMA_VERSION; startVersion += 1) {
+    it(`upgrades a historical v${startVersion} installation to schema v${LATEST_SQLITE_SCHEMA_VERSION}`, async () => {
+      const fixture = await createHistoricalSqliteFixture(startVersion);
+      try {
+        const onDisk = new Database(fixture.filename);
+        try {
+          expect(onDisk.pragma("user_version", { simple: true })).toBe(startVersion);
+        } finally {
+          onDisk.close();
+        }
+
+        const ledger = await openSqliteLedger({ path: fixture.filename });
+        try {
+          await expect(ledger.get<{ user_version: bigint }>("PRAGMA user_version")).resolves.toEqual({
+            user_version: BigInt(LATEST_SQLITE_SCHEMA_VERSION),
+          });
+
+          const { seed } = fixture;
+          await expect(
+            ledger.get("SELECT id,email,password_hash FROM users WHERE id=?", [seed.accountId])
+          ).resolves.toMatchObject({ id: seed.accountId, email: seed.email, password_hash: "fixture-hash" });
+          await expect(
+            ledger.get("SELECT id,name,status FROM sources WHERE id=? AND account_id=?", [
+              seed.sourceId,
+              seed.accountId,
+            ])
+          ).resolves.toMatchObject({ id: seed.sourceId, name: seed.sourceName, status: "ready" });
+          await expect(
+            ledger.get("SELECT id,title,model FROM chats WHERE id=? AND account_id=?", [seed.chatId, seed.accountId])
+          ).resolves.toMatchObject({ id: seed.chatId, title: seed.chatTitle, model: seed.chatModel });
+          await expect(
+            ledger.get("SELECT id,chat_id,role,content FROM messages WHERE id=?", [seed.messageId])
+          ).resolves.toMatchObject({
+            id: BigInt(seed.messageId),
+            chat_id: seed.chatId,
+            role: "user",
+            content: seed.messageContent,
+          });
+          await expect(
+            ledger.get("SELECT id,chat_id,user_message_id,status FROM chat_runs WHERE id=? AND account_id=?", [
+              seed.runId,
+              seed.accountId,
+            ])
+          ).resolves.toMatchObject({
+            id: seed.runId,
+            chat_id: seed.chatId,
+            user_message_id: BigInt(seed.messageId),
+            status: "completed",
+          });
+          await expect(
+            ledger.get("SELECT chat_id FROM chat_sources WHERE chat_id=? AND source_id=? AND account_id=?", [
+              seed.chatId,
+              seed.sourceId,
+              seed.accountId,
+            ])
+          ).resolves.toMatchObject({ chat_id: seed.chatId });
+          await expect(
+            ledger.get("SELECT run_id FROM chat_run_sources WHERE run_id=? AND source_id=? AND account_id=?", [
+              seed.runId,
+              seed.sourceId,
+              seed.accountId,
+            ])
+          ).resolves.toMatchObject({ run_id: seed.runId });
+
+          await expect(ledger.all("PRAGMA foreign_key_check")).resolves.toEqual([]);
+
+          const tables = new Set(
+            (await ledger.all<{ name: string }>("SELECT name FROM sqlite_master WHERE type='table'")).map(
+              (row) => row.name
+            )
+          );
+          expect([...tables]).toEqual(
+            expect.arrayContaining([
+              "report_shares",
+              "automations",
+              "automation_runs",
+              "connector_syncs",
+              "agent_skills",
+              "agent_skill_revisions",
+            ])
+          );
+          expect(await columnNames(ledger, "users")).toContain("default_chat_model");
+          expect(await columnNames(ledger, "agents")).toContain("configuration");
+          expect(await columnNames(ledger, "agent_revisions")).toContain("configuration");
+          expect(await columnNames(ledger, "chat_runs")).toEqual(
+            expect.arrayContaining(["agent_instructions", "agent_tools"])
+          );
+
+          const indexes = new Set(
+            (
+              await ledger.all<{ name: string }>(
+                "SELECT name FROM sqlite_master WHERE type='index' AND name NOT LIKE 'sqlite_%'"
+              )
+            ).map((row) => row.name)
+          );
+          expect([...indexes]).toEqual(
+            expect.arrayContaining([
+              "sources_account_catalog_idx",
+              "connectors_account_catalog_idx",
+              "libraries_account_catalog_idx",
+              "agents_account_catalog_idx",
+              "automations_account_catalog_idx",
+              "reports_account_catalog_idx",
+            ])
+          );
+          const recipientIndex = await ledger.get<{ sql: string }>(
+            "SELECT sql FROM sqlite_master WHERE type='index' AND name='report_shares_recipient_idx'"
+          );
+          expect(recipientIndex?.sql).toContain("report_id");
+        } finally {
+          await ledger.close();
+        }
+      } finally {
+        await fixture.cleanup();
+      }
+    });
+  }
 
   it("enforces composite tenancy, active-run uniqueness, and connector delete reservations", async () => {
     const { ledger } = await temporaryLedger();
