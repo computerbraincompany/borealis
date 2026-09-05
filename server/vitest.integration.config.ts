@@ -1,17 +1,10 @@
 import { defineConfig } from "vitest/config";
+import { INTEGRATION_TEST_FILES } from "./src/tests/vitestTestPartitions.js";
 
 export default defineConfig({
   test: {
     environment: "node",
-    include: [
-      "src/tests/chatStore.test.ts",
-      "src/tests/runStore.test.ts",
-      "src/tests/sqliteFoundation.test.ts",
-      "src/tests/sqliteSourceStore.test.ts",
-      "src/tests/sourceIngestionTransitions.test.ts",
-      "src/tests/ingestionVectorLifecycle.test.ts",
-      "src/tests/lanceVectorIndex.test.ts",
-    ],
+    include: [...INTEGRATION_TEST_FILES],
     fileParallelism: false,
     maxWorkers: 1,
     env: {

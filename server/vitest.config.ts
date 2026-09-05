@@ -1,9 +1,13 @@
-import { defineConfig } from "vitest/config";
+import { configDefaults, defineConfig } from "vitest/config";
+import { INTEGRATION_TEST_FILES, SERVER_TEST_GLOB } from "./src/tests/vitestTestPartitions.js";
 
 export default defineConfig({
   test: {
     environment: "node",
-    include: ["src/tests/**/*.test.ts"],
+    include: [SERVER_TEST_GLOB],
+    // The serialized integration files run only under
+    // vitest.integration.config.ts; Vitest's default exclusions are kept.
+    exclude: [...configDefaults.exclude, ...INTEGRATION_TEST_FILES],
     // Keep direct app-construction tests on an environment-owned secret; file-
     // backed secrets are intentionally initialized only after the workspace lock.
     env: {
