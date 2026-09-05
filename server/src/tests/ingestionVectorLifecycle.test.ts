@@ -114,6 +114,25 @@ async function nextRunningJob(resource: TestStores, accountId: string, sourceId:
   return job;
 }
 
+function deferred<T = void>(): { readonly promise: Promise<T>; readonly resolve: (value: T | PromiseLike<T>) => void } {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
+}
+
+function tick(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
+function outcome(result: Promise<unknown>): Promise<{ ok?: unknown; error?: unknown }> {
+  return result.then(
+    (value) => ({ ok: value }),
+    (error: unknown) => ({ error })
+  );
+}
+
 async function stageNew(resource: TestStores, job: IngestionJob, vector = [1, 0, 0]): Promise<string> {
   const ids = await resource.lifecycle.stageAndIndex({
     accountId: job.accountId,
@@ -307,6 +326,194 @@ describe("SQLite + LanceDB ingestion lifecycle", () => {
     await expect(
       resource.ledger.get("SELECT chunk_id FROM ingestion_chunk_staging WHERE chunk_id=?", [newChunk])
     ).resolves.toMatchObject({ chunk_id: newChunk });
+  });
+
+  it("releases the ledger writer gate while promotion vector verification is pending", async () => {
+    const resource = await stores();
+    const accountId = randomUUID();
+    const sourceId = randomUUID();
+    const unrelatedAccountId = randomUUID();
+    await seedUser(resource.ledger, accountId, "gate-held@example.test");
+    await seedSource(resource.ledger, accountId, sourceId);
+    const oldChunk = await seedLiveChunk(resource, {
+      accountId,
+      sourceId,
+      generation: 1,
+      content: "old passage",
+      vector: [0.8, 0.2, 0],
+    });
+    const job = await nextRunningJob(resource, accountId, sourceId);
+    const newChunk = await stageNew(resource, job);
+
+    const verificationEntered = deferred<void>();
+    const releaseVerification = deferred<void>();
+    const verifications: string[][] = [];
+    let promotionSettled = false;
+    const promotion = outcome(
+      resource.store.promoteGeneration({
+        accountId,
+        sourceId,
+        generation: job.generation,
+        leaseToken: job.leaseToken!,
+        sizeBytes: 12,
+        verifyVectors: async (chunkIds) => {
+          verifications.push([...chunkIds]);
+          verificationEntered.resolve();
+          await releaseVerification.promise;
+          return resource.vectors.hasAll(chunkIds, sourceId, 2);
+        },
+      })
+    ).then((result) => {
+      promotionSettled = true;
+      return result;
+    });
+
+    await verificationEntered.promise;
+    expect(verifications).toEqual([[newChunk]]);
+
+    // Under the previous implementation the shared SerialGate stayed held for
+    // the whole pending verification and this write could not settle.
+    let unrelatedSettled = false;
+    const unrelatedWrite = resource.ledger
+      .run("INSERT INTO users (id,email,password_hash) VALUES (?,?,?)", [
+        unrelatedAccountId,
+        "unrelated@example.test",
+        "hash",
+      ])
+      .then(() => {
+        unrelatedSettled = true;
+      });
+    await tick();
+    expect(unrelatedSettled).toBe(true);
+    await unrelatedWrite;
+    await expect(resource.ledger.get("SELECT id FROM users WHERE id=?", [unrelatedAccountId])).resolves.toMatchObject({
+      id: unrelatedAccountId,
+    });
+    expect(promotionSettled).toBe(false);
+
+    releaseVerification.resolve();
+    expect(await promotion).toEqual({ ok: { chunkCount: 1 } });
+
+    await expect(resource.store.getSource(accountId, sourceId)).resolves.toMatchObject({
+      status: "ready",
+      readyGeneration: 2,
+    });
+    await expect(
+      retrieveWithVector(resource.store, resource.vectors, {
+        accountId,
+        allowedSourceIds: [sourceId],
+        vector: [1, 0, 0],
+        topK: 1,
+      })
+    ).resolves.toMatchObject([{ chunk_id: newChunk, content: "new passage" }]);
+
+    // Pruning stays durable and post-commit with unchanged semantics.
+    await expect(resource.store.listPendingVectorOperations()).resolves.toEqual([
+      expect.objectContaining({ sourceId, operation: "prune_except_generation", generation: 2 }),
+    ]);
+    await resource.lifecycle.drainPendingVectorOperations();
+    await expect(resource.vectors.hasAll([oldChunk], sourceId, 1)).resolves.toBe(false);
+    await expect(resource.vectors.hasAll([newChunk], sourceId, 2)).resolves.toBe(true);
+    await expect(resource.store.listPendingVectorOperations()).resolves.toEqual([]);
+  });
+
+  it("rejects promotion when staging content changes under stable chunk IDs while verification waits", async () => {
+    const resource = await stores();
+    const accountId = randomUUID();
+    const sourceId = randomUUID();
+    await seedUser(resource.ledger, accountId, "restage-race@example.test");
+    await seedSource(resource.ledger, accountId, sourceId);
+    const oldChunk = await seedLiveChunk(resource, {
+      accountId,
+      sourceId,
+      generation: 1,
+      content: "old",
+      vector: [0, 1, 0],
+    });
+    const job = await nextRunningJob(resource, accountId, sourceId);
+    const newChunk = await stageNew(resource, job);
+
+    const verificationEntered = deferred<void>();
+    const restaged = deferred<void>();
+    const releaseVerification = deferred<void>();
+    const verifications: string[][] = [];
+    const promotion = outcome(
+      resource.store.promoteGeneration({
+        accountId,
+        sourceId,
+        generation: job.generation,
+        leaseToken: job.leaseToken!,
+        sizeBytes: 12,
+        verifyVectors: async (chunkIds) => {
+          verifications.push([...chunkIds]);
+          verificationEntered.resolve();
+          // The still-valid lease re-stages changed content/meta for the
+          // existing sequence — which retains the chunk UUID — while the
+          // shared ledger gate must be free during verification.
+          const restagedRows = await resource.store.stageChunks({
+            accountId,
+            sourceId,
+            generation: job.generation,
+            leaseToken: job.leaseToken!,
+            sourceName: "Revised",
+            chunks: [{ content: "revised passage", meta: { revised: true } }],
+          });
+          expect(restagedRows.chunks.map((chunk) => chunk.chunkId)).toEqual([newChunk]);
+          restaged.resolve();
+          await releaseVerification.promise;
+          return resource.vectors.hasAll(chunkIds, sourceId, 2);
+        },
+      })
+    );
+
+    await verificationEntered.promise;
+    await restaged.promise;
+    await expect(
+      resource.ledger.get<{ content: string }>(
+        "SELECT content FROM ingestion_chunk_staging WHERE chunk_id=? AND source_id=?",
+        [newChunk, sourceId]
+      )
+    ).resolves.toMatchObject({ content: "revised passage" });
+
+    releaseVerification.resolve();
+    const result = await promotion;
+    expect(result.ok).toBeUndefined();
+    expect(result.error).toBeInstanceOf(IngestionStoreError);
+    expect(result.error).toMatchObject({ code: "INGESTION_SUPERSEDED" });
+    expect(verifications).toEqual([[newChunk]]);
+
+    // The prior ready generation stays authoritative and queryable.
+    await expect(resource.store.getSource(accountId, sourceId)).resolves.toMatchObject({
+      readyGeneration: 1,
+    });
+    await expect(resource.ledger.get("SELECT id FROM chunks WHERE id=?", [oldChunk])).resolves.toMatchObject({
+      id: oldChunk,
+    });
+    await expect(
+      retrieveWithVector(resource.store, resource.vectors, {
+        accountId,
+        allowedSourceIds: [sourceId],
+        vector: [0, 1, 0],
+        topK: 1,
+      })
+    ).resolves.toMatchObject([{ chunk_id: oldChunk, content: "old" }]);
+
+    // The changed row remains staged for retry, and neither the job nor the
+    // vector pruning queue advanced.
+    await expect(
+      resource.ledger.get<{ seq: bigint; source_name: string; content: string; meta: string }>(
+        "SELECT seq, source_name, content, meta FROM ingestion_chunk_staging WHERE chunk_id=?",
+        [newChunk]
+      )
+    ).resolves.toMatchObject({ source_name: "Revised", content: "revised passage", meta: '{"revised":true}' });
+    await expect(resource.store.getJob(accountId, sourceId)).resolves.toMatchObject({
+      generation: 2,
+      status: "running",
+      leaseToken: job.leaseToken,
+    });
+    await expect(resource.store.listPendingVectorOperations()).resolves.toEqual([]);
+    await expect(resource.vectors.hasAll([oldChunk], sourceId, 1)).resolves.toBe(true);
+    await expect(resource.vectors.hasAll([newChunk], sourceId, 2)).resolves.toBe(true);
   });
 
   it("never promotes an exact file location while durable cleanup owns it", async () => {
