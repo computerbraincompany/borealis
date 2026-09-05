@@ -664,6 +664,7 @@ describe("model qualification route", () => {
       {
         llmBaseUrl: "https://draft-provider.example.test",
         apiKey: "draft-provider-key",
+        apiKeyOrigin: "https://draft-provider.example.test",
         chatModel: "draft-chat",
         embedModel: "draft-embed",
         embeddingDimension: 768,
@@ -703,6 +704,7 @@ describe("model qualification route", () => {
       {
         llmBaseUrl: "https://environment-provider.example.test",
         apiKey: "environment-provider-key",
+        apiKeyOrigin: "https://environment-provider.example.test",
         chatModel: "environment-chat",
         embedModel: "environment-embed",
         embeddingDimension: 768,

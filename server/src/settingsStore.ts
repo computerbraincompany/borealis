@@ -1,12 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
-import fs from "node:fs/promises";
+import fsPromises from "node:fs/promises";
 import { isIP } from "node:net";
 import path from "node:path";
 import { sameLlmModel } from "./llmAliases.js";
 
-export const SETTINGS_FILE_VERSION = 2 as const;
-const LEGACY_SETTINGS_FILE_VERSION = 1 as const;
+export const SETTINGS_FILE_VERSION = 3 as const;
+const PRE_DIMENSION_FILE_VERSION = 1 as const;
+const UNBOUND_CREDENTIAL_FILE_VERSION = 2 as const;
 export const DEFAULT_EMBEDDING_DIMENSION = 768;
 export const DEFAULT_LLM_SETTINGS = Object.freeze({
   llmBaseUrl: "http://127.0.0.1:1234",
@@ -32,6 +33,12 @@ export type LlmSettingField =
 export interface EffectiveLlmSettings {
   readonly llmBaseUrl: string;
   readonly apiKey?: string;
+  /**
+   * Canonical origin a saved credential is bound to. It is only ever present
+   * beside `apiKey` and equivalent to `llmBaseUrl`. It is internal: public
+   * snapshots expose neither the credential nor this binding.
+   */
+  readonly apiKeyOrigin?: string;
   readonly lmStudioBaseUrl?: string;
   readonly chatModel: string;
   readonly embedModel: string;
@@ -70,15 +77,59 @@ export interface SettingsStore {
   subscribe(listener: (snapshot: SettingsSnapshot) => void): () => void;
 }
 
+declare const settingsMutationTokenBrand: unique symbol;
+
+/**
+ * Opaque process-local mutation identity advanced by every successful durable
+ * write. It is never persisted, serialized, returned in a public snapshot, or
+ * logged; identity comparison is its only operation.
+ */
+export interface SettingsMutationToken {
+  readonly [settingsMutationTokenBrand]: never;
+}
+
+/** Internal write-queue receipt pairing effective state with its mutation token. */
+export interface SettingsMutationState {
+  readonly settings: EffectiveLlmSettings;
+  readonly token: SettingsMutationToken;
+}
+
+export interface SettingsApplyReceipt extends SettingsMutationState {
+  readonly applied: true;
+  readonly before: EffectiveLlmSettings;
+}
+
+export interface SettingsApplyMismatch {
+  readonly applied: false;
+}
+
+export type SettingsApplyResult = SettingsApplyReceipt | SettingsApplyMismatch;
+
+/**
+ * Internal conditional-apply surface used only by in-process consumers that
+ * need a single critical-section compare-and-patch (contained endpoint apply).
+ * It never appears in public responses; mismatches carry no settings, token,
+ * or credential detail.
+ */
+export interface SettingsMutationStore extends SettingsStore {
+  loadMutationState(): Promise<SettingsMutationState>;
+  applyIfUnchanged(expected: SettingsMutationState, patch: LlmSettingsPatch): Promise<SettingsApplyResult>;
+}
+
+export type SettingsFileSystem = Pick<typeof fsPromises, "mkdir" | "open" | "rename" | "unlink">;
+
 export interface CreateSettingsStoreOptions {
   readonly path: string;
   readonly env?: Readonly<Record<string, string | undefined>>;
+  /** Test-only persistence seam; production always uses `node:fs/promises`. */
+  readonly fs?: SettingsFileSystem;
 }
 
 interface PersistedSettingsFile {
   readonly version: typeof SETTINGS_FILE_VERSION;
   readonly llm_base_url: string;
   readonly llm_api_key?: string;
+  readonly llm_api_key_origin?: string;
   readonly lm_studio_base_url?: string;
   readonly default_chat_model: string;
   readonly default_embed_model: string;
@@ -90,18 +141,23 @@ interface PersistedRead {
   readonly status: SettingsSnapshot["fileStatus"];
 }
 
-interface EnvironmentSettings {
-  readonly values: Partial<EffectiveLlmSettings>;
-  readonly fields: readonly LlmSettingField[];
-}
-
-interface MutableEnvironmentSettings {
+interface MutableEffectiveLlmSettings {
   llmBaseUrl?: string;
   apiKey?: string;
+  apiKeyOrigin?: string;
   lmStudioBaseUrl?: string;
   chatModel?: string;
   embedModel?: string;
   embeddingDimension?: number;
+}
+
+type MutableCompleteLlmSettings = { -readonly [K in keyof EffectiveLlmSettings]: EffectiveLlmSettings[K] };
+
+interface EnvironmentSettings {
+  readonly values: MutableEffectiveLlmSettings;
+  readonly fields: readonly LlmSettingField[];
+  /** An environment API key without an environment base URL locks one origin for the process. */
+  readonly keyOnly: boolean;
 }
 
 export class SettingsValidationError extends Error {
@@ -127,7 +183,7 @@ export class SettingsEnvironmentOverrideError extends Error {
  * model-client reconfiguration. Reads never expose parse or filesystem errors;
  * a damaged file falls back to local-safe defaults until a valid PATCH replaces it.
  */
-export function createSettingsStore(options: CreateSettingsStoreOptions): SettingsStore {
+export function createSettingsStore(options: CreateSettingsStoreOptions): SettingsMutationStore {
   return new FileSettingsStore(options);
 }
 
@@ -164,37 +220,47 @@ export function modelEndpointOriginsEquivalent(left: string, right: string): boo
   );
 }
 
-class FileSettingsStore implements SettingsStore {
+/** Complete effective-field equality, including the credential and its binding. */
+export function sameEffectiveLlmSettings(left: EffectiveLlmSettings, right: EffectiveLlmSettings): boolean {
+  return (
+    left.llmBaseUrl === right.llmBaseUrl &&
+    left.apiKey === right.apiKey &&
+    left.apiKeyOrigin === right.apiKeyOrigin &&
+    left.lmStudioBaseUrl === right.lmStudioBaseUrl &&
+    left.chatModel === right.chatModel &&
+    left.embedModel === right.embedModel &&
+    left.embeddingDimension === right.embeddingDimension
+  );
+}
+
+function createSettingsMutationToken(): SettingsMutationToken {
+  return Object.freeze({}) as SettingsMutationToken;
+}
+
+class FileSettingsStore implements SettingsMutationStore {
   readonly #filename: string;
   readonly #environment: EnvironmentSettings;
+  readonly #fs: SettingsFileSystem;
   readonly #listeners = new Set<(snapshot: SettingsSnapshot) => void>();
   #writeTail: Promise<void> = Promise.resolve();
+  #mutationToken: SettingsMutationToken = createSettingsMutationToken();
+  #environmentKeyOrigin?: string;
 
   constructor(options: CreateSettingsStoreOptions) {
     this.#filename = path.resolve(options.path);
     this.#environment = resolveEnvironmentSettings(options.env ?? process.env);
+    this.#fs = options.fs ?? fsPromises;
   }
 
   async read(): Promise<SettingsSnapshot> {
-    await this.#writeTail;
-    return this.#snapshot(await this.#readPersisted());
+    return this.#serialize(async () => this.#snapshot(await this.#readPersisted()));
   }
 
   patch(patch: LlmSettingsPatch): Promise<SettingsSnapshot> {
     return this.#serialize(async () => {
-      this.#assertPatchable(patch);
-      const persisted = await this.#readPersisted();
-      const settings = applyPatch(persisted.settings, patch);
-      await writeSettingsFileAtomically(this.#filename, settings);
-      const snapshot = this.#snapshot({ settings, status: "loaded" });
-      for (const listener of this.#listeners) {
-        try {
-          listener(snapshot);
-        } catch {
-          // A model-client subscriber cannot roll back an already durable file.
-        }
-      }
-      return snapshot;
+      const result = await this.#applyPatchCritical(patch);
+      this.#publish(result.snapshot);
+      return result.snapshot;
     });
   }
 
@@ -203,6 +269,30 @@ class FileSettingsStore implements SettingsStore {
       this.#assertPatchable(patch);
       const persisted = await this.#readPersisted();
       return this.#snapshot({ settings: applyPatch(persisted.settings, patch), status: persisted.status });
+    });
+  }
+
+  loadMutationState(): Promise<SettingsMutationState> {
+    return this.#serialize(async () => ({
+      settings: this.#snapshot(await this.#readPersisted()).settings,
+      token: this.#mutationToken,
+    }));
+  }
+
+  applyIfUnchanged(expected: SettingsMutationState, patch: LlmSettingsPatch): Promise<SettingsApplyResult> {
+    return this.#serialize(async () => {
+      const current = this.#snapshot(await this.#readPersisted());
+      if (this.#mutationToken !== expected.token || !sameEffectiveLlmSettings(current.settings, expected.settings)) {
+        return { applied: false };
+      }
+      const result = await this.#applyPatchCritical(patch);
+      this.#publish(result.snapshot);
+      return {
+        applied: true,
+        before: result.before,
+        settings: result.snapshot.settings,
+        token: this.#mutationToken,
+      };
     });
   }
 
@@ -220,6 +310,32 @@ class FileSettingsStore implements SettingsStore {
     return result;
   }
 
+  /** Durable write inside an already-serialized critical section. */
+  async #applyPatchCritical(
+    patch: LlmSettingsPatch
+  ): Promise<{ before: EffectiveLlmSettings; snapshot: SettingsSnapshot }> {
+    this.#assertPatchable(patch);
+    const persisted = await this.#readPersisted();
+    const before = this.#snapshot({ settings: persisted.settings, status: persisted.status }).settings;
+    const settings = applyPatch(persisted.settings, patch);
+    await writeSettingsFileAtomically(this.#filename, settings, this.#fs);
+    // The rename above is the sole durable commit point. Advancing the token
+    // and publishing the receipt happens only after it succeeds; a failed or
+    // rejected write never changes the file, the token, or the listeners.
+    this.#mutationToken = createSettingsMutationToken();
+    return { before, snapshot: this.#snapshot({ settings, status: "loaded" }) };
+  }
+
+  #publish(snapshot: SettingsSnapshot): void {
+    for (const listener of this.#listeners) {
+      try {
+        listener(snapshot);
+      } catch {
+        // A model-client subscriber cannot roll back an already durable file.
+      }
+    }
+  }
+
   #assertPatchable(patch: LlmSettingsPatch): void {
     const patchedFields = patchFields(patch);
     for (const field of this.#environment.fields) {
@@ -228,18 +344,39 @@ class FileSettingsStore implements SettingsStore {
   }
 
   #snapshot(persisted: PersistedRead): SettingsSnapshot {
-    const settings = validateCompleteSettings({ ...persisted.settings, ...this.#environment.values });
+    const environment = this.#environment;
+    // Environment values win over the persisted record. An environment-owned
+    // credential field (present with `undefined` after an empty override)
+    // therefore also clears any persisted key/binding pair via the spread.
+    const merged: MutableCompleteLlmSettings = { ...persisted.settings, ...environment.values };
+    if (environment.fields.includes("llm_api_key")) {
+      // The environment owns the credential: a persisted pair never rides
+      // along, and a key-only environment binds one locked origin per process.
+      merged.apiKey = environment.values.apiKey;
+      if (environment.keyOnly) {
+        if (merged.apiKey === undefined) {
+          merged.apiKeyOrigin = undefined;
+        } else {
+          this.#environmentKeyOrigin ??= parseEndpointOrigin(merged.llmBaseUrl, "llm_base_url");
+          merged.llmBaseUrl = this.#environmentKeyOrigin;
+          merged.apiKeyOrigin = this.#environmentKeyOrigin;
+        }
+      } else {
+        merged.apiKeyOrigin = merged.apiKey === undefined ? undefined : environment.values.llmBaseUrl;
+      }
+    }
+    const settings = validateCompleteSettings(merged);
     return Object.freeze({
       settings: Object.freeze(settings),
-      environmentOverrides: this.#environment.fields,
+      environmentOverrides: environment.fields,
       fileStatus: persisted.status,
     });
   }
 
   async #readPersisted(): Promise<PersistedRead> {
-    let handle: Awaited<ReturnType<typeof fs.open>> | undefined;
+    let handle: Awaited<ReturnType<typeof fsPromises.open>> | undefined;
     try {
-      handle = await fs.open(this.#filename, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+      handle = await this.#fs.open(this.#filename, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
       const stat = await handle.stat();
       if (!stat.isFile() || stat.size > MAX_SETTINGS_FILE_BYTES) {
         return { settings: DEFAULT_LLM_SETTINGS, status: "invalid" };
@@ -262,7 +399,7 @@ class FileSettingsStore implements SettingsStore {
 }
 
 function resolveEnvironmentSettings(env: Readonly<Record<string, string | undefined>>): EnvironmentSettings {
-  const values: MutableEnvironmentSettings = {};
+  const values: MutableEffectiveLlmSettings = {};
   const fields: LlmSettingField[] = [];
 
   const baseUrlName = env.LLM_BASE_URL !== undefined ? "LLM_BASE_URL" : "LITELLM_BASE_URL";
@@ -276,6 +413,12 @@ function resolveEnvironmentSettings(env: Readonly<Record<string, string | undefi
     values.apiKey = apiKey === "" ? undefined : validateApiKey(apiKey);
     fields.push("llm_api_key");
   }
+  // A process-environment credential is bound to one effective origin for the
+  // whole process. Without an environment base URL, the store captures the
+  // first effective persisted/default origin and locks `llm_base_url` too, so
+  // a Settings retarget can never carry the environment key elsewhere.
+  const keyOnly = apiKey !== undefined && apiKey !== "" && baseUrl === undefined;
+  if (keyOnly) fields.push("llm_base_url");
   if (env.LM_STUDIO_BASE_URL !== undefined) {
     values.lmStudioBaseUrl =
       env.LM_STUDIO_BASE_URL === "" ? undefined : parseEndpointOrigin(env.LM_STUDIO_BASE_URL, "lm_studio_base_url");
@@ -296,8 +439,15 @@ function resolveEnvironmentSettings(env: Readonly<Record<string, string | undefi
     fields.push("embedding_dimension");
   }
 
-  validateCompleteSettings({ ...DEFAULT_LLM_SETTINGS, ...values });
-  return { values: Object.freeze(values), fields: Object.freeze(fields) };
+  validateCompleteSettings({
+    ...DEFAULT_LLM_SETTINGS,
+    ...values,
+    // Validate the environment credential against the origin it will bind to:
+    // the explicit environment URL when present, otherwise the default origin
+    // that key-only mode locks for the process. The store revalidates per snapshot.
+    ...(values.apiKey === undefined ? {} : { apiKeyOrigin: values.llmBaseUrl ?? DEFAULT_LLM_SETTINGS.llmBaseUrl }),
+  });
+  return { values: Object.freeze(values), fields: Object.freeze(fields), keyOnly };
 }
 
 function decodeSettingsFile(input: unknown): EffectiveLlmSettings {
@@ -306,50 +456,82 @@ function decodeSettingsFile(input: unknown): EffectiveLlmSettings {
     "version",
     "llm_base_url",
     "llm_api_key",
+    "llm_api_key_origin",
     "lm_studio_base_url",
     "default_chat_model",
     "default_embed_model",
     "embedding_dimension",
   ]);
-  if (
-    Object.keys(input).some((key) => !allowed.has(key)) ||
-    (input.version !== LEGACY_SETTINGS_FILE_VERSION && input.version !== SETTINGS_FILE_VERSION)
-  ) {
+  const legacy = input.version === PRE_DIMENSION_FILE_VERSION || input.version === UNBOUND_CREDENTIAL_FILE_VERSION;
+  if (Object.keys(input).some((key) => !allowed.has(key)) || (!legacy && input.version !== SETTINGS_FILE_VERSION)) {
     throw new SettingsValidationError();
   }
   if (
     typeof input.llm_base_url !== "string" ||
     typeof input.default_chat_model !== "string" ||
     typeof input.default_embed_model !== "string" ||
-    (input.version === SETTINGS_FILE_VERSION && typeof input.embedding_dimension !== "number") ||
-    (input.version === LEGACY_SETTINGS_FILE_VERSION && input.embedding_dimension !== undefined) ||
+    (input.version === PRE_DIMENSION_FILE_VERSION && input.embedding_dimension !== undefined) ||
+    (input.version !== PRE_DIMENSION_FILE_VERSION && typeof input.embedding_dimension !== "number") ||
     (input.llm_api_key !== undefined && typeof input.llm_api_key !== "string") ||
+    (input.llm_api_key_origin !== undefined && typeof input.llm_api_key_origin !== "string") ||
     (input.lm_studio_base_url !== undefined &&
       input.lm_studio_base_url !== null &&
       typeof input.lm_studio_base_url !== "string")
   ) {
     throw new SettingsValidationError();
   }
+  if (!legacy && (input.llm_api_key === undefined) !== (input.llm_api_key_origin === undefined)) {
+    // The version-3 credential and its binding are an inseparable pair; a
+    // half-pair never becomes an effective credential.
+    throw new SettingsValidationError();
+  }
   return validateCompleteSettings({
     llmBaseUrl: input.llm_base_url,
-    ...(input.llm_api_key === undefined ? {} : { apiKey: input.llm_api_key }),
+    // Version 1 and 2 files stored an unbound credential. Preserve the valid
+    // non-secret endpoint/health/model fields and deliberately drop the key;
+    // the user re-enters it once and the next write persists the bound pair.
+    ...(legacy || input.llm_api_key === undefined
+      ? {}
+      : { apiKey: input.llm_api_key, apiKeyOrigin: input.llm_api_key_origin }),
     ...(input.lm_studio_base_url === undefined || input.lm_studio_base_url === null
       ? {}
       : { lmStudioBaseUrl: input.lm_studio_base_url }),
     chatModel: input.default_chat_model,
     embedModel: input.default_embed_model,
     embeddingDimension:
-      input.version === SETTINGS_FILE_VERSION
-        ? validateEmbeddingDimension(input.embedding_dimension, "embedding_dimension")
-        : DEFAULT_EMBEDDING_DIMENSION,
+      input.version === PRE_DIMENSION_FILE_VERSION
+        ? DEFAULT_EMBEDDING_DIMENSION
+        : validateEmbeddingDimension(input.embedding_dimension, "embedding_dimension"),
   });
 }
 
 function applyPatch(current: EffectiveLlmSettings, patch: LlmSettingsPatch): EffectiveLlmSettings {
   assertPatchTypes(patch);
+  const llmBaseUrl =
+    patch.llmBaseUrl === undefined ? current.llmBaseUrl : parseEndpointOrigin(patch.llmBaseUrl, "llm_base_url");
+  const originUnchanged = modelEndpointOriginsEquivalent(llmBaseUrl, current.llmBaseUrl);
+
+  let apiKey: string | undefined;
+  let apiKeyOrigin: string | undefined;
+  if (patch.apiKey === undefined) {
+    // An omitted key preserves the pair only for an equivalent target origin;
+    // a cross-origin change clears both in patch and preview.
+    if (originUnchanged) {
+      apiKey = current.apiKey;
+      apiKeyOrigin = current.apiKeyOrigin;
+    }
+  } else if (patch.apiKey === null) {
+    apiKey = undefined;
+    apiKeyOrigin = undefined;
+  } else {
+    apiKey = patch.apiKey;
+    apiKeyOrigin = llmBaseUrl;
+  }
+
   return validateCompleteSettings({
-    llmBaseUrl: patch.llmBaseUrl ?? current.llmBaseUrl,
-    apiKey: patch.apiKey === undefined ? current.apiKey : patch.apiKey === null ? undefined : patch.apiKey,
+    llmBaseUrl,
+    ...(apiKey === undefined ? {} : { apiKey }),
+    ...(apiKeyOrigin === undefined ? {} : { apiKeyOrigin }),
     lmStudioBaseUrl:
       patch.lmStudioBaseUrl === undefined
         ? current.lmStudioBaseUrl
@@ -357,10 +539,7 @@ function applyPatch(current: EffectiveLlmSettings, patch: LlmSettingsPatch): Eff
           ? undefined
           : patch.lmStudioBaseUrl,
     chatModel:
-      patch.chatModel ??
-      (patch.llmBaseUrl !== undefined && parseEndpointOrigin(patch.llmBaseUrl, "llm_base_url") !== current.llmBaseUrl
-        ? ""
-        : current.chatModel),
+      patch.chatModel ?? (patch.llmBaseUrl !== undefined && llmBaseUrl !== current.llmBaseUrl ? "" : current.chatModel),
     embedModel: patch.embedModel ?? current.embedModel,
     embeddingDimension: patch.embeddingDimension ?? current.embeddingDimension,
   });
@@ -369,6 +548,12 @@ function applyPatch(current: EffectiveLlmSettings, patch: LlmSettingsPatch): Eff
 function validateCompleteSettings(input: EffectiveLlmSettings): EffectiveLlmSettings {
   const llmBaseUrl = parseEndpointOrigin(input.llmBaseUrl, "llm_base_url");
   const apiKey = input.apiKey === undefined ? undefined : validateApiKey(input.apiKey);
+  const apiKeyOrigin =
+    input.apiKeyOrigin === undefined ? undefined : parseEndpointOrigin(input.apiKeyOrigin, "llm_api_key");
+  if ((apiKey === undefined) !== (apiKeyOrigin === undefined)) throw new SettingsValidationError("llm_api_key");
+  if (apiKey !== undefined && apiKeyOrigin !== undefined && !modelEndpointOriginsEquivalent(llmBaseUrl, apiKeyOrigin)) {
+    throw new SettingsValidationError("llm_api_key");
+  }
   const lmStudioBaseUrl =
     input.lmStudioBaseUrl === undefined ? undefined : parseEndpointOrigin(input.lmStudioBaseUrl, "lm_studio_base_url");
   const chatModel = input.chatModel === "" ? "" : validateModelId(input.chatModel, "default_chat_model");
@@ -378,7 +563,7 @@ function validateCompleteSettings(input: EffectiveLlmSettings): EffectiveLlmSett
 
   return {
     llmBaseUrl,
-    ...(apiKey === undefined ? {} : { apiKey }),
+    ...(apiKey === undefined ? {} : { apiKey, apiKeyOrigin }),
     ...(lmStudioBaseUrl === undefined || modelEndpointOriginsEquivalent(llmBaseUrl, lmStudioBaseUrl)
       ? {}
       : { lmStudioBaseUrl }),
@@ -453,7 +638,7 @@ function containsHeaderBreakingCharacter(value: string): boolean {
   return false;
 }
 
-function parseEndpointOrigin(value: string, field: "llm_base_url" | "lm_studio_base_url"): string {
+function parseEndpointOrigin(value: string, field: LlmSettingField): string {
   if (value.length < 1 || value.length > MAX_ENDPOINT_CHARS) throw new SettingsValidationError(field);
   let endpoint: URL;
   try {
@@ -488,40 +673,52 @@ function patchFields(patch: LlmSettingsPatch): Set<LlmSettingField> {
   return fields;
 }
 
-async function writeSettingsFileAtomically(filename: string, settings: EffectiveLlmSettings): Promise<void> {
+async function writeSettingsFileAtomically(
+  filename: string,
+  settings: EffectiveLlmSettings,
+  filesystem: SettingsFileSystem
+): Promise<void> {
   const directory = path.dirname(filename);
-  await fs.mkdir(directory, { recursive: true, mode: 0o700 });
+  await filesystem.mkdir(directory, { recursive: true, mode: 0o700 });
   const temporary = path.join(directory, `.${path.basename(filename)}.${process.pid}.${randomUUID()}.tmp`);
   const payload: PersistedSettingsFile = {
     version: SETTINGS_FILE_VERSION,
     llm_base_url: settings.llmBaseUrl,
-    ...(settings.apiKey === undefined ? {} : { llm_api_key: settings.apiKey }),
+    ...(settings.apiKey === undefined || settings.apiKeyOrigin === undefined
+      ? {}
+      : { llm_api_key: settings.apiKey, llm_api_key_origin: settings.apiKeyOrigin }),
     ...(settings.lmStudioBaseUrl === undefined ? {} : { lm_studio_base_url: settings.lmStudioBaseUrl }),
     default_chat_model: settings.chatModel,
     default_embed_model: settings.embedModel,
     embedding_dimension: settings.embeddingDimension,
   };
-  let handle: Awaited<ReturnType<typeof fs.open>> | undefined;
+  let handle: Awaited<ReturnType<typeof fsPromises.open>> | undefined;
   try {
-    handle = await fs.open(temporary, "wx", 0o600);
+    handle = await filesystem.open(temporary, "wx", 0o600);
     await handle.writeFile(`${JSON.stringify(payload, null, 2)}\n`, "utf8");
+    // Every fallible hardening step precedes the rename. The mode repair runs
+    // on the temporary handle before publication so no throwing step can follow
+    // the durable commit.
+    const temporaryStat = await handle.stat();
+    if ((temporaryStat.mode & 0o777) !== 0o600) await handle.chmod(0o600);
     await handle.sync();
     await handle.close();
     handle = undefined;
-    await fs.rename(temporary, filename);
-    await fs.chmod(filename, 0o600);
-    await syncDirectory(directory);
+    // The rename is the single durable commit point of a settings write.
+    await filesystem.rename(temporary, filename);
   } catch (error) {
     if (handle) await handle.close().catch(() => undefined);
-    await fs.unlink(temporary).catch(() => undefined);
+    await filesystem.unlink(temporary).catch(() => undefined);
     throw error;
   }
+  // Directory fsync stays best-effort and content-free after commit.
+  await syncDirectory(directory, filesystem);
 }
 
-async function syncDirectory(directory: string): Promise<void> {
-  let handle: Awaited<ReturnType<typeof fs.open>> | undefined;
+async function syncDirectory(directory: string, filesystem: SettingsFileSystem): Promise<void> {
+  let handle: Awaited<ReturnType<typeof fsPromises.open>> | undefined;
   try {
-    handle = await fs.open(directory, "r");
+    handle = await filesystem.open(directory, "r");
     await handle.sync();
   } catch {
     // The file itself was fsynced; directory fsync is a best-effort portability hardening.

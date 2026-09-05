@@ -2,7 +2,9 @@ import path from "node:path";
 import { config } from "./config.js";
 import {
   createSettingsStore,
+  sameEffectiveLlmSettings,
   type EffectiveLlmSettings,
+  type SettingsMutationStore,
   type SettingsSnapshot,
   type SettingsStore,
 } from "./settingsStore.js";
@@ -18,7 +20,7 @@ export interface InitializeRuntimeSettingsOptions {
 
 interface RuntimeSettingsState {
   readonly settingsFile: string;
-  readonly store: SettingsStore;
+  readonly store: SettingsMutationStore;
   unsubscribe: () => void;
   current?: RuntimeSettingsSnapshot;
   loading?: Promise<RuntimeSettingsSnapshot>;
@@ -36,6 +38,14 @@ export async function initializeRuntimeSettings(
 
 /** The singleton store to register with createSettingsRoutes. */
 export function runtimeSettingsStore(): SettingsStore {
+  return getOrCreateState().store;
+}
+
+/**
+ * The same singleton with the internal conditional-apply surface used by the
+ * contained endpoint apply/restore chain. Never exposed over HTTP.
+ */
+export function runtimeSettingsMutationStore(): SettingsMutationStore {
   return getOrCreateState().store;
 }
 
@@ -94,20 +104,13 @@ function loadRuntimeSettings(target: RuntimeSettingsState): Promise<RuntimeSetti
 }
 
 function publishSnapshot(target: RuntimeSettingsState, snapshot: SettingsSnapshot): void {
+  // Equality includes the credential and its non-secret origin binding, so an
+  // effective credential change (including an origin-pair clear) invalidates
+  // the cached LLM client while a same-value durable write can keep the
+  // revision stable.
   const revision =
-    target.current && sameEffectiveSettings(target.current.settings, snapshot.settings)
+    target.current && sameEffectiveLlmSettings(target.current.settings, snapshot.settings)
       ? target.current.revision
       : ++nextRevision;
   target.current = Object.freeze({ ...snapshot, revision });
-}
-
-function sameEffectiveSettings(left: EffectiveLlmSettings, right: EffectiveLlmSettings): boolean {
-  return (
-    left.llmBaseUrl === right.llmBaseUrl &&
-    left.apiKey === right.apiKey &&
-    left.lmStudioBaseUrl === right.lmStudioBaseUrl &&
-    left.chatModel === right.chatModel &&
-    left.embedModel === right.embedModel &&
-    left.embeddingDimension === right.embeddingDimension
-  );
 }

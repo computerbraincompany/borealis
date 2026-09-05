@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import type { FileHandle } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -6,6 +7,7 @@ import {
   createSettingsStore,
   DEFAULT_LLM_SETTINGS,
   SettingsEnvironmentOverrideError,
+  type SettingsFileSystem,
   SettingsValidationError,
   toPublicLlmSettings,
 } from "../settingsStore.js";
@@ -63,9 +65,10 @@ describe("persisted LLM settings", () => {
 
     const raw = JSON.parse(await fs.readFile(filename, "utf8"));
     expect(raw).toEqual({
-      version: 2,
+      version: 3,
       llm_base_url: "https://models.example.test",
       llm_api_key: "provider-secret-value",
+      llm_api_key_origin: "https://models.example.test",
       lm_studio_base_url: "http://localhost:1234",
       default_chat_model: "chat-model",
       default_embed_model: "embed-model",
@@ -73,6 +76,139 @@ describe("persisted LLM settings", () => {
     });
     expect((await fs.stat(filename)).mode & 0o777).toBe(0o600);
     expect(await fs.readdir(path.dirname(filename))).toEqual(["settings.json"]);
+  });
+
+  it("binds an explicit key to the target origin and clears it on an unpaired origin change", async () => {
+    const filename = await temporarySettingsPath();
+    const store = createSettingsStore({ path: filename, env: {} });
+    await store.patch({
+      llmBaseUrl: "https://origin-a.example.test",
+      apiKey: "origin-a-secret",
+      chatModel: "chat-one",
+      embedModel: "embed-one",
+    });
+
+    // A model-only patch preserves the matching pair.
+    const modelOnly = await store.patch({ embedModel: "embed-two" });
+    expect(modelOnly.settings.apiKey).toBe("origin-a-secret");
+    expect(modelOnly.settings.apiKeyOrigin).toBe("https://origin-a.example.test");
+
+    // A URL-only patch to a different origin clears both, durably.
+    const retargeted = await store.patch({ llmBaseUrl: "https://origin-b.example.test" });
+    expect(retargeted.settings.apiKey).toBeUndefined();
+    expect(retargeted.settings.apiKeyOrigin).toBeUndefined();
+    expect(toPublicLlmSettings(retargeted).llm_api_key_configured).toBe(false);
+    const clearedFile = JSON.parse(await fs.readFile(filename, "utf8")) as Record<string, unknown>;
+    expect(clearedFile).not.toHaveProperty("llm_api_key");
+    expect(clearedFile).not.toHaveProperty("llm_api_key_origin");
+
+    // Supplying URL and key together atomically binds the new pair.
+    const paired = await store.patch({ llmBaseUrl: "https://origin-c.example.test", apiKey: "origin-c-secret" });
+    expect(paired.settings.apiKeyOrigin).toBe("https://origin-c.example.test");
+    expect(JSON.parse(await fs.readFile(filename, "utf8"))).toMatchObject({
+      version: 3,
+      llm_base_url: "https://origin-c.example.test",
+      llm_api_key: "origin-c-secret",
+      llm_api_key_origin: "https://origin-c.example.test",
+    });
+
+    // Loopback-equivalent spellings keep the binding.
+    const local = await store.patch({ llmBaseUrl: "http://127.0.0.1:1234", apiKey: "local-secret" });
+    expect(local.settings.apiKeyOrigin).toBe("http://127.0.0.1:1234");
+    const aliased = await store.patch({ llmBaseUrl: "http://localhost:1234" });
+    expect(aliased.settings.apiKey).toBe("local-secret");
+    expect(aliased.settings.apiKeyOrigin).toBe("http://127.0.0.1:1234");
+
+    // Explicit null clears the pair.
+    const cleared = await store.patch({ apiKey: null });
+    expect(cleared.settings.apiKey).toBeUndefined();
+    expect(cleared.settings.apiKeyOrigin).toBeUndefined();
+  });
+
+  it("previews a cross-origin draft without the old origin's credential", async () => {
+    const store = createSettingsStore({ path: await temporarySettingsPath(), env: {} });
+    await store.patch({ llmBaseUrl: "https://origin-a.example.test", apiKey: "origin-a-preview-secret" });
+
+    const crossOrigin = await store.preview({ llmBaseUrl: "https://origin-b.example.test" });
+    expect(crossOrigin.settings.apiKey).toBeUndefined();
+    const sameOrigin = await store.preview({ chatModel: "next-chat" });
+    expect(sameOrigin.settings.apiKey).toBe("origin-a-preview-secret");
+    const paired = await store.preview({ llmBaseUrl: "https://origin-b.example.test", apiKey: "draft-b-secret" });
+    expect(paired.settings.apiKeyOrigin).toBe("https://origin-b.example.test");
+  });
+
+  it("decodes version-1 and version-2 files, preserving non-secret fields and dropping unbound keys", async () => {
+    for (const version of [1, 2] as const) {
+      const filename = await temporarySettingsPath();
+      await fs.writeFile(
+        filename,
+        `${JSON.stringify({
+          version,
+          llm_base_url: "https://legacy.example.test",
+          llm_api_key: "unbound-legacy-secret",
+          lm_studio_base_url: "http://localhost:1234",
+          default_chat_model: "legacy-chat",
+          default_embed_model: "legacy-embed",
+          ...(version === 1 ? {} : { embedding_dimension: 1024 }),
+        })}\n`,
+        { mode: 0o600 }
+      );
+      const store = createSettingsStore({ path: filename, env: {} });
+      const snapshot = await store.read();
+
+      expect(snapshot.fileStatus).toBe("loaded");
+      expect(snapshot.settings).toMatchObject({
+        llmBaseUrl: "https://legacy.example.test",
+        lmStudioBaseUrl: "http://localhost:1234",
+        chatModel: "legacy-chat",
+        embedModel: "legacy-embed",
+        embeddingDimension: version === 1 ? 768 : 1024,
+      });
+      expect(snapshot.settings.apiKey).toBeUndefined();
+      expect(snapshot.settings.apiKeyOrigin).toBeUndefined();
+      expect(toPublicLlmSettings(snapshot).llm_api_key_configured).toBe(false);
+      expect(JSON.stringify(snapshot.settings)).not.toContain("unbound-legacy-secret");
+
+      // The next successful patch upgrades the file to the bound version without reviving the key.
+      await store.patch({ chatModel: "upgraded-chat" });
+      expect(JSON.parse(await fs.readFile(filename, "utf8"))).toMatchObject({
+        version: 3,
+        default_chat_model: "upgraded-chat",
+      });
+      const raw = JSON.parse(await fs.readFile(filename, "utf8")) as Record<string, unknown>;
+      expect(raw).not.toHaveProperty("llm_api_key");
+    }
+  });
+
+  it("never makes a malformed or mismatched version-3 credential pair effective", async () => {
+    const cases: Array<Record<string, unknown>> = [
+      { llm_api_key: "half-pair-secret" },
+      { llm_api_key_origin: "https://origin.example.test" },
+      {
+        llm_api_key: "mismatched-secret",
+        llm_api_key_origin: "https://elsewhere.example.test",
+      },
+    ];
+    for (const variant of cases) {
+      const filename = await temporarySettingsPath();
+      await fs.writeFile(
+        filename,
+        `${JSON.stringify({
+          version: 3,
+          llm_base_url: "https://origin.example.test",
+          default_chat_model: "chat-model",
+          default_embed_model: "embed-model",
+          embedding_dimension: 768,
+          ...variant,
+        })}\n`,
+        { mode: 0o600 }
+      );
+      const store = createSettingsStore({ path: filename, env: {} });
+      const snapshot = await store.read();
+      expect(snapshot.fileStatus).toBe("invalid");
+      expect(snapshot.settings).toEqual(DEFAULT_LLM_SETTINGS);
+      expect(JSON.stringify(snapshot.settings)).not.toMatch(/half-pair|mismatched/);
+    }
   });
 
   it("preserves an omitted API key and clears it only with explicit null", async () => {
@@ -151,6 +287,7 @@ describe("persisted LLM settings", () => {
     expect(snapshot.settings).toEqual({
       llmBaseUrl: "https://environment.example.test",
       apiKey: "environment-secret",
+      apiKeyOrigin: "https://environment.example.test",
       lmStudioBaseUrl: "http://localhost:1234",
       chatModel: "environment-chat",
       embedModel: "environment-embed",
@@ -211,7 +348,7 @@ describe("persisted LLM settings", () => {
     });
     await store.patch({ embeddingDimension: 384 });
     expect(JSON.parse(await fs.readFile(filename, "utf8"))).toMatchObject({
-      version: 2,
+      version: 3,
       embedding_dimension: 384,
     });
   });
@@ -318,4 +455,227 @@ describe("persisted LLM settings", () => {
       })
     ).toThrow("invalid settings");
   });
+
+  it("binds an explicit environment URL and key to the environment origin", async () => {
+    const filename = await temporarySettingsPath();
+    const persisted = createSettingsStore({ path: filename, env: {} });
+    await persisted.patch({ llmBaseUrl: "https://persisted.example.test", apiKey: "persisted-secret" });
+
+    const store = createSettingsStore({
+      path: filename,
+      env: { LLM_BASE_URL: "https://environment.example.test", LLM_API_KEY: "environment-pair-secret" },
+    });
+    const snapshot = await store.read();
+    expect(snapshot.settings).toMatchObject({
+      llmBaseUrl: "https://environment.example.test",
+      apiKey: "environment-pair-secret",
+      apiKeyOrigin: "https://environment.example.test",
+    });
+    expect(JSON.stringify(toPublicLlmSettings(snapshot))).not.toContain("environment-pair-secret");
+  });
+
+  it("locks the first effective origin for a key-only environment credential", async () => {
+    const filename = await temporarySettingsPath();
+    const persisted = createSettingsStore({ path: filename, env: {} });
+    await persisted.patch({
+      llmBaseUrl: "https://first-effective.example.test",
+      apiKey: "ignored-persisted-secret",
+      chatModel: "persisted-chat",
+      embedModel: "persisted-embed",
+    });
+
+    const store = createSettingsStore({ path: filename, env: { LLM_API_KEY: "environment-only-secret" } });
+    const initial = await store.read();
+    expect(initial.settings).toMatchObject({
+      llmBaseUrl: "https://first-effective.example.test",
+      apiKey: "environment-only-secret",
+      apiKeyOrigin: "https://first-effective.example.test",
+      chatModel: "persisted-chat",
+    });
+    const managed = toPublicLlmSettings(initial).managed_by_env;
+    expect(managed.llm_base_url).toBe(true);
+    expect(managed.llm_api_key).toBe(true);
+    expect(JSON.stringify(toPublicLlmSettings(initial))).not.toContain("environment-only-secret");
+
+    await expect(store.patch({ llmBaseUrl: "https://retarget.example.test" })).rejects.toBeInstanceOf(
+      SettingsEnvironmentOverrideError
+    );
+    await expect(store.patch({ apiKey: "rejected" })).rejects.toBeInstanceOf(SettingsEnvironmentOverrideError);
+
+    // A direct file edit cannot carry the environment key to a new origin in the same process.
+    await fs.writeFile(
+      filename,
+      `${JSON.stringify({
+        version: 3,
+        llm_base_url: "https://edited-elsewhere.example.test",
+        llm_api_key: "edited-persisted-secret",
+        llm_api_key_origin: "https://edited-elsewhere.example.test",
+        default_chat_model: "edited-chat",
+        default_embed_model: "edited-embed",
+        embedding_dimension: 768,
+      })}\n`,
+      { mode: 0o600 }
+    );
+    const locked = await store.read();
+    expect(locked.settings).toMatchObject({
+      llmBaseUrl: "https://first-effective.example.test",
+      apiKey: "environment-only-secret",
+      apiKeyOrigin: "https://first-effective.example.test",
+    });
+    expect(locked.settings.chatModel).toBe("edited-chat");
+  });
+
+  it("locks the default origin for a key-only legacy alias environment credential", async () => {
+    const store = createSettingsStore({
+      path: await temporarySettingsPath(),
+      env: { LITELLM_API_KEY: "alias-secret" },
+    });
+    const snapshot = await store.read();
+    expect(snapshot.settings).toMatchObject({
+      llmBaseUrl: DEFAULT_LLM_SETTINGS.llmBaseUrl,
+      apiKey: "alias-secret",
+      apiKeyOrigin: DEFAULT_LLM_SETTINGS.llmBaseUrl,
+    });
+    expect(toPublicLlmSettings(snapshot).managed_by_env.llm_base_url).toBe(true);
+    await expect(store.patch({ llmBaseUrl: "https://retarget.example.test" })).rejects.toBeInstanceOf(
+      SettingsEnvironmentOverrideError
+    );
+  });
+
+  it("treats rename as the only durable commit point with exactly one token advance", async () => {
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), "borealis-settings-seam-"));
+    temporaryDirectories.push(directory);
+    const filename = path.join(directory, "settings.json");
+    const seam = createSeamFs({ widenedTemporaryMode: true });
+    const store = createSettingsStore({ path: filename, env: {}, fs: seam.fs });
+    await store.patch({ chatModel: "committed-chat", embedModel: "committed-embed" });
+    const committed = await fs.readFile(filename, "utf8");
+    const before = await store.loadMutationState();
+
+    // A preview never advances the token.
+    await store.preview({ chatModel: "preview-chat" });
+    expect((await store.loadMutationState()).token).toBe(before.token);
+
+    // Every injected pre-rename hardening failure leaves the old file and the
+    // old token in place; the failure reports as a rejection, not a commit.
+    for (const failing of ["mkdir", "writeFile", "chmod", "sync", "close", "rename"] as const) {
+      seam.failOn = failing;
+      await expect(store.patch({ chatModel: "rejected-chat" })).rejects.toThrow(failing);
+      seam.failOn = undefined;
+      expect(await fs.readFile(filename, "utf8")).toBe(committed);
+      const unchanged = await store.loadMutationState();
+      expect(unchanged.token).toBe(before.token);
+      expect(unchanged.settings.chatModel).toBe("committed-chat");
+    }
+
+    // The successful rename is the commit point: new file, exactly one new
+    // token, and no throwing state-changing step after the rename.
+    const success = await store.patch({ chatModel: "final-chat" });
+    expect(success.settings.chatModel).toBe("final-chat");
+    expect((await fs.stat(filename)).mode & 0o777).toBe(0o600);
+    expect(await fs.readFile(filename, "utf8")).not.toBe(committed);
+    const stale = await store.applyIfUnchanged(before, { chatModel: "stale" });
+    expect(stale).toEqual({ applied: false });
+    const after = await store.loadMutationState();
+    expect(after.token).not.toBe(before.token);
+    const current = await store.applyIfUnchanged(after, { chatModel: "final-chat" });
+    expect(current.applied).toBe(true);
+    expect((await store.loadMutationState()).token).not.toBe(after.token);
+    const chmodIndex = seam.log.indexOf("chmod");
+    const renameIndex = seam.log.indexOf("rename");
+    expect(chmodIndex).toBeGreaterThanOrEqual(0);
+    expect(renameIndex).toBeGreaterThanOrEqual(0);
+    expect(chmodIndex).toBeLessThan(renameIndex);
+    // Nothing after the final committed rename throws or mutates state.
+    expect(seam.log.slice(seam.log.lastIndexOf("rename") + 1)).not.toContain("chmod");
+  });
+
+  it("advances the mutation token on every durable patch including same-value writes, never on mismatch", async () => {
+    const store = createSettingsStore({ path: await temporarySettingsPath(), env: {} });
+    await store.patch({ llmBaseUrl: "https://pair.example.test", apiKey: "pair-secret", chatModel: "pair-chat" });
+
+    const snapshot = await store.loadMutationState();
+    expect(snapshot.settings).toMatchObject({
+      llmBaseUrl: "https://pair.example.test",
+      apiKey: "pair-secret",
+      apiKeyOrigin: "https://pair.example.test",
+    });
+
+    // A same-value durable write still advances the token.
+    await store.patch({ chatModel: "pair-chat" });
+    const stale = await store.applyIfUnchanged(snapshot, { chatModel: "overwrite" });
+    expect(stale).toEqual({ applied: false });
+
+    // A conditional apply matching the current token writes and re-tokenizes.
+    const current = await store.loadMutationState();
+    const applied = await store.applyIfUnchanged(current, { chatModel: "conditional-chat" });
+    expect(applied.applied).toBe(true);
+    if (!applied.applied) throw new Error("unreachable");
+    expect(applied.before.chatModel).toBe("pair-chat");
+    expect(applied.settings.chatModel).toBe("conditional-chat");
+    const rerun = await store.applyIfUnchanged(current, { chatModel: "double-write" });
+    expect(rerun).toEqual({ applied: false });
+    // The mismatch receipt carries no settings, token, or credential detail.
+    expect(Object.keys(rerun)).toEqual(["applied"]);
+  });
 });
+
+type SeamStep = "mkdir" | "writeFile" | "chmod" | "sync" | "close" | "rename" | "unlink";
+
+/**
+ * Persistence seam recording the write flow and able to fail one step on
+ * demand. Failures only affect the temporary-handle write path so reads and
+ * directory syncing keep working between attempts.
+ */
+function createSeamFs(options: { widenedTemporaryMode?: boolean } = {}) {
+  const log: string[] = [];
+  const seam: { fs: SettingsFileSystem; log: string[]; failOn?: SeamStep } = { fs: undefined as never, log };
+  const fail = (step: SeamStep) => {
+    if (seam.failOn === step) throw new Error(`seam failure: ${step}`);
+  };
+  const wrapHandle = (handle: FileHandle, isWrite: boolean): FileHandle =>
+    new Proxy(handle, {
+      get(target, property, receiver) {
+        const value = Reflect.get(target, property, receiver);
+        if (
+          isWrite &&
+          typeof value === "function" &&
+          ["writeFile", "chmod", "sync", "close"].includes(String(property))
+        ) {
+          return (...args: unknown[]) => {
+            const step = String(property) as SeamStep;
+            log.push(step);
+            fail(step);
+            return (value as (...inner: unknown[]) => unknown).apply(target, args);
+          };
+        }
+        return value;
+      },
+    });
+  seam.fs = {
+    mkdir: async (...args: Parameters<typeof fs.mkdir>) => {
+      log.push("mkdir");
+      fail("mkdir");
+      await fs.mkdir(...args);
+    },
+    open: async (target, optionsArg, modeArg) => {
+      log.push("open");
+      const isWrite = optionsArg === "wx";
+      if (isWrite && options.widenedTemporaryMode) {
+        return wrapHandle(await fs.open(target, "wx", 0o644), true);
+      }
+      return wrapHandle(await fs.open(target, optionsArg as string | number, modeArg), isWrite);
+    },
+    rename: async (...args) => {
+      log.push("rename");
+      fail("rename");
+      return fs.rename(...args);
+    },
+    unlink: async (...args) => {
+      log.push("unlink");
+      fail("unlink");
+      return fs.unlink(...args);
+    },
+  };
+  return seam;
+}

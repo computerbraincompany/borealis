@@ -207,12 +207,21 @@ Engine contract: Borealis spawns the configured binary as
 [extra_args...]` (the llama.cpp `llama-server` shape), polls body-free
 `GET /v1/models` until healthy within a 180-second budget, and reports
 `off/starting/healthy/crashed/stopped`. When healthy, and only when the
-provider endpoint is not environment-managed, the engine's loopback origin is
-applied through the live settings store and the prior origin is restored on
-stop; an environment-managed endpoint is reported via
-`endpoint_managed_by_env` instead of being overridden. Engine process output
-is never read or logged, and orderly shutdown stops the engine before the
-embedded stores close.
+provider endpoint is not environment-managed, the engine's keyless loopback
+origin is applied through the live settings store — a saved remote credential
+is explicitly cleared and never follows the switch — and the prior
+origin/key pair is restored on stop. The apply and the restore are atomic
+full-snapshot compare-and-swaps inside the settings write queue, guarded by an
+opaque process-local mutation token that advances on every durable write: an
+intervening endpoint, key-only, model, health-endpoint, or same-value change,
+or an A→human→A value cycle, makes the restore a no-op that preserves the
+human choice. Reapplying after a crashed engine preserves the original
+pre-engine pair, and a conditional apply that loses a race discards the whole
+restore chain rather than keeping a stale expectation. An
+environment-managed endpoint is reported via `endpoint_managed_by_env` instead
+of being overridden. Engine process output and provider credentials are never
+read or logged, and orderly shutdown stops the engine before the embedded
+stores close.
 
 Engine start checks the configured paths deterministically (binary before
 model, so an absent binary always wins the diagnostic) and subscribes to the
@@ -630,12 +639,25 @@ Choose an advertised model afterward. Existing chat models and the embedding
 index identity remain unchanged. `default_chat_model: ""` explicitly unsets it.
 
 `llm_base_url`, `llm_api_key`, `lm_studio_base_url`, `default_chat_model`,
-`default_embed_model`, and `embedding_dimension` (integer 1–16,384). Omitting
-`llm_api_key` preserves it; sending `null` clears it. `lm_studio_base_url: null`
-clears the optional health endpoint. The response has the same redacted shape as
-`GET`. Version-2 settings persist the embedding dimension; version-1 files are
-read compatibly with the safe default. The settings file stores the API key as
-plaintext and is replaced atomically with mode `0600`.
+`default_embed_model`, and `embedding_dimension` (integer 1–16,384). A saved
+credential is persisted with its bound endpoint origin; the two are an
+inseparable pair. Omitting `llm_api_key` preserves the pair only when the
+target origin is equivalent to the bound origin; an origin change with an
+omitted key clears the credential durably. Supplying `llm_base_url` and
+`llm_api_key` together binds the new pair atomically. Sending `null` clears
+both. `lm_studio_base_url: null` clears the optional health endpoint. The
+response has the same redacted shape as `GET`; no response, error, or log ever
+exposes the stored key or its binding origin. Version-3 settings persist the
+key/origin pair beside the embedding dimension. Version-1 and version-2 files
+are read compatibly: their endpoint, health-endpoint, model, and (from version
+2) dimension fields are preserved while an unbound legacy key is dropped and
+reported unconfigured until it is re-entered. On disk the pair is
+`llm_api_key` plus `llm_api_key_origin`, written only together; the binding
+origin is an internal persistence field and never appears in any API payload.
+A malformed or mismatched version-3 pair never becomes an effective credential.
+The settings file stores
+the key as plaintext and is replaced atomically with mode `0600`, with the
+final rename as its single durable commit point.
 
 Both endpoint fields accept bare HTTP(S) origins only: no credentials, path
 (including `/v1`), query, or fragment. Borealis appends `/v1` itself. HTTP is
@@ -644,9 +666,13 @@ health origin equivalent to the primary origin is omitted from the effective
 configuration to avoid a duplicate probe.
 
 Environment-managed fields return `409` if included in a patch, connection-test
-draft, or qualification draft, even with the same value. Model IDs are trimmed,
-contain 1–256 characters, and must identify distinct chat and embedding models,
-including through aliases.
+draft, or qualification draft, even with the same value. An `LLM_API_KEY` (or
+`LITELLM_API_KEY`) set without an environment base URL is bound to the first
+effective endpoint of that process and additionally marks `llm_base_url`
+environment-managed, so the Settings API cannot retarget the endpoint away
+from the environment key; a direct settings-file edit plus restart remains an
+explicit operator rebind. Model IDs are trimmed, contain 1–256 characters, and
+must identify distinct chat and embedding models, including through aliases.
 
 Canonical environment overrides are `LLM_BASE_URL`, `LLM_API_KEY`,
 `LLM_CHAT_MODEL`, `LLM_EMBED_MODEL`, and `EMBEDDING_DIM`, plus
@@ -661,7 +687,10 @@ persisting, and performs a body-free `GET /v1/models`. Success returns
 `503 {"ok":false}` without URL, credential, response body, or exception details.
 The probe has a five-second timeout and does not follow redirects or validate
 model availability through inference. An omitted test body uses saved effective
-settings. When a remote provider is selected, chat prompts/history, retrieval
+settings. A URL-only cross-origin draft is probed without the saved origin's
+`Authorization` header; a draft that supplies both endpoint and key sends only
+the draft key, and neither the credential nor its binding is persisted by the
+preview. When a remote provider is selected, chat prompts/history, retrieval
 queries, and selected source/tool context leave the machine under that provider's
 data policy. Source text also goes to the provider for embeddings during
 ingestion, before any chat attachment is required. Parsing, analytical SQL,

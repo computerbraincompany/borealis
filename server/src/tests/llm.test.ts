@@ -13,7 +13,12 @@ import {
   streamingChat,
 } from "../llm.js";
 import { resolveLlmModelId } from "../llmAliases.js";
-import { closeRuntimeSettings, initializeRuntimeSettings, runtimeSettingsStore } from "../runtimeSettings.js";
+import {
+  closeRuntimeSettings,
+  getRuntimeSettings,
+  initializeRuntimeSettings,
+  runtimeSettingsStore,
+} from "../runtimeSettings.js";
 import { TOOL_DEFS } from "../tools.js";
 
 let temporaryDirectory = "";
@@ -157,6 +162,42 @@ describe("explicit model routing", () => {
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
+  });
+});
+
+describe("cached client credential binding", () => {
+  it("rebuilds the client only for effective changes and never carries a stale-origin key", async () => {
+    await runtimeSettingsStore().patch({
+      llmBaseUrl: "https://origin-a.example.test",
+      apiKey: "origin-a-client-key",
+      chatModel: "client-chat",
+      embedModel: "client-embed",
+    });
+    const first = await getLlmClient();
+    expect(first.apiKey).toBe("origin-a-client-key");
+    expect(await getLlmClient()).toBe(first);
+
+    // A same-value durable write leaves effective settings unchanged, so the
+    // revision-stable cached client is reused.
+    await runtimeSettingsStore().patch({ chatModel: "client-chat" });
+    expect(await getLlmClient()).toBe(first);
+
+    // A URL-only cross-origin change clears the effective credential, so the
+    // rebuilt client must not carry the old origin's key.
+    await runtimeSettingsStore().patch({ llmBaseUrl: "https://origin-b.example.test" });
+    const second = await getLlmClient();
+    expect(second).not.toBe(first);
+    expect(second.apiKey).not.toBe("origin-a-client-key");
+    expect(second.apiKey).toBe("borealis-keyless-local-runtime");
+    const snapshot = await getRuntimeSettings();
+    expect(snapshot.settings.apiKey).toBeUndefined();
+    expect(snapshot.settings.apiKeyOrigin).toBeUndefined();
+
+    // Re-pairing an explicit key rebuilds the client with a matching credential.
+    await runtimeSettingsStore().patch({ apiKey: "origin-b-client-key" });
+    const third = await getLlmClient();
+    expect(third).not.toBe(second);
+    expect(third.apiKey).toBe("origin-b-client-key");
   });
 });
 

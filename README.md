@@ -172,8 +172,12 @@ those options. Point Borealis at a `llama-server` binary and model file (which
 it can download and SHA-256-verify into the app's own data directory), then use
 the [contained-model API](docs/API.md#contained-models) to start and stop the
 engine. Borealis health-checks and stops that process as part of the workspace,
-switches the provider to its loopback origin, and restores whatever was there
-before. **Settings → Local engine** provides the contained setup and lifecycle
+switches the provider to its keyless loopback origin — a saved remote
+credential never follows the switch — and restores the original endpoint/key
+pair on stop. That restore is an atomic compare-and-swap: any Settings write
+made while the engine was active, even one that writes identical values back,
+wins, and Borealis leaves that choice untouched rather than restoring over it.
+**Settings → Local engine** provides the contained setup and lifecycle
 controls — configuration, verified downloads, and engine start/stop with live
 state. When the endpoint is managed by an environment override, Borealis
 reports the stand-down instead of overriding it.
@@ -238,9 +242,22 @@ a different provider between embedding batches by a concurrent Settings edit.
 
 Provider settings are shared by all accounts using the same server. A saved API
 key is stored in `settings.json` with mode `0600`, not encrypted or held in the
-macOS Keychain. Responses expose only whether a key is configured; they never
-return the key. Leave its input blank to preserve it or use **Clear saved key**.
-Health responses, logs, and chat events do not contain keys.
+macOS Keychain, and it is bound to exactly one endpoint origin. Responses expose
+only whether a key is configured; they never return the key, its binding, or any
+other credential detail. Health responses, logs, and chat events do not contain
+keys.
+
+Blanking the key input preserves the saved key only while the endpoint stays
+put: changing the endpoint without supplying a new key clears the saved
+credential — in connection-test previews too, so a URL-only change never sends
+the old origin's key to a new one. Supplying a new endpoint and key together
+stores the new bound pair atomically, and **Clear saved key** clears the pair
+explicitly. Keys saved by older versions were not bound to an origin; upgrading
+preserves the endpoint and model configuration but deactivates such an unbound
+key until it is entered once. A provider key supplied only through the
+environment (without `LLM_BASE_URL`) binds to the endpoint resolved when the
+process starts and locks that base URL against Settings retargeting for the
+lifetime of the process.
 
 Environment overrides remain available for operators and CI and make their
 corresponding Settings fields read-only; changing these requires a restart.

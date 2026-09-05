@@ -295,6 +295,77 @@ describe("authenticated settings routes", () => {
     });
   });
 
+  it("previews a URL-only cross-origin draft without the saved origin's Authorization", async () => {
+    const observations: Array<{ url?: string; authorization?: string }> = [];
+    const savedOrigin = await startCatalogServer((req, reply) => {
+      observations.push({ url: `saved:${req.url}`, authorization: req.headers.authorization });
+      reply.writeHead(200, { "Content-Type": "application/json" });
+      reply.end('{"data":[]}');
+    });
+    const draftOrigin = await startCatalogServer((req, reply) => {
+      observations.push({ url: `draft:${req.url}`, authorization: req.headers.authorization });
+      reply.writeHead(200, { "Content-Type": "application/json" });
+      reply.end('{"data":[]}');
+    });
+    const { store } = await temporaryStore();
+    await store.patch({ llmBaseUrl: savedOrigin, apiKey: "saved-origin-secret" });
+    const app = await buildApp(store);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/settings/test",
+      headers: auth,
+      payload: { llm_base_url: draftOrigin },
+    });
+
+    expect(response.statusCode).toBe(200);
+    // The probe reached only the draft origin and carried no credential.
+    expect(observations).toEqual([{ url: "draft:/v1/models", authorization: undefined }]);
+    // The saved credential remains configured for its own origin, untouched.
+    const unchanged = await app.inject({ method: "GET", url: "/api/settings", headers: auth });
+    expect(unchanged.json().llm_api_key_configured).toBe(true);
+    const durable = await app.inject({
+      method: "PATCH",
+      url: "/api/settings",
+      headers: auth,
+      payload: { llm_base_url: draftOrigin },
+    });
+    expect(durable.json().llm_api_key_configured).toBe(false);
+  });
+
+  it("sends a paired draft key only to the intended preview origin without persisting it", async () => {
+    const observations: Array<{ url?: string; authorization?: string }> = [];
+    const savedOrigin = await startCatalogServer((req, reply) => {
+      observations.push({ url: `saved:${req.url}`, authorization: req.headers.authorization });
+      reply.writeHead(200, { "Content-Type": "application/json" });
+      reply.end('{"data":[]}');
+    });
+    const draftOrigin = await startCatalogServer((req, reply) => {
+      observations.push({ url: `draft:${req.url}`, authorization: req.headers.authorization });
+      reply.writeHead(200, { "Content-Type": "application/json" });
+      reply.end('{"data":[]}');
+    });
+    const { store, filename } = await temporaryStore();
+    await store.patch({ llmBaseUrl: savedOrigin, apiKey: "saved-origin-secret" });
+    const app = await buildApp(store);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/settings/test",
+      headers: auth,
+      payload: { llm_base_url: draftOrigin, llm_api_key: "paired-draft-secret" },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(observations).toEqual([{ url: "draft:/v1/models", authorization: "Bearer paired-draft-secret" }]);
+    expect(response.body).not.toContain("paired-draft-secret");
+    // Preview persisted nothing: the saved pair still describes the durable file.
+    const raw = JSON.parse(await fs.readFile(filename, "utf8")) as Record<string, unknown>;
+    expect(raw.llm_base_url).toBe(savedOrigin);
+    expect(raw.llm_api_key).toBe("saved-origin-secret");
+    expect(raw.llm_api_key_origin).toBe(savedOrigin);
+  });
+
   it("turns upstream failure bodies into a bounded 503 and supports an empty draft", async () => {
     const origin = await startCatalogServer((_req, reply) => {
       reply.writeHead(401, { "Content-Type": "text/plain" });
