@@ -1,7 +1,7 @@
 import type { PendingSourceDelete } from "./db/stores/sourceStore.js";
 import { dataService } from "./dataService.js";
 import { storageRuntime } from "./storageRuntime.js";
-import { removeSourceArtifact } from "./storageArtifacts.js";
+import { isMissingOwnedSourceArtifact, removeSourceArtifact } from "./storageArtifacts.js";
 
 const MAX_DELETE_BATCH = 1_000;
 const CLEANUP_RETRY_CODE = "SOURCE_CLEANUP_RETRY";
@@ -10,7 +10,10 @@ export interface SourceCleanupDependencies {
   deleteVectors(sourceId: string): Promise<number>;
   deactivateDatasetLocation(accountId: string, name: string, location: string): Promise<unknown>;
   cleanupDatasetCache(accountId: string, name: string, location: string): Promise<unknown>;
-  removeUploadArtifact(intent: PendingSourceDelete): Promise<unknown>;
+  /** True only when the exact owned upload artifact was actually removed. */
+  removeUploadArtifact(intent: PendingSourceDelete): Promise<boolean>;
+  /** True only when the exact owned upload location is proven already absent. */
+  isMissingUploadArtifact(intent: PendingSourceDelete): Promise<boolean>;
   markFailure(intent: PendingSourceDelete): Promise<unknown>;
   clearIntent(intent: PendingSourceDelete): Promise<unknown>;
 }
@@ -22,8 +25,9 @@ export interface SourceCleanupResult {
 
 /**
  * Complete durable source deletions outside SQLite transactions. Every LanceDB
- * purge finishes before filesystem or DuckDB cleanup begins. A failed batch
- * keeps all remaining markers for idempotent boot repair.
+ * purge finishes before filesystem or DuckDB cleanup begins. An upload marker
+ * clears only after proven removal or proven absence at the exact owned path.
+ * A failed batch keeps all remaining markers for idempotent boot repair.
  */
 export async function completeSourceDeleteIntents(
   intentsInput: readonly PendingSourceDelete[],
@@ -69,7 +73,12 @@ async function cleanupExternalArtifacts(
   }
   if (!intent.filePath) return;
   await dependencies.deactivateDatasetLocation(intent.accountId, intent.name, intent.filePath);
-  await dependencies.removeUploadArtifact(intent);
+  if (await dependencies.removeUploadArtifact(intent)) return;
+  // A false removal is idempotently complete only when the canonical exact
+  // ownership classifier proves the artifact is already absent at its owned
+  // location. Anything else must keep the durable intent retryable.
+  if (await dependencies.isMissingUploadArtifact(intent)) return;
+  throw new Error("source upload artifact removal could not be proven");
 }
 
 function runtimeDependencies(): SourceCleanupDependencies {
@@ -86,6 +95,12 @@ function runtimeDependencies(): SourceCleanupDependencies {
         name: intent.name,
         filePath: intent.filePath ?? "",
         connector: null,
+      }),
+    isMissingUploadArtifact: (intent) =>
+      isMissingOwnedSourceArtifact({
+        accountId: intent.accountId,
+        sourceId: intent.sourceId,
+        filePath: intent.filePath ?? "",
       }),
     markFailure: (intent) =>
       runtime.sources.updatePendingSourceDelete(intent.accountId, intent.sourceId, {

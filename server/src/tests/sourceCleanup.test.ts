@@ -39,6 +39,54 @@ describe("durable source cleanup coordinator", () => {
     expect(calls).toEqual(["vectors:upload-1", "deactivate:/uploads/file.csv", "artifact:upload-1", "clear:upload-1"]);
   });
 
+  it("keeps the marker retryable when removal resolves false and the exact owned path is not proven missing", async () => {
+    const calls: string[] = [];
+    const dependencies = deps(calls);
+    dependencies.removeUploadArtifact = vi.fn(async (value) => {
+      calls.push(`artifact:${value.sourceId}`);
+      return false;
+    });
+    const upload = { ...intent("upload-1", null, ["/uploads/file.csv"]), filePath: "/uploads/file.csv" };
+
+    await expect(completeSourceDeleteIntents([upload], dependencies)).resolves.toEqual({
+      completed: false,
+      intents: 1,
+    });
+    expect(calls).toEqual([
+      "vectors:upload-1",
+      "deactivate:/uploads/file.csv",
+      "artifact:upload-1",
+      "missing:upload-1",
+      "failed:upload-1",
+    ]);
+  });
+
+  it("clears the marker when removal resolves false but the exact owned path is proven already missing", async () => {
+    const calls: string[] = [];
+    const dependencies = deps(calls);
+    dependencies.removeUploadArtifact = vi.fn(async (value) => {
+      calls.push(`artifact:${value.sourceId}`);
+      return false;
+    });
+    dependencies.isMissingUploadArtifact = vi.fn(async (value) => {
+      calls.push(`missing:${value.sourceId}`);
+      return true;
+    });
+    const upload = { ...intent("upload-1", null, ["/uploads/file.csv"]), filePath: "/uploads/file.csv" };
+
+    await expect(completeSourceDeleteIntents([upload], dependencies)).resolves.toEqual({
+      completed: true,
+      intents: 1,
+    });
+    expect(calls).toEqual([
+      "vectors:upload-1",
+      "deactivate:/uploads/file.csv",
+      "artifact:upload-1",
+      "missing:upload-1",
+      "clear:upload-1",
+    ]);
+  });
+
   it("leaves every marker retryable and records a stable failure code when cleanup fails", async () => {
     const calls: string[] = [];
     const dependencies = deps(calls);
@@ -86,6 +134,11 @@ function deps(calls: string[]): SourceCleanupDependencies {
     }),
     removeUploadArtifact: vi.fn(async (value) => {
       calls.push(`artifact:${value.sourceId}`);
+      return true;
+    }),
+    isMissingUploadArtifact: vi.fn(async (value) => {
+      calls.push(`missing:${value.sourceId}`);
+      return false;
     }),
     markFailure: vi.fn(async (value) => {
       calls.push(`failed:${value.sourceId}`);

@@ -12,6 +12,7 @@ vi.mock("../llm.js", () => {
 vi.mock("../storageArtifacts.js", () => ({
   resolveSourceArtifact: vi.fn(async ({ filePath }: { filePath: string }) => filePath),
   removeSourceArtifact: vi.fn(async () => true),
+  isMissingOwnedSourceArtifact: vi.fn(async () => false),
 }));
 vi.mock("../dataService.js", () => ({
   DataServiceError: class DataServiceError extends Error {

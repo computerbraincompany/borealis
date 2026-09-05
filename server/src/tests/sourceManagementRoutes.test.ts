@@ -51,6 +51,7 @@ vi.mock("../storageArtifacts.js", () => ({
   createUploadResourceDirectory: vi.fn(),
   cleanupCreatedUploadResource: vi.fn(),
   removeSourceArtifact: vi.fn(),
+  isMissingOwnedSourceArtifact: vi.fn(async () => false),
 }));
 
 import { signToken } from "../auth.js";
@@ -64,6 +65,7 @@ import { closeStorageRuntime, initializeStorageRuntime, storageRuntime } from ".
 import {
   cleanupCreatedUploadResource,
   createUploadResourceDirectory,
+  isMissingOwnedSourceArtifact,
   removeSourceArtifact,
 } from "../storageArtifacts.js";
 
@@ -72,6 +74,7 @@ const FOREIGN = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const auth = { authorization: `Bearer ${signToken({ userId: ACCOUNT, email: "owner@example.test" })}` };
 const wakeMock = vi.mocked(wakeIngestionWorkers);
 const removeArtifactMock = vi.mocked(removeSourceArtifact);
+const missingArtifactMock = vi.mocked(isMissingOwnedSourceArtifact);
 const createDirectoryMock = vi.mocked(createUploadResourceDirectory);
 const cleanupCreatedMock = vi.mocked(cleanupCreatedUploadResource);
 const listDatasetSummariesMock = vi.mocked(dataService.listDatasetSummaries);
@@ -111,6 +114,8 @@ beforeEach(async () => {
   wakeMock.mockReset();
   removeArtifactMock.mockReset();
   removeArtifactMock.mockResolvedValue(true);
+  missingArtifactMock.mockReset();
+  missingArtifactMock.mockResolvedValue(false);
   createDirectoryMock.mockReset();
   createDirectoryMock.mockImplementation(async (accountId, sourceId) => {
     const directory = path.join(testState.uploadDir, accountId, sourceId);
@@ -418,6 +423,37 @@ describe("source upload boundaries", () => {
       }),
     ]);
     expect(response.body).not.toContain("raw filesystem failure");
+  });
+
+  it("leaves a durable retry marker when upload removal resolves false without proven absence", async () => {
+    const sourceId = "22222222-2222-4222-8222-222222222222";
+    const filePath = path.join(testState.uploadDir, ACCOUNT, sourceId, "ledger.csv");
+    await storageRuntime().sourceIngestion.createUploadSource(ACCOUNT, {
+      id: sourceId,
+      baseName: "ledger",
+      kind: "tabular",
+      displayName: "Ledger.csv",
+      filePath,
+      mime: "text/csv",
+      sizeBytes: 10,
+    });
+    removeArtifactMock.mockResolvedValueOnce(false);
+    missingArtifactMock.mockResolvedValueOnce(false);
+    const app = await buildApp();
+
+    const response = await app.inject({ method: "DELETE", url: `/api/sources/${sourceId}`, headers: auth });
+
+    expect(response.statusCode).toBe(200);
+    await expect(storageRuntime().sources.listPendingSourceDeletes(ACCOUNT)).resolves.toEqual([
+      expect.objectContaining({
+        sourceId,
+        attempts: 1,
+        lastError: "SOURCE_CLEANUP_RETRY",
+      }),
+    ]);
+    expect(response.body).not.toContain(filePath);
+    expect(response.body).not.toContain(testState.uploadDir);
+    expect(response.body).not.toContain("could not be proven");
   });
 
   it("rejects deletion and reingest mutations while their exact source is unavailable", async () => {

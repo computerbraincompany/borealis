@@ -27,6 +27,7 @@ vi.mock("../dataService.js", () => ({
 vi.mock("../storageArtifacts.js", () => ({
   resolveSourceArtifact: vi.fn(async ({ filePath }: { filePath: string }) => filePath),
   removeSourceArtifact: vi.fn(async () => true),
+  isMissingOwnedSourceArtifact: vi.fn(async () => false),
 }));
 
 import { dataService } from "../dataService.js";
