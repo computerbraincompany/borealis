@@ -730,7 +730,7 @@ describe("ChatStore", () => {
         sourceScope: { source_mode: "selected", source_ids: [] },
         agentId,
       });
-      expect(bound.agent).toEqual({ id: agentId, name: "Finance analyst" });
+      expect(bound.agent).toEqual({ id: agentId, name: "Finance analyst", icon: "bot", color: "blue" });
 
       await expect(
         store.createChat({
@@ -776,6 +776,15 @@ describe("ChatStore", () => {
         name: "Finance analyst",
         version: 1,
         instructions: "Reconcile totals first.",
+        tools: [
+          "retrieve",
+          "list_sources",
+          "query_data",
+          "describe_data",
+          "render_chart",
+          "create_report",
+          "fetch_url",
+        ],
       });
       const runRow = await ledger.get<{ agent_instructions: string | null }>(
         "SELECT agent_instructions FROM chat_runs WHERE id=?",

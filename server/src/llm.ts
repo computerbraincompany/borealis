@@ -695,7 +695,7 @@ export async function chatOnce(messages: ChatMessage[], opts: ChatOptions): Prom
     messages,
     max_tokens: opts.maxTokens ?? 1800,
     temperature: opts.temperature ?? 0.2,
-    ...(opts.tools ? { tools: opts.tools } : {}),
+    ...(opts.tools?.length ? { tools: opts.tools } : {}),
     ...(opts.json ? { response_format: { type: "json_object" } } : {}),
   };
   return client.chat.completions.create(body, {
@@ -734,7 +734,7 @@ export async function streamingChat(
     messages,
     max_tokens: opts.maxTokens ?? 2200,
     temperature: opts.temperature ?? 0.2,
-    ...(opts.tools ? { tools: opts.tools } : {}),
+    ...(opts.tools?.length ? { tools: opts.tools } : {}),
     stream: true,
   } as const;
 

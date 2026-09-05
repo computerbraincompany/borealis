@@ -1194,3 +1194,35 @@ Asynchronous ingestion failures appear in source status/metadata after the
 initial successful upload. Once SSE starts, agent failures use its `error` and
 `run-ended` events instead of changing the HTTP status. Treat public messages as
 stable categories, not as a substitute for the correlated server logs.
+
+### Agent editor configuration
+
+Agent create and patch bodies accept `description` (up to 240 characters), `icon`,
+`color`, `tools`, and `skill_ids` alongside `name` and `instructions`. Patches save
+one atomic revision. Instructions retain the 8,000-character limit. Omitted
+capability fields preserve defaults on creation and existing values on edits;
+`tools: []` explicitly disables every built-in tool. Agent list/detail responses
+include this configuration, and revisions include their original configuration.
+Bound chat responses include the agent's icon and color.
+
+`GET /api/agent-capabilities` returns the seven supported built-in tool IDs.
+Selected skills belong to the authenticated account. Up to eight skills may be
+assigned, each with at most 8,000 characters; the combined agent prompt, skill
+contents, and section labels must fit 32,000 characters. Missing skills or an
+oversized combination produce an actionable configuration error. Message
+acceptance captures skill text and the tool allowlist in the same transaction as
+the run, so later edits cannot change an active run. The model receives only
+enabled tool definitions, and dispatch independently rejects disabled tools.
+
+| Endpoint | Behavior |
+| --- | --- |
+| `GET /api/agent-skills` | Account-owned skill library, maximum 200 records; numeric versions |
+| `POST /api/agent-skills` | Create `{name, description?, content}` and revision 1 |
+| `PUT /api/agent-skills/:id` | Replace skill fields and append a revision atomically |
+| `DELETE /api/agent-skills/:id` | Remove an owned skill; agents retaining its ID fail configuration validation |
+
+All endpoints authenticate before body parsing. Create/update bodies use the
+bounded long-text JSON ceiling. Markdown import in the editor extracts simple
+`name`/`description` front matter and submits the remaining instructions through
+the same skill-create endpoint. It does not install packages or execute files.
+MCP is a separate rollout stage described in `docs/AGENT_EDITOR_ROLLOUT.md`.

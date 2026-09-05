@@ -32,11 +32,14 @@ describe("agent instructions in the system prompt", () => {
     expect(prompt).not.toContain("Workspace agent instructions");
   });
 
-  it("truncates oversized instructions to the prompt budget", async () => {
-    const oversized = "x".repeat(MAX_AGENT_INSTRUCTION_PROMPT_CHARS + 5_000);
-    const prompt = await buildSystemPrompt("11111111-1111-4111-8111-111111111111", emptyScope, undefined, oversized);
-    const section = prompt.slice(prompt.indexOf("## Workspace agent instructions"));
-    const instructions = section.slice(section.indexOf("\n\n") + 2);
-    expect(instructions.length).toBe(MAX_AGENT_INSTRUCTION_PROMPT_CHARS);
+  it("rejects oversized combinations instead of silently dropping instructions", async () => {
+    await expect(
+      buildSystemPrompt(
+        "11111111-1111-4111-8111-111111111111",
+        emptyScope,
+        undefined,
+        "x".repeat(MAX_AGENT_INSTRUCTION_PROMPT_CHARS + 1)
+      )
+    ).rejects.toThrow("budget");
   });
 });

@@ -1,3 +1,4 @@
+import { agentSkillRoutes } from "./routes/agentSkills.js";
 import type { FastifyInstance } from "fastify";
 import swagger from "@fastify/swagger";
 import { authRoutes, requireAuth } from "./auth.js";
@@ -54,6 +55,7 @@ export async function routes(app: FastifyInstance): Promise<void> {
   await app.register(sourceRoutes);
   await app.register(libraryRoutes);
   await app.register(agentRoutes);
+  await app.register(agentSkillRoutes);
   await app.register(containedRoutes);
   await app.register(connectorRoutes);
   await app.register(reportRoutes);

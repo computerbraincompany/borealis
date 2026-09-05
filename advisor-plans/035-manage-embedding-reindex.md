@@ -74,7 +74,7 @@ operation that never exposes a corpus containing mixed embedding identities.
 - bounded SQLite chunk snapshot reader, LanceDB staging lifecycle, startup apply
 - model/source/connector/chat gates, routes/UI/tests/docs/desktop lifecycle
 - no application-ledger schema migration; completed plan 031 retains v12 and
-  plans 006/012/020 retain v13–v15
+  plans 006/012/020 retain v14–v16
 
 ## Implementation steps
 

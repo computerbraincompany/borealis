@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 const apiMocks = vi.hoisted(() => ({
+  skills: vi.fn(),
   list: vi.fn(),
   create: vi.fn(),
   get: vi.fn(),
@@ -17,6 +18,7 @@ vi.mock("@/lib/api", () => ({
     update: apiMocks.update,
     remove: apiMocks.remove,
   },
+  agentSkillsApi: { list: apiMocks.skills },
   MAX_AGENT_INSTRUCTION_CHARS: 8_000,
 }));
 
@@ -44,6 +46,7 @@ const agent = {
 describe("AgentsView", () => {
   beforeEach(() => {
     Object.values(apiMocks).forEach((mock) => mock.mockReset());
+    apiMocks.skills.mockResolvedValue({ items: [] });
     apiMocks.list.mockResolvedValue({ items: [agent], next_cursor: null });
     apiMocks.get.mockResolvedValue({
       ...agent,
@@ -103,7 +106,7 @@ describe("AgentsView", () => {
     fireEvent.click(screen.getByRole("button", { name: /New agent/i }));
     fireEvent.change(screen.getByLabelText("Agent name"), { target: { value: "Diligence" } });
     fireEvent.change(screen.getByLabelText("Agent instructions"), { target: { value: "Review every source." } });
-    fireEvent.click(screen.getByRole("button", { name: "Create" }));
+    fireEvent.click(screen.getByRole("button", { name: "Create agent" }));
 
     fireEvent.click(await screen.findByRole("button", { name: "Load older agents" }));
     expect(await screen.findByText("Researcher")).toBeInTheDocument();
@@ -121,10 +124,14 @@ describe("AgentsView", () => {
     fireEvent.change(screen.getByLabelText("Agent instructions"), {
       target: { value: "Ground every claim in the data room." },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Create" }));
+    fireEvent.click(screen.getByRole("button", { name: "Create agent" }));
 
     await waitFor(() =>
-      expect(apiMocks.create).toHaveBeenCalledWith("Diligence", "Ground every claim in the data room."),
+      expect(apiMocks.create).toHaveBeenCalledWith(
+        "Diligence",
+        "Ground every claim in the data room.",
+        expect.objectContaining({ icon: "bot", color: "blue" }),
+      ),
     );
   });
 
@@ -135,15 +142,18 @@ describe("AgentsView", () => {
     fireEvent.click(await screen.findByTitle("Revision history"));
     expect(await screen.findByText("v1")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: /Revise/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
     const input = screen.getByLabelText("Agent instructions");
     fireEvent.change(input, { target: { value: "Always open with the executive summary." } });
-    fireEvent.click(screen.getByRole("button", { name: "Save revision" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
 
     await waitFor(() =>
-      expect(apiMocks.update).toHaveBeenCalledWith("agent-1", {
-        instructions: "Always open with the executive summary.",
-      }),
+      expect(apiMocks.update).toHaveBeenCalledWith(
+        "agent-1",
+        expect.objectContaining({
+          instructions: "Always open with the executive summary.",
+        }),
+      ),
     );
   });
 

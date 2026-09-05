@@ -1,3 +1,5 @@
+import { AgentEditor } from "@/components/AgentEditor";
+import { AgentIdentity } from "@/components/AgentIdentity";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Bot, Plus, RefreshCw, Trash2, History, Loader2, Pencil } from "lucide-react";
 import { agentsApi, formatApiError, type AgentDetail, type AgentSummary } from "@/lib/api";
@@ -11,8 +13,6 @@ import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 
-const EMPTY_INSTRUCTIONS = "";
-
 export function AgentsView() {
   const [agents, setAgents] = useState<AgentSummary[]>([]);
   const [loading, setLoading] = useState(true);
@@ -20,14 +20,11 @@ export function AgentsView() {
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [pageError, setPageError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
-  const [newName, setNewName] = useState("");
-  const [newInstructions, setNewInstructions] = useState(EMPTY_INSTRUCTIONS);
   const [busy, setBusy] = useState(false);
   // Mutations that fail while a dialog is open must surface inside that dialog;
   // the page banner is hidden behind the modal overlay.
   const [dialogError, setDialogError] = useState<string | null>(null);
   const [reviseTarget, setReviseTarget] = useState<AgentSummary | null>(null);
-  const [reviseInstructions, setReviseInstructions] = useState("");
   const [renameTarget, setRenameTarget] = useState<AgentSummary | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [historyTarget, setHistoryTarget] = useState<AgentSummary | null>(null);
@@ -127,41 +124,6 @@ export function AgentsView() {
     };
   }, [load]);
 
-  const create = async () => {
-    const name = newName.trim();
-    const instructions = newInstructions.trim();
-    if (!name || !instructions) return;
-    setBusy(true);
-    setDialogError(null);
-    try {
-      await agentsApi.create(name, newInstructions);
-      setCreating(false);
-      setNewName("");
-      setNewInstructions(EMPTY_INSTRUCTIONS);
-      await load();
-    } catch (error: unknown) {
-      setDialogError(formatApiError(error, "Could not create the agent"));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const submitRevise = async () => {
-    if (!reviseTarget) return;
-    if (!reviseInstructions.trim() || reviseInstructions === reviseTarget.instructions) return;
-    setBusy(true);
-    setDialogError(null);
-    try {
-      await agentsApi.update(reviseTarget.id, { instructions: reviseInstructions });
-      setReviseTarget(null);
-      await load();
-    } catch (error: unknown) {
-      setDialogError(formatApiError(error, "Could not revise the agent"));
-    } finally {
-      setBusy(false);
-    }
-  };
-
   const submitRename = async () => {
     if (!renameTarget) return;
     const name = renameValue.trim();
@@ -214,8 +176,7 @@ export function AgentsView() {
           <div>
             <h1 className="text-2xl font-bold tracking-tight">Agents</h1>
             <p className="mt-1 text-sm text-muted-foreground">
-              Named, versioned instruction sets for a job. An agent shapes how a chat works; it never widens what the
-              runner can see or do.
+              Create dedicated assistants with their own identity, instructions, skills, and tools.
             </p>
           </div>
           <div className="flex items-center gap-2">
@@ -255,9 +216,7 @@ export function AgentsView() {
             {agents.map((agent) => (
               <Card key={agent.id} className="p-4 transition-colors hover:border-foreground/20">
                 <div className="flex items-start gap-4">
-                  <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
-                    <Bot className="h-5 w-5" />
-                  </div>
+                  <AgentIdentity icon={agent.icon} color={agent.color} />
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="truncate font-medium text-foreground">{agent.name}</span>
@@ -265,7 +224,7 @@ export function AgentsView() {
                       <span className="text-xs text-muted-foreground">{agent.instructions_chars} chars</span>
                     </div>
                     <p className="mt-1 line-clamp-2 whitespace-pre-wrap text-xs text-muted-foreground">
-                      {agent.instructions}
+                      {agent.description || agent.instructions}
                     </p>
                     <div className="mt-1.5 text-xs text-muted-foreground">Created {formatDate(agent.created_at)}</div>
                   </div>
@@ -277,10 +236,9 @@ export function AgentsView() {
                       onClick={() => {
                         setDialogError(null);
                         setReviseTarget(agent);
-                        setReviseInstructions(agent.instructions);
                       }}
                     >
-                      Revise
+                      Edit
                     </Button>
                     <Button
                       variant="ghost"
@@ -338,104 +296,21 @@ export function AgentsView() {
         )}
       </div>
 
-      {/* create dialog */}
-      <Dialog open={creating} onOpenChange={(value) => !value && !busy && setCreating(false)}>
-        <DialogContent className="max-w-lg">
-          <DialogHeader>
-            <DialogTitle>New agent</DialogTitle>
-            <DialogDescription>
-              Instructions are versioned: revising an agent later never changes chats already underway.
-            </DialogDescription>
-          </DialogHeader>
-          {dialogError && (
-            <p role="alert" className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
-              {dialogError}
-            </p>
-          )}
-          <form
-            className="space-y-3"
-            onSubmit={(event) => {
-              event.preventDefault();
-              void create();
-            }}
-          >
-            <Input
-              value={newName}
-              onChange={(event) => setNewName(event.target.value)}
-              maxLength={80}
-              aria-label="Agent name"
-              placeholder="Finance analyst"
-              autoFocus
-            />
-            <textarea
-              value={newInstructions}
-              onChange={(event) => setNewInstructions(event.target.value)}
-              maxLength={8_000}
-              aria-label="Agent instructions"
-              placeholder="How this agent should work: tone, checklists, analysis habits."
-              className="min-h-40 w-full rounded-md border bg-background px-3 py-2 text-sm"
-            />
-            <div className="flex justify-end gap-2">
-              <Button type="button" variant="ghost" size="sm" disabled={busy} onClick={() => setCreating(false)}>
-                Cancel
-              </Button>
-              <Button type="submit" size="sm" disabled={busy || !newName.trim() || !newInstructions.trim()}>
-                Create
-              </Button>
-            </div>
-          </form>
-        </DialogContent>
-      </Dialog>
-
-      {/* revise dialog */}
-      <Dialog
-        open={!!reviseTarget}
-        onOpenChange={(value) => {
-          if (!value && !busy) setReviseTarget(null);
-        }}
-      >
-        <DialogContent className="max-w-lg">
-          <DialogHeader>
-            <DialogTitle>Revise {reviseTarget?.name}</DialogTitle>
-            <DialogDescription>
-              Saving creates version {(reviseTarget?.current_version ?? 0) + 1}. Earlier revisions are kept and bound
-              chats keep the revision they started with.
-            </DialogDescription>
-          </DialogHeader>
-          {dialogError && (
-            <p role="alert" className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
-              {dialogError}
-            </p>
-          )}
-          <form
-            className="space-y-3"
-            onSubmit={(event) => {
-              event.preventDefault();
-              void submitRevise();
-            }}
-          >
-            <textarea
-              value={reviseInstructions}
-              onChange={(event) => setReviseInstructions(event.target.value)}
-              maxLength={8_000}
-              aria-label="Agent instructions"
-              className="min-h-40 w-full rounded-md border bg-background px-3 py-2 text-sm"
-            />
-            <div className="flex justify-end gap-2">
-              <Button type="button" variant="ghost" size="sm" disabled={busy} onClick={() => setReviseTarget(null)}>
-                Cancel
-              </Button>
-              <Button
-                type="submit"
-                size="sm"
-                disabled={busy || !reviseInstructions.trim() || reviseInstructions === reviseTarget?.instructions}
-              >
-                Save revision
-              </Button>
-            </div>
-          </form>
-        </DialogContent>
-      </Dialog>
+      {(creating || reviseTarget) && (
+        <AgentEditor
+          key={reviseTarget?.id ?? "new"}
+          agent={reviseTarget ?? undefined}
+          onClose={() => {
+            setCreating(false);
+            setReviseTarget(null);
+          }}
+          onSaved={() => {
+            setCreating(false);
+            setReviseTarget(null);
+            void load();
+          }}
+        />
+      )}
 
       {/* rename dialog */}
       <Dialog
@@ -529,7 +404,7 @@ export function AgentsView() {
       {deleteTarget && (
         <ConfirmDialog
           title={`Delete “${deleteTarget.name}”?`}
-          description="Chats bound to this agent keep the instruction revision they started with, but the agent and its history are removed. This cannot be undone."
+          description="Running messages keep their instruction snapshot. Future messages use the default assistant; the agent and its history are removed. This cannot be undone."
           busy={deletingId === deleteTarget.id}
           onConfirm={() => void confirmRemove()}
           onCancel={() => {

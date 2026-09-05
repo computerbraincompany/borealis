@@ -132,7 +132,8 @@ ${unavailableSummary}
  */
 function agentSection(instructions: string | null | undefined): string {
   if (!instructions || !instructions.trim()) return "";
-  const bounded = instructions.trim().slice(0, MAX_AGENT_INSTRUCTION_PROMPT_CHARS);
+  if (instructions.length > MAX_AGENT_INSTRUCTION_PROMPT_CHARS) throw new Error("agent prompt budget exceeded");
+  const bounded = instructions.trim();
   return `
 
 ## Workspace agent instructions
@@ -203,6 +204,7 @@ export async function runAgent(opts: {
   model: string;
   sourceScope: ResolvedSourceScope;
   agentInstructions?: string | null;
+  agentTools?: readonly string[] | null;
   userMessage?: { id: number | string };
   runId: string;
   signal?: AbortSignal;
@@ -228,6 +230,7 @@ export async function runAgent(opts: {
     content: await buildSystemPrompt(accountId, sourceScope, signal, agentInstructions),
   };
   const context: ToolRunContext = {
+    allowedTools: opts.agentTools,
     chartIds: [],
     evidence: [],
     queryResults: [],
@@ -249,7 +252,15 @@ export async function runAgent(opts: {
     const buffered: string[] = [];
     const res = await streamingChat(
       [system, ...messages],
-      { model, maxTokens: 2400, tools: TOOL_DEFS, signal },
+      {
+        model,
+        maxTokens: 2400,
+        tools:
+          opts.agentTools == null
+            ? TOOL_DEFS
+            : TOOL_DEFS.filter((tool) => opts.agentTools!.includes(tool.function.name)),
+        signal,
+      },
       (text) => buffered.push(text)
     );
     const msg = res.choices[0].message;
@@ -263,7 +274,11 @@ export async function runAgent(opts: {
     if (toolCalls.length > MAX_TOOL_CALLS_PER_ROUND || totalToolCalls + toolCalls.length > MAX_TOOL_CALLS_PER_RUN) {
       throw new Error("tool call budget exceeded");
     }
-    for (const toolCall of toolCalls) assertValidToolCall(toolCall);
+    for (const toolCall of toolCalls) {
+      assertValidToolCall(toolCall);
+      if (opts.agentTools != null && !opts.agentTools.includes(toolCall.function.name))
+        throw new Error("agent tool is disabled");
+    }
     totalToolCalls += toolCalls.length;
     messages.push(msg as any);
     for (const tc of toolCalls) {

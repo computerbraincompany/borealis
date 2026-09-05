@@ -1,3 +1,4 @@
+import { decodeAgentConfiguration, resolveAgentSkills } from "../../agentConfiguration.js";
 import { randomUUID } from "node:crypto";
 
 import {
@@ -117,7 +118,7 @@ export interface ChatSummary {
   readonly model: string;
   readonly source_mode: ChatSourceMode;
   /** Write-once agent binding from chat creation; null when unbound. */
-  readonly agent: Readonly<{ id: string; name: string }> | null;
+  readonly agent: Readonly<{ id: string; name: string; icon: string; color: string }> | null;
   readonly created_at: string;
   readonly updated_at: string;
 }
@@ -204,7 +205,13 @@ export interface AcceptedChatTurn {
   readonly model: string;
   readonly sourceScope: ResolvedChatSourceScope;
   /** Snapshot of the chat's bound agent at accept time; null when unbound. */
-  readonly agent: Readonly<{ id: string; name: string; version: number; instructions: string }> | null;
+  readonly agent: Readonly<{
+    id: string;
+    name: string;
+    version: number;
+    instructions: string;
+    tools: readonly string[];
+  }> | null;
   readonly userMessage: AcceptedUserMessage;
   readonly runId: string;
 }
@@ -239,6 +246,7 @@ interface ChatRow {
   source_mode?: unknown;
   agent_id?: unknown;
   agent_name?: unknown;
+  agent_configuration?: unknown;
   created_at?: unknown;
   updated_at?: unknown;
 }
@@ -317,7 +325,14 @@ function decodeChat(row: ChatRow): ChatSummary {
     model: requiredString(row.model, "chat model"),
     source_mode: sourceMode(row.source_mode),
     agent:
-      agentId === null ? null : Object.freeze({ id: agentId, name: requiredString(row.agent_name, "chat agent name") }),
+      agentId === null
+        ? null
+        : Object.freeze({
+            id: agentId,
+            name: requiredString(row.agent_name, "chat agent name"),
+            icon: decodeAgentConfiguration(row.agent_configuration).icon,
+            color: decodeAgentConfiguration(row.agent_configuration).color,
+          }),
     created_at: decodeIsoTimestamp(row.created_at, "chat created_at"),
     updated_at: decodeIsoTimestamp(row.updated_at, "chat updated_at"),
   });
@@ -542,7 +557,7 @@ export class ChatStore {
     if (page.after) parameters.push(page.after.timestamp, page.after.id);
     parameters.push(page.limit + 1);
     const rows = await this.ledger.all<ChatRow>(
-      `SELECT c.id,c.title,c.model,c.source_mode,c.agent_id,ag.name AS agent_name,c.created_at,c.updated_at
+      `SELECT c.id,c.title,c.model,c.source_mode,c.agent_id,ag.name AS agent_name,ag.configuration AS agent_configuration,c.created_at,c.updated_at
        FROM chats c
        LEFT JOIN agents ag ON ag.id=c.agent_id AND ag.account_id=c.account_id
        WHERE c.account_id=?${after} ORDER BY c.updated_at DESC,c.id DESC LIMIT ?`,
@@ -589,7 +604,7 @@ export class ChatStore {
         ]
       );
       const row = transaction.get<ChatRow>(
-        `SELECT c.id,c.title,c.model,c.source_mode,c.agent_id,ag.name AS agent_name,c.created_at,c.updated_at
+        `SELECT c.id,c.title,c.model,c.source_mode,c.agent_id,ag.name AS agent_name,ag.configuration AS agent_configuration,c.created_at,c.updated_at
          FROM chats c
          LEFT JOIN agents ag ON ag.id=c.agent_id AND ag.account_id=c.account_id
          WHERE c.id=? AND c.account_id=?`,
@@ -635,7 +650,7 @@ export class ChatStore {
 
     return this.ledger.withImmediateTransaction((transaction) => {
       const row = transaction.get<ChatRow>(
-        `SELECT c.id,c.title,c.model,c.source_mode,c.agent_id,ag.name AS agent_name,c.created_at,c.updated_at
+        `SELECT c.id,c.title,c.model,c.source_mode,c.agent_id,ag.name AS agent_name,ag.configuration AS agent_configuration,c.created_at,c.updated_at
          FROM chats c
          LEFT JOIN agents ag ON ag.id=c.agent_id AND ag.account_id=c.account_id
          WHERE c.id=? AND c.account_id=?`,
@@ -759,7 +774,7 @@ export class ChatStore {
 
   private async getChatSummaryRow(accountId: string, chatId: string): Promise<ChatSummary> {
     const row = await this.ledger.get<ChatRow>(
-      `SELECT c.id,c.title,c.model,c.source_mode,c.agent_id,ag.name AS agent_name,c.created_at,c.updated_at
+      `SELECT c.id,c.title,c.model,c.source_mode,c.agent_id,ag.name AS agent_name,ag.configuration AS agent_configuration,c.created_at,c.updated_at
        FROM chats c
        LEFT JOIN agents ag ON ag.id=c.agent_id AND ag.account_id=c.account_id
        WHERE c.id=? AND c.account_id=?`,
@@ -851,8 +866,14 @@ export class ChatStore {
         // edits or deletion can never change a running turn's prompt.
         let agent: AcceptedChatTurn["agent"] = null;
         if (chat.agent_id !== null && chat.agent_id !== undefined) {
-          const bound = transaction.get<{ id?: unknown; name?: unknown; version?: unknown; instructions?: unknown }>(
-            `SELECT a.id,a.name,a.current_version AS version,r.instructions
+          const bound = transaction.get<{
+            id?: unknown;
+            name?: unknown;
+            version?: unknown;
+            instructions?: unknown;
+            configuration?: unknown;
+          }>(
+            `SELECT a.configuration,a.id,a.name,a.current_version AS version,r.instructions
              FROM agents a
              JOIN agent_revisions r ON r.agent_id=a.id AND r.version=a.current_version AND r.account_id=a.account_id
              WHERE a.id=? AND a.account_id=?`,
@@ -863,7 +884,13 @@ export class ChatStore {
               id: requiredString(bound.id, "agent id"),
               name: requiredString(bound.name, "agent name"),
               version: decodeSafeInteger(bound.version, "agent version"),
-              instructions: requiredString(bound.instructions, "agent instructions"),
+              instructions: resolveAgentSkills(
+                transaction,
+                accountId,
+                decodeAgentConfiguration(bound.configuration),
+                requiredString(bound.instructions, "agent instructions")
+              ),
+              tools: Object.freeze(decodeAgentConfiguration(bound.configuration).tools),
             });
           }
         }
@@ -883,14 +910,15 @@ export class ChatStore {
         );
         transaction.run(
           `INSERT INTO chat_runs
-             (id,account_id,chat_id,user_message_id,status,agent_instructions,created_at,started_at)
-           VALUES (?,?,?,?,'running',?,?,?)`,
+             (id,account_id,chat_id,user_message_id,status,agent_instructions,agent_tools,created_at,started_at)
+           VALUES (?,?,?,?,'running',?,?,?,?)`,
           [
             runId,
             accountId,
             chatId,
             messageResult.lastInsertRowid,
             agent ? agent.instructions : null,
+            agent ? JSON.stringify(agent.tools) : null,
             createdAt,
             createdAt,
           ]

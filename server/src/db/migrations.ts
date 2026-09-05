@@ -1,6 +1,6 @@
 import { SqliteMigrationError } from "./types.js";
 
-export const LATEST_SQLITE_SCHEMA_VERSION = 12;
+export const LATEST_SQLITE_SCHEMA_VERSION = 13;
 
 interface MigrationDatabase {
   exec(sql: string): unknown;
@@ -483,6 +483,32 @@ CREATE INDEX report_shares_recipient_idx
   ON report_shares (recipient_account_id, shared_at DESC, report_id DESC);
 `;
 
+// Agent editor ships before the previously reserved (unimplemented) remediation migrations.
+const SCHEMA_V13 = `
+ALTER TABLE agents ADD COLUMN configuration TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(configuration));
+ALTER TABLE agent_revisions ADD COLUMN configuration TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(configuration));
+ALTER TABLE chat_runs ADD COLUMN agent_tools TEXT CHECK(agent_tools IS NULL OR json_valid(agent_tools));
+CREATE TABLE agent_skills (
+  id TEXT PRIMARY KEY,
+  account_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name TEXT NOT NULL CHECK(length(name) BETWEEN 1 AND 80),
+  description TEXT NOT NULL DEFAULT '' CHECK(length(description)<=240),
+  content TEXT NOT NULL CHECK(length(content) BETWEEN 1 AND 8000),
+  version INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(account_id,name)
+) STRICT;
+CREATE INDEX agent_skills_account_idx ON agent_skills(account_id,name,id);
+CREATE TABLE agent_skill_revisions (
+  skill_id TEXT NOT NULL REFERENCES agent_skills(id) ON DELETE CASCADE,
+  version INTEGER NOT NULL,
+  content TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY(skill_id,version)
+) STRICT;
+`;
+
 const migrations = [
   { version: 1, sql: SCHEMA_V1 },
   { version: 2, sql: SCHEMA_V2 },
@@ -496,6 +522,7 @@ const migrations = [
   { version: 10, sql: SCHEMA_V10 },
   { version: 11, sql: SCHEMA_V11 },
   { version: 12, sql: SCHEMA_V12 },
+  { version: 13, sql: SCHEMA_V13 },
 ] as const;
 
 function schemaVersion(database: MigrationDatabase): number {

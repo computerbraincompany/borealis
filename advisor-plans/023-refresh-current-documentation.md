@@ -65,13 +65,13 @@ For each row, read the completed plan for intent, then verify the final named so
 | Plans   | Final behavior to reconcile                                                                                                                                                                                                                       | Primary evidence to inspect                                                                                                                                                                            |
 | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | 001–004 | Disjoint unit/integration suites, source-current desktop verification, immutable migration fixtures, deterministic vertical agent coverage                                                                                                        | `server/vitest.config.ts`, `server/vitest.integration.config.ts`, `server/src/tests/vitestTestPartitions.ts`, root/server/desktop scripts, `server/src/tests/sqliteMigrationFixture.ts`, plan-004 test |
-| 005–006 | Provider credential bound to canonical origin; schema v13 provider-bound consent; early gates plus final same-settings-snapshot outbound authorization                                                                                            | settings/runtime/LLM/egress policy, `v013.sql`, tests; never inspect real values                                                                                                                       |
+| 005–006 | Provider credential bound to canonical origin; schema v14 provider-bound consent; early gates plus final same-settings-snapshot outbound authorization                                                                                            | settings/runtime/LLM/egress policy, `v014.sql`, tests; never inspect real values                                                                                                                       |
 | 007–009 | Desktop-operator-only contained mutations, redacted local paths, verified engine files, DNS-pinned/hash-verified downloads with reserved partial namespace and atomic filename ownership, no unsolicited UI network                               | auth/bootstrap/contained/source DTOs, download transport/lifecycle, web assets/security tests                                                                                                          |
-| 010–012 | Authorized shared report detail/HTML/PDF, durable source-cleanup intent, schema v14 owned automation targets/cascades                                                                                                                             | report/source/automation stores/routes, `v014.sql`, route/migration tests                                                                                                                              |
+| 010–012 | Authorized shared report detail/HTML/PDF, durable source-cleanup intent, schema v15 owned automation targets/cascades                                                                                                                             | report/source/automation stores/routes, `v015.sql`, route/migration tests                                                                                                                              |
 | 013–014 | Scheduler and contained-download quiesce/drain before storage close/stopped acknowledgment, plus one exact-lease application runtime through normal/failure shutdown                                                                              | application runtime, server close/startup tests, automation/download runners                                                                                                                           |
 | 015–016 | Short promotion transactions with snapshot recheck; bounded periodic pages/external work, a finite complete startup-delete snapshot, and owned pump drainage                                                                                      | ingestion store/lifecycle tests, reconciliation owner/scheduler/snapshot tests                                                                                                                         |
 | 017–018 | Worker-thread PDF/DOCX event-loop isolation with timeout, V8 heap/stack ceilings, and existing parser budgets (not an RSS sandbox); public auth throttling before bcrypt with 429/`Retry-After`                                                   | extraction worker/import policy/tests; auth limiter/routes/OpenAPI tests                                                                                                                               |
-| 019–022 | Real packaged lifecycle smoke through bootstrap and authenticated `/api/me`, schema-v15 typed connector refresh/recovery plus final attempts-first repair indexes, exact guarded ExcelJS boundary, generated server/web contracts and stale check | desktop package scripts/CI, `v015.sql`/refresh store/query plans, manifests/policy, contract generator/scripts                                                                                         |
+| 019–022 | Real packaged lifecycle smoke through bootstrap and authenticated `/api/me`, schema-v16 typed connector refresh/recovery plus final attempts-first repair indexes, exact guarded ExcelJS boundary, generated server/web contracts and stale check | desktop package scripts/CI, `v016.sql`/refresh store/query plans, manifests/policy, contract generator/scripts                                                                                         |
 | 024–029 | Proven connector-cache deletion, truthful automation terminal outcomes, pre-parse authentication/body budgets, lossless streamed tool names, retained chart lineage, and full DuckDB query deadlines                                              | connector cleanup/repair, automation runner/history, auth hooks/routes, LLM stream merger, chart/run store, dataset worker and focused tests                                                           |
 | 030–033 | Exact dialog request ownership, bounded keyset catalogs with schema-v12 ordering indexes, hardened Electron fuses/normal packaged native acceptance, and lazy route/chart chunks with enforced budgets                                            | React views/hooks, catalog stores/routes/generated contracts, `v012.sql`, builder/fuse/package tests, Vite manifest/budget checks                                                                      |
 | 034–035 | Explicit synthetic model-pair qualification and a durable, crash-recoverable whole-corpus embedding reindex/swap                                                                                                                                  | qualification service/routes/UI, settings codecs, migration coordinator/private manifest, staged/live Lance indexes, startup recovery tests                                                            |
@@ -127,14 +127,14 @@ For each row, read the completed plan for intent, then verify the final named so
 
 ### Step 1: Prove all implementation dependencies and establish facts
 
-Run the dependency-status command. Confirm the index dependency notes reserve schema v12 for completed plan 031, v13 for plan 006, v14 for plan 012, and v15 for plan 020. Confirm a clean working tree before documentation edits; if the reviewer has uncommitted work, STOP rather than mixing it into the sweep.
+Run the dependency-status command. Confirm the index dependency notes reserve schema v12 for completed plan 031, v14 for plan 006, v15 for plan 012, and v16 for plan 020. Confirm a clean working tree before documentation edits; if the reviewer has uncommitted work, STOP rather than mixing it into the sweep.
 
 Read all 36 completed behavioral plans, but build the final fact set from live
 code/tests:
 
 - run `git ls-files --error-unmatch README.md AGENTS.md docs/API.md docs/VISION.md desktop/README.md server/.env.example milestones/README.md` to prove the seven maintained references are tracked with exact-case paths; use a separate unfiltered `git ls-files '*.md'` inventory when checking intentionally ignored tracked research;
 - read final root/Turbo/package scripts and CI before naming any command or claiming gate coverage;
-- read `LATEST_SQLITE_SCHEMA_VERSION`, v12/v13/v14/v15 deltas, and migration tests before naming schema behavior;
+- read `LATEST_SQLITE_SCHEMA_VERSION`, v12/v14/v15/v16 deltas, and migration tests before naming schema behavior;
 - read OpenAPI route schemas/generated contracts plus runtime validators before documenting requests/responses;
 - read configuration parsing/precedence and `server/.env.example` before describing environment values;
 - read owned runtime, scheduler, extraction/OCR, connector refresh, contained,
@@ -167,7 +167,7 @@ In `README.md`:
 In `AGENTS.md`, update the source-of-truth command/invariant sections, not merely prose around them:
 
 - exact package/contract/unit/integration/desktop/lifecycle commands;
-- schema v12 catalog indexes, v13 provider-bound consent, v14 owned automation targets, and v15 typed connector-refresh state;
+- schema v12 catalog indexes, v14 provider-bound consent, v15 owned automation targets, and v16 typed connector-refresh state;
 - same-snapshot final egress authorization, origin-bound credentials, and no credential disclosure;
 - literal desktop-operator capability plus redacted contained/source DTOs and verified download/spawn policy;
 - scheduler/download drain and one exact-lease owned application-runtime
@@ -185,7 +185,7 @@ In `AGENTS.md`, update the source-of-truth command/invariant sections, not merel
 
 Do not paste plan checklists into either document. State stable invariants and operator actions only.
 
-**Verify**: `git diff --check HEAD -- README.md AGENTS.md` → exit 0; `rg -n 'schema v12|schema v13|schema v14|schema v15|contracts:check|package:lifecycle:smoke|desktop.operator|desktop-operator|worker' README.md AGENTS.md` returns the applicable new invariants/commands without credential values or absolute local paths. Manually compare each changed command with the final package scripts and each changed invariant with the named source/test evidence.
+**Verify**: `git diff --check HEAD -- README.md AGENTS.md` → exit 0; `rg -n 'schema v12|schema v14|schema v15|schema v16|contracts:check|package:lifecycle:smoke|desktop.operator|desktop-operator|worker' README.md AGENTS.md` returns the applicable new invariants/commands without credential values or absolute local paths. Manually compare each changed command with the final package scripts and each changed invariant with the named source/test evidence.
 
 ### Step 3: Reconcile the API and environment references
 
@@ -200,7 +200,7 @@ Use the final OpenAPI document, route schemas, generated types, and route tests 
   reservation, shutdown drainage, and ordinary-account 403 behavior;
 - plan-010 shared report detail/HTML/PDF authorization and owner-only mutation;
 - durable automation ownership/cascades, scheduler shutdown semantics where API-relevant, and bounded generic history;
-- connector refresh public states/errors without exposing the internal cache paths represented by schema v15, including durable cache-deletion retry semantics;
+- connector refresh public states/errors without exposing the internal cache paths represented by schema v16, including durable cache-deletion retry semantics;
 - paginated catalog request/response/cursor contracts and the intentional
   pre-1.0 array-to-envelope break;
 - model qualification and reindex status/retry/cancel contracts, including
@@ -296,7 +296,7 @@ Run these stale-claim checks:
 
 - [ ] Plans 001–022 and 024–037 are `DONE`, their final focused tests pass, and no behavior is documented solely from a plan.
 - [ ] README, API, desktop guide, environment example, AGENTS, VISION, and milestone ledger agree on current commands and behavior.
-- [ ] Root `AGENTS.md` includes the new operator capability, schemas v12–v15, last-mile egress, scheduler drain, owned runtime, extraction worker, reconciliation/promotion, parser, and contract invariants.
+- [ ] Root `AGENTS.md` includes the new operator capability, schemas v12–v16, last-mile egress, scheduler drain, owned runtime, extraction worker, reconciliation/promotion, parser, and contract invariants.
 - [ ] `docs/VISION.md` clearly separates shipping inventory from destination/horizons and no longer calls shipped sharing/automation/contained capabilities future-only.
 - [ ] Public registration remains documented; auth throttling/429 and remote exposure warnings are accurate.
 - [ ] No unsupported environment variable, endpoint field, guarantee, live-model result, signing result, or release claim was added.
@@ -314,7 +314,7 @@ Stop and report rather than guessing if:
 - Any plan 001–022 or 024–037 is not `DONE`, its final tests fail, or implementation differs materially from its target contract.
 - The worktree is not clean before this documentation-only branch or contains changes not attributable to this plan.
 - Route schemas/generated types/runtime validation disagree about an API shape or status.
-- `LATEST_SQLITE_SCHEMA_VERSION` is not exactly 15 with v12/v13/v14/v15 owned by plans 031/006/012/020 respectively.
+- `LATEST_SQLITE_SCHEMA_VERSION` is not exactly 15 with v12/v14/v15/v16 owned by plans 031/006/012/020 respectively.
 - Final source does not provide one same-snapshot outbound egress gate, one
   exact-lease owned runtime, drained scheduler and contained-download shutdown,
   the documented worker isolation/deadline/V8-ceiling/parser-budget layers,
@@ -330,6 +330,6 @@ Stop and report rather than guessing if:
 
 - README/API/Desktop/AGENTS/environment example are current references and must move with behavior. VISION moves when intended product direction changes; its “today” subsection moves with shipped inventory.
 - `milestones/` records product milestones, `advisor-plans/` records this remediation wave, `plans/` is completed historical implementation, and `docs/cohere-north/` is dated research. Do not collapse those roles.
-- Future migrations add a contiguous immutable fixture and update `LATEST_SQLITE_SCHEMA_VERSION`; never edit released v12–v15 deltas.
+- Future migrations add a contiguous immutable fixture and update `LATEST_SQLITE_SCHEMA_VERSION`; never edit released v12–v16 deltas.
 - Future API changes update route schemas, run `pnpm contracts:generate`, retain runtime validation, and pass `pnpm contracts:check` before documentation.
 - Verification records use the executor's actual date from `date -u +%F`, never the plan date, and name only commands actually run and their scope. Never imply fixture/mock checks validate a live model, signed release, or production provider.

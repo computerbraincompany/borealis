@@ -273,8 +273,10 @@ runtime startup alone republishes that matching marker.
   chat-creation contract; never add a server-side dynamic chat↔library
   resolution path without speccing it against the scope semantics above.
   Library deletion cascades membership only — never sources or their data.
-- Schema v12 owns the current keyset-catalog indexes. The active remediation
-  ledger reserves contiguous v13, v14, and v15 for provider-bound consent,
+- Schema v12 owns the current keyset-catalog indexes. Schema v13 adds agent identity,
+  versioned capability configuration, skills, and accepted-turn tool snapshots,
+  ahead of the remaining remediation work by the September 5 sequencing decision. The active remediation
+  ledger reserves contiguous v14, v15, and v16 for provider-bound consent,
   automation target ownership, and typed connector-refresh/repair state; do not
   reuse or reorder those versions. Account catalogs use opaque endpoint-bound
   keyset cursors, while source/connector transition polling uses only bounded
@@ -324,8 +326,10 @@ runtime startup alone republishes that matching marker.
   edits or deletion never change a running turn. Instructions are bounded at
   8,000 characters and appended to the system prompt only through
   `agentSection` in `server/src/agent.ts`, which must keep the
-  fixed-workspace-policy sentence. Agents never alter the tool set, retrieval
-  scope, or authorization; instruction text is never logged.
+  fixed-workspace-policy sentence. Agent capability selections can restrict the
+  built-in tool set; instruction text never changes retrieval scope or authorization.
+  Selected skill contents and tool allowlists are captured at turn acceptance,
+  with a 32,000-character combined prompt budget. Instruction text is never logged.
 - The OpenAI Node client defaults embeddings to base64 and decodes responses.
   Compatible local runtimes return float arrays, so `server/src/llm.ts` must
   continue sending `encoding_format: "float"` explicitly.

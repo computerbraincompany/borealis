@@ -47,7 +47,7 @@ scheduled-connector gaps without reopening their architecture.
 ## Current state after Plans 031 and 034-036
 
 - Plan 031 owns SQLite schema v12 exclusively for the account/order catalog
-  indexes. This plan owns v13; v14 and v15 remain reserved for Plans 012 and 020.
+  indexes. This plan owns v14; v15 and v16 remain reserved for Plans 012 and 020.
 - Schema v4 added only `users.remote_egress_ack_at`. `ChatStore` reads and
   writes that scalar independently, so no durable destination is remembered.
 - `egressPolicy.ts` reads the timestamp and live effective Settings separately.
@@ -88,7 +88,7 @@ scheduled-connector gaps without reopening their architecture.
 
 ## Target contract
 
-- SQLite schema v13 adds nullable `users.remote_egress_ack_origin`, containing
+- SQLite schema v14 adds nullable `users.remote_egress_ack_origin`, containing
   only the canonical bare remote origin and bounded to the Settings endpoint
   limit. Existing timestamp rows migrate with a null origin and are therefore
   unacknowledged for every remote provider until the account consents again.
@@ -138,7 +138,7 @@ scheduled-connector gaps without reopening their architecture.
 
 | Purpose                     | Command                                                                                                                                                                                                | Expected on success                                                       |
 | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------- |
-| Migration                   | `pnpm --filter borealis-server exec vitest run --config vitest.integration.config.ts src/tests/sqliteFoundation.test.ts`                                                                               | exit 0; all v1-v12 starts reach v13                                       |
+| Migration                   | `pnpm --filter borealis-server exec vitest run --config vitest.integration.config.ts src/tests/sqliteFoundation.test.ts`                                                                               | exit 0; all v1-v12 starts reach v14                                       |
 | Consent store/policy        | `pnpm --filter borealis-server exec vitest run src/tests/egressConsent.test.ts`                                                                                                                        | exit 0; a v12 timestamp without origin is unacknowledged                  |
 | Chat/retrieval boundary     | `pnpm --filter borealis-server exec vitest run src/tests/llm.test.ts src/tests/agentModel.test.ts src/tests/retrieve.test.ts src/tests/thinkSplitter.test.ts`                                          | exit 0; no unacknowledged destination receives a request                  |
 | Ingestion/migration         | `pnpm --filter borealis-server exec vitest run src/tests/ingestionEmbedding.test.ts src/tests/ingestionEngine.test.ts src/tests/embeddingMigration.test.ts src/tests/embeddingMigrationRoutes.test.ts` | exit 0; existing immutable sessions and migration snapshots remain intact |
@@ -170,7 +170,7 @@ run a broad formatter. Use generated loopback test providers only.
 - `server/src/ingestionEmbedding.ts`
 - `server/src/embeddingMigration.ts`
 - `server/src/automationRunner.ts`
-- `server/src/tests/fixtures/sqlite/v013.sql` (create)
+- `server/src/tests/fixtures/sqlite/v014.sql` (create)
 - the focused server tests named in the commands table
 - `README.md`
 - `docs/API.md`
@@ -178,7 +178,7 @@ run a broad formatter. Use generated loopback test providers only.
 
 **Out of scope**:
 
-- Schema v14 or later, or any unrelated migration.
+- Schema v15 or later, or any unrelated migration.
 - Replacing the single remembered origin with a consent history/set, adding a
   revoke API, multi-provider credentials, roles/admin UI, or public consent
   fields.
@@ -207,24 +207,24 @@ run a broad formatter. Use generated loopback test providers only.
 
 ## Steps
 
-### Step 1: Add schema v13 and its immutable historical fixture
+### Step 1: Add schema v14 and its immutable historical fixture
 
-Require the starting `LATEST_SQLITE_SCHEMA_VERSION` to be exactly 12, with v12
-containing only Plan 031's catalog indexes. Add `SCHEMA_V13` with one nullable
+Require the starting `LATEST_SQLITE_SCHEMA_VERSION` to be exactly 13, with v12
+containing only Plan 031's catalog indexes and v13 containing the agent editor foundation. Add `SCHEMA_V14` with one nullable
 `users.remote_egress_ack_origin` column. Apply the same endpoint-length ceiling
-used by Settings with a column CHECK, and append exactly `{version: 13, ...}` to
+used by Settings with a column CHECK, and append exactly `{version: 14, ...}` to
 the ordered migration list. Do not backfill the column: the old timestamp does
 not identify a trustworthy destination.
 
-Add `server/src/tests/fixtures/sqlite/v013.sql` through Plan 003's immutable
+Add `server/src/tests/fixtures/sqlite/v014.sql` through Plan 003's immutable
 delta contract. Extend the foundation assertions for the column and prove that
 a v12 fixture user with a non-null timestamp upgrades with a null origin, while
 seeded historical data and foreign keys remain intact.
 
 **Verify**:
 `pnpm --filter borealis-server exec vitest run --config vitest.integration.config.ts src/tests/sqliteFoundation.test.ts`
--> exit 0; fixture inventory is exactly v001-v013 and every v1-v12 start reaches
-v13.
+-> exit 0; fixture inventory is exactly v001-v014 and every v1-v12 start reaches
+v14.
 
 ### Step 2: Store one atomic timestamp/origin acknowledgment
 
@@ -238,7 +238,7 @@ fail closed without exposing it.
 Use Plan 005's canonical origin parser/equivalence primitive rather than adding
 a second URL policy. Update every direct SQL fixture that means "acknowledged"
 to write both fields. Timestamp-only fixtures remain intentional only where a
-test proves the v13 fail-closed migration.
+test proves the v14 fail-closed migration.
 
 **Verify**:
 `pnpm --filter borealis-server exec vitest run src/tests/egressConsent.test.ts`
@@ -403,7 +403,7 @@ Update README privacy guidance, `docs/API.md`, and the repository invariants in
 
 - consent is per account and canonical remote provider origin;
 - changing remote origins requires consent again;
-- pre-v13 timestamp-only rows are intentionally unacknowledged;
+- pre-v14 timestamp-only rows are intentionally unacknowledged;
 - qualification's request-local synthetic-probe acknowledgment is not durable
   workspace consent;
 - chat and retrieval authorize one exact runtime revision per call;
@@ -422,7 +422,7 @@ provider URLs, credentials, or payload-bearing audit data.
 - `pnpm --filter borealis-server typecheck && pnpm --filter borealis-server lint && pnpm --filter borealis-server format:check`
   -> exit 0.
 - `rg -n 'remote_egress_ack_at' server/src --glob '*.ts'` -> every direct read
-  used as authorization also reads/compares the v13 origin; timestamp-only
+  used as authorization also reads/compares the v14 origin; timestamp-only
   references are migration/legacy characterization only.
 - `rg -n 'getRuntimeSettings\(|getEffectiveLlmSettings\(' server/src/llm.ts server/src/egressAudit.ts server/src/ingestionEmbedding.ts`
   -> ordinary authorized call/session paths have exactly one intentional
@@ -431,7 +431,7 @@ provider URLs, credentials, or payload-bearing audit data.
 ## Test plan
 
 - Migration: v12 timestamp upgrades with null origin; every v1-v12 fixture
-  reaches v13; fresh installs have the bounded pair.
+  reaches v14; fresh installs have the bounded pair.
 - Store/policy: atomic pair, malformed/null origin fail closed, A/B mismatch,
   A/B replacement semantics, canonical same-origin match, local/private bypass,
   concurrent acknowledgment switch, and exact audit attribution.
@@ -454,7 +454,7 @@ provider URLs, credentials, or payload-bearing audit data.
 
 ## Done criteria
 
-- [ ] Schema version is exactly 13 and `v013.sql` is the immutable consent-
+- [ ] Schema version is exactly 14 and `v014.sql` is the immutable consent-
       origin delta after Plan 031's v12 indexes.
 - [ ] Old timestamp-only rows are unacknowledged for every remote origin until
       re-consent.
@@ -483,8 +483,8 @@ provider URLs, credentials, or payload-bearing audit data.
 Stop and report if:
 
 - Plan 003 or Plan 005 is incomplete;
-- `LATEST_SQLITE_SCHEMA_VERSION` is not exactly 12 with v12 exclusively owned by
-  Plan 031's catalog indexes when this plan starts, or another change owns v13;
+- `LATEST_SQLITE_SCHEMA_VERSION` is not exactly 13 with v12 exclusively owned by
+  Plan 031's catalog indexes and v13 owned by the agent editor foundation when this plan starts, or another change owns v14;
 - Plan 034 no longer uses fixed synthetic probes plus exact request-local draft
   acknowledgment, or its qualification result is being treated as durable
   consent;
@@ -522,6 +522,6 @@ Stop and report if:
   client later.
 - If simultaneous provider origins are added later, replace the single stored
   origin through a new schema migration; do not overload the timestamp or place
-  a serialized set in v13.
-- Schema v14 remains reserved for Plan 012 automation target ownership and v15
+  a serialized set in v14.
+- Schema v15 remains reserved for Plan 012 automation target ownership and v16
   for Plan 020 typed connector-refresh state. Do not reuse or reorder them.

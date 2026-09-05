@@ -82,8 +82,8 @@ requests and React state grow with workspace age.
   selectors, and explicit load-more controls.
 - Query-plan evidence required a schema migration: v12 now owns only the exact
   account/order indexes for the seven non-chat catalog scans. Future active
-  plans reserve v13 for provider-bound consent, v14 for automation ownership,
-  and v15 for typed connector-refresh state.
+  plans reserve v14 for provider-bound consent, v15 for automation ownership,
+  and v16 for typed connector-refresh state.
 - Head refreshes keep the newest copy of a repeated ID, while continuation
   merges preserve visible order but replace stale copies with the page's current
   row. Source and connector polling uses authenticated `POST .../status`

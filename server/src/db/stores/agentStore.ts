@@ -1,3 +1,9 @@
+import {
+  agentConfiguration,
+  decodeAgentConfiguration,
+  resolveAgentSkills,
+  type AgentConfiguration,
+} from "../../agentConfiguration.js";
 import { randomUUID } from "node:crypto";
 import {
   catalogStorePage,
@@ -10,9 +16,9 @@ import { SqliteConstraintError, type SqliteLedger } from "../types.js";
 
 export const MAX_AGENT_NAME_CHARS = 80;
 export const MAX_AGENT_INSTRUCTION_CHARS = 8_000;
-export const MAX_AGENT_INSTRUCTION_PROMPT_CHARS = 8_000;
+export const MAX_AGENT_INSTRUCTION_PROMPT_CHARS = 32_000;
 
-export interface AgentSummary {
+export interface AgentSummary extends AgentConfiguration {
   readonly id: string;
   readonly name: string;
   readonly current_version: number;
@@ -22,7 +28,7 @@ export interface AgentSummary {
   readonly updated_at: string;
 }
 
-export interface AgentRevision {
+export interface AgentRevision extends AgentConfiguration {
   readonly version: number;
   readonly instructions: string;
   readonly created_at: string;
@@ -52,11 +58,13 @@ interface AgentRow {
   current_version?: unknown;
   created_at?: unknown;
   updated_at?: unknown;
+  configuration?: unknown;
   instructions?: unknown;
 }
 
 interface RevisionRow {
   version?: unknown;
+  configuration?: unknown;
   instructions?: unknown;
   created_at?: unknown;
 }
@@ -99,6 +107,7 @@ function decodeTimestamp(row: AgentRow | RevisionRow, field: "created_at" | "upd
 function decodeSummary(row: AgentRow): AgentSummary {
   const instructions = row.instructions as string;
   return Object.freeze({
+    ...decodeAgentConfiguration(row.configuration),
     id: requiredId(row.id as string, "agent id"),
     name: row.name as string,
     current_version: Number(row.current_version),
@@ -122,7 +131,7 @@ export class AgentStore {
     if (page.after) parameters.push(page.after.timestamp, page.after.id);
     parameters.push(page.limit + 1);
     const rows = await this.ledger.all<AgentRow>(
-      `SELECT a.id,a.name,a.current_version,a.created_at,a.updated_at,
+      `SELECT a.configuration,a.id,a.name,a.current_version,a.created_at,a.updated_at,
               (SELECT r.instructions FROM agent_revisions r
                WHERE r.agent_id=a.id AND r.version=a.current_version AND r.account_id=a.account_id) AS instructions
        FROM agents a
@@ -136,21 +145,28 @@ export class AgentStore {
     }));
   }
 
-  async createAgent(accountIdValue: string, nameValue: string, instructionsValue: string): Promise<AgentSummary> {
+  async createAgent(
+    accountIdValue: string,
+    nameValue: string,
+    instructionsValue: string,
+    configurationValue: Partial<AgentConfiguration> = {}
+  ): Promise<AgentSummary> {
     const accountId = requiredId(accountIdValue, "account id");
     const name = agentName(nameValue);
     const instructions = agentInstructions(instructionsValue);
+    const configuration = agentConfiguration(configurationValue);
     const id = randomUUID();
     const timestamp = new Date().toISOString();
     try {
       await this.ledger.withImmediateTransaction((transaction) => {
+        resolveAgentSkills(transaction, accountId, configuration, instructions);
         transaction.run(
-          "INSERT INTO agents (id,account_id,name,current_version,created_at,updated_at) VALUES (?,?,?,1,?,?)",
-          [id, accountId, name, timestamp, timestamp]
+          "INSERT INTO agents (id,account_id,name,current_version,created_at,updated_at,configuration) VALUES (?,?,?,1,?,?,?)",
+          [id, accountId, name, timestamp, timestamp, JSON.stringify(configuration)]
         );
         transaction.run(
-          "INSERT INTO agent_revisions (agent_id,version,account_id,instructions,created_at) VALUES (?,1,?,?,?)",
-          [id, accountId, instructions, timestamp]
+          "INSERT INTO agent_revisions (agent_id,version,account_id,instructions,created_at,configuration) VALUES (?,1,?,?,?,?)",
+          [id, accountId, instructions, timestamp, JSON.stringify(configuration)]
         );
       });
     } catch (error) {
@@ -158,7 +174,7 @@ export class AgentStore {
       throw error;
     }
     const row = await this.ledger.get<AgentRow>(
-      `SELECT a.id,a.name,a.current_version,a.created_at,a.updated_at,r.instructions
+      `SELECT a.configuration,a.id,a.name,a.current_version,a.created_at,a.updated_at,r.instructions
        FROM agents a JOIN agent_revisions r ON r.agent_id=a.id AND r.version=a.current_version AND r.account_id=a.account_id
        WHERE a.id=? AND a.account_id=?`,
       [id, accountId]
@@ -171,20 +187,21 @@ export class AgentStore {
     const accountId = requiredId(accountIdValue, "account id");
     const agentId = requiredId(agentIdValue, "agent id");
     const row = await this.ledger.get<AgentRow>(
-      `SELECT a.id,a.name,a.current_version,a.created_at,a.updated_at,r.instructions
+      `SELECT a.configuration,a.id,a.name,a.current_version,a.created_at,a.updated_at,r.instructions
        FROM agents a JOIN agent_revisions r ON r.agent_id=a.id AND r.version=a.current_version AND r.account_id=a.account_id
        WHERE a.id=? AND a.account_id=?`,
       [agentId, accountId]
     );
     if (!row) return undefined;
     const revisions = await this.ledger.all<RevisionRow>(
-      "SELECT version,instructions,created_at FROM agent_revisions WHERE agent_id=? AND account_id=? ORDER BY version DESC",
+      "SELECT configuration,version,instructions,created_at FROM agent_revisions WHERE agent_id=? AND account_id=? ORDER BY version DESC",
       [agentId, accountId]
     );
     return Object.freeze({
       ...decodeSummary(row),
       revisions: revisions.map((revision) =>
         Object.freeze({
+          ...decodeAgentConfiguration(revision.configuration),
           version: Number(revision.version),
           instructions: revision.instructions as string,
           created_at: decodeTimestamp(revision, "created_at"),
@@ -220,29 +237,44 @@ export class AgentStore {
     agentIdValue: string,
     instructionsValue: string
   ): Promise<AgentSummary | undefined> {
+    return this.updateAgent(accountIdValue, agentIdValue, { instructions: instructionsValue });
+  }
+
+  async updateAgent(
+    accountIdValue: string,
+    agentIdValue: string,
+    patch: Partial<AgentConfiguration> & { name?: string; instructions?: string }
+  ): Promise<AgentSummary | undefined> {
     const accountId = requiredId(accountIdValue, "account id");
     const agentId = requiredId(agentIdValue, "agent id");
-    const instructions = agentInstructions(instructionsValue);
-    // The summary read happens after the transaction closes; reading through
-    // the ledger inside the open immediate transaction would self-deadlock.
-    const revised = await this.ledger.withImmediateTransaction(async (transaction) => {
-      const agent = transaction.get<{ current_version?: unknown }>(
-        "SELECT current_version FROM agents WHERE id=? AND account_id=?",
-        [agentId, accountId]
-      );
-      if (!agent) return false;
-      const nextVersion = Number(agent.current_version) + 1;
-      transaction.run(
-        "INSERT INTO agent_revisions (agent_id,version,account_id,instructions,created_at) VALUES (?,?,?,?,?)",
-        [agentId, nextVersion, accountId, instructions, new Date().toISOString()]
-      );
-      transaction.run(
-        "UPDATE agents SET current_version=?,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=? AND account_id=?",
-        [nextVersion, agentId, accountId]
-      );
-      return true;
-    });
-    return revised ? this.getAgentSummary(accountId, agentId) : undefined;
+    try {
+      const changed = await this.ledger.withImmediateTransaction((transaction) => {
+        const row = transaction.get<AgentRow>(
+          `SELECT a.*, r.instructions FROM agents a JOIN agent_revisions r ON r.agent_id=a.id AND r.version=a.current_version AND r.account_id=a.account_id WHERE a.id=? AND a.account_id=?`,
+          [agentId, accountId]
+        );
+        if (!row) return false;
+        const name = agentName(patch.name ?? String(row.name));
+        const instructions = agentInstructions(patch.instructions ?? String(row.instructions));
+        const configuration = agentConfiguration({ ...decodeAgentConfiguration(row.configuration), ...patch });
+        resolveAgentSkills(transaction, accountId, configuration, instructions);
+        const version = Number(row.current_version) + 1;
+        const now = new Date().toISOString();
+        transaction.run(
+          "INSERT INTO agent_revisions(agent_id,version,account_id,instructions,created_at,configuration) VALUES (?,?,?,?,?,?)",
+          [agentId, version, accountId, instructions, now, JSON.stringify(configuration)]
+        );
+        transaction.run(
+          "UPDATE agents SET name=?,configuration=?,current_version=?,updated_at=? WHERE id=? AND account_id=?",
+          [name, JSON.stringify(configuration), version, now, agentId, accountId]
+        );
+        return true;
+      });
+      return changed ? this.getAgentSummary(accountId, agentId) : undefined;
+    } catch (error) {
+      if (error instanceof SqliteConstraintError && error.kind === "unique") throw new DuplicateAgentError();
+      throw error;
+    }
   }
 
   async deleteAgent(accountIdValue: string, agentIdValue: string): Promise<boolean> {
@@ -255,7 +287,7 @@ export class AgentStore {
 
   private async getAgentSummary(accountId: string, agentId: string): Promise<AgentSummary | undefined> {
     const row = await this.ledger.get<AgentRow>(
-      `SELECT a.id,a.name,a.current_version,a.created_at,a.updated_at,r.instructions
+      `SELECT a.configuration,a.id,a.name,a.current_version,a.created_at,a.updated_at,r.instructions
        FROM agents a JOIN agent_revisions r ON r.agent_id=a.id AND r.version=a.current_version AND r.account_id=a.account_id
        WHERE a.id=? AND a.account_id=?`,
       [agentId, accountId]

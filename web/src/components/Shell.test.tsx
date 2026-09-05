@@ -66,7 +66,7 @@ describe("Shell", () => {
     expect(reports).not.toHaveClass("border-l-2", "border-primary");
     expect(reports.querySelector("span")).toBeNull();
     expect(screen.getByRole("link", { name: "Chat" })).not.toHaveAttribute("aria-current");
-    expect(screen.getByRole("link", { name: "Settings" })).toHaveAttribute("href", "#/settings");
+    expect(screen.queryByRole("link", { name: "Settings" })).not.toBeInTheDocument();
   });
 
   it("opens a compact account menu with the full email and signs out", async () => {
@@ -80,7 +80,7 @@ describe("Shell", () => {
     await user.click(trigger);
 
     expect(screen.getAllByText("user@example.test")).toHaveLength(2);
-    expect(screen.getByRole("link", { name: "Settings" })).toHaveAttribute("href", "#/settings");
+    expect(screen.getByRole("menuitem", { name: "Settings" })).toHaveAttribute("href", "#/settings");
     await user.click(screen.getByRole("menuitem", { name: "Sign out" }));
 
     expect(apiMocks.clearSession).toHaveBeenCalledOnce();

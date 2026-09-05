@@ -206,7 +206,7 @@ export interface Chat {
   title: string;
   model: string;
   source_mode: SourceMode;
-  agent: { id: string; name: string } | null;
+  agent: { id: string; name: string; icon?: string; color?: string } | null;
   created_at: string;
   updated_at: string;
 }
@@ -1238,7 +1238,30 @@ export const containedApi = {
 };
 
 // ------------------------------------------------------------------ libraries
-export interface AgentSummary {
+export interface AgentConfiguration {
+  description?: string;
+  icon?: string;
+  color?: string;
+  tools?: string[];
+  skill_ids?: string[];
+}
+export interface AgentSkill {
+  id: string;
+  name: string;
+  description: string;
+  content: string;
+  version: number;
+}
+export const agentSkillsApi = {
+  list: (signal?: AbortSignal) => api<{ items: AgentSkill[] }>("/api/agent-skills", { signal }),
+  save: (skill: { name: string; description: string; content: string }, id?: string) =>
+    api<AgentSkill>(id ? `/api/agent-skills/${id}` : "/api/agent-skills", {
+      method: id ? "PUT" : "POST",
+      body: JSON.stringify({ name: skill.name, description: skill.description, content: skill.content }),
+    }),
+  remove: (id: string) => api<{ ok: true }>(`/api/agent-skills/${id}`, { method: "DELETE" }),
+};
+export interface AgentSummary extends AgentConfiguration {
   id: string;
   name: string;
   current_version: number;
@@ -1265,10 +1288,13 @@ export const agentsApi = {
     parseTypedCatalogEnvelope<AgentSummary>(
       await api<unknown>(catalogPath("/api/agents", options), { signal: options.signal }),
     ),
-  create: (name: string, instructions: string) =>
-    api<AgentSummary>("/api/agents", { method: "POST", body: JSON.stringify({ name, instructions }) }),
+  create: (name: string, instructions: string, configuration: AgentConfiguration = {}) =>
+    api<AgentSummary>("/api/agents", {
+      method: "POST",
+      body: JSON.stringify({ name, instructions, ...configuration }),
+    }),
   get: (id: string) => api<AgentDetail>(`/api/agents/${id}`),
-  update: (id: string, patch: { name?: string; instructions?: string }) =>
+  update: (id: string, patch: { name?: string; instructions?: string } & AgentConfiguration) =>
     api<AgentSummary>(`/api/agents/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
   remove: (id: string) => api<{ ok: true }>(`/api/agents/${id}`, { method: "DELETE" }),
 };

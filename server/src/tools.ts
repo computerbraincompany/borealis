@@ -211,6 +211,7 @@ export const TOOL_DEFS: ToolDef[] = [
 ];
 
 export interface ToolRunContext {
+  readonly allowedTools?: readonly string[] | null;
   chartIds: string[];
   evidence: RetrievedEvidence[];
   queryResults: QueryResultArtifact[];
@@ -457,6 +458,7 @@ function sanitizeQueryCell(value: unknown): { value: QueryResultCell; truncated:
 }
 
 export async function executeTool(accountId: string, name: string, args: any, context: ToolRunContext): Promise<any> {
+  if (context.allowedTools != null && !context.allowedTools.includes(name)) throw new Error("agent tool is disabled");
   if (context.abortSignal?.aborted) throw new Error("run cancelled");
   switch (name) {
     case "retrieve": {

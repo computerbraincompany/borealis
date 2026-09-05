@@ -1,3 +1,10 @@
+import {
+  AGENT_ICONS,
+  AGENT_COLORS,
+  AGENT_TOOLS,
+  AgentConfigurationError,
+  type AgentConfiguration,
+} from "../agentConfiguration.js";
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { getAccountId, requireAuth } from "../auth.js";
 import { catalogPageQuerySchema, catalogResponse, parseCatalogPageQuery } from "../catalogPagination.js";
@@ -16,6 +23,11 @@ const agentBodySchema = {
   required: ["name", "instructions"],
   additionalProperties: false,
   properties: {
+    description: { type: "string", maxLength: 240 },
+    icon: { type: "string", enum: AGENT_ICONS },
+    color: { type: "string", enum: AGENT_COLORS },
+    tools: { type: "array", maxItems: 7, uniqueItems: true, items: { type: "string", enum: AGENT_TOOLS } },
+    skill_ids: { type: "array", maxItems: 8, uniqueItems: true, items: { type: "string", format: "uuid" } },
     name: { type: "string", minLength: 1, maxLength: MAX_AGENT_NAME_CHARS, pattern: "\\S" },
     instructions: { type: "string", minLength: 1, maxLength: MAX_AGENT_INSTRUCTION_CHARS },
   },
@@ -26,12 +38,21 @@ const agentPatchSchema = {
   minProperties: 1,
   additionalProperties: false,
   properties: {
+    description: { type: "string", maxLength: 240 },
+    icon: { type: "string", enum: AGENT_ICONS },
+    color: { type: "string", enum: AGENT_COLORS },
+    tools: { type: "array", maxItems: 7, uniqueItems: true, items: { type: "string", enum: AGENT_TOOLS } },
+    skill_ids: { type: "array", maxItems: 8, uniqueItems: true, items: { type: "string", format: "uuid" } },
     name: { type: "string", minLength: 1, maxLength: MAX_AGENT_NAME_CHARS, pattern: "\\S" },
     instructions: { type: "string", minLength: 1, maxLength: MAX_AGENT_INSTRUCTION_CHARS },
   },
 } as const;
 
 function sendAgentError(reply: FastifyReply, error: unknown): boolean {
+  if (error instanceof AgentConfigurationError) {
+    reply.code(400).send({ error: error.message, code: "AGENT_CONFIGURATION_INVALID" });
+    return true;
+  }
   if (error instanceof DuplicateAgentError) {
     reply.code(409).send({ error: "an agent with this name already exists" });
     return true;
@@ -61,8 +82,8 @@ export async function agentRoutes(app: FastifyInstance): Promise<void> {
     { onRequest: requireAuth, bodyLimit: LONG_TEXT_JSON_BODY_LIMIT_BYTES, schema: { body: agentBodySchema } },
     async (req, reply) => {
       try {
-        const body = req.body as { name: string; instructions: string };
-        const agent = await storageRuntime().agents.createAgent(getAccountId(req), body.name, body.instructions);
+        const body = req.body as { name: string; instructions: string } & Partial<AgentConfiguration>;
+        const agent = await storageRuntime().agents.createAgent(getAccountId(req), body.name, body.instructions, body);
         return reply.code(201).send(agent);
       } catch (error) {
         if (sendAgentError(reply, error)) return;
@@ -87,17 +108,9 @@ export async function agentRoutes(app: FastifyInstance): Promise<void> {
     async (req, reply) => {
       const accountId = getAccountId(req);
       const agentId = (req.params as any).id;
-      const body = req.body as { name?: string; instructions?: string };
+      const body = req.body as { name?: string; instructions?: string } & Partial<AgentConfiguration>;
       try {
-        let agent = undefined;
-        if (body.instructions !== undefined) {
-          agent = await storageRuntime().agents.reviseAgent(accountId, agentId, body.instructions);
-          if (agent && body.name !== undefined && body.name.trim() !== agent.name) {
-            agent = (await storageRuntime().agents.renameAgent(accountId, agentId, body.name)) ?? agent;
-          }
-        } else {
-          agent = await storageRuntime().agents.renameAgent(accountId, agentId, body.name as string);
-        }
+        const agent = await storageRuntime().agents.updateAgent(accountId, agentId, body);
         if (!agent) return reply.code(404).send({ error: "agent not found" });
         return reply.send(agent);
       } catch (error) {

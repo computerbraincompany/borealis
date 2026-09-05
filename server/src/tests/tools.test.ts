@@ -655,3 +655,10 @@ describe("makeReportPayload current-run chart resolution", () => {
     expect(runStoreMock.getPendingChart).not.toHaveBeenCalled();
   });
 });
+
+it("rejects guessed disabled tools before any data access", async () => {
+  await expect(
+    executeTool("owner", "retrieve", { query: "guessed" }, { ...context(), allowedTools: [] })
+  ).rejects.toThrow("disabled");
+  expect(retrieveMock).not.toHaveBeenCalled();
+});

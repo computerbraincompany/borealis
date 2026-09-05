@@ -31,7 +31,7 @@ makes background work proportional to total retained data and accounts on every
 tick, even when no durable work is pending, and competes with ingestion,
 retrieval, chat persistence, and analytics. Keep a deliberately thorough,
 finite startup snapshot repair, but make recurring external work and returned
-pages consume only bounded durable queues. Plan 020's serialized v15 migration
+pages consume only bounded durable queues. Plan 020's serialized v16 migration
 adds the matching attempts-first indexes that also bound final queue-selection
 scan/sort cost; until then this plan must not claim a backlog-independent SQLite
 query latency.
@@ -146,7 +146,7 @@ query latency.
 - None of those three attempts-first orderings has a matching index at the
   planned commit. `LIMIT` bounds returned rows and downstream side effects, but
   SQLite may still scan/sort the complete retry table. Schema numbering is
-  already serialized through v12/v13/v14 and Plan 020 owns v15, so this plan names
+  already serialized through v12/v14/v15 and Plan 020 owns v16, so this plan names
   that interim limitation and Plan 020 adds the exact three indexes rather than
   creating an unversioned runtime index.
 
@@ -192,7 +192,7 @@ query latency.
   rows by their existing `attempts` fields is in scope. A connection-local TEMP
   table used only to freeze one finite startup-delete snapshot is not durable
   schema and is in scope; Plan 020 adds the final persistent repair indexes in
-  v15.
+  v16.
 - DuckDB catalog capacity or account/sorted-allowlist scoping, connector activation, extraction, or dataset registration behavior.
 - Source cleanup ownership/path proof, Plan 011's proven-removal success semantics, or its batch coordinator contract. This plan consumes that contract one intent at a time; it does not redesign it.
 - Logging resource IDs, paths, content, URLs, SQL results, or exception bodies. Reconciliation logs remain aggregate and content-free.
@@ -290,12 +290,12 @@ non-negative attempts and stable identity columns. The rule is fairness among
 bounded durable retry rows, not FIFO across different attempt counts.
 
 These orderings deliberately precede their persistent indexes. Record the exact
-v15 handoff for Plan 020: it must add indexes matching
+v16 handoff for Plan 020: it must add indexes matching
 `pending_source_deletes(attempts, updated_at, account_id, source_id)`,
 `pending_vector_ops(attempts, updated_at, source_id, operation, generation)`,
 and
 `dataset_cache_cleanup_jobs(attempts, updated_at, account_id, name, location)`.
-Until v15 lands, assert bounded returned rows/cleanup calls and fair order, but
+Until v16 lands, assert bounded returned rows/cleanup calls and fair order, but
 do not describe the SQL selection itself as backlog-independent.
 
 In `sqliteSourceStore.test.ts`, create pending intents for at least two accounts
@@ -478,7 +478,7 @@ Run plans 011, 014, and 015's focused regressions, both focused commands above, 
       attempts before time and stable identity.
 - [ ] This plan makes returned rows and downstream work bounded and explicitly
       records that selection scans remain backlog-dependent until Plan 020 adds
-      the three exact v15 repair indexes; no stronger interim latency claim is
+      the three exact v16 repair indexes; no stronger interim latency claim is
       documented.
 - [ ] Full dataset restoration still runs at startup and ordinary activation/deactivation behavior is unchanged.
 - [ ] `stopIngestionWorkers` invalidates the old epoch before awaiting and
@@ -523,7 +523,7 @@ Stop and report back instead of improvising if:
   ordinals even across missing/failing rows, and drop the TEMP table in
   `finally`.
 - Plan 020 must retain the exact attempts-first query shapes and create their
-  matching v15 indexes before documentation claims backlog-independent periodic
+  matching v16 indexes before documentation claims backlog-independent periodic
   selection cost.
 - If a new runtime mutation can leave recoverable cross-store work, record its durable intent at the authoritative SQLite commit boundary and drain it here in a bounded page.
 - `restoreDatasets` is recovery, not a general catalog refresh primitive. Normal connector/upload activation must continue updating DuckDB through its exact-location workflow.

@@ -147,6 +147,7 @@ export function createAutomationRunner(dependencies: AutomationRunnerDependencie
         accountId,
         ...turn,
         agentInstructions: turn.agent?.instructions ?? null,
+        agentTools: turn.agent?.tools ?? null,
         content: turn.userMessage.content,
         emit: () => undefined,
         signal: controller.signal,

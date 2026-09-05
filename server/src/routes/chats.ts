@@ -309,6 +309,7 @@ export async function chatRoutes(app: FastifyInstance): Promise<void> {
           accountId,
           ...turn,
           agentInstructions: turn.agent?.instructions ?? null,
+          agentTools: turn.agent?.tools ?? null,
           content: turn.userMessage.content,
           emit,
           signal: controller.signal,

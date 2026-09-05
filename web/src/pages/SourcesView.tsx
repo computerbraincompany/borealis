@@ -196,15 +196,6 @@ export function SourcesView() {
               <p className="text-sm text-muted-foreground">
                 No sources yet. Upload CSVs, spreadsheets, PDFs or documents so Borealis can answer grounded questions.
               </p>
-              {import.meta.env.DEV && (
-                <p className="text-xs text-muted-foreground/70">
-                  Tip (development builds): run{" "}
-                  <code className="rounded bg-secondary px-1.5 py-0.5 font-mono text-[11px]">
-                    pnpm --filter borealis-server exec tsx ../data/generate_sample.ts
-                  </code>{" "}
-                  for sample personal-finance data.
-                </p>
-              )}
             </Card>
           )}
           {sources.map((s) => (

@@ -59,21 +59,24 @@ const DropdownMenuRadioGroup = DropdownMenuPrimitive.RadioGroup;
 
 const DropdownMenuRadioItem = React.forwardRef<
   React.ElementRef<typeof DropdownMenuPrimitive.RadioItem>,
-  React.ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.RadioItem>
->(({ className, children, ...props }, ref) => (
+  React.ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.RadioItem> & { indicator?: "dot" | "icon" }
+>(({ className, children, indicator = "dot", ...props }, ref) => (
   <DropdownMenuPrimitive.RadioItem
     ref={ref}
     className={cn(
-      "relative flex cursor-pointer select-none items-center rounded-sm py-2 pl-8 pr-2 text-sm outline-none transition-colors focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50",
+      "relative flex cursor-pointer select-none items-center gap-2.5 rounded-sm py-2 pl-8 pr-2 text-sm outline-none transition-colors focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50 [&>svg]:size-4 [&>svg]:shrink-0 [&>svg]:text-muted-foreground",
+      indicator === "icon" && "pl-2.5 dropdown-radio-icon",
       className,
     )}
     {...props}
   >
-    <span className="absolute left-2 flex size-3.5 items-center justify-center [&_svg]:size-2">
-      <DropdownMenuPrimitive.ItemIndicator>
-        <Circle className="fill-current" />
-      </DropdownMenuPrimitive.ItemIndicator>
-    </span>
+    {indicator === "dot" && (
+      <span className="absolute left-2 flex size-3.5 items-center justify-center [&_svg]:size-2">
+        <DropdownMenuPrimitive.ItemIndicator>
+          <Circle className="fill-current" />
+        </DropdownMenuPrimitive.ItemIndicator>
+      </span>
+    )}
     {children}
   </DropdownMenuPrimitive.RadioItem>
 ));

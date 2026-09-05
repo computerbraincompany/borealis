@@ -77,6 +77,16 @@ describe("explicit model routing", () => {
     );
   });
 
+  it("omits an explicitly empty tool list for compatible providers", async () => {
+    const client = await getLlmClient();
+    async function* chunks() {
+      yield { choices: [{ delta: { content: "ok" } }] };
+    }
+    const create = vi.spyOn(client.chat.completions, "create").mockReturnValue(chunks() as any);
+    await streamingChat([], { model: "selected-chat-b", tools: [] }, () => {});
+    expect(create.mock.calls[0][0]).not.toHaveProperty("tools");
+  });
+
   it("resolves a logical alias in the outbound streaming request", async () => {
     const client = await getLlmClient();
     async function* chunks() {
