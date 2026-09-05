@@ -499,10 +499,12 @@ export type SourceScopeInput = { source_mode: "all" } | { source_mode: "selected
 
 export interface ChatModelOption {
   id: string;
+  display_name?: string;
   owned_by?: string;
 }
 
 export interface ModelsResponse {
+  available_models?: ChatModelOption[];
   models: ChatModelOption[];
   default_model: string;
   /** The signed-in account's own default chat model; null until set in Settings. */
@@ -548,8 +550,19 @@ export interface ProviderConnectionTestResponse {
   latency_ms: number;
 }
 
-export type ChatQualificationReason = "qualified" | "unreachable" | "tool-call-missing" | "tool-call-invalid";
-export type EmbeddingQualificationReason = "qualified" | "unreachable" | "embedding-invalid" | "dimension-mismatch";
+export type ChatQualificationReason =
+  | "qualified"
+  | "unreachable"
+  | "timeout"
+  | "response-truncated"
+  | "tool-call-missing"
+  | "tool-call-invalid";
+export type EmbeddingQualificationReason =
+  | "qualified"
+  | "unreachable"
+  | "timeout"
+  | "embedding-invalid"
+  | "dimension-mismatch";
 
 export interface ModelPairQualificationResult {
   chat: {
@@ -566,7 +579,7 @@ export interface ModelPairQualificationResult {
 }
 
 export type ModelPairQualificationRequest = Omit<ProviderSettingsPatch, "lm_studio_base_url"> & {
-  expected_dimension: number;
+  expected_dimension?: number;
   remote_egress_ack_origin?: string;
 };
 

@@ -12,7 +12,6 @@ export const MAX_CATALOG_STATUS_IDS = 50;
 
 export const modelQualificationBodySchema = {
   type: "object",
-  required: ["expected_dimension"],
   additionalProperties: false,
   properties: {
     llm_base_url: settingsDraftProperties.llm_base_url,
@@ -38,7 +37,7 @@ export const modelQualificationResponseSchema = {
         qualified: { type: "boolean" },
         reason_code: {
           type: "string",
-          enum: ["qualified", "unreachable", "tool-call-missing", "tool-call-invalid"],
+          enum: ["qualified", "unreachable", "timeout", "response-truncated", "tool-call-missing", "tool-call-invalid"],
         },
         latency_ms: { type: "integer", minimum: 0, maximum: 30_000 },
       },
@@ -51,7 +50,7 @@ export const modelQualificationResponseSchema = {
         qualified: { type: "boolean" },
         reason_code: {
           type: "string",
-          enum: ["qualified", "unreachable", "embedding-invalid", "dimension-mismatch"],
+          enum: ["qualified", "unreachable", "timeout", "embedding-invalid", "dimension-mismatch"],
         },
         dimension: { type: ["integer", "null"], minimum: 0 },
         latency_ms: { type: "integer", minimum: 0, maximum: 30_000 },

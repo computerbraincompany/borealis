@@ -132,7 +132,7 @@ design.
 
 Borealis does not bundle model weights. Start LM Studio with a chat model that
 supports streaming tool calls and a separate embedding model, or configure a
-remote OpenAI-compatible provider under **Settings → Models**. The agent needs
+remote OpenAI-compatible provider under **Settings → Provider**. The agent needs
 **native** tool calling: a model that answers tool calls as plain text (for
 example `Action: list_sources()`) cannot drive the loop — pick a model whose
 runtime emits OpenAI `tool_calls`. The same provider
@@ -145,13 +145,22 @@ Local defaults are:
 - embedding model: `nomic-embed`
 - embedding dimension: `768`
 
+Settings separates **Provider**, **Chat models**, **Embeddings**, and **Local engine**.
+Chat and embedding models use provider-discovered dropdowns with full model names.
+In Embeddings, **Check model** detects the dimension automatically from a validated
+response; no dimension entry is needed. It checks embeddings before chat compatibility
+and reports timeouts separately. Changing the index still requires managed migration.
+Drafts remain when switching panels; saving or discarding affects only the current
+panel. Provider and chat changes must be saved or discarded before embedding
+qualification and migration. Personal chat-model overrides remain in **Account**.
+
 The contained-mode backend is an authenticated, API-driven local path beside
 those options. Point Borealis at a `llama-server` binary and model file (which
 it can download and SHA-256-verify into the app's own data directory), then use
 the [contained-model API](docs/API.md#contained-models) to start and stop the
 engine. Borealis health-checks and stops that process as part of the workspace,
 switches the provider to its loopback origin, and restores whatever was there
-before. **Settings → Models** provides the contained setup and lifecycle
+before. **Settings → Local engine** provides the contained setup and lifecycle
 controls — configuration, verified downloads, and engine start/stop with live
 state. When the endpoint is managed by an environment override, Borealis
 reports the stand-down instead of overriding it.
@@ -229,7 +238,7 @@ aliases only; Borealis no longer starts or requires a LiteLLM process.
 Once the live fixed-schema vector index exists, a normal Settings save cannot
 change the embedding model or dimension: the API returns `409
 EMBEDDING_REINDEX_REQUIRED`, even when the workspace has no sources. Use the
-managed embedding migration in **Settings → Models** instead. Borealis qualifies
+managed embedding migration in **Settings → Embeddings** instead. Borealis qualifies
 the target pair against the persisted provider, credential, and chat model
 settings and rechecks that exact baseline/target snapshot when start is
 admitted. It then freezes one source/generation snapshot, builds and verifies a
@@ -398,7 +407,7 @@ curl http://127.0.0.1:3000/health
 
 The curl command applies to the running browser-development server. `/health`
 is a public liveness check, not proof that models or rendering work. Inspect
-**Settings → System** (authenticated `GET /api/health`) and **Models**, then:
+**Settings → System** (authenticated `GET /api/health`) and **Provider**, then:
 
 1. Upload `accounts.csv`, `budget.csv`, `networth.csv`, and `transactions.csv`
    from `data/sample/`, and wait until all four are ready.
@@ -570,7 +579,7 @@ restore, and forward-version behavior.
   content-free egress/sync audit history.
 - Ambient provider locality, direct-route remote-egress consent, and an
   API-managed loopback `llama-server` lifecycle for contained models with
-  Settings → Models lifecycle controls.
+  Settings → Local engine lifecycle controls.
 - Synthetic model-pair qualification, managed crash-recoverable embedding-index
   migration, bounded local macOS PDF OCR, and encrypted verified workspace
   archives.

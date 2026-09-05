@@ -167,7 +167,37 @@ export function validateProviderSettings(form: ProviderSettingsForm): string | n
   return null;
 }
 
-export function useProviderSettings() {
+export type ProviderSettingsScope = "all" | "connection" | "chat" | "embeddings";
+
+const SCOPE_FIELDS: Record<ProviderSettingsScope, (keyof ProviderSettingsForm)[]> = {
+  all: Object.keys(EMPTY_FORM) as (keyof ProviderSettingsForm)[],
+  connection: ["llm_base_url", "llm_api_key", "lm_studio_base_url"],
+  chat: ["default_chat_model"],
+  embeddings: ["default_embed_model", "embedding_dimension"],
+};
+
+function scopedForm(settings: ProviderSettingsResponse, form: ProviderSettingsForm, scope: ProviderSettingsScope) {
+  const scoped = formFromSettings(settings);
+  for (const field of SCOPE_FIELDS[scope]) scoped[field] = form[field];
+  return scoped;
+}
+
+function scopedPatch(
+  settings: ProviderSettingsResponse,
+  form: ProviderSettingsForm,
+  scope: ProviderSettingsScope,
+  onlyChanges: boolean,
+) {
+  const patch = buildPatch(settings, scopedForm(settings, form, scope), onlyChanges);
+  if (scope !== "all") {
+    for (const key of Object.keys(patch) as (keyof ProviderSettingsPatch)[]) {
+      if (!SCOPE_FIELDS[scope].includes(key)) delete patch[key];
+    }
+  }
+  return patch;
+}
+
+export function useProviderSettings(scope: ProviderSettingsScope = "all") {
   const [settings, setSettings] = useState<ProviderSettingsResponse | null>(null);
   const [form, setForm] = useState<ProviderSettingsForm>(EMPTY_FORM);
   const [loading, setLoading] = useState(true);
@@ -245,13 +275,13 @@ export function useProviderSettings() {
 
   const save = useCallback(async (): Promise<boolean> => {
     if (!settings || actionRef.current) return false;
-    const validationError = validateProviderSettings(form);
+    const validationError = validateProviderSettings(scopedForm(settings, form, scope));
     if (validationError) {
       setFeedback({ kind: "error", message: validationError });
       return false;
     }
 
-    const patch = buildPatch(settings, form, true);
+    const patch = scopedPatch(settings, form, scope, true);
     if (Object.keys(patch).length === 0) return false;
 
     actionRef.current = "saving";
@@ -269,7 +299,14 @@ export function useProviderSettings() {
         actionController.current === controller
       ) {
         setSettings(next);
-        setForm(formFromSettings(next));
+        setForm((current) => {
+          const saved = formFromSettings(next);
+          const merged = { ...current };
+          for (const field of SCOPE_FIELDS[scope]) merged[field] = saved[field];
+          return merged;
+        });
+        setQualification(null);
+        setQualificationAcknowledgedOrigin(null);
         setFeedback({ kind: "success", message: "Settings saved. New model requests will use this connection." });
       }
       return !controller.signal.aborted && requestId === actionRequestRef.current;
@@ -290,11 +327,11 @@ export function useProviderSettings() {
         if (mounted.current) setAction(null);
       }
     }
-  }, [form, settings]);
+  }, [form, settings, scope]);
 
   const testConnection = useCallback(async (): Promise<boolean> => {
     if (!settings || actionRef.current) return false;
-    const validationError = validateProviderSettings(form);
+    const validationError = validateProviderSettings(scopedForm(settings, form, scope));
     if (validationError) {
       setFeedback({ kind: "error", message: validationError });
       return false;
@@ -307,7 +344,10 @@ export function useProviderSettings() {
     setAction("testing");
     setFeedback(null);
     try {
-      const result = await settingsApi.testConnection(buildPatch(settings, form, false), controller.signal);
+      const result = await settingsApi.testConnection(
+        buildPatch(settings, scopedForm(settings, form, scope), false),
+        controller.signal,
+      );
       if (
         mounted.current &&
         !controller.signal.aborted &&
@@ -337,11 +377,14 @@ export function useProviderSettings() {
         if (mounted.current) setAction(null);
       }
     }
-  }, [form, settings]);
+  }, [form, settings, scope]);
 
   const qualifyModelPair = useCallback(async (): Promise<boolean> => {
     if (!settings || actionRef.current) return false;
-    const validationError = validateProviderSettings(form);
+    const validationError = validateProviderSettings({
+      ...form,
+      embedding_dimension: String(settings.embedding_dimension),
+    });
     if (validationError) {
       setFeedback({ kind: "error", message: validationError });
       return false;
@@ -366,10 +409,11 @@ export function useProviderSettings() {
       // The LM Studio URL is a health-only setting and is not part of model
       // qualification's deliberately narrow draft contract.
       delete draft.lm_studio_base_url;
+      delete draft.embedding_dimension;
       const result = await modelsApi.qualify(
         {
           ...draft,
-          expected_dimension: Number(form.embedding_dimension),
+
           ...(qualificationRemoteOrigin ? { remote_egress_ack_origin: qualificationRemoteOrigin } : {}),
         },
         controller.signal,
@@ -381,10 +425,22 @@ export function useProviderSettings() {
         actionController.current === controller
       ) {
         setQualification(result);
+        if (
+          result.embedding.qualified &&
+          result.embedding.dimension !== null &&
+          !settings.managed_by_env.embedding_dimension
+        ) {
+          setForm((current) => ({ ...current, embedding_dimension: String(result.embedding.dimension) }));
+        }
         setFeedback(
           result.chat.qualified && result.embedding.qualified
-            ? { kind: "success", message: "Chat tools and embeddings qualified for this draft." }
-            : { kind: "error", message: "This draft did not pass every model qualification check." },
+            ? { kind: "success", message: "Model check passed. Borealis detected the search settings automatically." }
+            : {
+                kind: "error",
+                message: result.embedding.qualified
+                  ? "The embedding model works. Check your chat model before rebuilding search."
+                  : "The embedding check failed. See the result above, then try again.",
+              },
         );
       }
       return (
@@ -459,8 +515,30 @@ export function useProviderSettings() {
     }
   }, [settings]);
 
+  const dismissFeedback = useCallback(() => setFeedback(null), []);
+  const discardChanges = useCallback(() => {
+    if (!settings || actionRef.current) return;
+    const saved = formFromSettings(settings);
+    setForm((current) => {
+      const next = { ...current };
+      for (const field of SCOPE_FIELDS[scope]) next[field] = saved[field];
+      return next;
+    });
+    setFeedback(null);
+    setQualification(null);
+    setQualificationAcknowledgedOrigin(null);
+  }, [settings, scope]);
+
   const hasChanges = useMemo(
-    () => !!settings && Object.keys(buildPatch(settings, form, true)).length > 0,
+    () => !!settings && Object.keys(scopedPatch(settings, form, scope, true)).length > 0,
+    [form, settings, scope],
+  );
+  const dirtyScopes = useMemo(
+    () => ({
+      connection: !!settings && Object.keys(scopedPatch(settings, form, "connection", true)).length > 0,
+      chat: !!settings && Object.keys(scopedPatch(settings, form, "chat", true)).length > 0,
+      embeddings: !!settings && Object.keys(scopedPatch(settings, form, "embeddings", true)).length > 0,
+    }),
     [form, settings],
   );
   const hasNonEmbeddingChanges = useMemo(() => {
@@ -486,8 +564,11 @@ export function useProviderSettings() {
       qualificationRemoteOrigin !== null && qualificationAcknowledgedOrigin === qualificationRemoteOrigin,
     hasChanges,
     hasNonEmbeddingChanges,
+    dirtyScopes,
     remoteEndpoint: isRemoteModelEndpoint(form.llm_base_url),
     setField,
+    dismissFeedback,
+    discardChanges,
     reload: load,
     save,
     testConnection,

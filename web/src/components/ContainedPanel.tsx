@@ -117,7 +117,7 @@ function formatBytes(bytes: number): string {
  * only while that section is open, so the live two-second poll inside
  * `useContained` stops on unmount.
  */
-export function ContainedPanel() {
+export function ContainedPanel({ standalone = false }: { standalone?: boolean }) {
   const contained = useContained(true);
   const [configDraft, setConfigDraft] = useState<ContainedConfigDraft>({
     enabled: false,
@@ -179,12 +179,19 @@ export function ContainedPanel() {
   };
 
   return (
-    <section aria-labelledby="contained-engine-heading" className="mt-5 border-t pt-5">
-      <div className="flex min-w-0 items-start gap-3">
+    <section aria-labelledby="contained-engine-heading" className={standalone ? "space-y-5" : "mt-5 border-t pt-5"}>
+      <div className={cn("flex min-w-0 items-start gap-3", standalone && "border-b pb-5 pr-8")}>
         <Cpu className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
-        <div>
-          <h3 id="contained-engine-heading" className="text-sm font-semibold text-foreground">
-            Contained engine
+        <div className="min-w-0">
+          <h3
+            id="contained-engine-heading"
+            className={
+              standalone
+                ? "text-xl font-semibold tracking-tight text-foreground"
+                : "text-sm font-semibold text-foreground"
+            }
+          >
+            {standalone ? "Local engine" : "Contained engine"}
           </h3>
           <p className="mt-1 max-w-prose text-xs leading-5 text-muted-foreground">
             Download a checksum-verified model file and run a local llama-server engine on this Mac. The engine binds

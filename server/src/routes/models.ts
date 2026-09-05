@@ -1,4 +1,5 @@
 import type { FastifyInstance, FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
+import { resolveLlmModelId } from "../llmAliases.js";
 import { getAccountId, requireAuth } from "../auth.js";
 import { endpointHost, isRemoteProvider } from "../egressPolicy.js";
 import { recordEgressEvent, type EgressEventKind } from "../egressAudit.js";
@@ -24,7 +25,7 @@ export const DRAFT_REMOTE_EGRESS_ACK_MESSAGE =
   "Explicit acknowledgment of the canonical draft provider origin is required before qualification.";
 
 interface QualificationBody extends Record<string, unknown> {
-  readonly expected_dimension: number;
+  readonly expected_dimension?: number;
   readonly embedding_dimension?: number;
   readonly remote_egress_ack_origin?: string;
 }
@@ -33,7 +34,7 @@ export interface ModelRoutesOptions {
   readonly store: SettingsStore;
   readonly qualify?: (
     settings: EffectiveLlmSettings,
-    expectedDimension: number
+    expectedDimension: number | null
   ) => Promise<ModelPairQualificationResult>;
   readonly audit?: (kind: EgressEventKind, accountId: string, endpointHost?: string | null) => Promise<void>;
 }
@@ -68,7 +69,11 @@ export function createModelRoutes(options: ModelRoutesOptions): FastifyPluginAsy
           storageRuntime().chats.getDefaultChatModel(getAccountId(req)),
         ]);
         return reply.send({
-          models: result.models,
+          models: result.models.map((model) => ({ ...model, display_name: resolveLlmModelId(model.id) })),
+          available_models: result.available_models.map((model) => ({
+            ...model,
+            display_name: resolveLlmModelId(model.id),
+          })),
           default_model: runtime.settings.chatModel,
           account_default_model: accountDefaultModel,
           discovery: result.discovery,
@@ -96,7 +101,11 @@ export function createModelRoutes(options: ModelRoutesOptions): FastifyPluginAsy
       async (req, reply) => {
         try {
           const input = req.body as QualificationBody;
-          if (input.embedding_dimension !== undefined && input.embedding_dimension !== input.expected_dimension) {
+          if (
+            input.embedding_dimension !== undefined &&
+            input.expected_dimension !== undefined &&
+            input.embedding_dimension !== input.expected_dimension
+          ) {
             throw new SettingsValidationError("embedding_dimension");
           }
           const snapshot = await resolveEffectiveSettingsDraft(options.store, selectSettingsDraftFields(input));
@@ -113,7 +122,14 @@ export function createModelRoutes(options: ModelRoutesOptions): FastifyPluginAsy
             recordQualificationEgress(audit, "remote_turn", accountId, host);
             recordQualificationEgress(audit, "remote_ingest", accountId, host);
           }
-          return reply.send(await qualify(settings, input.expected_dimension));
+          return reply.send(
+            await qualify(
+              settings,
+              input.expected_dimension ??
+                input.embedding_dimension ??
+                (snapshot.environmentOverrides.includes("embedding_dimension") ? settings.embeddingDimension : null)
+            )
+          );
         } catch (error) {
           return sendModelSettingsError(req, reply, error);
         }

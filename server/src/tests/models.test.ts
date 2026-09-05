@@ -144,7 +144,11 @@ describe("chat model discovery", () => {
     const listModels = vi.fn().mockResolvedValue({ data: [{ id: "chat-a" }] });
     const discover = createChatModelDiscovery({ listModels, now: () => now, warn: vi.fn() });
 
-    await expect(discover()).resolves.toEqual({ models: [{ id: "chat-a" }], discovery: "live" });
+    await expect(discover()).resolves.toEqual({
+      models: [{ id: "chat-a" }],
+      available_models: [{ id: "chat-a" }],
+      discovery: "live",
+    });
     now += 14_999;
     await discover();
     expect(listModels).toHaveBeenCalledTimes(1);
@@ -168,8 +172,8 @@ describe("chat model discovery", () => {
     resolvePage?.({ data: [{ id: "chat-a" }] });
 
     await expect(Promise.all([first, second])).resolves.toEqual([
-      { models: [{ id: "chat-a" }], discovery: "live" },
-      { models: [{ id: "chat-a" }], discovery: "live" },
+      { models: [{ id: "chat-a" }], available_models: [{ id: "chat-a" }], discovery: "live" },
+      { models: [{ id: "chat-a" }], available_models: [{ id: "chat-a" }], discovery: "live" },
     ]);
     expect(listModels).toHaveBeenCalledTimes(1);
   });
@@ -182,8 +186,16 @@ describe("chat model discovery", () => {
     const discover = createChatModelDiscovery({ listModels, warn: vi.fn() });
 
     await discover();
-    await expect(discover()).resolves.toEqual({ models: [{ id: "chat-a" }], discovery: "live" });
-    await expect(discover({ refresh: true })).resolves.toEqual({ models: [{ id: "chat-b" }], discovery: "live" });
+    await expect(discover()).resolves.toEqual({
+      models: [{ id: "chat-a" }],
+      available_models: [{ id: "chat-a" }],
+      discovery: "live",
+    });
+    await expect(discover({ refresh: true })).resolves.toEqual({
+      models: [{ id: "chat-b" }],
+      available_models: [{ id: "chat-b" }],
+      discovery: "live",
+    });
     expect(listModels).toHaveBeenCalledTimes(2);
   });
 
@@ -193,8 +205,8 @@ describe("chat model discovery", () => {
     const warn = vi.fn();
     const discover = createChatModelDiscovery({ listModels, warn });
 
-    await expect(discover()).resolves.toEqual({ models: [], discovery: "unavailable" });
-    await expect(discover()).resolves.toEqual({ models: [], discovery: "unavailable" });
+    await expect(discover()).resolves.toEqual({ models: [], available_models: [], discovery: "unavailable" });
+    await expect(discover()).resolves.toEqual({ models: [], available_models: [], discovery: "unavailable" });
     expect(listModels).toHaveBeenCalledTimes(2);
     expect(warn).toHaveBeenCalledWith("model discovery unavailable");
     expect(JSON.stringify(warn.mock.calls)).not.toContain(upstreamDetail);
@@ -204,7 +216,11 @@ describe("chat model discovery", () => {
     const client = await getLlmClient();
     const list = vi.spyOn(client.models, "list").mockResolvedValue({ data: [] } as any);
 
-    await expect(discoverChatModels({ refresh: true })).resolves.toEqual({ models: [], discovery: "live" });
+    await expect(discoverChatModels({ refresh: true })).resolves.toEqual({
+      models: [],
+      available_models: [],
+      discovery: "live",
+    });
     expect(list).toHaveBeenCalledWith({ timeout: 5_000, maxRetries: 0 });
   });
 
@@ -216,6 +232,7 @@ describe("chat model discovery", () => {
 
     await expect(discover()).resolves.toEqual({
       models: [{ id: "nomic-embed-chat" }],
+      available_models: [{ id: "nomic-embed" }, { id: "nomic-embed-chat" }],
       discovery: "live",
     });
   });
@@ -228,6 +245,7 @@ describe("chat model discovery", () => {
 
     await expect(discover()).resolves.toEqual({
       models: [{ id: "qwen-chat" }],
+      available_models: [{ id: "nomic-embed" }, { id: "qwen-chat" }],
       discovery: "live",
     });
   });
@@ -235,7 +253,11 @@ describe("chat model discovery", () => {
   it("rebuilds the SDK client and discovery cache when persisted settings change", async () => {
     const firstClient = await getLlmClient();
     const firstList = vi.spyOn(firstClient.models, "list").mockResolvedValue({ data: [{ id: "first-chat" }] } as any);
-    await expect(discoverChatModels()).resolves.toEqual({ models: [{ id: "first-chat" }], discovery: "live" });
+    await expect(discoverChatModels()).resolves.toEqual({
+      models: [{ id: "first-chat" }],
+      available_models: [{ id: "first-chat" }],
+      discovery: "live",
+    });
 
     await runtimeSettingsStore().patch({
       llmBaseUrl: "https://second-provider.example.test",
@@ -250,7 +272,11 @@ describe("chat model discovery", () => {
       .spyOn(secondClient.models, "list")
       .mockResolvedValue({ data: [{ id: "second-embed" }, { id: "second-chat" }] } as any);
 
-    await expect(discoverChatModels()).resolves.toEqual({ models: [{ id: "second-chat" }], discovery: "live" });
+    await expect(discoverChatModels()).resolves.toEqual({
+      models: [{ id: "second-chat" }],
+      available_models: [{ id: "second-chat" }, { id: "second-embed" }],
+      discovery: "live",
+    });
     expect(firstList).toHaveBeenCalledOnce();
     expect(secondList).toHaveBeenCalledOnce();
   });

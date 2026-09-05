@@ -1,6 +1,6 @@
 import { act, renderHook } from "@testing-library/react";
 import { useEmbeddingMigration } from "@/hooks/useEmbeddingMigration";
-import { modelsApi, type EmbeddingMigrationStatus } from "@/lib/api";
+import { ApiError, modelsApi, type EmbeddingMigrationStatus } from "@/lib/api";
 
 const building: EmbeddingMigrationStatus = {
   phase: "building",
@@ -52,6 +52,64 @@ describe("useEmbeddingMigration", () => {
       await vi.advanceTimersByTimeAsync(2_000);
     });
     expect(status).toHaveBeenCalledTimes(2);
+  });
+
+  it("explains a failed idle status check and automatically clears it after recovery", async () => {
+    vi.useFakeTimers();
+    const idle: EmbeddingMigrationStatus = { ...building, phase: "idle", can_cancel: false };
+    const status = vi
+      .spyOn(modelsApi, "embeddingMigrationStatus")
+      .mockResolvedValueOnce(idle)
+      .mockRejectedValueOnce(new ApiError(500, "Internal Server Error", undefined, "test-reference"))
+      .mockResolvedValue(idle);
+    const { result } = renderHook(() => useEmbeddingMigration(true));
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      await result.current.refresh();
+    });
+    expect(result.current.status?.phase).toBe("idle");
+    expect(result.current.loadError).toContain("Couldn’t refresh search rebuild status.");
+    expect(result.current.loadError).toContain("HTTP 500");
+    expect(result.current.loadError).toContain("test-reference");
+    expect(result.current.loadError).toContain("Refresh status");
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+    expect(result.current.loadError).toBeNull();
+    expect(status).toHaveBeenCalledTimes(3);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+    });
+    expect(status).toHaveBeenCalledTimes(3);
+  });
+
+  it("does not let a closed status request replace a newer result", async () => {
+    let rejectOld!: (error: Error) => void;
+    vi.spyOn(modelsApi, "embeddingMigrationStatus")
+      .mockImplementationOnce(
+        () =>
+          new Promise((_resolve, reject) => {
+            rejectOld = reject;
+          }),
+      )
+      .mockResolvedValue(building);
+    const { result, rerender } = renderHook(({ enabled }) => useEmbeddingMigration(enabled), {
+      initialProps: { enabled: true },
+    });
+    rerender({ enabled: false });
+    rerender({ enabled: true });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      rejectOld(new ApiError(500, "Internal Server Error"));
+    });
+    expect(result.current.status).toEqual(building);
+    expect(result.current.loadError).toBeNull();
   });
 
   it("does not poll before the Models settings section is enabled", async () => {

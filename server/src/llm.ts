@@ -27,6 +27,7 @@ export interface ChatModelOption {
 }
 
 export interface ChatModelDiscovery {
+  available_models: ChatModelOption[];
   models: ChatModelOption[];
   discovery: "live" | "unavailable";
 }
@@ -85,13 +86,14 @@ export function createChatModelDiscovery(deps: ChatModelDiscoveryDependencies) {
         const page = await deps.listModels();
         const result: ChatModelDiscovery = {
           models: normalizeChatModels(page, configuredEmbeddingModel),
+          available_models: normalizeChatModels(page, ""),
           discovery: "live",
         };
         cached = { result, storedAt: now() };
         return result;
       } catch {
         warn("model discovery unavailable");
-        return { models: [], discovery: "unavailable" };
+        return { models: [], available_models: [], discovery: "unavailable" };
       }
     })();
 
@@ -173,9 +175,9 @@ const MAX_STREAM_TOOL_CALLS = 8;
 const MAX_STREAM_TOOL_NAME_CHARS = 100;
 const MAX_STREAM_TOOL_ARGUMENT_CHARS = 20_000;
 const MAX_STREAM_TOTAL_TOOL_ARGUMENT_CHARS = 80_000;
-const DEFAULT_QUALIFICATION_TIMEOUT_MS = 15_000;
+const DEFAULT_QUALIFICATION_TIMEOUT_MS = 30_000;
 const MAX_QUALIFICATION_TIMEOUT_MS = 30_000;
-const MAX_QUALIFICATION_CHAT_RESPONSE_BYTES = 64 * 1024;
+const MAX_QUALIFICATION_CHAT_RESPONSE_BYTES = 512 * 1024;
 const MAX_QUALIFICATION_EMBED_RESPONSE_BYTES = 2 * 1024 * 1024;
 const MAX_QUALIFICATION_TOOL_ARGUMENT_CHARS = 256;
 const MAX_QUALIFICATION_DIMENSION = 16_384;
@@ -207,8 +209,10 @@ const QUALIFICATION_STREAM_TOOL_LIMITS: StreamToolCallLimits = Object.freeze({
   totalArgumentChars: MAX_QUALIFICATION_TOOL_ARGUMENT_CHARS,
 });
 
-export type ChatQualificationReason = "qualified" | "unreachable" | "tool-call-missing" | "tool-call-invalid";
-export type EmbeddingQualificationReason = "qualified" | "unreachable" | "embedding-invalid" | "dimension-mismatch";
+export type ChatQualificationReason =
+  "qualified" | "unreachable" | "timeout" | "response-truncated" | "tool-call-missing" | "tool-call-invalid";
+export type EmbeddingQualificationReason =
+  "qualified" | "unreachable" | "timeout" | "embedding-invalid" | "dimension-mismatch";
 
 export interface ModelPairQualificationResult {
   readonly chat: {
@@ -239,13 +243,14 @@ export interface ModelQualificationDependencies {
  */
 export async function qualifyModelPair(
   settings: EffectiveLlmSettings,
-  expectedDimension: number,
+  expectedDimension: number | null,
   dependencies: ModelQualificationDependencies = {}
 ): Promise<ModelPairQualificationResult> {
   if (
-    !Number.isSafeInteger(expectedDimension) ||
-    expectedDimension < 1 ||
-    expectedDimension > MAX_QUALIFICATION_DIMENSION
+    expectedDimension !== null &&
+    (!Number.isSafeInteger(expectedDimension) ||
+      expectedDimension < 1 ||
+      expectedDimension > MAX_QUALIFICATION_DIMENSION)
   ) {
     throw new RangeError("expected embedding dimension is invalid");
   }
@@ -259,10 +264,10 @@ export async function qualifyModelPair(
   };
   if (settings.apiKey) headers.Authorization = `Bearer ${settings.apiKey}`;
 
-  const [chat, embedding] = await Promise.all([
-    qualifyChatRole(settings, headers, fetchImpl, timeoutMs, now),
-    qualifyEmbeddingRole(settings, expectedDimension, headers, fetchImpl, timeoutMs, now),
-  ]);
+  // Local providers may load or swap model weights on demand. Check embeddings
+  // first so a slow chat load cannot queue the dimension probe behind it.
+  const embedding = await qualifyEmbeddingRole(settings, expectedDimension, headers, fetchImpl, timeoutMs, now);
+  const chat = await qualifyChatRole(settings, headers, fetchImpl, timeoutMs, now);
   return Object.freeze({ chat: Object.freeze(chat), embedding: Object.freeze(embedding) });
 }
 
@@ -279,7 +284,9 @@ async function qualifyChatRole(
     {
       model: resolveLlmModelId(settings.chatModel),
       messages: [{ role: "user", content: QUALIFICATION_PROMPT }],
-      max_tokens: 128,
+      // Reasoning-capable local models may emit hundreds of tokens before the
+      // fixed tool call. The response byte, argument, and time bounds still apply.
+      max_tokens: 1024,
       temperature: 0,
       tools: [
         {
@@ -305,7 +312,11 @@ async function qualifyChatRole(
     now
   );
   if (!outcome.reachable) {
-    return { qualified: false, reason_code: "unreachable", latency_ms: outcome.latencyMs };
+    return {
+      qualified: false,
+      reason_code: outcome.timedOut ? "timeout" : "unreachable",
+      latency_ms: outcome.latencyMs,
+    };
   }
 
   if (!Array.isArray(outcome.payload)) {
@@ -323,6 +334,9 @@ async function qualifyChatRole(
       const choice = choices?.length === 1 ? asRecord(choices[0]) : undefined;
       const delta = choice && asRecord(choice.delta);
       if (!delta) throw new Error("qualification stream is invalid");
+      if (choice?.finish_reason === "length") {
+        return { qualified: false, reason_code: "response-truncated", latency_ms: outcome.latencyMs };
+      }
       sawDelta = true;
       accumulator.push(delta.tool_calls);
     }
@@ -342,7 +356,7 @@ async function qualifyChatRole(
 
 async function qualifyEmbeddingRole(
   settings: EffectiveLlmSettings,
-  expectedDimension: number,
+  expectedDimension: number | null,
   headers: Readonly<Record<string, string>>,
   fetchImpl: ModelQualificationFetch,
   timeoutMs: number,
@@ -364,7 +378,7 @@ async function qualifyEmbeddingRole(
   if (!outcome.reachable) {
     return {
       qualified: false,
-      reason_code: "unreachable",
+      reason_code: outcome.timedOut ? "timeout" : "unreachable",
       dimension: null,
       latency_ms: outcome.latencyMs,
     };
@@ -376,6 +390,8 @@ async function qualifyEmbeddingRole(
   const vector = item && Array.isArray(item.embedding) ? item.embedding : undefined;
   const dimension = vector?.length ?? null;
   try {
+    if (dimension === null || dimension < 1 || dimension > MAX_QUALIFICATION_DIMENSION)
+      throw new Error("invalid dimension");
     normalizeEmbeddingVectorValues(vector);
   } catch {
     return {
@@ -385,7 +401,7 @@ async function qualifyEmbeddingRole(
       latency_ms: outcome.latencyMs,
     };
   }
-  if (dimension !== expectedDimension) {
+  if (expectedDimension !== null && dimension !== expectedDimension) {
     return {
       qualified: false,
       reason_code: "dimension-mismatch",
@@ -398,6 +414,7 @@ async function qualifyEmbeddingRole(
 
 interface QualificationHttpOutcome {
   readonly reachable: boolean;
+  readonly timedOut?: boolean;
   readonly payload?: unknown;
   readonly latencyMs: number;
 }
@@ -439,8 +456,10 @@ async function postQualificationResponse(
   const controller = new AbortController();
   const startedAt = now();
   let timer: NodeJS.Timeout | undefined;
+  let timedOut = false;
   const timeout = new Promise<never>((_resolve, reject) => {
     timer = setTimeout(() => {
+      timedOut = true;
       controller.abort();
       reject(new Error("qualification deadline exceeded"));
     }, timeoutMs);
@@ -465,7 +484,7 @@ async function postQualificationResponse(
     const payload = await Promise.race([decode(response, maxResponseBytes), timeout]);
     return { reachable: true, payload, latencyMs: qualificationLatency(now() - startedAt, timeoutMs) };
   } catch {
-    return { reachable: false, latencyMs: qualificationLatency(now() - startedAt, timeoutMs) };
+    return { reachable: false, timedOut, latencyMs: qualificationLatency(now() - startedAt, timeoutMs) };
   } finally {
     if (timer) clearTimeout(timer);
   }

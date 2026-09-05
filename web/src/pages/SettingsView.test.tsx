@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { ApiError, type ModelsResponse, type ProviderSettingsResponse, type SystemHealthResponse } from "@/lib/api";
 
 const mocks = vi.hoisted(() => ({
@@ -87,7 +87,17 @@ const liveCatalog: ModelsResponse = {
   default_model: "qwen-chat",
   account_default_model: null,
   discovery: "live",
-  models: [{ id: "qwen-chat", owned_by: "LM Studio" }, { id: "analysis-large" }],
+  models: [
+    { id: "qwen-chat", display_name: "qwen/qwen3.6-35b-a3b", owned_by: "LM Studio" },
+    { id: "analysis-large" },
+    { id: "analysis-draft" },
+    { id: "chat-v2" },
+  ],
+  available_models: [
+    { id: "qwen-chat", display_name: "qwen/qwen3.6-35b-a3b" },
+    { id: "nomic-embed", display_name: "text-embedding-nomic-embed-text-v1.5" },
+    { id: "embed-v2" },
+  ],
 };
 
 const providerSettings: ProviderSettingsResponse = {
@@ -162,7 +172,7 @@ const healthySystem: SystemHealthResponse = {
 };
 
 function selectSettingsSection(name: string | RegExp) {
-  fireEvent.click(screen.getByRole("button", { name }));
+  fireEvent.click(within(screen.getByRole("navigation", { name: "Settings sections" })).getByRole("button", { name }));
 }
 
 function deferred<T>() {
@@ -223,18 +233,29 @@ describe("SettingsView", () => {
     window.location.hash = "/settings";
   });
 
-  it("shows the configured default, advertised models, providers, and forced refresh", () => {
+  it("separates provider, chat, embeddings and engine controls without duplicate catalog sections", async () => {
+    mocks.settingsGet.mockResolvedValue(providerSettings);
     render(<SettingsView />);
-    selectSettingsSection("Models");
-
-    expect(screen.getAllByText("qwen-chat")).toHaveLength(2);
-    expect(screen.getByText("analysis-large")).toBeInTheDocument();
-    expect(screen.getByText("Provider: LM Studio")).toBeInTheDocument();
-    expect(screen.getByText("2 models")).toBeInTheDocument();
-    expect(screen.getByText("Live")).toBeInTheDocument();
-
+    selectSettingsSection("Provider");
+    await screen.findByLabelText("Chat endpoint URL");
+    expect(screen.queryByLabelText("Default chat model")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Embedding model")).not.toBeInTheDocument();
+    selectSettingsSection("Chat models");
+    expect(screen.getByRole("combobox", { name: "Default chat model" })).toHaveValue("qwen-chat");
+    expect(screen.queryByLabelText("Chat endpoint URL")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Embedding model")).not.toBeInTheDocument();
+    expect(screen.queryByText("Available chat models")).not.toBeInTheDocument();
+    expect(screen.queryByText("Configured default")).not.toBeInTheDocument();
+    expect(screen.queryByText("Discovery")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Refresh models" }));
     expect(mocks.refresh).toHaveBeenCalledWith(true);
+    selectSettingsSection("Embeddings");
+    expect(screen.getByRole("combobox", { name: "Embedding model" })).toHaveValue("nomic-embed");
+    expect(screen.getByRole("region", { name: "Embedding index migration" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Save changes" })).not.toBeInTheDocument();
+    selectSettingsSection("Local engine");
+    expect(screen.getByRole("region", { name: "Local engine" })).toBeInTheDocument();
+    expect(screen.queryByLabelText("Embedding model")).not.toBeInTheDocument();
   });
 
   it("shows the dependency request path and refreshes it independently", () => {
@@ -475,7 +496,8 @@ describe("SettingsView", () => {
     await act(async () => pendingSave.reject(new Error("late save failed")));
   });
 
-  it("explains unavailable and empty discovery states", () => {
+  it("explains unavailable and empty discovery states", async () => {
+    mocks.settingsGet.mockResolvedValue(providerSettings);
     mocks.modelCatalog.mockReturnValue({
       catalog: { default_model: "qwen-chat", account_default_model: null, discovery: "unavailable", models: [] },
       loading: false,
@@ -483,9 +505,10 @@ describe("SettingsView", () => {
       refresh: mocks.refresh,
     });
     const { unmount } = render(<SettingsView />);
-    selectSettingsSection("Models");
+    selectSettingsSection("Chat models");
+    await screen.findByLabelText("Default chat model");
     expect(
-      screen.getByText("Model discovery is unavailable. New chats can still use the configured default."),
+      screen.getByText("Model discovery is unavailable. Check the provider connection, then refresh."),
     ).toBeInTheDocument();
     unmount();
 
@@ -496,11 +519,13 @@ describe("SettingsView", () => {
       refresh: mocks.refresh,
     });
     render(<SettingsView />);
-    selectSettingsSection("Models");
-    expect(screen.getByText("No chat models advertised.")).toBeInTheDocument();
+    selectSettingsSection("Chat models");
+    await screen.findByLabelText("Default chat model");
+    expect(screen.getByText("No chat models advertised. Check your provider, then refresh.")).toBeInTheDocument();
   });
 
-  it("keeps stale models visible while surfacing a bounded refresh error", () => {
+  it("keeps stale models visible while surfacing a bounded refresh error", async () => {
+    mocks.settingsGet.mockResolvedValue(providerSettings);
     mocks.modelCatalog.mockReturnValue({
       catalog: liveCatalog,
       loading: false,
@@ -508,28 +533,49 @@ describe("SettingsView", () => {
       refresh: mocks.refresh,
     });
     render(<SettingsView />);
-    selectSettingsSection("Models");
+    selectSettingsSection("Chat models");
+    await screen.findByLabelText("Default chat model");
 
-    expect(screen.getByRole("alert")).toHaveTextContent(
-      "Showing the last available catalog. The model catalog is temporarily unavailable.",
-    );
+    expect(screen.getByRole("alert")).toHaveTextContent("The model catalog is temporarily unavailable.");
     expect(screen.getByText("analysis-large")).toBeInTheDocument();
   });
 
   it("loads redacted provider settings without ever receiving the stored key", async () => {
     mocks.settingsGet.mockResolvedValue(providerSettings);
     render(<SettingsView />);
-    selectSettingsSection("Models");
+    selectSettingsSection("Provider");
 
     expect(await screen.findByLabelText("Chat endpoint URL")).toHaveValue("http://127.0.0.1:1234");
-    expect(screen.getByLabelText("Default chat model")).toHaveValue("qwen-chat");
-    expect(screen.getByLabelText("Embedding model")).toHaveValue("nomic-embed");
-    expect(screen.getByLabelText("Embedding dimension")).toHaveValue(768);
     expect(screen.getByLabelText("API key")).toHaveValue("");
     expect(screen.getByLabelText("API key")).toHaveAttribute("placeholder", "Configured — leave blank to keep it");
     expect(screen.getByRole("button", { name: "Clear saved key" })).toBeEnabled();
     expect(screen.queryByLabelText("LM Studio URL (optional)")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Save changes" })).toBeDisabled();
+  });
+
+  it("offers provider names and gates model choices while preserving connection drafts across panels", async () => {
+    mocks.settingsGet.mockResolvedValue(providerSettings);
+    render(<SettingsView />);
+    selectSettingsSection("Chat models");
+    const chat = await screen.findByRole("combobox", { name: "Default chat model" });
+    expect(within(chat).getByRole("option", { name: "qwen/qwen3.6-35b-a3b" })).toHaveValue("qwen-chat");
+    selectSettingsSection("Embeddings");
+    expect(
+      within(screen.getByLabelText("Embedding model")).getByRole("option", {
+        name: "text-embedding-nomic-embed-text-v1.5",
+      }),
+    ).toHaveValue("nomic-embed");
+    selectSettingsSection("Provider");
+    fireEvent.change(screen.getByLabelText("Chat endpoint URL"), { target: { value: "http://localhost:4321" } });
+    selectSettingsSection("Chat models");
+    expect(screen.getByLabelText("Default chat model")).toBeDisabled();
+    selectSettingsSection("Embeddings");
+    expect(screen.getByLabelText("Embedding model")).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Open Provider" }));
+    expect(screen.getByLabelText("Chat endpoint URL")).toHaveValue("http://localhost:4321");
+    fireEvent.click(screen.getByRole("button", { name: "Discard changes" }));
+    selectSettingsSection("Chat models");
+    expect(screen.getByLabelText("Default chat model")).toBeEnabled();
   });
 
   it("saves changed fields while a blank secret preserves the configured API key", async () => {
@@ -539,7 +585,7 @@ describe("SettingsView", () => {
       default_chat_model: patch.default_chat_model ?? providerSettings.default_chat_model,
     }));
     render(<SettingsView />);
-    selectSettingsSection("Models");
+    selectSettingsSection("Chat models");
 
     const chatModel = await screen.findByLabelText("Default chat model");
     fireEvent.change(chatModel, { target: { value: "analysis-large" } });
@@ -555,15 +601,64 @@ describe("SettingsView", () => {
     expect(await screen.findByRole("status")).toHaveTextContent(
       "Settings saved. New model requests will use this connection.",
     );
+    selectSettingsSection("Provider");
     expect(screen.getByLabelText("API key")).toHaveValue("");
     await waitFor(() => expect(mocks.refresh).toHaveBeenCalledWith(true));
+  });
+
+  it("saves only the current panel and preserves an embedding draft", async () => {
+    mocks.settingsGet.mockResolvedValue(providerSettings);
+    mocks.settingsUpdate.mockImplementation(async (patch) => ({ ...providerSettings, ...patch }));
+    render(<SettingsView />);
+    selectSettingsSection("Embeddings");
+    fireEvent.change(await screen.findByLabelText("Embedding model"), { target: { value: "embed-v2" } });
+    selectSettingsSection("Chat models");
+    fireEvent.change(screen.getByLabelText("Default chat model"), { target: { value: "chat-v2" } });
+    selectSettingsSection("Provider");
+    fireEvent.change(screen.getByLabelText("Chat endpoint URL"), { target: { value: "http://localhost:4321" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    await screen.findByRole("status");
+    expect(mocks.settingsUpdate).toHaveBeenCalledWith(
+      { llm_base_url: "http://localhost:4321" },
+      expect.any(AbortSignal),
+    );
+    selectSettingsSection("Chat models");
+    expect(screen.getByLabelText("Default chat model")).toHaveValue("chat-v2");
+    expect(screen.getByRole("button", { name: "Save changes" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    await screen.findByRole("status");
+    expect(mocks.settingsUpdate).toHaveBeenLastCalledWith({ default_chat_model: "chat-v2" }, expect.any(AbortSignal));
+    selectSettingsSection("Embeddings");
+    expect(screen.getByLabelText("Embedding model")).toHaveValue("embed-v2");
+    fireEvent.click(screen.getByRole("button", { name: "Discard changes" }));
+    expect(screen.getByLabelText("Embedding model")).toHaveValue("nomic-embed");
+    selectSettingsSection("Chat models");
+    expect(screen.getByLabelText("Default chat model")).toHaveValue("chat-v2");
+  });
+
+  it("keeps an in-flight save and its failure visible until it settles", async () => {
+    const pending = deferred<ProviderSettingsResponse>();
+    const onClose = vi.fn();
+    mocks.settingsGet.mockResolvedValue(providerSettings);
+    mocks.settingsUpdate.mockReturnValue(pending.promise);
+    render(<SettingsView onClose={onClose} />);
+    selectSettingsSection("Chat models");
+    fireEvent.change(await screen.findByLabelText("Default chat model"), { target: { value: "chat-v2" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    expect(screen.getByRole("button", { name: "Provider" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    expect(onClose).not.toHaveBeenCalled();
+    await act(async () => pending.reject(new Error("failed")));
+    expect(screen.getByRole("alert")).toHaveTextContent("Settings could not be saved.");
+    expect(screen.getByRole("button", { name: "Provider" })).toBeEnabled();
+    expect(screen.getByLabelText("Default chat model")).toHaveValue("chat-v2");
   });
 
   it("sends a newly entered key once, then clears it from the form", async () => {
     mocks.settingsGet.mockResolvedValue({ ...providerSettings, llm_api_key_configured: false });
     mocks.settingsUpdate.mockResolvedValue(providerSettings);
     render(<SettingsView />);
-    selectSettingsSection("Models");
+    selectSettingsSection("Provider");
 
     const key = await screen.findByLabelText("API key");
     fireEvent.change(key, { target: { value: "sk-new-secret" } });
@@ -581,10 +676,10 @@ describe("SettingsView", () => {
     mocks.settingsGet.mockResolvedValue(providerSettings);
     mocks.settingsUpdate.mockReturnValue(cleared.promise);
     render(<SettingsView />);
-    selectSettingsSection("Models");
+    selectSettingsSection("Provider");
 
     const key = await screen.findByLabelText("API key");
-    fireEvent.change(screen.getByLabelText("Default chat model"), { target: { value: "analysis-draft" } });
+    fireEvent.change(screen.getByLabelText("Chat endpoint URL"), { target: { value: "http://localhost:4321" } });
     fireEvent.change(key, { target: { value: "replacement-not-saved" } });
     fireEvent.click(screen.getByRole("button", { name: "Clear saved key" }));
 
@@ -600,7 +695,7 @@ describe("SettingsView", () => {
     });
 
     expect(screen.getByLabelText("API key")).toHaveValue("");
-    expect(screen.getByLabelText("Default chat model")).toHaveValue("analysis-draft");
+    expect(screen.getByLabelText("Chat endpoint URL")).toHaveValue("http://localhost:4321");
     expect(screen.queryByRole("button", { name: "Clear saved key" })).not.toBeInTheDocument();
     expect(screen.getByRole("status")).toHaveTextContent("Saved API key cleared.");
     expect(screen.getByRole("button", { name: "Save changes" })).toBeEnabled();
@@ -611,7 +706,7 @@ describe("SettingsView", () => {
     mocks.settingsGet.mockResolvedValue(providerSettings);
     mocks.settingsUpdate.mockRejectedValue(new Error("secret filesystem path /private/settings.json"));
     render(<SettingsView />);
-    selectSettingsSection("Models");
+    selectSettingsSection("Provider");
 
     const key = await screen.findByLabelText("API key");
     fireEvent.change(key, { target: { value: "replacement-not-saved" } });
@@ -630,7 +725,7 @@ describe("SettingsView", () => {
     mocks.settingsGet.mockResolvedValue(providerSettings);
     mocks.settingsUpdate.mockReturnValue(pending());
     let view = render(<SettingsView />);
-    selectSettingsSection("Models");
+    selectSettingsSection("Chat models");
     fireEvent.change(await screen.findByLabelText("Default chat model"), { target: { value: "chat-v2" } });
     fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
     await waitFor(() => expect(mocks.settingsUpdate).toHaveBeenCalled());
@@ -641,7 +736,7 @@ describe("SettingsView", () => {
     mocks.settingsGet.mockReset().mockResolvedValue(providerSettings);
     mocks.settingsTest.mockReturnValue(pending());
     view = render(<SettingsView />);
-    selectSettingsSection("Models");
+    selectSettingsSection("Provider");
     await screen.findByLabelText("Chat endpoint URL");
     fireEvent.click(screen.getByRole("button", { name: "Test connection" }));
     await waitFor(() => expect(mocks.settingsTest).toHaveBeenCalled());
@@ -652,9 +747,9 @@ describe("SettingsView", () => {
     mocks.settingsGet.mockReset().mockResolvedValue(providerSettings);
     mocks.modelsQualify.mockReturnValue(pending());
     view = render(<SettingsView />);
-    selectSettingsSection("Models");
-    await screen.findByLabelText("Chat endpoint URL");
-    fireEvent.click(screen.getByRole("button", { name: "Qualify model pair" }));
+    selectSettingsSection("Embeddings");
+    await screen.findByLabelText("Embedding model");
+    fireEvent.click(screen.getByRole("button", { name: "Check model" }));
     await waitFor(() => expect(mocks.modelsQualify).toHaveBeenCalled());
     signal = mocks.modelsQualify.mock.calls[0][1] as AbortSignal;
     view.unmount();
@@ -663,7 +758,7 @@ describe("SettingsView", () => {
     mocks.settingsGet.mockReset().mockResolvedValue(providerSettings);
     mocks.settingsUpdate.mockReset().mockReturnValue(pending());
     view = render(<SettingsView />);
-    selectSettingsSection("Models");
+    selectSettingsSection("Provider");
     await screen.findByLabelText("Chat endpoint URL");
     fireEvent.click(screen.getByRole("button", { name: "Clear saved key" }));
     await waitFor(() => expect(mocks.settingsUpdate).toHaveBeenCalled());
@@ -676,7 +771,7 @@ describe("SettingsView", () => {
     mocks.settingsGet.mockResolvedValue(providerSettings);
     mocks.settingsTest.mockResolvedValue({ ok: true, latency_ms: 42.6 });
     render(<SettingsView />);
-    selectSettingsSection("Models");
+    selectSettingsSection("Provider");
 
     const endpoint = await screen.findByLabelText("Chat endpoint URL");
     fireEvent.change(endpoint, { target: { value: "https://api.example.test" } });
@@ -711,11 +806,10 @@ describe("SettingsView", () => {
       embedding: { ...qualifiedPair.embedding, dimension: 384 },
     });
     render(<SettingsView />);
-    selectSettingsSection("Models");
+    selectSettingsSection("Embeddings");
 
     fireEvent.change(await screen.findByLabelText("Embedding model"), { target: { value: "embed-v2" } });
-    fireEvent.change(screen.getByLabelText("Embedding dimension"), { target: { value: "384" } });
-    fireEvent.click(screen.getByRole("button", { name: "Qualify model pair" }));
+    fireEvent.click(screen.getByRole("button", { name: "Check model" }));
 
     await waitFor(() =>
       expect(mocks.modelsQualify).toHaveBeenCalledWith(
@@ -723,68 +817,46 @@ describe("SettingsView", () => {
           llm_base_url: "http://127.0.0.1:1234",
           default_chat_model: "qwen-chat",
           default_embed_model: "embed-v2",
-          embedding_dimension: 384,
-          expected_dimension: 384,
         },
         expect.any(AbortSignal),
       ),
     );
     const results = await screen.findByLabelText("Model qualification results");
-    expect(results).toHaveTextContent("Chat tools");
-    expect(results).toHaveTextContent("Qualified · 17 ms");
-    expect(results).toHaveTextContent("384 dimensions");
+    expect(results).toHaveTextContent("Chat compatibility");
+    expect(results).toHaveTextContent("Ready");
+    expect(results).toHaveTextContent("Search settings detected automatically");
     expect(screen.getByRole("button", { name: "Start migration" })).toBeEnabled();
 
-    fireEvent.change(screen.getByLabelText("Embedding dimension"), { target: { value: "512" } });
+    fireEvent.change(screen.getByLabelText("Embedding model"), { target: { value: "nomic-embed" } });
     expect(screen.queryByLabelText("Model qualification results")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Start migration" })).toBeDisabled();
   });
 
-  it("does not start a migration from a qualification that includes unsaved provider changes", async () => {
+  it("requires hidden chat drafts to be saved before qualifying or starting a migration", async () => {
     mocks.settingsGet.mockResolvedValue(providerSettings);
     mocks.migrationStatus.mockResolvedValue(idleMigration);
-    mocks.modelsQualify.mockResolvedValue({
-      ...qualifiedPair,
-      embedding: { ...qualifiedPair.embedding, dimension: 384 },
-    });
     render(<SettingsView />);
-    selectSettingsSection("Models");
-
+    selectSettingsSection("Chat models");
     fireEvent.change(await screen.findByLabelText("Default chat model"), { target: { value: "chat-v2" } });
+    selectSettingsSection("Embeddings");
     fireEvent.change(screen.getByLabelText("Embedding model"), { target: { value: "embed-v2" } });
-    fireEvent.change(screen.getByLabelText("Embedding dimension"), { target: { value: "384" } });
-    fireEvent.click(screen.getByRole("button", { name: "Qualify model pair" }));
-
-    await waitFor(() =>
-      expect(mocks.modelsQualify).toHaveBeenCalledWith(
-        {
-          llm_base_url: "http://127.0.0.1:1234",
-          default_chat_model: "chat-v2",
-          default_embed_model: "embed-v2",
-          embedding_dimension: 384,
-          expected_dimension: 384,
-        },
-        expect.any(AbortSignal),
-      ),
-    );
-    expect(await screen.findByLabelText("Model qualification results")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Start migration" })).toBeDisabled();
-    expect(screen.getByText(/Save or revert endpoint, API key, chat-model, and health-probe changes/i)).toBeVisible();
+    expect(screen.getByRole("button", { name: "Check model" })).toBeDisabled();
+    expect(await screen.findByRole("button", { name: "Start migration" })).toBeDisabled();
+    expect(mocks.modelsQualify).not.toHaveBeenCalled();
+    expect(mocks.migrationStart).not.toHaveBeenCalled();
   });
 
   it("requires draft-specific acknowledgement of the canonical remote origin before qualification", async () => {
-    mocks.settingsGet.mockResolvedValue(providerSettings);
+    mocks.settingsGet.mockResolvedValue({ ...providerSettings, llm_base_url: "https://MODELS.Example.test:443/" });
     render(<SettingsView />);
-    selectSettingsSection("Models");
+    selectSettingsSection("Embeddings");
 
-    fireEvent.change(await screen.findByLabelText("Chat endpoint URL"), {
-      target: { value: "https://MODELS.Example.test:443/" },
-    });
+    await screen.findByLabelText("Embedding model");
     const acknowledge = screen.getByRole("checkbox", { name: /https:\/\/models\.example\.test/i });
-    expect(screen.getByRole("button", { name: "Qualify model pair" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Check model" })).toBeDisabled();
 
     fireEvent.click(acknowledge);
-    fireEvent.click(screen.getByRole("button", { name: "Qualify model pair" }));
+    fireEvent.click(screen.getByRole("button", { name: "Check model" }));
 
     await waitFor(() =>
       expect(mocks.modelsQualify).toHaveBeenCalledWith(
@@ -792,8 +864,6 @@ describe("SettingsView", () => {
           llm_base_url: "https://MODELS.Example.test:443/",
           default_chat_model: "qwen-chat",
           default_embed_model: "nomic-embed",
-          embedding_dimension: 768,
-          expected_dimension: 768,
           remote_egress_ack_origin: "https://models.example.test",
         },
         expect.any(AbortSignal),
@@ -802,18 +872,21 @@ describe("SettingsView", () => {
     expect(await screen.findByLabelText("Model qualification results")).toBeInTheDocument();
   });
 
-  it("validates embedding dimensions before any provider request", async () => {
+  it("detects the embedding dimension without requiring technical input", async () => {
     mocks.settingsGet.mockResolvedValue(providerSettings);
+    mocks.modelsQualify.mockResolvedValue({
+      ...qualifiedPair,
+      embedding: { ...qualifiedPair.embedding, dimension: 384 },
+    });
     render(<SettingsView />);
-    selectSettingsSection("Models");
-
-    fireEvent.change(await screen.findByLabelText("Embedding dimension"), { target: { value: "0" } });
-    fireEvent.click(screen.getByRole("button", { name: "Qualify model pair" }));
-
-    expect(await screen.findByRole("alert")).toHaveTextContent(
-      "Embedding dimension must be a whole number from 1 to 16,384.",
-    );
-    expect(mocks.modelsQualify).not.toHaveBeenCalled();
+    selectSettingsSection("Embeddings");
+    await screen.findByLabelText("Embedding model");
+    expect(screen.queryByRole("spinbutton")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Check model" }));
+    await screen.findByLabelText("Model qualification results");
+    expect(mocks.modelsQualify.mock.calls[0][0]).not.toHaveProperty("expected_dimension");
+    expect(mocks.modelsQualify.mock.calls[0][0]).not.toHaveProperty("embedding_dimension");
+    expect(screen.getByRole("status")).toHaveTextContent("Model check passed");
   });
 
   it("starts only a qualified exact target, exposes progress, and stages apply for restart", async () => {
@@ -853,12 +926,11 @@ describe("SettingsView", () => {
     mocks.migrationStart.mockResolvedValue(building);
     mocks.migrationApply.mockResolvedValue(pending);
     render(<SettingsView />);
-    selectSettingsSection("Models");
+    selectSettingsSection("Embeddings");
 
     fireEvent.change(await screen.findByLabelText("Embedding model"), { target: { value: "embed-v2" } });
-    fireEvent.change(screen.getByLabelText("Embedding dimension"), { target: { value: "384" } });
     expect(await screen.findByRole("button", { name: "Start migration" })).toBeDisabled();
-    fireEvent.click(screen.getByRole("button", { name: "Qualify model pair" }));
+    fireEvent.click(screen.getByRole("button", { name: "Check model" }));
     await waitFor(() => expect(screen.getByRole("button", { name: "Start migration" })).toBeEnabled());
     fireEvent.click(screen.getByRole("button", { name: "Start migration" }));
 
@@ -905,7 +977,7 @@ describe("SettingsView", () => {
     mocks.migrationRetry.mockResolvedValue(resumed);
     mocks.migrationCancel.mockResolvedValue(idleMigration);
     render(<SettingsView />);
-    selectSettingsSection("Models");
+    selectSettingsSection("Embeddings");
 
     expect(await screen.findByRole("alert")).toHaveTextContent("The embedding provider was unavailable");
     fireEvent.click(screen.getByRole("button", { name: "Retry migration" }));
@@ -932,31 +1004,30 @@ describe("SettingsView", () => {
     mocks.settingsGet.mockResolvedValue(managedSettings);
     mocks.settingsTest.mockResolvedValue({ ok: true, latency_ms: 8 });
     render(<SettingsView />);
-    selectSettingsSection("Models");
+    selectSettingsSection("Provider");
 
     expect(await screen.findByLabelText("Chat endpoint URL")).toBeDisabled();
-    for (const label of [
-      "API key",
-      "LM Studio URL (optional)",
-      "Default chat model",
-      "Embedding model",
-      "Embedding dimension",
-    ]) {
+    for (const label of ["API key", "LM Studio URL (optional)"]) {
       expect(screen.getByLabelText(label)).toBeDisabled();
     }
-    expect(screen.getAllByText("Managed by environment")).toHaveLength(6);
+    expect(screen.getAllByText("Managed by environment")).toHaveLength(3);
     expect(screen.queryByRole("button", { name: "Clear saved key" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Save changes" })).toBeDisabled();
 
     fireEvent.click(screen.getByRole("button", { name: "Test connection" }));
     await waitFor(() => expect(mocks.settingsTest).toHaveBeenCalledWith({}, expect.any(AbortSignal)));
+    selectSettingsSection("Chat models");
+    expect(screen.getByLabelText("Default chat model")).toBeDisabled();
+    selectSettingsSection("Embeddings");
+    expect(screen.getByLabelText("Embedding model")).toBeDisabled();
+    expect(screen.queryByLabelText("Embedding dimension")).not.toBeInTheDocument();
   });
 
   it("shows bounded provider errors without reflecting runtime details", async () => {
     mocks.settingsGet.mockResolvedValue(providerSettings);
     mocks.settingsTest.mockRejectedValue(new Error("secret upstream trace at https://private.invalid"));
     render(<SettingsView />);
-    selectSettingsSection("Models");
+    selectSettingsSection("Provider");
 
     await screen.findByLabelText("Chat endpoint URL");
     fireEvent.click(screen.getByRole("button", { name: "Test connection" }));
@@ -970,7 +1041,7 @@ describe("SettingsView", () => {
       .mockRejectedValueOnce(new ApiError(503, "Provider settings unavailable.", undefined, "settings-request-7"))
       .mockResolvedValueOnce(providerSettings);
     render(<SettingsView />);
-    selectSettingsSection("Models");
+    selectSettingsSection("Provider");
 
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "Provider settings unavailable. (reference: settings-request-7)",

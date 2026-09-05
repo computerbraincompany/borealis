@@ -145,12 +145,21 @@ describe("model catalog route", () => {
     expect(response.statusCode).toBe(200);
     expect(Object.keys(response.json()).sort()).toEqual([
       "account_default_model",
+      "available_models",
       "default_model",
       "discovery",
       "models",
     ]);
     expect(response.json()).toEqual({
-      models: [{ id: "chat-b", owned_by: "local" }, { id: "qwen-chat" }],
+      models: [
+        { id: "chat-b", display_name: "chat-b", owned_by: "local" },
+        { id: "qwen-chat", display_name: "qwen/qwen3.6-35b-a3b" },
+      ],
+      available_models: [
+        { id: "chat-b", display_name: "chat-b", owned_by: "local" },
+        { id: "nomic-embed", display_name: resolveLlmModelId("nomic-embed") },
+        { id: "qwen-chat", display_name: "qwen/qwen3.6-35b-a3b" },
+      ],
       default_model: "qwen-chat",
       account_default_model: null,
       discovery: "live",
@@ -353,7 +362,11 @@ describe("chat persistence routes", () => {
     const catalog = await app.inject({ method: "GET", url: "/api/models?refresh=1", headers: authHeader });
     expect(catalog.statusCode).toBe(200);
     expect(catalog.json()).toEqual({
-      models: [{ id: "saved-default-chat" }],
+      models: [{ id: "saved-default-chat", display_name: "saved-default-chat" }],
+      available_models: [
+        { id: "nomic-embed", display_name: resolveLlmModelId("nomic-embed") },
+        { id: "saved-default-chat", display_name: "saved-default-chat" },
+      ],
       default_model: "saved-default-chat",
       account_default_model: null,
       discovery: "live",

@@ -155,7 +155,7 @@ describe("model-pair qualification service", () => {
           content: "Call the provided qualification function exactly once with ok set to true.",
         },
       ],
-      max_tokens: 128,
+      max_tokens: 1024,
       tool_choice: "required",
       stream: true,
     });
@@ -379,6 +379,56 @@ describe("model-pair qualification service", () => {
     });
   });
 
+  it("allows a bounded long reasoning stream before the one validated tool call", async () => {
+    const prelude = Array.from({ length: 2000 }, () => ({
+      choices: [{ delta: { content: "private-thinking-fragment" } }],
+    }));
+    const tool = {
+      choices: [
+        {
+          delta: {
+            tool_calls: [
+              {
+                index: 0,
+                id: "call-qualify",
+                type: "function",
+                function: { name: "borealis_qualify", arguments: '{"ok":true}' },
+              },
+            ],
+          },
+          finish_reason: "tool_calls",
+        },
+      ],
+    };
+    const wire = await sseResponse([...prelude, tool]).text();
+    expect(Buffer.byteLength(wire)).toBeGreaterThan(64 * 1024);
+    expect(Buffer.byteLength(wire)).toBeLessThan(512 * 1024);
+    const fetchMock: ModelQualificationFetch = vi.fn(async (url) =>
+      url.endsWith("/v1/chat/completions") ? new Response(wire) : jsonResponse({ data: [{ embedding: [1, 2, 3] }] })
+    );
+    const result = await qualifyModelPair(DEFAULT_LLM_SETTINGS, 3, { fetch: fetchMock });
+    expect(result.chat.qualified).toBe(true);
+    expect(JSON.stringify(result)).not.toContain("private-thinking-fragment");
+    const oversizedFetch: ModelQualificationFetch = vi.fn(async (url) =>
+      url.endsWith("/v1/chat/completions")
+        ? sseResponse([...prelude, ...prelude, ...prelude, ...prelude, tool])
+        : jsonResponse({ data: [{ embedding: [1, 2, 3] }] })
+    );
+    expect((await qualifyModelPair(DEFAULT_LLM_SETTINGS, 3, { fetch: oversizedFetch })).chat.qualified).toBe(false);
+  });
+
+  it("reports an exhausted generation budget instead of claiming tool support is missing", async () => {
+    const fetchMock: ModelQualificationFetch = vi.fn(async (url) =>
+      url.endsWith("/v1/chat/completions")
+        ? sseResponse([{ choices: [{ delta: { content: "private unfinished reasoning" }, finish_reason: "length" }] }])
+        : jsonResponse({ data: [{ embedding: [1, 2, 3] }] })
+    );
+    const result = await qualifyModelPair(DEFAULT_LLM_SETTINGS, 3, { fetch: fetchMock });
+    expect(result.chat).toMatchObject({ qualified: false, reason_code: "response-truncated" });
+    expect(result.embedding.qualified).toBe(true);
+    expect(JSON.stringify(result)).not.toContain("private unfinished reasoning");
+  });
+
   it("rejects a non-streaming chat response even when its tool call would otherwise be valid", async () => {
     const fetchMock: ModelQualificationFetch = vi.fn(async (url) =>
       url.endsWith("/v1/chat/completions")
@@ -442,7 +492,7 @@ describe("model-pair qualification service", () => {
   });
 
   it("rejects non-finite embedding values and malformed or oversized response bodies without reflecting them", async () => {
-    const largePrivatePayload = "provider-private".repeat(5_000);
+    const largePrivatePayload = "provider-private".repeat(50_000);
     const fetchMock: ModelQualificationFetch = vi.fn(async (url) => {
       if (url.endsWith("/v1/chat/completions")) return new Response(largePrivatePayload, { status: 200 });
       return new Response('{"data":[{"embedding":[1e999,1,2],"private":"provider-secret"}]}', {
@@ -469,8 +519,8 @@ describe("model-pair qualification service", () => {
     const timedOut = await qualifyModelPair(DEFAULT_LLM_SETTINGS, 3, { fetch: abortingFetch, timeoutMs: 10 });
 
     expect(Date.now() - startedAt).toBeLessThan(1_000);
-    expect(timedOut.chat).toMatchObject({ qualified: false, reason_code: "unreachable" });
-    expect(timedOut.embedding).toMatchObject({ qualified: false, reason_code: "unreachable", dimension: null });
+    expect(timedOut.chat).toMatchObject({ qualified: false, reason_code: "timeout" });
+    expect(timedOut.embedding).toMatchObject({ qualified: false, reason_code: "timeout", dimension: null });
     expect(timedOut.chat.latency_ms).toBeLessThanOrEqual(10);
     expect(timedOut.embedding.latency_ms).toBeLessThanOrEqual(10);
     expect(abortingFetch).toHaveBeenCalledTimes(2);
@@ -493,8 +543,58 @@ describe("model-pair qualification service", () => {
 
     const result = await qualifyModelPair(DEFAULT_LLM_SETTINGS, 3, { fetch: fetchMock, timeoutMs: 10 });
 
-    expect(result.chat).toMatchObject({ qualified: false, reason_code: "unreachable" });
+    expect(result.chat).toMatchObject({ qualified: false, reason_code: "timeout" });
     expect(result.embedding).toMatchObject({ qualified: true, reason_code: "qualified", dimension: 3 });
+  });
+
+  it("detects dimensions from validated vectors and checks embeddings before loading chat", async () => {
+    const fetchMock = providerFetch(
+      {
+        choices: [
+          {
+            message: {
+              tool_calls: [
+                {
+                  id: "call-probe",
+                  type: "function",
+                  function: { name: "borealis_qualify", arguments: '{"ok":true}' },
+                },
+              ],
+            },
+          },
+        ],
+      },
+      { data: [{ embedding: [1, 2, 3] }] }
+    );
+    const result = await qualifyModelPair(DEFAULT_LLM_SETTINGS, null, { fetch: fetchMock });
+    expect(result.embedding).toMatchObject({ qualified: true, dimension: 3 });
+    expect(vi.mocked(fetchMock).mock.calls.map(([url]) => new URL(url).pathname)).toEqual([
+      "/v1/embeddings",
+      "/v1/chat/completions",
+    ]);
+  });
+
+  it("rejects oversized automatically detected vectors", async () => {
+    const fetchMock = providerFetch(
+      {
+        choices: [
+          {
+            message: {
+              tool_calls: [
+                {
+                  id: "call-probe",
+                  type: "function",
+                  function: { name: "borealis_qualify", arguments: '{"ok":true}' },
+                },
+              ],
+            },
+          },
+        ],
+      },
+      { data: [{ embedding: Array(16_385).fill(1) }] }
+    );
+    const result = await qualifyModelPair(DEFAULT_LLM_SETTINGS, null, { fetch: fetchMock });
+    expect(result.embedding).toMatchObject({ qualified: false, reason_code: "embedding-invalid" });
   });
 
   it("rejects invalid expected dimensions before provider access", async () => {
@@ -508,6 +608,19 @@ describe("model-pair qualification service", () => {
 });
 
 describe("model qualification route", () => {
+  it("allows automatic detection without saving it and preserves environment dimension constraints", async () => {
+    for (const managed of [false, true]) {
+      const { store } = await temporaryStore(managed ? { EMBEDDING_DIM: "3" } : {});
+      const qualify = vi.fn(async () => successfulQualification);
+      const app = await buildApp(store, { qualify });
+      const before = await store.read();
+      const response = await app.inject({ method: "POST", url: "/api/models/qualify", headers: auth, payload: {} });
+      expect(response.statusCode).toBe(200);
+      expect(qualify).toHaveBeenCalledWith(before.settings, managed ? 3 : null);
+      expect(await store.read()).toEqual(before);
+    }
+  });
+
   it("requires the exact canonical remote draft acknowledgment and never persists the draft", async () => {
     const { store, filename } = await temporaryStore();
     const qualify = vi.fn(async () => ({ ...successfulQualification, private_result: "must-be-stripped" }));

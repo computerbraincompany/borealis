@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { formatApiError, modelsApi, type EmbeddingMigrationStatus } from "@/lib/api";
+import { ApiError, formatApiError, modelsApi, type EmbeddingMigrationStatus } from "@/lib/api";
 
 const ACTIVE_POLL_INTERVAL_MS = 1_000;
 
@@ -30,6 +30,21 @@ const ERROR_MESSAGES: Record<string, string> = {
 export function embeddingMigrationErrorMessage(code: string | null): string | null {
   if (!code) return null;
   return ERROR_MESSAGES[code] ?? "The embedding migration stopped before completion.";
+}
+
+function migrationRequestError(failure: unknown, context: string): string {
+  const generic =
+    failure instanceof ApiError &&
+    /^(internal server error|bad gateway|service unavailable|gateway timeout|failed to fetch|request failed.*)$/i.test(
+      failure.message,
+    );
+  const detail = generic
+    ? formatApiError(
+        new ApiError(failure.status, `Server error (HTTP ${failure.status}).`, undefined, failure.requestId),
+        "",
+      )
+    : formatApiError(failure, "The server could not be reached.");
+  return `${context} ${detail} Refresh status to check the current state before trying again.`;
 }
 
 /** Own migration polling and mutations while the Models settings section is visible. */
@@ -71,13 +86,14 @@ export function useEmbeddingMigration(enabled: boolean) {
           pollFailuresRef.current = 0;
           setStatus(next);
           setLoadError(null);
+          setFeedback((current) => (current?.kind === "error" ? null : current));
         }
         return next;
       })
       .catch((failure: unknown) => {
         if (!controller.signal.aborted && mounted.current) {
           pollFailuresRef.current = Math.min(pollFailuresRef.current + 1, 14);
-          setLoadError(formatApiError(failure, "Embedding migration status is temporarily unavailable."));
+          setLoadError(migrationRequestError(failure, "Couldn’t refresh search rebuild status."));
         }
         return null;
       })
@@ -99,11 +115,12 @@ export function useEmbeddingMigration(enabled: boolean) {
   }, [enabled, refresh]);
 
   useEffect(() => {
-    if (!enabled || (status?.phase !== "snapshotting" && status?.phase !== "building")) return;
+    if (!enabled || (!loadError && status?.phase !== "snapshotting" && status?.phase !== "building")) return;
     let timer = 0;
     let active = true;
     const schedule = () => {
-      const delay = Math.min(ACTIVE_POLL_INTERVAL_MS * (pollFailuresRef.current + 1), 15_000);
+      const delay =
+        pollFailuresRef.current > 0 ? Math.min(5_000 * pollFailuresRef.current, 30_000) : ACTIVE_POLL_INTERVAL_MS;
       timer = window.setTimeout(() => {
         if (!active) return;
         if (document.visibilityState === "visible") void refresh();
@@ -115,7 +132,7 @@ export function useEmbeddingMigration(enabled: boolean) {
       active = false;
       window.clearTimeout(timer);
     };
-  }, [enabled, refresh, status?.phase]);
+  }, [enabled, refresh, status?.phase, loadError]);
 
   const runAction = useCallback(
     async (
@@ -146,7 +163,10 @@ export function useEmbeddingMigration(enabled: boolean) {
         if (mounted.current) {
           setFeedback({
             kind: "error",
-            message: formatApiError(failure, "The embedding migration action could not be completed."),
+            message: migrationRequestError(
+              failure,
+              `Couldn’t confirm ${nextAction === "starting" ? "the start of" : nextAction === "retrying" ? "the retry of" : nextAction === "cancelling" ? "cancellation of" : "the scheduled installation of"} the search rebuild.`,
+            ),
           });
         }
         return false;

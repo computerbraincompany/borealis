@@ -473,11 +473,17 @@ when no separate LM Studio health endpoint is configured. Latency is bounded to
 `{state,model,endpoint_host,endpoint_managed_by_env}`. The snapshot is
 informational chrome state, not an authorization surface.
 
+`GET /api/models` includes `display_name` (the resolved provider model ID) on each option, while `id` preserves stable aliases for selection. `available_models` includes the complete advertised catalog for the Settings embedding selector; `/v1/models` does not standardize model capabilities, so embedding choices require qualification before migration. Settings uses dropdowns, refreshes discovery after saving a provider connection, and retains an unadvertised current value when discovery is unavailable.
+
 `GET /api/models` returns, for example:
 
 ```json
 {
-  "models": [{ "id": "qwen-chat" }],
+  "models": [{ "id": "qwen-chat", "display_name": "qwen/qwen3.6-35b-a3b" }],
+  "available_models": [
+    { "id": "nomic-embed", "display_name": "text-embedding-nomic-embed-text-v1.5" },
+    { "id": "qwen-chat", "display_name": "qwen/qwen3.6-35b-a3b" }
+  ],
   "default_model": "qwen-chat",
   "account_default_model": null,
   "discovery": "live"
@@ -489,12 +495,12 @@ informational chrome state, not an authorization surface.
 is non-null, otherwise the workspace `default_model`. The web composer applies
 an explicit selection as a per-chat patch before accepting the first turn.
 
-Entries contain only `id` and optional `owned_by`, are deduplicated and sorted,
-and exclude the configured embedding identity. Known physical model IDs map
+Entries contain `id`, `display_name`, and optional `owned_by`, and are deduplicated
+and sorted. The chat `models` list excludes the configured embedding identity. Known physical model IDs map
 back to the stable aliases in [llmAliases.ts](../server/src/llmAliases.ts);
 unknown IDs are preserved. Successful discovery is cached for 15 seconds;
 `?refresh=1` bypasses that cache (`refresh=0` is also accepted). Discovery failure
-returns `200` with `models: []` and `discovery: "unavailable"`, keeping the
+returns `200` with empty `models` and `available_models` lists and `discovery: "unavailable"`, keeping the
 configured `default_model`. Settings changes invalidate the runtime's catalog
 cache. Discovery is informational; saving a per-chat model does not require it
 to appear in the current catalog.
@@ -538,6 +544,13 @@ scope explicitly.
   precedence is: explicit chat model > account default > workspace default.
 
 ### Provider Settings
+
+The Settings UI separates connection credentials (**Provider**), workspace chat
+model selection (**Chat models**), embedding qualification and index migration
+(**Embeddings**), and contained runtime controls (**Local engine**). Drafts survive
+panel navigation; ordinary saves and discards apply only to the current panel.
+Embedding identity changes use qualification and migration, never ordinary save.
+
 
 - `GET /api/settings`
 - `PATCH /api/settings`
@@ -613,13 +626,15 @@ ingestion, before any chat attachment is required. Parsing, analytical SQL,
 storage, and rendering remain local.
 
 `POST /api/models/qualify` accepts a complete or partial Settings draft plus the
-required `expected_dimension`; `embedding_dimension`, when supplied, must equal
-that expected value. It performs two independent, fixed synthetic checks with no
+optional `expected_dimension`; when omitted, a validated embedding response determines
+the dimension automatically. An environment-managed dimension remains an exact
+constraint. If both `embedding_dimension` and `expected_dimension` are supplied,
+they must agree. It performs two independent, fixed synthetic checks with no
 workspace content: the chat model must emit bounded streaming SSE that the
 production tool-call accumulator resolves to one 1–256-character call ID, the
 exact synthetic tool name, and bounded valid JSON arguments. A nonstreaming
 lookalike response does not qualify. The embedding model must return one vector
-of exactly the expected dimension whose coordinate values and accumulated
+with 1–16,384 dimensions (matching an explicit expected dimension when supplied) whose coordinate values and accumulated
 squared norm remain finite and positive after float32 rounding. This rejects
 coordinate and norm underflow/overflow before Lance cosine search. The draft is
 not saved.
@@ -643,10 +658,10 @@ as account consent. The result is:
 }
 ```
 
-Chat reason codes are `qualified`, `unreachable`, `tool-call-missing`, and
-`tool-call-invalid`; embedding codes are `qualified`, `unreachable`,
-`embedding-invalid`, and `dimension-mismatch`. Both roles run concurrently with
-a 15-second request deadline; the chat response is capped at 64 KiB, the
+Chat reason codes are `qualified`, `unreachable`, `timeout`, `response-truncated`, `tool-call-missing`, and
+`tool-call-invalid`; embedding codes are `qualified`, `unreachable`, `timeout`,
+`embedding-invalid`, and `dimension-mismatch`. Embeddings run first, followed by chat, to avoid simultaneous cold model loads.
+Each request has a 30-second deadline (at most 60 seconds total); the chat request allows up to 1,024 generated tokens and its SSE response is capped at 512 KiB, the
 embedding response at 2 MiB, and synthetic tool arguments at 256 characters.
 Tool-name fragments may be incremental or cumulative, matching the real
 streaming path, but call count, ID, name, and argument budgets remain fixed.
