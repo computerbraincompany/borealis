@@ -351,7 +351,10 @@ and lowercased, with a 254-character maximum. Passwords require at least six
 characters and at most 72 UTF-8 bytes; the JSON body limit is 2 KiB. Registration
 returns `409` for an existing email; incorrect login credentials return `401`.
 
-JWTs expire after seven days. `GET /api/me` validates the token and returns its
+JWTs expire after seven days. Protected routes also verify that the account still
+exists before body parsing. A token for a removed account returns `401` with
+`SESSION_ACCOUNT_UNAVAILABLE`; the browser clears the stale session and returns
+to sign-in, including from `/login#/settings`. `GET /api/me` validates the token and returns its
 claims (`userId`, `email`, `iat`, and `exp`), not the registration response's
 `user` object. There is no token-refresh or server logout endpoint.
 
@@ -548,8 +551,12 @@ to appear in the current catalog.
 | `DELETE /api/chats/:id/runs/:runId` | Cancellation contract above.                                                                                                                   |
 
 Titles are trimmed and must contain 1–80 Unicode characters. An omitted title
-starts as `New chat` and becomes the first message's first 80 characters;
-explicit titles are retained. Models are trimmed to a required 1–256 characters
+starts as `New chat` and uses the first message's first 80 characters as a fallback.
+After the first successful browser/API chat answer, Borealis asks the selected model
+for a concise title (up to 60 characters). This optional request uses at most 2,000
+characters of the first message, no tools, no retries, and a ten-second deadline.
+Provider failure or invalid output keeps the fallback. Explicit titles and manual
+renames are never overwritten; existing conversations are not renamed retroactively. Models are trimmed to a required 1–256 characters
 and cannot equal the configured embedding model in either alias or physical
 form. Renaming advances chat activity; changing its model or source scope does
 not.
@@ -725,7 +732,14 @@ changes the embedding model or dimension always returns `409` with code
 `EMBEDDING_REINDEX_REQUIRED`, including when the ledger has zero ready sources.
 Use the managed migration rather than creating mixed embedding identities; a
 zero-source migration builds and verifies an empty target index before the same
-journaled apply-and-restart swap.
+journaled live swap. `POST /api/models/embedding-migration/apply` returns
+`202` with `apply_pending`; poll status until `idle` or a failure. The server
+waits up to 60 seconds for active chats, holds new turn/source admission, then
+closes and reopens only the vector index. SQLite and the HTTP server stay open.
+`ACTIVE_TURNS_BUSY` returns the migration to `ready_to_apply` for another attempt.
+`restart_required` remains in the response for compatibility and is false.
+Installation failures restore the previous index/settings pair; startup journal
+recovery remains available after a process crash.
 
 `POST /api/models/embedding-migration/start` accepts
 `{target_embed_model,target_dimension}`. It applies the normal account consent
@@ -1185,7 +1199,7 @@ complete result.
 | Dataset extraction         | Worker ceiling of 2,000 rows, 500 columns, 50,000 cells, 1,000,000 characters, and 10,000 characters per cell; the facade requests at most 100 rows and ingestion uses 40.                                                                                                                                                                                                                                                                       |
 | Dataset description        | Up to 100,000 profiled rows, 100 columns, and 128,000 returned characters; top values are computed for at most 20 columns.                                                                                                                                                                                                                                                                                                                       |
 | Registered dataset/catalog | 500 columns per table; 100 allowed tables per scope; eight cached scopes per account; four DuckDB threads, 512 MiB memory, 512 MiB temporary data per scope; 256,000 characters per catalog response.                                                                                                                                                                                                                                            |
-| Agent execution            | Eight model iterations, eight tool calls per round, 24 calls per run, 120 seconds per model request, and 120 seconds per tool. Each model request asks for at most 2,400 output tokens; streamed content and reasoning are each capped at 32,000 characters. Tool arguments are capped at 20,000 characters per call and 80,000 per model round; serialized tool responses added to the model conversation are capped at 12,000 characters each. |
+| Agent execution            | Sixteen tool rounds plus one reserved final synthesis call, eight tool calls per round, 48 calls per run, 120 seconds per model request, and 120 seconds per tool. Each model request asks for at most 8,192 output tokens; streamed content and reasoning are each capped at 32,000 characters. Tool arguments are capped at 20,000 characters per call and 80,000 per model round; serialized tool responses added to the model conversation are capped at 12,000 characters each. |
 | Evidence display           | Eight passages, 800 characters per excerpt, and 6,000 aggregate characters.                                                                                                                                                                                                                                                                                                                                                                      |
 | Query display snapshots    | Three queries per assistant message; 32 columns and 100 rows per query, 500 cells and 30,000 serialized characters across snapshots.                                                                                                                                                                                                                                                                                                             |
 | Chart spec                 | 500 categories, 20 series, 100 pie items, 500 characters per label; finite numbers with magnitude at most `1e15`.                                                                                                                                                                                                                                                                                                                                |
@@ -1221,3 +1235,5 @@ Asynchronous ingestion failures appear in source status/metadata after the
 initial successful upload. Once SSE starts, agent failures use its `error` and
 `run-ended` events instead of changing the HTTP status. Treat public messages as
 stable categories, not as a substitute for the correlated server logs.
+
+Agent activity is collapsed by default, with separate completed and failed counts. Tool failures use fixed, actionable summaries; raw provider/SQL exceptions remain private. At the tool or conversation budget boundary, the agent uses a reserved tools-disabled call to summarize successful results and identify incomplete deliverables. Verbose context is reduced to bounded captured artifacts when needed for that final call. A later model-request failure or empty response also uses this bounded synthesis path; if the final request fails too, successful artifacts remain attached to an explicitly incomplete answer.

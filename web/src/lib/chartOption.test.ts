@@ -1,4 +1,4 @@
-import { optionFromCanonicalSpec } from "@/lib/chartOption";
+import { optionFromCanonicalSpec, chatChartLayout } from "@/lib/chartOption";
 
 const seriesSpec = (type: string) => ({
   type,
@@ -40,5 +40,35 @@ describe("canonical chart fallback", () => {
       smooth: false,
     });
     expect(scatter.grid.left).toBe(60);
+  });
+});
+
+describe("chat chart layout", () => {
+  it("separates headings and fits long category bars without changing the saved option", () => {
+    const base = optionFromCanonicalSpec({ ...seriesSpec("bar"), categories: ["A very long payee name"] });
+    const { option, height } = chatChartLayout(base, 360);
+    expect(option.title.show).toBe(false);
+    expect(option.legend.show).toBe(false);
+    expect(option.xAxis.type).toBe("value");
+    expect(option.yAxis).toMatchObject({ type: "category", inverse: true, name: "", axisLabel: { interval: 0 } });
+    expect(option.yAxis.axisLabel.width).toBeLessThan(150);
+    expect(base.xAxis.type).toBe("category");
+    expect(base.title.text).toBe("Trend");
+    expect(height).toBeGreaterThanOrEqual(280);
+  });
+
+  it("reserves legend space and keeps dense timelines in their original order", () => {
+    const base = optionFromCanonicalSpec({
+      ...seriesSpec("line"),
+      series: [
+        { name: "A", data: [1] },
+        { name: "B", data: [2] },
+      ],
+    });
+    const { option } = chatChartLayout(base, 360);
+    expect(option.legend).toMatchObject({ show: true, type: "scroll" });
+    expect(option.grid.top).toBe(44);
+    expect(option.xAxis.type).toBe("category");
+    expect(option.xAxis.axisLabel.hideOverlap).toBe(true);
   });
 });

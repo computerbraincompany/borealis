@@ -163,7 +163,7 @@ runtime startup alone republishes that matching marker.
 2. `POST /api/chats/:id/messages` commits the user message, model, source mode,
    concrete ready source IDs, bound-agent instruction revision, and durable run
    in one SQLite transaction. It then streams sanitized SSE events from
-   `server/src/agent.ts` for at most eight iterations. One active run is allowed
+   `server/src/agent.ts` for at most sixteen tool rounds plus one reserved final synthesis call. One active run is allowed
    per chat; deletion of the run requests cancellation. Activity events arrive
    during execution, but the answer's `delta` is sent as a complete string after
    persistence, not token by token.
@@ -359,10 +359,13 @@ runtime startup alone republishes that matching marker.
   or per-source reingest. Generic `PATCH /api/settings` must reject an embedding-
   identity change with `EMBEDDING_REINDEX_REQUIRED`, including in an empty
   workspace. Qualify the target pair, build and verify a separate LanceDB index
-  from one immutable SQLite generation snapshot, request apply, then restart so
-  startup can revalidate provider identity and environment precedence, perform
-  the journaled swap, verify row/dimension counts, and run a scoped retrieval
-  smoke when the snapshot is nonempty. A zero-source workspace uses the same
+  from one immutable SQLite generation snapshot, then request live apply. Hold
+  chat/source admission, drain durable and in-process active turns (bounded to
+  60 seconds), close only vector handles, revalidate provider identity and
+  environment precedence, perform the journaled swap, reopen vectors and replace
+  the ingestion lifecycle/cache, verify row/dimension counts, and run a scoped
+  retrieval smoke when the snapshot is nonempty. Keep SQLite/server open; restore
+  the old pair on failure. Startup still recovers interrupted journaled swaps. A zero-source workspace uses the same
   managed path with a verified zero-row target index; never delete only the
   vector index or expose mixed embedding identities. Migration start
   uses the persisted provider, credential, and chat-model settings; the UI must

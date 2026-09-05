@@ -98,7 +98,7 @@ describe("production embedding-migration startup composition", () => {
       });
       await expect(preparing.requestApply()).resolves.toMatchObject({
         phase: "apply_pending",
-        restart_required: true,
+        restart_required: false,
       });
       await preparing.close();
       preparing = undefined;

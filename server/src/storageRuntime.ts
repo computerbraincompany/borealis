@@ -149,3 +149,18 @@ export async function closeStorageRuntime(): Promise<void> {
   await runtime.vectors.close();
   await runtime.ledger.close();
 }
+
+/** Caller must hold migration admission and drain all vector users first. SQLite stays open. */
+export async function reopenStorageVectors(settings: SettingsSnapshot): Promise<void> {
+  const runtime = storageRuntime();
+  const vectors = await LanceVectorIndex.open({
+    directory: runtime.lanceDirectory,
+    dimension: settings.settings.embeddingDimension,
+    embeddingModel: settings.settings.embedModel,
+  });
+  active = Object.freeze({
+    ...runtime,
+    vectors,
+    vectorLifecycle: new IngestionVectorLifecycle(runtime.ingestion, vectors),
+  });
+}

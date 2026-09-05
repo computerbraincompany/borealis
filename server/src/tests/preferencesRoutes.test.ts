@@ -183,3 +183,20 @@ describe("preferences routes", () => {
     expect(otherReread.json()).toEqual({ default_chat_model: "other-model" });
   });
 });
+
+it("rejects sessions for removed accounts before catalog work or body parsing", async () => {
+  const app = await buildApp();
+  await storageRuntime().ledger.run("DELETE FROM users WHERE id=?", [accountId]);
+  for (const url of ["/api/models", "/api/preferences", "/api/me"]) {
+    const response = await app.inject({ method: "GET", url, headers: authHeader });
+    expect(response.statusCode).toBe(401);
+    expect(response.json().code).toBe("SESSION_ACCOUNT_UNAVAILABLE");
+  }
+  const malformed = await app.inject({
+    method: "PATCH",
+    url: "/api/preferences",
+    headers: { ...authHeader, "content-type": "application/json" },
+    payload: "{",
+  });
+  expect(malformed.statusCode).toBe(401);
+});

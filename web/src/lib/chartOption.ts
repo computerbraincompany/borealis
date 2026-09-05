@@ -75,3 +75,62 @@ export function optionFromCanonicalSpec(spec: ChartSpecRecord): ChartSpecRecord 
     ),
   };
 }
+
+/** Chat presentation only; stored options and downloadable exports stay intact. */
+export function chatChartLayout(base: ChartSpecRecord, width: number) {
+  const series = Array.isArray(base.series) ? base.series : [];
+  const categories = Array.isArray(base.xAxis?.data) ? base.xAxis.data : [];
+  const horizontal =
+    series.length > 0 &&
+    series.every((s: ChartSpecRecord) => s.type === "bar") &&
+    categories.some((label: unknown) => String(label).length > 12);
+  const pie = series.some((s: ChartSpecRecord) => s.type === "pie");
+  const labelWidth = Math.max(70, Math.min(180, width * 0.38));
+  const option: ChartSpecRecord = {
+    ...base,
+    title: { show: false },
+    tooltip: { ...base.tooltip, confine: true },
+    legend: {
+      ...base.legend,
+      type: "scroll",
+      top: 4,
+      bottom: undefined,
+      left: 8,
+      right: 8,
+      show: pie || series.length > 1,
+    },
+    grid: { left: 12, right: 20, top: series.length > 1 ? 44 : 16, bottom: 16, containLabel: true },
+    ...(pie
+      ? {
+          series: series.map((s: ChartSpecRecord) => ({
+            ...s,
+            center: ["50%", "55%"],
+            radius: Array.isArray(s.radius) ? ["35%", "60%"] : "60%",
+            label: { ...s.label, show: width >= 500, width: Math.min(240, width * 0.22), overflow: "truncate" },
+          })),
+        }
+      : {
+          xAxis: horizontal
+            ? { ...base.yAxis, name: "", splitNumber: 3 }
+            : {
+                ...base.xAxis,
+                name: "",
+                axisLabel: {
+                  ...base.xAxis?.axisLabel,
+                  hideOverlap: true,
+                  width: Math.max(45, width / Math.min(categories.length || 1, 6)),
+                  overflow: "truncate",
+                },
+              },
+          yAxis: horizontal
+            ? {
+                ...base.xAxis,
+                name: "",
+                inverse: true,
+                axisLabel: { ...base.xAxis?.axisLabel, interval: 0, width: labelWidth, overflow: "truncate" },
+              }
+            : { ...base.yAxis, name: "", splitNumber: 4 },
+        }),
+  };
+  return { option, height: horizontal ? Math.max(280, Math.min(1800, categories.length * 34 + 60)) : 280 };
+}

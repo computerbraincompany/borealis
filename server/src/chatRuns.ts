@@ -15,6 +15,11 @@ const activeControllers = new Map<string, ActiveRunController>();
 const terminalizationRetries = new Map<string, Promise<"completed" | "failed" | "cancelled">>();
 const PENDING_REPORT_CLEANUP_BATCH = 100;
 
+/** Includes executors whose chat/run row may have been deleted during cancellation. */
+export function hasActiveRunExecutors(): boolean {
+  return activeControllers.size > 0;
+}
+
 export async function beginRun(accountId: string, chatId: string, runId: string): Promise<AbortController> {
   const controller = new AbortController();
   activeControllers.set(runId, { accountId, chatId, controller });

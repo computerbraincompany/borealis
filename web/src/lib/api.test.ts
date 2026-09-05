@@ -1,5 +1,8 @@
 import {
   ApiError,
+  api,
+  setSession,
+  getUser,
   apiText,
   agentsApi,
   automationsApi,
@@ -22,6 +25,24 @@ import {
 
 describe("typed API contracts", () => {
   afterEach(() => vi.unstubAllGlobals());
+
+  it("leaves a stale authenticated hash route even when pathname is already login", async () => {
+    const location = { pathname: "/login", hash: "#/settings", href: "/login#/settings" };
+    vi.stubGlobal("location", location);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ error: "Sign in again", code: "SESSION_ACCOUNT_UNAVAILABLE" }), {
+          status: 401,
+          headers: { "content-type": "application/json" },
+        }),
+      ),
+    );
+    setSession("expired-test-session", { id: "removed-user", email: "removed@example.test" });
+    await expect(api("/api/models")).rejects.toMatchObject({ status: 401 });
+    expect(getUser()).toBeNull();
+    expect(location.href).toBe("/login");
+  });
 
   it("sends explicit connector identity fields without hiding the table in config", async () => {
     const fetchMock = vi.fn().mockResolvedValue(

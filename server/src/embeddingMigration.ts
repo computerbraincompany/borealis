@@ -5,6 +5,7 @@ import path from "node:path";
 
 import Database from "better-sqlite3";
 
+import { hasActiveRunExecutors } from "./chatRuns.js";
 import { config } from "./config.js";
 import type { SqliteLedger, SqliteTransaction } from "./db/types.js";
 import { openSqliteLedger } from "./db/sqlite.js";
@@ -15,7 +16,7 @@ import { normalizeEmbeddingVector } from "./embeddingVector.js";
 import { resolveLlmModelId } from "./llmAliases.js";
 import { runtimeSettingsStore } from "./runtimeSettings.js";
 import type { EffectiveLlmSettings, LlmSettingsPatch, SettingsSnapshot, SettingsStore } from "./settingsStore.js";
-import { storageRuntime, type StorageRuntime } from "./storageRuntime.js";
+import { reopenStorageVectors, storageRuntime, type StorageRuntime } from "./storageRuntime.js";
 import { LanceVectorIndex, type LanceVectorRow } from "./vector/lance.js";
 import { retrieveWithVector } from "./vector/retrieve.js";
 
@@ -46,6 +47,8 @@ export type PublicEmbeddingMigrationPhase =
   "idle" | "snapshotting" | "building" | "ready_to_apply" | "apply_pending" | "failed";
 
 export type EmbeddingMigrationErrorCode =
+  | "LIVE_RECOVERY_FAILED"
+  | "ACTIVE_TURNS_BUSY"
   | "MIGRATION_ACTIVE"
   | "TARGET_UNCHANGED"
   | "NO_READY_SOURCES"
@@ -133,6 +136,12 @@ interface StartupLedgerHandle {
 }
 
 export interface EmbeddingMigrationCoordinatorOptions {
+  readonly liveApply?: {
+    hasActiveExecutors?(): boolean;
+    closeVectors(): Promise<void>;
+    openVectors(settings: SettingsSnapshot): Promise<void>;
+  };
+  readonly drainTimeoutMs?: number;
   readonly stateFile: string;
   readonly migrationRoot: string;
   readonly liveLanceDirectory: string;
@@ -193,8 +202,15 @@ export class EmbeddingMigrationCoordinator implements EmbeddingMigrationOperatio
   #tail: Promise<void> = Promise.resolve();
   #build: Promise<void> | undefined;
   #buildAbort: AbortController | undefined;
+  readonly #liveApply: EmbeddingMigrationCoordinatorOptions["liveApply"];
+  readonly #drainTimeoutMs: number;
+  #applying: Promise<void> | undefined;
+  #vectorsUnavailable = false;
+  #applyFailure = false;
 
   constructor(options: EmbeddingMigrationCoordinatorOptions) {
+    this.#liveApply = options.liveApply;
+    this.#drainTimeoutMs = options.drainTimeoutMs ?? 60_000;
     this.#stateFile = path.resolve(options.stateFile);
     this.#migrationRoot = path.resolve(options.migrationRoot);
     this.#liveLanceDirectory = path.resolve(options.liveLanceDirectory);
@@ -215,7 +231,17 @@ export class EmbeddingMigrationCoordinator implements EmbeddingMigrationOperatio
   }
 
   async status(): Promise<EmbeddingMigrationStatus> {
-    return publicStatus(await this.#readState());
+    const status = publicStatus(await this.#readState());
+    return this.#applyFailure
+      ? {
+          ...status,
+          phase: "failed",
+          error_code: "LIVE_RECOVERY_FAILED",
+          can_apply: false,
+          can_retry: false,
+          can_cancel: false,
+        }
+      : status;
   }
 
   async start(
@@ -223,7 +249,7 @@ export class EmbeddingMigrationCoordinator implements EmbeddingMigrationOperatio
     qualification?: EmbeddingMigrationQualification
   ): Promise<EmbeddingMigrationStatus> {
     return this.#exclusive(async () => {
-      if (await this.#readState()) throw new EmbeddingMigrationError("MIGRATION_ACTIVE");
+      if (this.#vectorsUnavailable || (await this.#readState())) throw new EmbeddingMigrationError("MIGRATION_ACTIVE");
       const current = await this.#settingsStore.read();
       assertTarget(current, target);
       if (qualification) assertQualificationStillCurrent(current.settings, target, qualification);
@@ -372,22 +398,63 @@ export class EmbeddingMigrationCoordinator implements EmbeddingMigrationOperatio
       this.#assertProviderAndOldIdentity(state, settings.settings);
       await this.#assertSnapshotUnchanged(this.#ledger(), state);
       const next = await this.#replaceState(state, { phase: "apply_pending", error_code: null });
+      if (this.#liveApply) {
+        this.#applying = this.#exclusive(() => this.#applyLive()).catch(() => {
+          // Retain the journal and block admission if rollback/reopen failed.
+          this.#vectorsUnavailable = true;
+          this.#applyFailure = true;
+        });
+      }
       return publicStatus(next);
     });
   }
 
+  async #applyLive(): Promise<void> {
+    const state = await this.#requiredState();
+    const deadline = Date.now() + this.#drainTimeoutMs;
+    while (
+      this.#liveApply?.hasActiveExecutors?.() ||
+      (await this.#ledger().get("SELECT 1 FROM chat_runs WHERE status IN ('running','cancelling') LIMIT 1"))
+    ) {
+      if (Date.now() >= deadline) {
+        await this.#replaceState(state, { phase: "ready_to_apply", error_code: "ACTIVE_TURNS_BUSY" });
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    this.#vectorsUnavailable = true;
+    await this.#liveApply!.closeVectors();
+    try {
+      await this.#recoverSwap(this.#ledger(), state);
+      await this.#liveApply!.openVectors(await this.#settingsStore.read());
+      await this.finalizeAfterStorageOpen();
+      this.#vectorsUnavailable = false;
+    } catch {
+      await this.#liveApply!.closeVectors();
+      const current = await this.#requiredState();
+      if (current.phase !== "complete") {
+        await this.#rollbackSwap(current, "STARTUP_OPEN_FAILED");
+      }
+      await this.#liveApply!.openVectors(await this.#settingsStore.read());
+      this.#vectorsUnavailable = false;
+    }
+  }
+
   async runSourceMutation<T>(operation: () => Promise<T>): Promise<T> {
     return this.#exclusive(async () => {
-      if (await this.#readState()) throw new EmbeddingMigrationError("SOURCE_MUTATION_BLOCKED");
+      if (this.#vectorsUnavailable || (await this.#readState()))
+        throw new EmbeddingMigrationError("SOURCE_MUTATION_BLOCKED");
       return operation();
     });
   }
 
   async assertSourceMutationAllowed(): Promise<void> {
-    if (await this.#readState()) throw new EmbeddingMigrationError("SOURCE_MUTATION_BLOCKED");
+    if (this.#vectorsUnavailable || (await this.#readState()))
+      throw new EmbeddingMigrationError("SOURCE_MUTATION_BLOCKED");
   }
 
   async assertChatTurnAllowed(): Promise<void> {
+    if (this.#vectorsUnavailable) throw new EmbeddingMigrationError("MIGRATION_ACTIVE");
     const state = await this.#readState();
     if (
       state &&
@@ -498,6 +565,7 @@ export class EmbeddingMigrationCoordinator implements EmbeddingMigrationOperatio
   }
 
   async close(): Promise<void> {
+    await this.#applying;
     this.#buildAbort?.abort(new DOMException("migration coordinator closing", "AbortError"));
     await this.#build?.catch(() => undefined);
   }
@@ -919,6 +987,11 @@ export function embeddingMigrationCoordinator(): EmbeddingMigrationCoordinator {
     singletonIdentity = identity;
   }
   singleton ??= new EmbeddingMigrationCoordinator({
+    liveApply: {
+      hasActiveExecutors: () => hasActiveRunExecutors(),
+      closeVectors: () => storageRuntime().vectors.close(),
+      openVectors: reopenStorageVectors,
+    },
     stateFile: path.join(paths.storageDirectory, "embedding-migration.json"),
     migrationRoot: path.join(path.dirname(paths.lanceDirectory), `.${path.basename(paths.lanceDirectory)}-migrations`),
     liveLanceDirectory: paths.lanceDirectory,
@@ -1444,7 +1517,7 @@ function publicStatus(state: StoredMigrationState | undefined): EmbeddingMigrati
     chunk_count: state.chunk_count,
     indexed_count: state.indexed_count,
     error_code: state.error_code,
-    restart_required: phase === "apply_pending",
+    restart_required: false,
     can_cancel: ![
       "apply_pending",
       "cancelling",
@@ -1493,6 +1566,8 @@ function decodeState(input: unknown): StoredMigrationState {
     "failed",
   ];
   const errorCodes: EmbeddingMigrationErrorCode[] = [
+    "ACTIVE_TURNS_BUSY",
+    "LIVE_RECOVERY_FAILED",
     "MIGRATION_ACTIVE",
     "TARGET_UNCHANGED",
     "NO_READY_SOURCES",
@@ -1654,6 +1729,9 @@ function publicMigrationError(code: EmbeddingMigrationErrorCode): string {
     TARGET_UNCHANGED: "the target embedding identity is already configured",
     NO_READY_SOURCES: "no ready sources require embedding migration",
     SOURCE_MUTATION_BLOCKED: "source changes are paused during embedding migration",
+    LIVE_RECOVERY_FAILED:
+      "Search index recovery could not finish. Check workspace disk access and server logs before restarting to recover the journal.",
+    ACTIVE_TURNS_BUSY: "Active chats are still finishing. Wait for them to finish, then apply again.",
     INGESTION_BUSY: "ingestion must finish before embedding migration starts",
     REMOTE_EGRESS_CONSENT_REQUIRED: "remote egress consent is required for every affected account",
     ENVIRONMENT_MANAGED: "embedding settings are managed by environment",

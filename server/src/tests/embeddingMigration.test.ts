@@ -15,7 +15,13 @@ import {
 } from "../embeddingMigration.js";
 import { IngestionExecutor, type IngestionDataOperations } from "../ingestionEngine.js";
 import { createSettingsStore, type EffectiveLlmSettings, type SettingsStore } from "../settingsStore.js";
-import { closeStorageRuntime, initializeStorageRuntime, type StorageRuntime } from "../storageRuntime.js";
+import {
+  closeStorageRuntime,
+  initializeStorageRuntime,
+  reopenStorageVectors,
+  storageRuntime,
+  type StorageRuntime,
+} from "../storageRuntime.js";
 import { retrieveWithVector } from "../vector/retrieve.js";
 
 const ACCOUNT = "11111111-1111-4111-8111-111111111111";
@@ -55,6 +61,9 @@ async function createHarness(
     ) => Promise<void>;
     readonly env?: Readonly<Record<string, string | undefined>>;
     readonly seed?: boolean;
+    readonly live?: boolean;
+    readonly failOpen?: boolean;
+    readonly drainTimeoutMs?: number;
   } = {}
 ): Promise<Harness> {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "borealis-embedding-migration-")));
@@ -73,6 +82,20 @@ async function createHarness(
   });
   const harness = {} as Harness;
   const coordinator = new EmbeddingMigrationCoordinator({
+    ...(options.live
+      ? {
+          liveApply: {
+            closeVectors: () => harness.runtime.vectors.close(),
+            openVectors: async (settings: import("../settingsStore.js").SettingsSnapshot) => {
+              if (options.failOpen && settings.settings.embedModel === "new-embed")
+                throw new Error("fixture open failure");
+              await reopenStorageVectors(settings);
+              harness.runtime = storageRuntime();
+            },
+          },
+          drainTimeoutMs: options.drainTimeoutMs ?? 1000,
+        }
+      : {}),
     stateFile,
     migrationRoot,
     liveLanceDirectory: lanceDirectory,
@@ -106,6 +129,71 @@ async function createHarness(
 }
 
 describe("durable embedding migration coordinator", () => {
+  it.each([true, false])("switches live with SQLite open (seeded=%s)", async (seed) => {
+    const harness = await createHarness({ live: true, seed });
+    const ledger = harness.runtime.ledger;
+    await harness.coordinator.start({ model: "new-embed", dimension: 5 });
+    await waitForPhase(harness.coordinator, "ready_to_apply");
+    await harness.coordinator.requestApply();
+    await waitForPhase(harness.coordinator, "idle");
+    expect(harness.runtime.ledger).toBe(ledger);
+    expect(await ledger.health()).toBe(true);
+    expect(harness.runtime.vectors.dimension).toBe(5);
+    expect(harness.runtime.vectors.embeddingModel).toBe("new-embed");
+    expect(await harness.runtime.vectors.countRows()).toBe(seed ? 1 : 0);
+    await expect(harness.coordinator.runChatTurnAdmission(async () => "accepted")).resolves.toBe("accepted");
+    await expect(harness.coordinator.runSourceMutation(async () => "resumed")).resolves.toBe("resumed");
+  });
+
+  it.each([false, true])("waits for accepted chats before switching (timeout=%s)", async (timeout) => {
+    const harness = await createHarness({ live: true, drainTimeoutMs: timeout ? 20 : 1000 });
+    await harness.coordinator.start({ model: "new-embed", dimension: 5 });
+    await waitForPhase(harness.coordinator, "ready_to_apply");
+    const chatId = randomUUID();
+    const runId = randomUUID();
+    await harness.runtime.ledger.run("INSERT INTO chats (id,account_id,title,model) VALUES (?,?,'test','chat-model')", [
+      chatId,
+      ACCOUNT,
+    ]);
+    await harness.coordinator.runChatTurnAdmission(() =>
+      harness.runtime.ledger.run("INSERT INTO chat_runs (id,account_id,chat_id) VALUES (?,?,?)", [
+        runId,
+        ACCOUNT,
+        chatId,
+      ])
+    );
+    await harness.coordinator.requestApply();
+    await new Promise((resolve) => setTimeout(resolve, timeout ? 150 : 30));
+    expect(harness.runtime.vectors.dimension).toBe(3);
+    expect(await harness.runtime.vectors.countRows()).toBe(1);
+    if (timeout) {
+      await expect(waitForPhase(harness.coordinator, "ready_to_apply")).resolves.toMatchObject({
+        phase: "ready_to_apply",
+        error_code: "ACTIVE_TURNS_BUSY",
+      });
+    } else {
+      await expect(harness.coordinator.assertChatTurnAllowed()).rejects.toMatchObject({ code: "MIGRATION_ACTIVE" });
+    }
+    await harness.runtime.ledger.run("UPDATE chat_runs SET status='completed' WHERE id=?", [runId]);
+    if (timeout) await harness.coordinator.requestApply();
+    await waitForPhase(harness.coordinator, "idle");
+    expect(harness.runtime.vectors.dimension).toBe(5);
+  });
+
+  it("restores the old live index and settings when the replacement cannot open", async () => {
+    const harness = await createHarness({ live: true, failOpen: true });
+    await harness.coordinator.start({ model: "new-embed", dimension: 5 });
+    await waitForPhase(harness.coordinator, "ready_to_apply");
+    await harness.coordinator.requestApply();
+    await waitForPhase(harness.coordinator, "failed");
+    // close waits for the complete background handover, including rollback reopen.
+    await harness.coordinator.close();
+    expect(harness.runtime.vectors.dimension).toBe(3);
+    expect(await harness.runtime.vectors.countRows()).toBe(1);
+    expect((await harness.store.read()).settings.embedModel).toBe("old-embed");
+    await expect(harness.coordinator.assertChatTurnAllowed()).resolves.toBeUndefined();
+  });
+
   it("does not strand the workspace behind migration state when ingestion is busy", async () => {
     const busy = await createHarness();
     const source = await busy.runtime.ledger.get<{ id: string }>("SELECT id FROM sources WHERE account_id=?", [
@@ -419,7 +507,7 @@ describe("durable embedding migration coordinator", () => {
 
     await expect(harness.coordinator.requestApply()).resolves.toMatchObject({
       phase: "apply_pending",
-      restart_required: true,
+      restart_required: false,
       can_cancel: false,
     });
     await expect(harness.coordinator.assertChatTurnAllowed()).rejects.toMatchObject({ code: "MIGRATION_ACTIVE" });
@@ -830,7 +918,7 @@ function unitVector(dimension: number, offset: number): number[] {
 
 async function waitForPhase(
   coordinator: EmbeddingMigrationCoordinator,
-  phase: "ready_to_apply" | "failed",
+  phase: "ready_to_apply" | "failed" | "idle",
   timeoutMs = 5_000
 ) {
   const deadline = Date.now() + timeoutMs;

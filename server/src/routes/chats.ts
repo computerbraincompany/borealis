@@ -1,4 +1,5 @@
 import type { FastifyInstance } from "fastify";
+import { suggestChatTitle } from "../chatTitle.js";
 import { runAgent } from "../agent.js";
 import { getAccountId, requireAuth } from "../auth.js";
 import { catalogPageQuerySchema, catalogResponse, parseCatalogPageQuery } from "../catalogPagination.js";
@@ -324,6 +325,9 @@ export async function chatRoutes(app: FastifyInstance): Promise<void> {
             meta: terminal.message.meta,
             message_id: terminal.message.id,
           });
+          if (turn.automaticTitleBaseline) {
+            await suggestChatTitle(accountId, turn, controller.signal);
+          }
           emit({ type: "done" });
         }
         emit({ type: "run-ended", run_id: turn.runId, status: terminal.status });

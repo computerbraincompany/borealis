@@ -76,7 +76,7 @@ function operations(overrides: Partial<EmbeddingMigrationOperations> = {}): Embe
     requestApply: vi.fn(async (): Promise<EmbeddingMigrationStatus> => ({
       ...building,
       phase: "apply_pending",
-      restart_required: true,
+      restart_required: false,
     })),
     ...overrides,
   };
@@ -230,6 +230,6 @@ describe("managed embedding migration routes", () => {
     ).toBe(202);
     expect(
       (await app.inject({ method: "POST", url: "/api/models/embedding-migration/apply", headers: auth })).json()
-    ).toMatchObject({ phase: "apply_pending", restart_required: true });
+    ).toMatchObject({ phase: "apply_pending", restart_required: false });
   });
 });

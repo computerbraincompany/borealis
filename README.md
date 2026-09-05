@@ -149,7 +149,8 @@ Settings separates **Provider**, **Chat models**, **Embeddings**, and **Local en
 Chat and embedding models use provider-discovered dropdowns with full model names.
 In Embeddings, **Check model** detects the dimension automatically from a validated
 response; no dimension entry is needed. It checks embeddings before chat compatibility
-and reports timeouts separately. Changing the index still requires managed migration.
+and reports timeouts separately. After a successful check, **Save and rebuild search**
+starts the managed index rebuild. Once it is ready, choose **Apply now** to activate the new embedding model without restarting.
 Drafts remain when switching panels; saving or discarding affects only the current
 panel. Provider and chat changes must be saved or discarded before embedding
 qualification and migration. Personal chat-model overrides remain in **Account**.
@@ -261,12 +262,14 @@ Save compatible provider-draft changes before starting; the migration never
 mixes an unsaved endpoint, key, or chat model into its target. The same path
 creates and verifies an empty target index for a zero-source workspace. Source
 uploads, reingestion, connector changes, and scheduled connector refreshes pause
-for the operation. Applying the verified index enters `apply_pending`; restart
-Borealis to perform the journaled swap. Startup revalidates the persisted
-provider identity and rejects embedding environment overrides before accepting
-the installed target, then reopens both stores, verifies dimension and row
-counts, and runs a scoped retrieval smoke for a nonempty snapshot before the
-old index can be retired. Status remains content-free, exposing the target
+for the operation. Applying the verified index enters `apply_pending`. Borealis pauses admission,
+waits up to one minute for active chats to finish, and performs the journaled
+swap while keeping the server and SQLite database open. It revalidates provider
+identity and environment overrides, opens the replacement vector index, checks
+dimension and row counts, and runs a scoped retrieval smoke before retiring the
+old index. If chats are still running after one minute, the index stays ready
+to apply and you can try again. Failed installation restores the old pair;
+startup recovery also handles an interrupted swap. Status remains content-free, exposing the target
 identity, phase, aggregate counts, stable failure code, and available actions;
 failed builds can be retried or cancelled before apply. `EMBEDDING_DIM` remains
 a higher-precedence operator override; an environment-managed model or

@@ -119,3 +119,25 @@ export async function requireAuth(req: FastifyRequest, reply: FastifyReply) {
 export function getAccountId(req: FastifyRequest): string {
   return (req as any).user.userId;
 }
+
+/** Install account existence checks on authenticated routes before body parsing. */
+export function installAccountSessionValidation(app: FastifyInstance): void {
+  app.addHook("onRoute", (route) => {
+    const hooks = route.onRequest ? (Array.isArray(route.onRequest) ? route.onRequest : [route.onRequest]) : [];
+    const authIndex = hooks.indexOf(requireAuth);
+    if (authIndex === -1) return;
+    route.onRequest = [
+      ...hooks.slice(0, authIndex + 1),
+      async (req, reply) => {
+        const user = await storageRuntime().chats.findUserById(getAccountId(req));
+        if (!user)
+          return reply.code(401).send({
+            error: "Your session no longer belongs to an active account. Sign in again.",
+            code: "SESSION_ACCOUNT_UNAVAILABLE",
+            request_id: String(reply.getHeader("X-Request-ID") || req.id),
+          });
+      },
+      ...hooks.slice(authIndex + 1),
+    ];
+  });
+}

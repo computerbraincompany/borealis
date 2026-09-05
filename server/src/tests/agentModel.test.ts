@@ -6,18 +6,22 @@ vi.mock("../storageRuntime.js", () => ({
   storageRuntime: () => ({ chats: { listAgentHistoryForRun: storageMocks.listAgentHistoryForRun } }),
 }));
 vi.mock("../llm.js", () => ({ chatOnce: vi.fn(), streamingChat: vi.fn() }));
-vi.mock("../dataService.js", () => ({ dataService: { listDatasetCatalog: vi.fn() } }));
+vi.mock("../dataService.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../dataService.js")>()),
+  dataService: { listDatasetCatalog: vi.fn() },
+}));
 vi.mock("../tools.js", () => ({ TOOL_DEFS: [], executeTool: vi.fn() }));
 
 import {
   buildSystemPrompt,
   runAgent,
+  safeToolFailure,
   runToolRound,
   selectRecentHistory,
   serializedAgentCharacterCount,
 } from "../agent.js";
 import { chatOnce, streamingChat } from "../llm.js";
-import { dataService } from "../dataService.js";
+import { dataService, DataServiceError } from "../dataService.js";
 import { executeTool } from "../tools.js";
 
 const historyMock = storageMocks.listAgentHistoryForRun;
@@ -289,6 +293,57 @@ describe("runAgent model snapshot", () => {
     expect(emitted.every((event) => event.type !== "message" && event.type !== "delta")).toBe(true);
   });
 
+  it("gives actionable query feedback without exposing native exception details", () => {
+    const failure = new DataServiceError(422, "/datasets/query");
+    expect(safeToolFailure("query_data", failure)).toContain("describe_data");
+    expect(safeToolFailure("query_data", new DataServiceError(504, "query"))).toContain("timed out");
+    const privateFailure = new Error("SELECT private_amount FROM private_account: secret token");
+    expect(safeToolFailure("query_data", privateFailure)).not.toMatch(/private_amount|private_account|secret token/);
+  });
+
+  it.each(["failure", "empty"])(
+    "recovers a provider %s after tools with a bounded final synthesis request",
+    async (mode) => {
+      streamingChatMock.mockResolvedValueOnce({
+        choices: [
+          {
+            message: {
+              role: "assistant",
+              content: "",
+              tool_calls: [{ id: "query-1", function: { name: "query_data", arguments: "{}" } }],
+            },
+          },
+        ],
+      } as any);
+      executeToolMock.mockImplementationOnce(async (_a, _n, _args, context) => {
+        context.queryResults = [
+          { id: "query-1", sql: "SELECT 1", columns: ["n"], rows: [[1]], row_count: 1, truncated: false },
+        ];
+        return { rows: [[1]] };
+      });
+      if (mode === "failure") streamingChatMock.mockRejectedValueOnce(new Error("private provider payload"));
+      else
+        streamingChatMock.mockResolvedValueOnce({ choices: [{ message: { role: "assistant", content: "" } }] } as any);
+      streamingChatMock.mockResolvedValueOnce({
+        choices: [{ message: { role: "assistant", content: "The verified count is one." } }],
+      } as any);
+      const result = await runAgent({
+        accountId: "account-1",
+        chatId: "chat-1",
+        runId: "run-1",
+        content: "Analyze",
+        model: "model",
+        sourceScope: emptyScope,
+        emit: () => {},
+      });
+      expect(result.content).toBe("The verified count is one.");
+      expect(result.meta.query_results).toHaveLength(1);
+      expect(streamingChatMock).toHaveBeenCalledTimes(3);
+      expect(streamingChatMock.mock.calls.at(-1)?.[1]?.tools).toEqual([]);
+      expect(JSON.stringify(streamingChatMock.mock.calls.at(-1)?.[0])).not.toContain("private provider payload");
+    }
+  );
+
   it("uses the same evidence metadata contract when the iteration guard is exhausted", async () => {
     const evidence = [
       {
@@ -300,7 +355,7 @@ describe("runAgent model snapshot", () => {
       },
     ];
     listDatasetCatalogMock.mockResolvedValue({ datasets: [], total: 0, returned: 0, omitted: 0, truncated: false });
-    for (let index = 0; index < 8; index += 1) {
+    for (let index = 0; index < 16; index += 1) {
       streamingChatMock.mockResolvedValueOnce({
         choices: [
           {
@@ -315,6 +370,9 @@ describe("runAgent model snapshot", () => {
         ],
       } as any);
     }
+    streamingChatMock.mockResolvedValueOnce({
+      choices: [{ message: { role: "assistant", content: "Here is the analysis from the collected evidence." } }],
+    } as any);
     executeToolMock.mockImplementation(async (_accountId, _name, _args, context) => {
       context.evidence = evidence;
       return { passages: [] };
@@ -343,8 +401,13 @@ describe("runAgent model snapshot", () => {
       evidence,
       query_results: [],
     });
-    expect(completion.content).toContain("tool-step limit");
-    expect(streamingChatMock).toHaveBeenCalledTimes(8);
+    expect(completion.content).toContain("analysis from the collected evidence");
+    expect(streamingChatMock.mock.calls.at(-1)?.[1]?.tools).toEqual([]);
+    expect(streamingChatMock).toHaveBeenCalledTimes(17);
+    for (const [messages] of streamingChatMock.mock.calls) {
+      expect(messages[0].role).toBe("system");
+      expect(messages.slice(1).some((message) => message.role === "system")).toBe(false);
+    }
     expect(emitted.every((event) => event.type !== "message" && event.type !== "delta")).toBe(true);
   });
 
@@ -401,7 +464,7 @@ describe("runAgent model snapshot", () => {
     expect(emitted).toContainEqual({
       type: "step-end",
       name: "retrieve",
-      summary: "The operation could not be completed.",
+      summary: "This operation took too long. Try a smaller query or a simpler operation.",
       status: "error",
     });
     expect(completeLateRetrieval).toBeTypeOf("function");
@@ -464,7 +527,7 @@ describe("runAgent model snapshot", () => {
     expect(emitted).toContainEqual({
       type: "step-end",
       name: "query_data",
-      summary: "The operation could not be completed.",
+      summary: "This operation took too long. Try a smaller query or a simpler operation.",
       status: "error",
     });
     expect(completeLateQuery).toBeTypeOf("function");

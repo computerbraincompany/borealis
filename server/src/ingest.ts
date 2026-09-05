@@ -44,7 +44,7 @@ const MAX_JOB_ATTEMPTS = 3;
 export type IngestSourceOptions = IngestionExecutionInput;
 
 interface CachedEngine {
-  readonly ledgerPath: string;
+  readonly runtime: ReturnType<typeof storageRuntime>;
   readonly executor: IngestionExecutor;
   readonly worker: IngestionWorker;
 }
@@ -75,7 +75,7 @@ let reconciliationTimer: NodeJS.Timeout | undefined;
 
 function engine(): CachedEngine {
   const runtime = storageRuntime();
-  if (cachedEngine?.ledgerPath === runtime.ledger.path) return cachedEngine;
+  if (cachedEngine?.runtime === runtime) return cachedEngine;
   const executor = new IngestionExecutor({
     store: runtime.ingestion,
     lifecycle: runtime.vectorLifecycle,
@@ -90,7 +90,7 @@ function engine(): CachedEngine {
     datasetPreviewText,
   });
   cachedEngine = Object.freeze({
-    ledgerPath: runtime.ledger.path,
+    runtime,
     executor,
     worker: new IngestionWorker({
       store: runtime.ingestion,
@@ -139,17 +139,19 @@ export async function processOneJob(
   runIngest: (input: IngestionExecutionInput) => Promise<void> = ingestSource,
   signal?: AbortSignal
 ): Promise<boolean> {
-  const runtime = storageRuntime();
-  const worker =
-    runIngest === ingestSource
-      ? engine().worker
-      : new IngestionWorker({
-          store: runtime.ingestion,
-          sources: runtime.sources,
-          lifecycle: runtime.vectorLifecycle,
-          ingest: runIngest,
-        });
-  return runSourceMaintenance(() => worker.processOne(signal), false);
+  return runSourceMaintenance(async () => {
+    const runtime = storageRuntime();
+    const worker =
+      runIngest === ingestSource
+        ? engine().worker
+        : new IngestionWorker({
+            store: runtime.ingestion,
+            sources: runtime.sources,
+            lifecycle: runtime.vectorLifecycle,
+            ingest: runIngest,
+          });
+    return worker.processOne(signal);
+  }, false);
 }
 
 function scheduleIngestionPump(): void {

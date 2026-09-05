@@ -1,7 +1,7 @@
 import { agentSkillRoutes } from "./routes/agentSkills.js";
 import type { FastifyInstance } from "fastify";
 import swagger from "@fastify/swagger";
-import { authRoutes, requireAuth } from "./auth.js";
+import { authRoutes, requireAuth, installAccountSessionValidation } from "./auth.js";
 import { config } from "./config.js";
 import { installHttpBoundary } from "./httpErrors.js";
 import { chartRoutes } from "./routes/charts.js";
@@ -26,6 +26,7 @@ export { publicAgentFailureMessage } from "./routes/chats.js";
 /** Compose resource plugins while keeping shared HTTP policy in one place. */
 export async function routes(app: FastifyInstance): Promise<void> {
   installHttpBoundary(app);
+  installAccountSessionValidation(app);
   await app.register(swagger, {
     openapi: {
       info: { title: "Borealis API", version: "0.1.0" },

@@ -11,6 +11,9 @@ export interface EmbeddingMigrationFeedback {
 }
 
 const ERROR_MESSAGES: Record<string, string> = {
+  LIVE_RECOVERY_FAILED:
+    "Search is paused because index recovery could not finish. Check workspace disk space and access, then restart to recover the saved migration journal.",
+  ACTIVE_TURNS_BUSY: "Active chats are still finishing. Wait for them to finish, then select Apply now again.",
   EMBEDDING_INVALID: "The provider returned embeddings that did not match the target identity.",
   EMBEDDING_UNAVAILABLE: "The embedding provider was unavailable while the index was being built.",
   INDEX_VERIFY_FAILED: "The staged index did not pass verification.",
@@ -21,9 +24,9 @@ const ERROR_MESSAGES: Record<string, string> = {
   REMOTE_EGRESS_CONSENT_REQUIRED: "Every affected account must acknowledge remote embedding egress first.",
   SNAPSHOT_DRIFT: "The source snapshot changed while the replacement index was being built.",
   SNAPSHOT_FAILED: "Borealis could not create a stable source snapshot.",
-  STARTUP_OPEN_FAILED: "The replacement index could not be opened during restart.",
-  STARTUP_SMOKE_FAILED: "The replacement index failed its retrieval check during restart.",
-  STARTUP_SWAP_FAILED: "The replacement index could not be installed safely during restart.",
+  STARTUP_OPEN_FAILED: "The replacement index could not be opened during installation.",
+  STARTUP_SMOKE_FAILED: "The replacement index failed its retrieval check during installation.",
+  STARTUP_SWAP_FAILED: "The replacement index could not be installed safely during installation.",
   STATE_INVALID: "The saved migration state could not be validated.",
 };
 
@@ -55,6 +58,7 @@ export function useEmbeddingMigration(enabled: boolean) {
   const [action, setAction] = useState<EmbeddingMigrationAction>(null);
   const [feedback, setFeedback] = useState<EmbeddingMigrationFeedback | null>(null);
   const mounted = useRef(false);
+  const lastPhase = useRef<string | undefined>(undefined);
   const statusController = useRef<AbortController | null>(null);
   const statusRequest = useRef<Promise<EmbeddingMigrationStatus | null> | null>(null);
   const actionRef = useRef<EmbeddingMigrationAction>(null);
@@ -84,6 +88,10 @@ export function useEmbeddingMigration(enabled: boolean) {
       .then((next) => {
         if (!controller.signal.aborted && mounted.current) {
           pollFailuresRef.current = 0;
+          if (lastPhase.current === "apply_pending" && next.phase === "idle") {
+            setFeedback({ kind: "success", message: "Search updated. The new embedding model is active." });
+          }
+          lastPhase.current = next.phase;
           setStatus(next);
           setLoadError(null);
           setFeedback((current) => (current?.kind === "error" ? null : current));
@@ -115,7 +123,14 @@ export function useEmbeddingMigration(enabled: boolean) {
   }, [enabled, refresh]);
 
   useEffect(() => {
-    if (!enabled || (!loadError && status?.phase !== "snapshotting" && status?.phase !== "building")) return;
+    if (
+      !enabled ||
+      (!loadError &&
+        status?.phase !== "snapshotting" &&
+        status?.phase !== "building" &&
+        status?.phase !== "apply_pending")
+    )
+      return;
     let timer = 0;
     let active = true;
     const schedule = () => {
@@ -149,6 +164,7 @@ export function useEmbeddingMigration(enabled: boolean) {
       try {
         const next = await operation();
         if (mounted.current) {
+          lastPhase.current = next.phase;
           setStatus(next);
           setLoadError(null);
           const migrationFailure = embeddingMigrationErrorMessage(next.error_code);
@@ -165,7 +181,7 @@ export function useEmbeddingMigration(enabled: boolean) {
             kind: "error",
             message: migrationRequestError(
               failure,
-              `Couldn’t confirm ${nextAction === "starting" ? "the start of" : nextAction === "retrying" ? "the retry of" : nextAction === "cancelling" ? "cancellation of" : "the scheduled installation of"} the search rebuild.`,
+              `Couldn’t confirm ${nextAction === "starting" ? "the start of" : nextAction === "retrying" ? "the retry of" : nextAction === "cancelling" ? "cancellation of" : "installation of"} the search rebuild.`,
             ),
           });
         }
@@ -217,7 +233,7 @@ export function useEmbeddingMigration(enabled: boolean) {
       runAction(
         "applying",
         () => modelsApi.applyEmbeddingMigration(),
-        "Migration staged for installation. Restart Borealis and its server to install and verify the new index.",
+        "Applying the search index. Active chats will finish before the switch; no restart is needed.",
       ),
     [runAction],
   );

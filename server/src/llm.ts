@@ -832,7 +832,7 @@ async function getLlmRuntime(): Promise<LlmRuntimeBundle> {
   return runtime;
 }
 
-function createOpenAiClient(settings: EffectiveLlmSettings): OpenAI {
+export function createOpenAiClient(settings: EffectiveLlmSettings): OpenAI {
   return new OpenAI({
     baseURL: `${settings.llmBaseUrl}/v1`,
     // openai-node requires an explicit string. Nulling its generated header

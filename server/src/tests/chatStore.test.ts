@@ -842,3 +842,20 @@ describe("ChatStore", () => {
     });
   });
 });
+
+it("automatic title suggestions preserve ownership and manual renames", async () => {
+  const { store } = await setup();
+  const account = await createUser(store, "title-owner");
+  const other = await createUser(store, "title-other");
+  const chat = await createChat(store, account);
+  const turn = await store.acceptChatTurn(account, chat, "Analyze my spending and produce a financial report");
+  const baseline = turn.automaticTitleBaseline!;
+  expect(baseline).toBe("Analyze my spending and produce a financial report");
+  await store.suggestTitle(other, chat, baseline, "Wrong account");
+  expect((await store.listChats(account)).items[0].title).toBe(baseline);
+  await store.suggestTitle(account, chat, baseline, "Spending report");
+  expect((await store.listChats(account)).items[0].title).toBe("Spending report");
+  await store.updateTitle(account, chat, baseline);
+  await store.suggestTitle(account, chat, baseline, "Late suggestion");
+  expect((await store.listChats(account)).items[0].title).toBe(baseline);
+});

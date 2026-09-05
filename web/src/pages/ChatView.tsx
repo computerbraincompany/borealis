@@ -1315,7 +1315,9 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
                     </div>
                   </div>
                 ) : null}
-                {stream.steps.length > 0 && <ToolActivity steps={stream.steps} className="max-w-[360px]" />}
+                {stream.steps.length > 0 && (
+                  <ToolActivity steps={stream.steps} running={stream.running} className="max-w-2xl" />
+                )}
               </div>
             )}
             {stream.error && (

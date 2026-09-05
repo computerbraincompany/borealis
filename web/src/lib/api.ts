@@ -189,7 +189,7 @@ export async function api<T>(path: string, opts: RequestInit = {}): Promise<T> {
   const res = await fetch(path, { ...opts, headers });
   if (res.status === 401) {
     clearSession();
-    if (!location.pathname.startsWith("/login")) {
+    if (!location.pathname.startsWith("/login") || location.hash) {
       location.href = "/login";
     }
     throw await errorFromResponse(res);
@@ -1454,7 +1454,7 @@ export async function streamAgentChat(
   });
   if (res.status === 401) {
     clearSession();
-    if (!location.pathname.startsWith("/login")) location.href = "/login";
+    if (!location.pathname.startsWith("/login") || location.hash) location.href = "/login";
     throw await errorFromResponse(res);
   }
   if (!res.ok || !res.body) {

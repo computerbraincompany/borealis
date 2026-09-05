@@ -842,11 +842,11 @@ describe("SettingsView", () => {
     expect(results).toHaveTextContent("Chat compatibility");
     expect(results).toHaveTextContent("Ready");
     expect(results).toHaveTextContent("Search settings detected automatically");
-    expect(screen.getByRole("button", { name: "Start migration" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Save and rebuild search" })).toBeEnabled();
 
     fireEvent.change(screen.getByLabelText("Embedding model"), { target: { value: "nomic-embed" } });
     expect(screen.queryByLabelText("Model qualification results")).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Start migration" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Save and rebuild search" })).toBeDisabled();
   });
 
   it("requires hidden chat drafts to be saved before qualifying or starting a migration", async () => {
@@ -858,7 +858,7 @@ describe("SettingsView", () => {
     selectSettingsSection("Embeddings");
     fireEvent.change(screen.getByLabelText("Embedding model"), { target: { value: "embed-v2" } });
     expect(screen.getByRole("button", { name: "Check model" })).toBeDisabled();
-    expect(await screen.findByRole("button", { name: "Start migration" })).toBeDisabled();
+    expect(await screen.findByRole("button", { name: "Save and rebuild search" })).toBeDisabled();
     expect(mocks.modelsQualify).not.toHaveBeenCalled();
     expect(mocks.migrationStart).not.toHaveBeenCalled();
   });
@@ -906,7 +906,7 @@ describe("SettingsView", () => {
     expect(screen.getByRole("status")).toHaveTextContent("Model check passed");
   });
 
-  it("starts only a qualified exact target, exposes progress, and stages apply for restart", async () => {
+  it("starts only a qualified exact target, exposes progress, and applies without restarting", async () => {
     const building = {
       phase: "building" as const,
       target_model: "embed-v2",
@@ -930,7 +930,7 @@ describe("SettingsView", () => {
     const pending = {
       ...ready,
       phase: "apply_pending" as const,
-      restart_required: true,
+      restart_required: false,
       can_cancel: false,
       can_apply: false,
     };
@@ -946,14 +946,15 @@ describe("SettingsView", () => {
     selectSettingsSection("Embeddings");
 
     fireEvent.change(await screen.findByLabelText("Embedding model"), { target: { value: "embed-v2" } });
-    expect(await screen.findByRole("button", { name: "Start migration" })).toBeDisabled();
+    expect(await screen.findByRole("button", { name: "Save and rebuild search" })).toBeDisabled();
     fireEvent.click(screen.getByRole("button", { name: "Check model" }));
-    await waitFor(() => expect(screen.getByRole("button", { name: "Start migration" })).toBeEnabled());
-    fireEvent.click(screen.getByRole("button", { name: "Start migration" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Save and rebuild search" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "Save and rebuild search" }));
 
     await waitFor(() =>
       expect(mocks.migrationStart).toHaveBeenCalledWith({ target_embed_model: "embed-v2", target_dimension: 384 }),
     );
+    expect(mocks.settingsUpdate).not.toHaveBeenCalled();
     expect(await screen.findByText("Building replacement index")).toBeInTheDocument();
     expect(screen.getByLabelText("Embedding migration progress")).toHaveAttribute("value", "5");
     expect(screen.getByText("5 of 20 chunks")).toBeInTheDocument();
@@ -961,12 +962,12 @@ describe("SettingsView", () => {
 
     mocks.migrationStatus.mockResolvedValueOnce(ready);
     fireEvent.click(screen.getByRole("button", { name: "Refresh embedding migration status" }));
-    expect(await screen.findByRole("button", { name: "Apply on restart" })).toBeEnabled();
-    fireEvent.click(screen.getByRole("button", { name: "Apply on restart" }));
+    expect(await screen.findByRole("button", { name: "Apply now" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "Apply now" }));
 
     await waitFor(() => expect(mocks.migrationApply).toHaveBeenCalledOnce());
-    expect(await screen.findByText("Restart required")).toBeInTheDocument();
-    expect(screen.getByText(/Quit and reopen Borealis/)).toBeInTheDocument();
+    expect(await screen.findByText("Applying search index")).toBeInTheDocument();
+    expect(screen.getByText(/Keep using Borealis; no restart is needed/)).toBeInTheDocument();
   });
 
   it("offers retry and cancel for a failed migration without exposing raw failure details", async () => {

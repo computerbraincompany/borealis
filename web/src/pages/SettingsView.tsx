@@ -94,7 +94,7 @@ function migrationPhaseLabel(phase: string): string {
     snapshotting: "Capturing source snapshot",
     building: "Building replacement index",
     ready_to_apply: "Ready to apply",
-    apply_pending: "Restart required",
+    apply_pending: "Applying search index",
     failed: "Migration stopped",
   };
   return labels[phase] ?? "Status unavailable";
@@ -163,6 +163,22 @@ export function SettingsView({ onClose }: SettingsViewProps) {
       provider.action === null &&
       migration.action === null,
   );
+  const reloadProvider = provider.reload;
+  const previousMigrationPhase = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    if (previousMigrationPhase.current === "apply_pending" && migration.status?.phase === "idle") {
+      void reloadProvider();
+      void refresh(true);
+    }
+    previousMigrationPhase.current = migration.status?.phase;
+  }, [migration.status?.phase, reloadProvider, refresh]);
+
+  const migrationDetailsRef = useRef<HTMLElement>(null);
+  const saveEmbeddingSettings = async () => {
+    if (!canStartMigration) return;
+    await migration.start(provider.form.default_embed_model, embeddingDimension);
+    migrationDetailsRef.current?.scrollIntoView?.({ block: "start", behavior: "smooth" });
+  };
   const migrationProgress = migration.status?.chunk_count
     ? Math.min(100, Math.round((migration.status.indexed_count / migration.status.chunk_count) * 100))
     : 0;
@@ -551,7 +567,8 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                       aria-labelledby="settings-models-heading"
                       onSubmit={(event) => {
                         event.preventDefault();
-                        if (section !== "embeddings") void saveProviderSettings();
+                        if (section === "embeddings") void saveEmbeddingSettings();
+                        else void saveProviderSettings();
                       }}
                     >
                       <div className="grid gap-x-4 gap-y-5 p-4 sm:grid-cols-2">
@@ -926,8 +943,8 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                         )}
                       </div>
 
-                      {(section !== "embeddings" || provider.feedback || provider.hasChanges) && (
-                        <div className="flex flex-col gap-3 border-t bg-secondary/20 px-4 py-3">
+                      {
+                        <div className="sticky bottom-0 z-10 flex flex-col gap-3 border-t bg-card px-4 py-3">
                           <div className="min-h-5 text-xs" aria-live="polite">
                             {provider.feedback && (
                               <p
@@ -938,6 +955,21 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                               </p>
                             )}
                           </div>
+                          {section === "embeddings" && (
+                            <p className="text-xs leading-5 text-muted-foreground">
+                              {embeddingIdentityManaged
+                                ? "This embedding configuration is managed by the environment."
+                                : migrationActive
+                                  ? "A search rebuild is already in progress. Follow its status below to finish applying the change."
+                                  : provider.hasNonEmbeddingChanges
+                                    ? "Save or discard your Provider and Chat models changes first."
+                                    : !embeddingTargetChanged
+                                      ? "Choose a different embedding model to save a change."
+                                      : !provider.qualificationReady
+                                        ? "Check the selected model first, then save and rebuild search."
+                                        : "Saving rebuilds the search index. After it finishes, apply the change to activate the new model without restarting."}
+                            </p>
+                          )}
                           <div className="flex flex-wrap justify-end gap-2">
                             {section === "provider" && (
                               <Button
@@ -964,6 +996,12 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                                 Discard changes
                               </Button>
                             )}
+                            {section === "embeddings" && (
+                              <Button type="submit" disabled={!canStartMigration}>
+                                {migration.action === "starting" ? <LoaderCircle className="animate-spin" /> : <Save />}
+                                {migration.action === "starting" ? "Starting rebuild…" : "Save and rebuild search"}
+                              </Button>
+                            )}
                             {section !== "embeddings" && (
                               <Button
                                 type="submit"
@@ -975,13 +1013,17 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                             )}
                           </div>
                         </div>
-                      )}
+                      }
                     </form>
                   ) : null}
                 </div>
 
                 {section === "embeddings" && (
-                  <section aria-labelledby="embedding-migration-heading" className="border-b py-5">
+                  <section
+                    ref={migrationDetailsRef}
+                    aria-labelledby="embedding-migration-heading"
+                    className="scroll-mt-4 border-b py-5"
+                  >
                     <div className="flex flex-wrap items-start justify-between gap-3">
                       <div className="flex min-w-0 items-start gap-3">
                         <HardDrive className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
@@ -991,7 +1033,7 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                           </h3>
                           <p className="mt-1 max-w-prose text-xs leading-5 text-muted-foreground">
                             Build a verified replacement index before changing an embedding model or dimension. Source
-                            changes pause during the build; the current index stays active until restart.
+                            changes pause during the build; the current index stays active until you apply the change.
                           </p>
                         </div>
                       </div>
@@ -1099,21 +1141,19 @@ export function SettingsView({ onClose }: SettingsViewProps) {
 
                         {migration.status.phase === "ready_to_apply" && (
                           <div className="mt-3 rounded-md border border-warning/30 bg-warning/10 px-3 py-2.5 text-xs leading-5 text-muted-foreground">
-                            The replacement index is complete and verified. Applying schedules a restart-time swap; keep
-                            the current workspace data directory together and restart the Borealis server immediately
-                            afterward.
+                            The replacement index is complete and verified. Apply it now without restarting. Borealis
+                            waits for active chats to finish, switches search indexes, then resumes automatically.
                           </div>
                         )}
 
-                        {migration.status.restart_required && (
+                        {migration.status.phase === "apply_pending" && (
                           <div className="mt-3 rounded-md border border-warning/30 bg-warning/10 px-3 py-2.5 text-xs leading-5 text-muted-foreground">
-                            Restart required. Quit and reopen Borealis (or restart the browser-development server) to
-                            install and verify the replacement index. Do not change or copy only part of the workspace
-                            data while this is pending.
+                            Waiting for active chats to finish, then switching to the verified search index. Keep using
+                            Borealis; no restart is needed.
                           </div>
                         )}
 
-                        {migration.status.phase === "failed" && (
+                        {migration.status.error_code && (
                           <p className="mt-3 text-xs leading-5 text-destructive" role="alert">
                             {embeddingMigrationErrorMessage(migration.status.error_code)}
                           </p>
@@ -1132,18 +1172,6 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                         )}
 
                         <div className="mt-4 flex flex-wrap gap-2">
-                          {migration.status.phase === "idle" && (
-                            <Button
-                              type="button"
-                              onClick={() =>
-                                void migration.start(provider.form.default_embed_model, embeddingDimension)
-                              }
-                              disabled={!canStartMigration}
-                            >
-                              {migration.action === "starting" && <LoaderCircle className="animate-spin" />}
-                              {migration.action === "starting" ? "Starting…" : "Start migration"}
-                            </Button>
-                          )}
                           {migration.status.can_retry && (
                             <Button
                               type="button"
@@ -1165,7 +1193,7 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                               }
                             >
                               {migration.action === "applying" && <LoaderCircle className="animate-spin" />}
-                              {migration.action === "applying" ? "Scheduling…" : "Apply on restart"}
+                              {migration.action === "applying" ? "Applying…" : "Apply now"}
                             </Button>
                           )}
                           {migration.status.can_cancel && (

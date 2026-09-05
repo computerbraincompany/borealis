@@ -201,6 +201,7 @@ export interface AcceptedUserMessage {
 }
 
 export interface AcceptedChatTurn {
+  readonly automaticTitleBaseline?: string;
   readonly chatId: string;
   readonly model: string;
   readonly sourceScope: ResolvedChatSourceScope;
@@ -743,6 +744,19 @@ export class ChatStore {
     });
   }
 
+  /** Compare-and-swap prevents late suggestions from replacing a manual rename. */
+  async suggestTitle(accountIdValue: string, chatIdValue: string, baseline: string, titleValue: string): Promise<void> {
+    const accountId = identity(accountIdValue, "account id");
+    const chatId = identity(chatIdValue, "chat id");
+    const title = inputCodePointString(titleValue, "chat title", 80);
+    await this.ledger.run("UPDATE chats SET title=? WHERE id=? AND account_id=? AND title_is_manual=0 AND title=?", [
+      title,
+      chatId,
+      accountId,
+      baseline,
+    ]);
+  }
+
   async updateTitle(accountIdValue: string, chatIdValue: string, titleValue: string): Promise<ChatSummary> {
     const accountId = identity(accountIdValue, "account id");
     const chatId = identity(chatIdValue, "chat id");
@@ -962,7 +976,11 @@ export class ChatStore {
           meta,
           created_at: createdAt,
         });
-        return Object.freeze({ ...snapshot, userMessage });
+        return Object.freeze({
+          ...snapshot,
+          userMessage,
+          ...(!hadMessages && title === "New chat" && !titleIsManual ? { automaticTitleBaseline: automaticTitle } : {}),
+        });
       });
     } catch (error) {
       if (error instanceof ChatStoreError) throw error;

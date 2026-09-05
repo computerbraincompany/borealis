@@ -18,6 +18,7 @@ export interface AcceptedUserMessage {
 }
 
 export interface AcceptedChatTurn {
+  readonly automaticTitleBaseline?: string;
   readonly chatId: string;
   readonly model: string;
   readonly sourceScope: ResolvedSourceScope;

@@ -115,7 +115,7 @@ describe("portable workspace archives with external embedding migration staging"
     try {
       await expect(restoredCoordinator.requestApply()).resolves.toMatchObject({
         phase: "apply_pending",
-        restart_required: true,
+        restart_required: false,
       });
       await closeStorageRuntime();
 
