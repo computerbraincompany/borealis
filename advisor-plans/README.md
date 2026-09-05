@@ -31,9 +31,9 @@ requests it.
 
 | Plan                                                   | Title                                                                 | Priority | Effort | Depends on                        | Status |
 | ------------------------------------------------------ | --------------------------------------------------------------------- | -------: | -----: | --------------------------------- | ------ |
-| [001](001-partition-server-test-suites.md)             | Partition the server unit and integration test suites                 |       P2 |      S | —                                 | TODO   |
+| [001](001-partition-server-test-suites.md)             | Partition the server unit and integration test suites                 |       P2 |      S | —                                 | DONE 2026-09-06 `50d70b7` |
 | [002](002-make-desktop-verification-source-current.md) | Make every desktop verification command source-current                |       P2 |      M | —                                 | TODO   |
-| [003](003-add-historical-migration-fixtures.md)        | Add executable historical SQLite migration fixtures                   |       P1 |      M | 031                               | TODO   |
+| [003](003-add-historical-migration-fixtures.md)        | Add executable historical SQLite migration fixtures                   |       P1 |      M | 031                               | DONE 2026-09-06 `795ebad` |
 | [004](004-add-vertical-agent-integration-test.md)      | Add a vertical agent-turn integration test                            |       P1 |      L | 001                               | TODO   |
 | [005](005-bind-provider-credentials-to-origin.md)      | Bind every provider credential to one endpoint origin                 |       P1 |      M | —                                 | TODO   |
 | [006](006-bind-egress-consent-to-provider-revision.md) | Bind egress consent and outbound calls to the current provider origin |       P1 |      L | 003, 005, 031                     | TODO   |
@@ -41,7 +41,7 @@ requests it.
 | [008](008-harden-contained-download-transport.md)      | Harden contained-model download transport                             |       P1 |      L | 007                               | TODO   |
 | [009](009-eliminate-unsolicited-ui-egress.md)          | Eliminate unsolicited UI egress                                       |       P1 |      M | —                                 | TODO   |
 | [010](010-authorize-shared-report-artifacts.md)        | Authorize shared report artifacts consistently                        |       P1 |      S | —                                 | TODO   |
-| [011](011-preserve-source-cleanup-intents.md)          | Preserve source cleanup intents until artifact removal is proven      |       P1 |      S | —                                 | TODO   |
+| [011](011-preserve-source-cleanup-intents.md)          | Preserve source cleanup intents until artifact removal is proven      |       P1 |      S | —                                 | DONE 2026-09-06 `042bec1` |
 | [012](012-enforce-automation-target-ownership.md)      | Enforce automation target ownership in SQLite                         |       P1 |      M | 003, 006, 031                     | TODO   |
 | [013](013-drain-automation-scheduler-on-shutdown.md)   | Drain the automation scheduler before storage shutdown                |       P1 |      M | 006                               | TODO   |
 | [014](014-create-owned-application-runtime.md)         | Create an owned application runtime                                   |       P2 |      L | 004, 007, 008, 009, 013           | TODO   |

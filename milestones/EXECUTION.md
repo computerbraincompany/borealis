@@ -9,7 +9,7 @@ Read [the handoff](../docs/DEVELOPMENT_HANDOFF.md) before executing.
 
 | Work | State | Implementation commit | Verification evidence |
 | ---- | ----- | --------------------- | --------------------- |
-| Prerequisite closure 001,003–009,011–016,020 | TODO | — | Reconcile individual plans; do not infer completion from old statuses |
+| Prerequisite closure 001,003–009,011–016,020 | IN PROGRESS | 001 `50d70b7`, 003 `795ebad`, 011 `042bec1` | Merged to main 2026-09-06 after diff review; integrated server gate on merged main green (841 unit + 89 integration, typecheck/lint/format pass). 005/009 executing in worktrees; 004 dispatched. Remaining order: 015 → 006(v14) → 007/012(v15)/013 → 008 → 014 → 016 → 020(v16). Protocol: one subagent per plan in `../north-clone-wt/<plan>` worktree with plan-scoped file ownership; coordinating agent reviews diffs, merges serially, runs integrated gates. Worktree-load flake observed: `workspaceServerLock`-class subprocess tests can hit their 5 s budgets under ≥3 concurrent full suites; re-run before treating as failure. |
 | Connected agents: MCP, OAuth, job setup | TODO | — | — |
 | M12 saved analyses | TODO | — | — |
 | M13 report/document workbench | TODO | — | — |
