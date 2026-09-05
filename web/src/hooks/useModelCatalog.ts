@@ -48,15 +48,15 @@ function getSnapshot() {
 
 /**
  * Load the shared chat-model catalog. A forced refresh owns the result over any
- * older request, while a failed request leaves the last successful catalog in
- * place so model selection never disappears because discovery briefly failed.
+ * older request, and clears the previous catalog immediately so a changed provider never shows
+ * models from the old endpoint, including when discovery fails.
  */
 async function loadModelCatalog(force = false): Promise<ModelsResponse | null> {
   if (!force && state.catalog) return state.catalog;
   if (!force && inFlight) return inFlight;
 
   const ownedRequestId = ++requestId;
-  publish({ ...state, loading: true, error: null });
+  publish({ ...state, ...(force ? { catalog: null } : {}), loading: true, error: null });
 
   const request = (async () => {
     try {

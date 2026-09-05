@@ -143,7 +143,6 @@ export function SettingsView({ onClose }: SettingsViewProps) {
       (provider.form.llm_base_url.trim() !== provider.settings.llm_base_url || provider.form.llm_api_key.trim()),
   );
   const availableModels = catalog?.available_models ?? catalog?.models ?? [];
-  const modelName = (id: string) => availableModels.find((model) => model.id === id)?.display_name ?? id;
   const embeddingDimension = Number(provider.form.embedding_dimension);
   const migrationActive = Boolean(migration.status && migration.status.phase !== "idle");
   const embeddingTargetChanged = Boolean(
@@ -681,7 +680,11 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                               id="settings-default-chat-model"
                               required
                               className="mt-2 h-10 w-full min-w-0 rounded-md border bg-background px-3 text-sm"
-                              value={provider.form.default_chat_model}
+                              value={
+                                (catalog?.models ?? []).some((model) => model.id === provider.form.default_chat_model)
+                                  ? provider.form.default_chat_model
+                                  : ""
+                              }
                               onChange={(event) => provider.setField("default_chat_model", event.target.value)}
                               disabled={
                                 provider.settings.managed_by_env.default_chat_model ||
@@ -692,13 +695,9 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                                 !discoveryLive
                               }
                             >
-                              {!(catalog?.models ?? []).some(
-                                (model) => model.id === provider.form.default_chat_model,
-                              ) && (
-                                <option value={provider.form.default_chat_model}>
-                                  {modelName(provider.form.default_chat_model)} (current; not advertised)
-                                </option>
-                              )}
+                              <option value="" disabled>
+                                Choose a chat model
+                              </option>
                               {(catalog?.models ?? []).map((model) => (
                                 <option key={model.id} value={model.id}>
                                   {model.display_name ?? model.id}
@@ -717,7 +716,11 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                               id="settings-default-embed-model"
                               required
                               className="mt-2 h-10 w-full min-w-0 rounded-md border bg-background px-3 text-sm"
-                              value={provider.form.default_embed_model}
+                              value={
+                                availableModels.some((model) => model.id === provider.form.default_embed_model)
+                                  ? provider.form.default_embed_model
+                                  : ""
+                              }
                               onChange={(event) => provider.setField("default_embed_model", event.target.value)}
                               disabled={
                                 provider.settings.managed_by_env.default_embed_model ||
@@ -728,13 +731,9 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                                 !discoveryLive
                               }
                             >
-                              {!(catalog?.available_models ?? []).some(
-                                (model) => model.id === provider.form.default_embed_model,
-                              ) && (
-                                <option value={provider.form.default_embed_model}>
-                                  {modelName(provider.form.default_embed_model)} (current; not advertised)
-                                </option>
-                              )}
+                              <option value="" disabled>
+                                Choose an embedding model
+                              </option>
                               {(catalog?.available_models ?? []).map((model) => (
                                 <option key={model.id} value={model.id}>
                                   {model.display_name ?? model.id}
@@ -1294,7 +1293,11 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                       <Label htmlFor="settings-personal-default-model">Personal default model</Label>
                       <select
                         id="settings-personal-default-model"
-                        value={personalDefault ?? ""}
+                        value={
+                          personalModelOptions.some((option) => option.id === personalDefault)
+                            ? (personalDefault ?? "")
+                            : ""
+                        }
                         disabled={personalDefaultSaving}
                         aria-busy={personalDefaultSaving}
                         onChange={(event) =>
@@ -1303,10 +1306,6 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                         className="mt-2 h-9 w-full rounded-md border bg-background px-2 text-sm"
                       >
                         <option value="">Workspace default</option>
-                        {personalDefault !== null &&
-                          !personalModelOptions.some((option) => option.id === personalDefault) && (
-                            <option value={personalDefault}>{personalDefault}</option>
-                          )}
                         {personalModelOptions.map((option) => (
                           <option key={option.id} value={option.id}>
                             {option.display_name ?? option.id}

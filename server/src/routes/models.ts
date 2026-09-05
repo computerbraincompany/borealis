@@ -1,5 +1,5 @@
 import type { FastifyInstance, FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
-import { resolveLlmModelId } from "../llmAliases.js";
+import { resolveLlmModelId, sameLlmModel } from "../llmAliases.js";
 import { getAccountId, requireAuth } from "../auth.js";
 import { endpointHost, isRemoteProvider } from "../egressPolicy.js";
 import { recordEgressEvent, type EgressEventKind } from "../egressAudit.js";
@@ -74,8 +74,14 @@ export function createModelRoutes(options: ModelRoutesOptions): FastifyPluginAsy
             ...model,
             display_name: resolveLlmModelId(model.id),
           })),
-          default_model: runtime.settings.chatModel,
-          account_default_model: accountDefaultModel,
+          default_model: result.models.some((model) => sameLlmModel(model.id, runtime.settings.chatModel))
+            ? runtime.settings.chatModel
+            : "",
+          account_default_model: result.models.some(
+            (model) => accountDefaultModel !== null && sameLlmModel(model.id, accountDefaultModel)
+          )
+            ? accountDefaultModel
+            : null,
           discovery: result.discovery,
         });
       }

@@ -207,12 +207,13 @@ export const sourceScopeBodySchema = {
 
 export const chatCreateBodySchema = {
   type: "object",
-  propertyNames: { enum: ["title", "agent_id", "source_mode", "source_ids"] },
+  propertyNames: { enum: ["title", "agent_id", "source_mode", "source_ids", "model"] },
   description:
     "Optional title and agent binding plus the exact source-scope union. Omitting scope preserves legacy all-source behavior.",
   properties: {
     // Runtime validation owns type checking so Fastify's coercion cannot turn
     // a numeric title into a valid string before the exact-shape parser sees it.
+    model: { minLength: 1, maxLength: CHAT_MODEL_MAX_CHARS, pattern: "\\S" },
     title: { minLength: 1, maxLength: CHAT_TITLE_MAX_CHARS, pattern: "\\S" },
     agent_id: { type: "string", pattern: UUID_PATTERN },
     source_mode: { type: "string", enum: ["all", "selected"] },

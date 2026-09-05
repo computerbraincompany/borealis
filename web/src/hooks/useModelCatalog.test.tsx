@@ -31,7 +31,7 @@ describe("useModelCatalog", () => {
     expect(list).toHaveBeenCalledWith(false);
   });
 
-  it("forces endpoint refresh and retains the last catalog when refresh fails", async () => {
+  it("clears the old catalog before a provider refresh and keeps it cleared on failure", async () => {
     const list = vi
       .spyOn(modelsApi, "list")
       .mockResolvedValueOnce(liveCatalog)
@@ -44,7 +44,7 @@ describe("useModelCatalog", () => {
     });
 
     expect(list).toHaveBeenLastCalledWith(true);
-    expect(result.current.catalog).toEqual(liveCatalog);
+    expect(result.current.catalog).toBeNull();
     expect(result.current.error).toBe("The model catalog is temporarily unavailable.");
     expect(result.current.loading).toBe(false);
   });

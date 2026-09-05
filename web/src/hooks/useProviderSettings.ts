@@ -154,7 +154,7 @@ export function validateProviderSettings(form: ProviderSettingsForm): string | n
 
   const baseUrlError = validateUrl(baseUrl, "Chat endpoint URL");
   if (baseUrlError) return baseUrlError;
-  if (!chatModel || chatModel.length > 256) return "Default chat model must contain 1 to 256 characters.";
+  if (chatModel.length > 256) return "Default chat model must contain at most 256 characters.";
   if (!embedModel || embedModel.length > 256) return "Embedding model must contain 1 to 256 characters.";
   if (chatModel === embedModel) return "Chat and embedding models must be different.";
   if (!Number.isSafeInteger(embeddingDimension) || embeddingDimension < 1 || embeddingDimension > 16_384) {
@@ -304,6 +304,7 @@ export function useProviderSettings(scope: ProviderSettingsScope = "all") {
           const saved = formFromSettings(next);
           const merged = { ...current };
           for (const field of SCOPE_FIELDS[scope]) merged[field] = saved[field];
+          if (next.llm_base_url !== settings.llm_base_url) merged.default_chat_model = saved.default_chat_model;
           return merged;
         });
         setQualification(null);

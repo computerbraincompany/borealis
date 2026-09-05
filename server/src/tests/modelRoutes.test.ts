@@ -166,6 +166,28 @@ describe("model catalog route", () => {
     });
   });
 
+  it("requires a model after a provider switch and accepts an explicit composer choice", async () => {
+    const app = await buildApp();
+    await runtimeSettingsStore().patch({ llmBaseUrl: "http://dgx01.local:4000" });
+    const missing = await app.inject({
+      method: "POST",
+      url: "/api/chats",
+      headers: authHeader,
+      payload: { source_mode: "selected", source_ids: [] },
+    });
+    expect(missing.statusCode).toBe(409);
+    expect(missing.json().code).toBe("CHAT_MODEL_REQUIRED");
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/chats",
+      headers: authHeader,
+      payload: { model: "GLM-5.3-Flash-EXL3", source_mode: "selected", source_ids: [] },
+    });
+    expect(created.statusCode).toBe(200);
+    expect(created.json().model).toBe("GLM-5.3-Flash-EXL3");
+    expect(created.json().source_mode).toBe("selected");
+  });
+
   it("exposes the account default model alongside the workspace default", async () => {
     const app = await buildApp();
     const client = await getLlmClient();
@@ -183,7 +205,7 @@ describe("model catalog route", () => {
     const catalog = await app.inject({ method: "GET", url: "/api/models?refresh=1", headers: authHeader });
     expect(catalog.statusCode).toBe(200);
     expect(catalog.json()).toMatchObject({
-      default_model: "qwen-chat",
+      default_model: "",
       account_default_model: "personal-default",
     });
 
@@ -191,7 +213,7 @@ describe("model catalog route", () => {
       authorization: `Bearer ${signToken({ userId: otherAccountId, email: "other@example.test" })}`,
     };
     const otherCatalog = await app.inject({ method: "GET", url: "/api/models?refresh=1", headers: otherHeader });
-    expect(otherCatalog.json()).toMatchObject({ default_model: "qwen-chat", account_default_model: null });
+    expect(otherCatalog.json()).toMatchObject({ default_model: "", account_default_model: null });
   });
 
   it("publishes protected API security with explicit public auth and health overrides", async () => {

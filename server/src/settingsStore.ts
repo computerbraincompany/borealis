@@ -356,7 +356,11 @@ function applyPatch(current: EffectiveLlmSettings, patch: LlmSettingsPatch): Eff
         : patch.lmStudioBaseUrl === null
           ? undefined
           : patch.lmStudioBaseUrl,
-    chatModel: patch.chatModel ?? current.chatModel,
+    chatModel:
+      patch.chatModel ??
+      (patch.llmBaseUrl !== undefined && parseEndpointOrigin(patch.llmBaseUrl, "llm_base_url") !== current.llmBaseUrl
+        ? ""
+        : current.chatModel),
     embedModel: patch.embedModel ?? current.embedModel,
     embeddingDimension: patch.embeddingDimension ?? current.embeddingDimension,
   });
@@ -367,7 +371,7 @@ function validateCompleteSettings(input: EffectiveLlmSettings): EffectiveLlmSett
   const apiKey = input.apiKey === undefined ? undefined : validateApiKey(input.apiKey);
   const lmStudioBaseUrl =
     input.lmStudioBaseUrl === undefined ? undefined : parseEndpointOrigin(input.lmStudioBaseUrl, "lm_studio_base_url");
-  const chatModel = validateModelId(input.chatModel, "default_chat_model");
+  const chatModel = input.chatModel === "" ? "" : validateModelId(input.chatModel, "default_chat_model");
   const embedModel = validateModelId(input.embedModel, "default_embed_model");
   const embeddingDimension = validateEmbeddingDimension(input.embeddingDimension, "embedding_dimension");
   if (sameLlmModel(chatModel, embedModel)) throw new SettingsValidationError("default_embed_model");

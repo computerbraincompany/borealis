@@ -59,7 +59,13 @@ export async function chatRoutes(app: FastifyInstance): Promise<void> {
       schema: { tags: ["chats"], summary: "Create a chat", body: chatCreateBodySchema },
     },
     async (req, reply) => {
-      let parsed: { title: string; titleIsManual: boolean; scope: SourceScopeInput; agentId: string | null };
+      let parsed: {
+        title: string;
+        titleIsManual: boolean;
+        scope: SourceScopeInput;
+        agentId: string | null;
+        model: string | null;
+      };
       try {
         parsed = parseChatCreateBody(req.body);
       } catch (error) {
@@ -71,11 +77,16 @@ export async function chatRoutes(app: FastifyInstance): Promise<void> {
           getRuntimeSettings(),
           storageRuntime().chats.getDefaultChatModel(accountId),
         ]);
+        const model = parsed.model ?? accountDefaultModel ?? runtime.settings.chatModel;
+        if (!model)
+          return reply
+            .code(409)
+            .send({ error: "Choose a chat model before creating a conversation.", code: "CHAT_MODEL_REQUIRED" });
         const chat = await storageRuntime().chats.createChat({
           accountId,
           title: parsed.title,
           titleIsManual: parsed.titleIsManual,
-          model: accountDefaultModel ?? runtime.settings.chatModel,
+          model,
           sourceScope: parsed.scope,
           agentId: parsed.agentId,
         });
@@ -445,11 +456,12 @@ function parseChatCreateBody(body: unknown): {
   titleIsManual: boolean;
   scope: SourceScopeInput;
   agentId: string | null;
+  model: string | null;
 } {
   const value = body ?? {};
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new SourceScopeError(400, "invalid chat body");
   const record = value as Record<string, unknown>;
-  const allowed = new Set(["title", "source_mode", "source_ids", "agent_id"]);
+  const allowed = new Set(["title", "source_mode", "source_ids", "agent_id", "model"]);
   if (Object.keys(record).some((key) => !allowed.has(key))) throw new SourceScopeError(400, "invalid chat body");
   const titleIsManual = Object.prototype.hasOwnProperty.call(record, "title");
   const title = titleIsManual ? parseChatTitle(record.title) : "New chat";
@@ -474,7 +486,13 @@ function parseChatCreateBody(body: unknown): {
     }
     agentId = raw.toLowerCase();
   }
-  return { title, titleIsManual, scope, agentId };
+  let model: string | null = null;
+  if (Object.prototype.hasOwnProperty.call(record, "model")) {
+    if (typeof record.model !== "string" || !record.model.trim() || record.model.trim().length > CHAT_MODEL_MAX_CHARS)
+      throw new SourceScopeError(400, "invalid chat model");
+    model = record.model.trim();
+  }
+  return { title, titleIsManual, scope, agentId, model };
 }
 
 function parseChatTitle(value: unknown): string {

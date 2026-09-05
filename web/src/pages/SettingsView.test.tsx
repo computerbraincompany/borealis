@@ -608,7 +608,11 @@ describe("SettingsView", () => {
 
   it("saves only the current panel and preserves an embedding draft", async () => {
     mocks.settingsGet.mockResolvedValue(providerSettings);
-    mocks.settingsUpdate.mockImplementation(async (patch) => ({ ...providerSettings, ...patch }));
+    mocks.settingsUpdate.mockImplementation(async (patch) => ({
+      ...providerSettings,
+      ...patch,
+      default_chat_model: patch.llm_base_url ? "" : (patch.default_chat_model ?? providerSettings.default_chat_model),
+    }));
     render(<SettingsView />);
     selectSettingsSection("Embeddings");
     fireEvent.change(await screen.findByLabelText("Embedding model"), { target: { value: "embed-v2" } });
@@ -623,7 +627,8 @@ describe("SettingsView", () => {
       expect.any(AbortSignal),
     );
     selectSettingsSection("Chat models");
-    expect(screen.getByLabelText("Default chat model")).toHaveValue("chat-v2");
+    expect(screen.getByLabelText("Default chat model")).toHaveValue("");
+    fireEvent.change(screen.getByLabelText("Default chat model"), { target: { value: "chat-v2" } });
     expect(screen.getByRole("button", { name: "Save changes" })).toBeEnabled();
     fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
     await screen.findByRole("status");

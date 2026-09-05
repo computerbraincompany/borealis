@@ -997,10 +997,11 @@ export const chatsApi = {
     scope: SourceScopeInput = { source_mode: "selected", source_ids: [] },
     agentId?: string,
     signal?: AbortSignal,
+    model?: string,
   ) =>
     api<Chat>("/api/chats", {
       method: "POST",
-      body: JSON.stringify({ title, ...scope, ...(agentId ? { agent_id: agentId } : {}) }),
+      body: JSON.stringify({ title, ...(model ? { model } : {}), ...scope, ...(agentId ? { agent_id: agentId } : {}) }),
       signal,
     }),
   get: (id: string, page?: { beforeMessageId?: string; limit?: number }) => {

@@ -492,8 +492,10 @@ informational chrome state, not an authorization surface.
 
 `account_default_model` is the requesting account's personal default chat model
 (see Preferences below) or `null`. `POST /api/chats` stamps that value when it
-is non-null, otherwise the workspace `default_model`. The web composer applies
-an explicit selection as a per-chat patch before accepting the first turn.
+is non-null, otherwise the workspace `default_model`; an explicit `model` in
+the create body takes precedence. An unset default is an empty string, and a
+create without any model returns `409 CHAT_MODEL_REQUIRED`. Catalog responses
+expose defaults only when advertised by the current provider.
 
 Entries contain `id`, `display_name`, and optional `owned_by`, and are deduplicated
 and sorted. The chat `models` list excludes the configured embedding identity. Known physical model IDs map
@@ -510,7 +512,7 @@ to appear in the current catalog.
 | Endpoint                            | Request and response                                                                                                                           |
 | ----------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
 | `GET /api/chats`                    | Paginated `{items,next_cursor}` of `{id,title,model,source_mode,agent,created_at,updated_at}`, ordered by latest activity, then ID.            |
-| `POST /api/chats`                   | Optional `title` and source-scope union; returns the chat summary. Uses the account's default chat model when set, else the workspace default. |
+| `POST /api/chats`                   | Optional `title`, `model`, and source-scope union; returns the chat summary. Uses the account's default chat model when set, else the workspace default. |
 | `GET /api/chats/:id`                | Summary, sources, bounded history page, and active run; accepts `limit` and `before_message_id`.                                               |
 | `PATCH /api/chats/:id`              | Exactly one of `{"title":"..."}` or `{"model":"..."}`; returns the updated summary.                                                            |
 | `PUT /api/chats/:id/sources`        | Source-scope union; returns `{source_mode,sources}`.                                                                                           |
@@ -587,6 +589,12 @@ configuration:
 Settings are shared by the running Borealis instance, not scoped to the signed-in
 account. Any authenticated account can read or update them. The stored API key
 is never returned. `PATCH /api/settings` accepts any subset of
+Changing the provider origin clears the workspace chat default unless the same
+API request explicitly supplies a replacement; environment overrides still win.
+Settings → Provider clears the previous chat draft after saving a new origin.
+Choose an advertised model afterward. Existing chat models and the embedding
+index identity remain unchanged. `default_chat_model: ""` explicitly unsets it.
+
 `llm_base_url`, `llm_api_key`, `lm_studio_base_url`, `default_chat_model`,
 `default_embed_model`, and `embedding_dimension` (integer 1–16,384). Omitting
 `llm_api_key` preserves it; sending `null` clears it. `lm_studio_base_url: null`

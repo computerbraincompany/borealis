@@ -270,6 +270,19 @@ describe("persisted LLM settings", () => {
     await expect(store.read()).resolves.toMatchObject({ fileStatus: "invalid", settings: DEFAULT_LLM_SETTINGS });
   });
 
+  it("clears the default on provider changes and persists an unset default across reload", async () => {
+    const filename = await temporarySettingsPath();
+    const store = createSettingsStore({ path: filename, env: {} });
+    await store.patch({ chatModel: "old-model" });
+    const next = await store.patch({ llmBaseUrl: "http://dgx01.local:4000/" });
+    expect(next.settings.chatModel).toBe("");
+    expect((await createSettingsStore({ path: filename, env: {} }).read()).settings.chatModel).toBe("");
+    await store.patch({ chatModel: "GLM-5.3-Flash-EXL3" });
+    expect((await store.patch({ llmBaseUrl: "http://dgx01.local:4000/" })).settings.chatModel).toBe(
+      "GLM-5.3-Flash-EXL3"
+    );
+  });
+
   it("accepts local-network mDNS provider origins while rejecting public HTTP", async () => {
     const store = createSettingsStore({ path: await temporarySettingsPath(), env: {} });
     await store.patch({ llmBaseUrl: "http://dgx01.local:4000/" });

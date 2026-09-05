@@ -657,6 +657,8 @@ describe("ChatView orchestration", () => {
         source_ids: [source.id],
       },
       undefined,
+      undefined,
+      selectedModel,
     );
     expect(chatsApi.updateModel).toHaveBeenCalledOnce();
     expect(chatsApi.updateModel).toHaveBeenCalledWith(created.id, selectedModel);
@@ -779,7 +781,13 @@ describe("ChatView orchestration", () => {
       ),
     );
     expect(chatsApi.create).toHaveBeenCalledTimes(1);
-    expect(chatsApi.create).toHaveBeenCalledWith(undefined, { source_mode: "selected", source_ids: [] }, undefined);
+    expect(chatsApi.create).toHaveBeenCalledWith(
+      undefined,
+      { source_mode: "selected", source_ids: [] },
+      undefined,
+      undefined,
+      "qwen-chat",
+    );
     expect(chatsApi.updateModel).not.toHaveBeenCalled();
     expect(chatsApi.get).toHaveBeenCalledTimes(1);
     expect(window.location.hash).toBe("#/chat/chat-new");

@@ -27,7 +27,7 @@ export const settingsDraftProperties = {
   lm_studio_base_url: {
     anyOf: [{ type: "string", minLength: 1, maxLength: MAX_ENDPOINT_CHARS }, { type: "null" }],
   },
-  default_chat_model: { type: "string", minLength: 1, maxLength: MODEL_ID_MAX_CHARS },
+  default_chat_model: { type: "string", minLength: 0, maxLength: MODEL_ID_MAX_CHARS },
   default_embed_model: { type: "string", minLength: 1, maxLength: MODEL_ID_MAX_CHARS },
   embedding_dimension: { type: "integer", minimum: 1, maximum: 16_384 },
 } as const;

@@ -595,3 +595,7 @@ See [AGENTS.md](AGENTS.md) for implementation guidance and
 
 Licensed under the [MIT License](LICENSE). Built with Fastify, React, Electron,
 SQLite, LanceDB, DuckDB, ExcelJS, Playwright, and ECharts.
+
+Changing the model provider in Settings clears the workspace chat default. Choose
+a model advertised by the new provider in Chat models or the composer. Existing
+chats retain their saved model.

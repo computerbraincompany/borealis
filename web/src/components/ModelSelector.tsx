@@ -40,7 +40,7 @@ export function ModelSelector({
 }: ModelSelectorProps) {
   const advertised = models.some((option) => option.id === model);
   const savedOption = models.find((option) => option.id === model) ?? { id: model };
-  const options = advertised ? models : [savedOption, ...models];
+  const options = models;
   const unavailable = discovery === "unavailable";
   const unadvertised = discovery === "live" && !advertised;
   const disabled = pending || streaming;
@@ -67,14 +67,14 @@ export function ModelSelector({
             size="sm"
             disabled={disabled}
             className="h-8 max-w-full justify-start px-2.5"
-            aria-label={`Chat model: ${savedOption.display_name ?? model}`}
-            title={savedOption.display_name ?? model}
+            aria-label={`Chat model: ${savedOption.display_name ?? (model || "Choose a model")}`}
+            title={savedOption.display_name ?? (model || "Choose a model")}
           >
             <span className="shrink-0 text-[10px] font-medium uppercase tracking-[0.12em] text-muted-foreground">
               Model
             </span>
             <span className="min-w-0 truncate font-mono text-xs text-foreground">
-              {savedOption.display_name ?? model}
+              {savedOption.display_name ?? (model || "Choose a model")}
             </span>
             {status && <span className="hidden shrink-0 text-[10px] text-muted-foreground sm:inline">· {status}</span>}
             {pending ? (

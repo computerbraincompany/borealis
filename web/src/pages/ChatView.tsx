@@ -1030,7 +1030,10 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
     firstSubmitTargetChatIdRef.current = null;
     firstSubmitSetupCompleteRef.current = false;
     const selectedModel =
-      newChatModelSelection ?? modelCatalog?.account_default_model ?? modelCatalog?.default_model ?? null;
+      (modelCatalog?.models.some((option) => option.id === newChatModelSelection) ? newChatModelSelection : null) ??
+      modelCatalog?.account_default_model ??
+      modelCatalog?.default_model ??
+      null;
     const selectedAgentId = newChatAgentSelection;
     const selectedSourceScope: SourceScopeInput =
       newChatSourceScope.source_mode === "all"
@@ -1040,7 +1043,10 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
 
     try {
       await createChat(
-        () => chatsApi.create(undefined, selectedSourceScope, selectedAgentId ?? undefined),
+        () =>
+          selectedModel
+            ? chatsApi.create(undefined, selectedSourceScope, selectedAgentId ?? undefined, undefined, selectedModel)
+            : chatsApi.create(undefined, selectedSourceScope, selectedAgentId ?? undefined),
         async (created) => {
           createdChatId = created.id;
           chatListRequestRef.current += 1;
@@ -1133,7 +1139,7 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
   const modelDiscovery = modelCatalog?.discovery ?? (modelCatalogError ? "unavailable" : null);
   const modelOptions = modelCatalog?.models ?? [];
   const newChatModel =
-    newChatModelSelection ??
+    (modelCatalog?.models.some((option) => option.id === newChatModelSelection) ? newChatModelSelection : null) ??
     modelCatalog?.account_default_model ??
     modelCatalog?.default_model ??
     "Server default model";
