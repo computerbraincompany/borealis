@@ -40,6 +40,29 @@ export interface RunningBorealisServer {
   close(): Promise<void>;
 }
 
+/**
+ * Production shell CSP applied to every HTML shell response (direct static
+ * HTML and the SPA fallback alike, from this one constant so they cannot
+ * drift). It keeps every subresource on the exact Fastify origin, allows only
+ * the inline theme bootstrap and inline styles the shell already uses, chart
+ * `data:` images, and the sandboxed `srcDoc` report preview under `about:`.
+ * Same-origin HTTP frames stay denied: an HTTP frame is still a network
+ * frame. Report artifacts carry their own stricter policy and are unaffected.
+ */
+export const STATIC_UI_CSP = [
+  "default-src 'self'",
+  "base-uri 'none'",
+  "object-src 'none'",
+  "frame-ancestors 'none'",
+  "form-action 'self'",
+  "script-src 'self' 'unsafe-inline'",
+  "style-src 'self' 'unsafe-inline'",
+  "img-src 'self' data:",
+  "font-src 'self'",
+  "connect-src 'self'",
+  "frame-src about:",
+].join("; ");
+
 async function canonicalStaticDirectory(directory: string): Promise<string> {
   const resolved = await fsPromises.realpath(path.resolve(directory));
   const stat = await fsPromises.stat(path.join(resolved, "index.html"));
@@ -55,8 +78,10 @@ async function registerStaticUi(app: FastifyInstance, directory: string): Promis
     serveDotFiles: false,
     dotfiles: "ignore",
     setHeaders(response, filename) {
-      if (path.extname(filename) === ".html") response.header("Cache-Control", "no-store");
-      else if (filename.startsWith(path.join(root, "assets") + path.sep)) {
+      if (path.extname(filename) === ".html") {
+        response.header("Cache-Control", "no-store");
+        response.header("Content-Security-Policy", STATIC_UI_CSP);
+      } else if (filename.startsWith(path.join(root, "assets") + path.sep)) {
         response.header("Cache-Control", "public, max-age=31536000, immutable");
       }
     },
@@ -80,7 +105,10 @@ function staticUiNotFound(request: FastifyRequest, reply: FastifyReply): unknown
     !requestPath.startsWith("/api/") &&
     request.headers.accept?.includes("text/html")
   ) {
-    return reply.header("Cache-Control", "no-store").sendFile("index.html");
+    return reply
+      .header("Cache-Control", "no-store")
+      .header("Content-Security-Policy", STATIC_UI_CSP)
+      .sendFile("index.html");
   }
   const requestId = String(reply.getHeader("X-Request-ID") || request.id);
   return reply.code(404).send({ error: "not found", request_id: requestId });

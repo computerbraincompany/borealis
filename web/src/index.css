@@ -140,7 +140,7 @@
   line-height: 1.6;
 }
 .markdown-body code {
-  font-family: "JetBrains Mono", ui-monospace, Menlo, monospace;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
 .markdown-body :not(pre) > code {
   background: hsl(var(--code-background));

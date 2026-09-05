@@ -37,13 +37,42 @@ vi.mock("../routes.js", () => ({
   },
 }));
 
-import { buildBorealisApp, isLoopbackDesktopHost, startBorealisServer } from "../serverApp.js";
+import { buildBorealisApp, isLoopbackDesktopHost, startBorealisServer, STATIC_UI_CSP } from "../serverApp.js";
 import { DEFAULT_BODY_LIMIT_BYTES } from "../routes/bodyLimits.js";
 import { config } from "../config.js";
 import { acquireWorkspaceLock, WorkspaceLockedError } from "../workspaceLock.js";
 
 const apps: FastifyInstance[] = [];
 const directories: string[] = [];
+
+/** Exact directive-token map for the shell CSP response header. */
+function cspDirectives(header: unknown): Map<string, string[]> {
+  expect(typeof header).toBe("string");
+  const directives = new Map<string, string[]>();
+  for (const part of String(header).split(";")) {
+    const tokens = part.trim().split(/\s+/).filter(Boolean);
+    if (tokens.length > 0) directives.set(tokens[0]!.toLowerCase(), tokens.slice(1));
+  }
+  return directives;
+}
+
+function expectShellCsp(header: unknown): void {
+  expect(header).toBe(STATIC_UI_CSP);
+  const directives = cspDirectives(header);
+  expect(directives.get("default-src")).toEqual(["'self'"]);
+  expect(directives.get("base-uri")).toEqual(["'none'"]);
+  expect(directives.get("object-src")).toEqual(["'none'"]);
+  expect(directives.get("frame-ancestors")).toEqual(["'none'"]);
+  expect(directives.get("form-action")).toEqual(["'self'"]);
+  expect(directives.get("script-src")).toEqual(["'self'", "'unsafe-inline'"]);
+  expect(directives.get("style-src")).toEqual(["'self'", "'unsafe-inline'"]);
+  expect(directives.get("img-src")).toEqual(["'self'", "data:"]);
+  expect(directives.get("font-src")).toEqual(["'self'"]);
+  expect(directives.get("connect-src")).toEqual(["'self'"]);
+  // Load-bearing: the sandboxed srcDoc preview lives under `about:` and an
+  // ordinary same-origin HTTP frame must stay denied.
+  expect(directives.get("frame-src")).toEqual(["about:"]);
+}
 
 async function staticFixture(): Promise<string> {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "borealis-static-test-"));
@@ -52,6 +81,25 @@ async function staticFixture(): Promise<string> {
   await fs.writeFile(path.join(directory, "index.html"), "<!doctype html><title>Borealis</title><main>shell</main>");
   await fs.writeFile(path.join(directory, "assets", "app-abc123.js"), "globalThis.loaded=true;");
   await fs.writeFile(path.join(directory, ".secret"), "never serve this");
+  return directory;
+}
+
+async function frameProbeFixture(): Promise<string> {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "borealis-frame-test-"));
+  directories.push(directory);
+  await fs.writeFile(
+    path.join(directory, "index.html"),
+    [
+      "<!doctype html><title>Frame probe</title>",
+      '<iframe name="doc-frame" sandbox="allow-scripts"',
+      '  srcdoc="<p id=&quot;doc-marker&quot;>doc-frame-loaded</p>"></iframe>',
+      '<iframe name="url-frame" src="/marker-probe.html"></iframe>',
+    ].join("\n")
+  );
+  await fs.writeFile(
+    path.join(directory, "marker-probe.html"),
+    '<!doctype html><title>probe</title><p id="url-marker">url-frame-loaded</p>'
+  );
   return directory;
 }
 
@@ -102,11 +150,14 @@ describe("Fastify same-origin static host", () => {
     expect(shell.statusCode).toBe(200);
     expect(shell.body).toContain("<main>shell</main>");
     expect(shell.headers["cache-control"]).toBe("no-store");
+    expectShellCsp(shell.headers["content-security-policy"]);
 
     const asset = await app.inject({ method: "GET", url: "/assets/app-abc123.js" });
     expect(asset.statusCode).toBe(200);
     expect(asset.headers["cache-control"]).toBe("public, max-age=31536000, immutable");
     expect(asset.body).toContain("globalThis.loaded=true");
+    // The shell CSP is an HTML policy; fingerprinted assets must still load.
+    expect(asset.headers["content-security-policy"]).toBeUndefined();
 
     for (const url of ["/.secret", "/%2esecret"]) {
       const dotFile = await app.inject({ method: "GET", url, headers: { accept: "text/html" } });
@@ -128,6 +179,8 @@ describe("Fastify same-origin static host", () => {
     expect(navigation.statusCode).toBe(200);
     expect(navigation.body).toContain("<main>shell</main>");
     expect(navigation.headers["cache-control"]).toBe("no-store");
+    // The SPA fallback must carry the same shell CSP as the direct response.
+    expectShellCsp(navigation.headers["content-security-policy"]);
 
     const head = await app.inject({ method: "HEAD", url: "/sources", headers: { accept: "text/html" } });
     expect(head.statusCode).toBe(200);
@@ -136,6 +189,9 @@ describe("Fastify same-origin static host", () => {
     const nonHtml = await app.inject({ method: "GET", url: "/missing.json", headers: { accept: "application/json" } });
     expect(nonHtml.statusCode).toBe(404);
     expect(nonHtml.json()).toMatchObject({ error: "not found", request_id: expect.any(String) });
+    // JSON error envelopes never become HTML and carry no shell CSP.
+    expect(nonHtml.headers["content-security-policy"]).toBeUndefined();
+    expect(nonHtml.headers["content-type"]).toContain("application/json");
   });
 
   it("never lets the SPA fallback absorb either the exact or nested API namespace", async () => {
@@ -146,6 +202,7 @@ describe("Fastify same-origin static host", () => {
       const response = await app.inject({ method: "GET", url, headers: { accept: "text/html" } });
       expect(response.statusCode).toBe(404);
       expect(response.json()).toMatchObject({ error: "not found", request_id: expect.any(String) });
+      expect(response.headers["content-security-policy"]).toBeUndefined();
     }
   });
 
@@ -197,6 +254,57 @@ describe("Fastify same-origin static host", () => {
     });
     expect(denied.headers["access-control-allow-origin"]).toBeUndefined();
   });
+});
+
+describe("shell CSP frame behavior in a real browser", () => {
+  it("renders the sandboxed srcDoc preview while blocking a same-origin HTTP frame", async () => {
+    const { chromium } = await import("playwright");
+    const requestedUrls: string[] = [];
+    let browser: import("playwright").Browser | undefined;
+    let app: FastifyInstance | undefined;
+    try {
+      app = await buildBorealisApp({ logger: false, staticWebDir: await frameProbeFixture() });
+      apps.push(app);
+      app.addHook("onRequest", (request, _reply, done) => {
+        requestedUrls.push(request.url.split("?")[0] ?? request.url);
+        done();
+      });
+      await app.listen({ host: "127.0.0.1", port: 0 });
+      const address = app.server.address();
+      if (!address || typeof address === "string") throw new Error("server did not bind a TCP socket");
+      const origin = `http://127.0.0.1:${address.port}`;
+
+      browser = await chromium.launch({ headless: true });
+      const page = await browser.newPage();
+      const outboundRequests: string[] = [];
+      page.on("request", (request) => outboundRequests.push(request.url()));
+      await page.goto(`${origin}/`, { waitUntil: "load" });
+
+      // Chromium permits the sandboxed srcDoc iframe under `frame-src about:`.
+      const docMarker = page.frameLocator('iframe[name="doc-frame"]').locator("#doc-marker");
+      await docMarker.waitFor({ state: "visible", timeout: 10_000 });
+      expect(((await docMarker.textContent()) ?? "").trim()).toBe("doc-frame-loaded");
+
+      // The same-origin HTTP frame never loads and its resource is never requested.
+      expect(requestedUrls).toContain("/");
+      expect(requestedUrls.some((url) => url.includes("marker-probe"))).toBe(false);
+      // A CSP-blocked frame stays on `about:blank` or Chromium's blocked
+      // navigation error page; it never reaches a shell-origin document.
+      const urlFrame = page.frames().find((frame) => frame.name() === "url-frame");
+      const blockedUrl = urlFrame?.url();
+      expect(
+        blockedUrl === undefined || blockedUrl === "about:blank" || blockedUrl === "chrome-error://chromewebdata/"
+      ).toBe(true);
+
+      // The browser made no request outside the exact loopback shell origin.
+      for (const url of outboundRequests) {
+        expect(url.startsWith(`${origin}/`)).toBe(true);
+      }
+    } finally {
+      await browser?.close().catch(() => {});
+      await app?.close().catch(() => {});
+    }
+  }, 60_000);
 });
 
 describe("desktop listener guard", () => {
