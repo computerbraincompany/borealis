@@ -719,6 +719,18 @@ describe("SettingsView", () => {
     expect(mocks.refresh).not.toHaveBeenCalled();
   });
 
+  it("tests a local-network HTTP provider without a loopback-only validation error", async () => {
+    mocks.settingsGet.mockResolvedValue(providerSettings);
+    render(<SettingsView />);
+    selectSettingsSection("Provider");
+    fireEvent.change(await screen.findByLabelText("Chat endpoint URL"), {
+      target: { value: "http://dgx01.local:4000/" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Test connection" }));
+    await waitFor(() => expect(mocks.settingsTest).toHaveBeenCalled());
+    expect(mocks.settingsTest.mock.calls[0][0]).toMatchObject({ llm_base_url: "http://dgx01.local:4000/" });
+  });
+
   it("aborts every in-flight provider action when Settings unmounts", async () => {
     const pending = () => new Promise<never>(() => undefined);
 

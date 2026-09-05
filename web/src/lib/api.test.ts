@@ -390,7 +390,10 @@ describe("typed API contracts", () => {
 
   it("does not render an unvalidated request reference", () => {
     const failure = new ApiError(500, "internal server error", undefined, "<script>alert(1)</script>");
-    expect(formatApiError(failure, "fallback")).toBe("internal server error");
+    expect(formatApiError(failure, "fallback")).toBe("fallback");
+    expect(
+      formatApiError(new ApiError(500, "Internal Server Error", undefined, "audit-ref"), "Could not load history."),
+    ).toBe("Could not load history. (reference: audit-ref)");
     expect(formatApiError(new Error("secret provider trace"), "fallback")).toBe("fallback");
   });
 

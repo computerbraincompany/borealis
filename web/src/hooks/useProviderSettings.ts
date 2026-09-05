@@ -112,8 +112,9 @@ function validateUrl(value: string, label: string): string | null {
     return `${label} must be an origin without a path, query, fragment, or credentials.`;
   }
 
-  const loopback = isLoopbackHostname(parsed.hostname);
-  if (!loopback && parsed.protocol !== "https:") return "Non-loopback endpoints must use HTTPS.";
+  const local = isLoopbackHostname(parsed.hostname) || parsed.hostname.toLowerCase().endsWith(".local");
+  if (!local && parsed.protocol !== "https:")
+    return "Use HTTPS for public providers, or HTTP with localhost or a .local hostname.";
   return null;
 }
 
@@ -130,7 +131,7 @@ function isLoopbackHostname(hostname: string): boolean {
 export function isRemoteModelEndpoint(value: string): boolean {
   try {
     const hostname = new URL(value.trim()).hostname;
-    return !isLoopbackHostname(hostname);
+    return !isLoopbackHostname(hostname) && !hostname.toLowerCase().endsWith(".local");
   } catch {
     return value.trim().length > 0;
   }

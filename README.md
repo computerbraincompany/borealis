@@ -279,7 +279,7 @@ context leave the machine under that provider's data policy. Uploading a source
 can therefore send text for embedding even before it is attached to a chat.
 Source parsing, analytical SQL, the durable stores, and report rendering remain
 local. Remote provider URLs must use HTTPS; plain HTTP is accepted only for
-validated loopback origins.
+validated loopback origins and `.local` hostnames.
 
 ## Browser development
 

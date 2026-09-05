@@ -270,6 +270,20 @@ describe("persisted LLM settings", () => {
     await expect(store.read()).resolves.toMatchObject({ fileStatus: "invalid", settings: DEFAULT_LLM_SETTINGS });
   });
 
+  it("accepts local-network mDNS provider origins while rejecting public HTTP", async () => {
+    const store = createSettingsStore({ path: await temporarySettingsPath(), env: {} });
+    await store.patch({ llmBaseUrl: "http://dgx01.local:4000/" });
+    expect((await store.read()).settings.llmBaseUrl).toBe("http://dgx01.local:4000");
+    for (const llmBaseUrl of [
+      "http://provider.example.com",
+      "http://dgx01.local.example.com",
+      "http://dgx01.local:4000/v1",
+      "http://user:secret@dgx01.local:4000",
+    ]) {
+      await expect(store.patch({ llmBaseUrl })).rejects.toBeInstanceOf(SettingsValidationError);
+    }
+  });
+
   it("validates origins and distinct bounded model IDs without reflecting rejected values", async () => {
     const filename = await temporarySettingsPath();
     const store = createSettingsStore({ path: filename, env: {} });

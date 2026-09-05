@@ -97,7 +97,10 @@ async function errorFromResponse(res: Response): Promise<ApiError> {
 export function formatApiError(error: unknown, fallback: string): string {
   // Only the HTTP boundary's normalized message is safe to reflect. Runtime,
   // provider, and parser exceptions may contain URLs, SQL, paths, or secrets.
-  const message = error instanceof ApiError && error.message.trim() ? error.message.trim().slice(0, 500) : fallback;
+  const raw = error instanceof ApiError ? error.message.trim() : "";
+  const generic =
+    /^(internal server error|bad gateway|service unavailable|gateway timeout|request failed \(\d{3}\))$/i.test(raw);
+  const message = raw && !generic ? raw.slice(0, 500) : fallback;
   const requestId = error instanceof ApiError ? safeRequestId(error.requestId) : undefined;
   return requestId ? `${message} (reference: ${requestId})` : message || fallback;
 }

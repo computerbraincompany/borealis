@@ -597,7 +597,7 @@ plaintext and is replaced atomically with mode `0600`.
 
 Both endpoint fields accept bare HTTP(S) origins only: no credentials, path
 (including `/v1`), query, or fragment. Borealis appends `/v1` itself. HTTP is
-allowed only for loopback origins; other endpoints require HTTPS. An LM Studio
+allowed for loopback origins and `.local` hostnames; other endpoints require HTTPS. An LM Studio
 health origin equivalent to the primary origin is omitted from the effective
 configuration to avoid a duplicate probe.
 

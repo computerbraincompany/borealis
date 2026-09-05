@@ -133,7 +133,7 @@ export function SettingsView({ onClose }: SettingsViewProps) {
   const activePanel = panelCopy[section === "chat" ? "chat" : section === "embeddings" ? "embeddings" : "provider"];
   const panelBusy = provider.action !== null || migration.action !== null;
   const systemHealth = useSystemHealth();
-  const egressAudit = useEgressAudit();
+  const egressAudit = useEgressAudit(50, section === "system");
   const { theme, resolvedTheme, setTheme } = useTheme();
   const user = getUser();
   const desktopWorkspace = hasDesktopBridge();
@@ -431,17 +431,34 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                     health={systemHealth.health}
                     checking={systemHealth.checking}
                     error={systemHealth.error}
-                    onRefresh={() => void systemHealth.refresh()}
+                    onRefresh={() => {
+                      void systemHealth.refresh();
+                      void egressAudit.refresh();
+                    }}
                     embedded
                   />
                 </div>
                 {egressAudit.loadError && (
-                  <p
-                    className="mt-6 rounded-lg border border-destructive/25 bg-destructive/5 px-4 py-2.5 text-xs text-destructive"
-                    role="alert"
-                  >
-                    Egress audit unavailable: {egressAudit.loadError}
-                  </p>
+                  <div className="mt-6 rounded-lg border border-destructive/25 bg-destructive/5 p-4" role="alert">
+                    <p className="text-sm font-medium">Activity history unavailable</p>
+                    <p className="mt-1 text-xs leading-5 text-muted-foreground">{egressAudit.loadError}</p>
+                    <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                      This history is separate from the service health checks above.
+                      {egressAudit.events.length > 0 && " Entries below are from the last successful refresh."} Borealis
+                      will retry automatically while this panel is visible.
+                    </p>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="mt-3"
+                      disabled={egressAudit.loading}
+                      onClick={() => void egressAudit.refresh()}
+                    >
+                      {egressAudit.loading && <LoaderCircle className="animate-spin" />}
+                      {egressAudit.loading ? "Retrying…" : "Retry activity history"}
+                    </Button>
+                  </div>
                 )}
                 {egressAudit.events.length > 0 && (
                   <section
@@ -911,7 +928,7 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                       </div>
 
                       {(section !== "embeddings" || provider.feedback || provider.hasChanges) && (
-                        <div className="flex flex-col gap-3 border-t bg-secondary/20 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+                        <div className="flex flex-col gap-3 border-t bg-secondary/20 px-4 py-3">
                           <div className="min-h-5 text-xs" aria-live="polite">
                             {provider.feedback && (
                               <p
@@ -922,7 +939,7 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                               </p>
                             )}
                           </div>
-                          <div className="flex shrink-0 flex-wrap gap-2">
+                          <div className="flex flex-wrap justify-end gap-2">
                             {section === "provider" && (
                               <Button
                                 type="button"

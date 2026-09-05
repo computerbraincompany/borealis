@@ -388,7 +388,7 @@ Settings persist the OpenAI-compatible endpoint, optional API key, optional
 distinct LM Studio health endpoint, and default chat/embed model IDs. They are
 process-wide, shared by all authenticated accounts. The key is stored as text in
 the mode-`0600` settings file; public responses expose only a configured boolean.
-The local endpoint default is `http://127.0.0.1:1234`; non-loopback endpoints
+The local endpoint default is `http://127.0.0.1:1234`; endpoints other than loopback and `.local` hostnames
 require HTTPS. Endpoints must be bare origins: Borealis appends `/v1`, so paths,
 queries, fragments, and URL credentials are rejected. The optional LM Studio
 endpoint is a health probe only; chat and embeddings use the provider endpoint.

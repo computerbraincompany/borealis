@@ -464,7 +464,9 @@ function parseEndpointOrigin(value: string, field: "llm_base_url" | "lm_studio_b
     endpoint.pathname !== "/" ||
     endpoint.search ||
     endpoint.hash ||
-    (endpoint.protocol === "http:" && !isLoopbackHostname(endpoint.hostname))
+    (endpoint.protocol === "http:" &&
+      !isLoopbackHostname(endpoint.hostname) &&
+      !endpoint.hostname.toLowerCase().endsWith(".local"))
   ) {
     throw new SettingsValidationError(field);
   }
