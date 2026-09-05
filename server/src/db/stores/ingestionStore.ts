@@ -216,6 +216,30 @@ function placeholders(length: number): string {
   return new Array(length).fill("?").join(",");
 }
 
+const STAGING_SNAPSHOT_SQL = `SELECT chunk_id, source_id, account_id, generation, seq, source_name, content, meta
+         FROM ingestion_chunk_staging WHERE source_id=? AND generation=? ORDER BY seq`;
+
+function stagedRowsEqual(left: StagingRow, right: StagingRow): boolean {
+  return (
+    left.chunk_id === right.chunk_id &&
+    left.source_id === right.source_id &&
+    left.account_id === right.account_id &&
+    left.generation === right.generation &&
+    left.seq === right.seq &&
+    left.source_name === right.source_name &&
+    left.content === right.content &&
+    left.meta === right.meta
+  );
+}
+
+function stagedSnapshotsEqual(left: readonly StagingRow[], right: readonly StagingRow[]): boolean {
+  if (left.length !== right.length) return false;
+  for (let index = 0; index < left.length; index += 1) {
+    if (!stagedRowsEqual(left[index]!, right[index]!)) return false;
+  }
+  return true;
+}
+
 function sourceRowInTransaction(tx: SqliteTransaction, accountId: string, sourceId: string): SourceRow | undefined {
   return tx.get<SourceRow>(
     `SELECT id, account_id, name, kind, connector, display_name, file_path, url, mime,
@@ -716,33 +740,38 @@ export class SqliteIngestionStore {
     });
   }
 
+  /**
+   * Promotes one leased generation in three phases: a short immediate
+   * transaction captures the ordered staging snapshot, external vector
+   * verification runs with no SQLite transaction or writer-gate hold, and a
+   * second short immediate transaction revalidates the lease, source, and
+   * every staged row field before promoting the exact verified snapshot.
+   */
   async promoteGeneration(input: PromoteGenerationInput): Promise<{ readonly chunkCount: number }> {
     const generation = positiveGeneration(input.generation);
     const sizeBytes = nonNegativeInteger(input.sizeBytes, "sizeBytes");
-    return this.ledger.withImmediateTransaction(async (tx) => {
+    const snapshot = await this.ledger.withImmediateTransaction((tx) => {
       this.assertLeaseTx(tx, input.accountId, input.sourceId, generation, input.leaseToken);
       const source = sourceRowInTransaction(tx, input.accountId, input.sourceId);
       if (!source) throw new IngestionStoreError("INGESTION_SUPERSEDED", "source ingestion superseded");
-      // Defense in depth for every caller: a durable cleanup owner prevents
-      // the exact location from becoming authoritative at promotion time.
-      if (
-        input.promotedFilePath &&
-        tx.get(
-          `SELECT 1 FROM dataset_cache_cleanup_jobs
-           WHERE account_id=? AND name=? AND location=?`,
-          [input.accountId, source.name, input.promotedFilePath]
-        )
-      ) {
-        throw new IngestionStoreError("INGESTION_SUPERSEDED", "source artifact is reserved for cleanup");
-      }
-      const staged = tx.all<StagingRow>(
-        `SELECT chunk_id, source_id, account_id, generation, seq, source_name, content, meta
-         FROM ingestion_chunk_staging WHERE source_id=? AND generation=? ORDER BY seq`,
-        [input.sourceId, generation]
-      );
+      this.assertPromotableArtifactTx(tx, input, source);
+      const staged = tx.all<StagingRow>(STAGING_SNAPSHOT_SQL, [input.sourceId, generation]);
       if (!staged.length) throw new IngestionStoreError("INGESTION_EMPTY", "ingestion has no staged chunks");
-      if (!(await input.verifyVectors(Object.freeze(staged.map((row) => row.chunk_id))))) {
-        throw new IngestionStoreError("VECTOR_INCOMPLETE", "ingestion vectors are incomplete");
+      return Object.freeze(staged.map((row) => Object.freeze(row)));
+    });
+    if (!(await input.verifyVectors(Object.freeze(snapshot.map((row) => row.chunk_id))))) {
+      throw new IngestionStoreError("VECTOR_INCOMPLETE", "ingestion vectors are incomplete");
+    }
+    return this.ledger.withImmediateTransaction((tx) => {
+      this.assertLeaseTx(tx, input.accountId, input.sourceId, generation, input.leaseToken);
+      const source = sourceRowInTransaction(tx, input.accountId, input.sourceId);
+      if (!source) throw new IngestionStoreError("INGESTION_SUPERSEDED", "source ingestion superseded");
+      this.assertPromotableArtifactTx(tx, input, source);
+      const staged = tx.all<StagingRow>(STAGING_SNAPSHOT_SQL, [input.sourceId, generation]);
+      // Chunk IDs alone are insufficient: stageChunks can rewrite content and
+      // meta while retaining an existing sequence's UUID.
+      if (!stagedSnapshotsEqual(staged, snapshot)) {
+        throw new IngestionStoreError("INGESTION_SUPERSEDED", "source ingestion superseded");
       }
       tx.run("DELETE FROM chunks WHERE source_id=? AND account_id=?", [input.sourceId, input.accountId]);
       tx.run(
@@ -1078,6 +1107,24 @@ export class SqliteIngestionStore {
       [sourceId, accountId, generation, leaseToken]
     );
     if (!row) throw new IngestionStoreError("INGESTION_SUPERSEDED", "source ingestion superseded");
+  }
+
+  /**
+   * Defense in depth for every caller: a durable cleanup owner prevents
+   * the exact location from becoming authoritative at promotion time. Checked
+   * in both promotion transactions so the guard also holds after verification.
+   */
+  private assertPromotableArtifactTx(tx: SqliteTransaction, input: PromoteGenerationInput, source: SourceRow): void {
+    if (
+      input.promotedFilePath &&
+      tx.get(
+        `SELECT 1 FROM dataset_cache_cleanup_jobs
+         WHERE account_id=? AND name=? AND location=?`,
+        [input.accountId, source.name, input.promotedFilePath]
+      )
+    ) {
+      throw new IngestionStoreError("INGESTION_SUPERSEDED", "source artifact is reserved for cleanup");
+    }
   }
 
   private enqueueVectorOperationTx(
