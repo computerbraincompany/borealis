@@ -7,6 +7,7 @@ import { ChatStore } from "./db/stores/chatStore.js";
 import { AgentStore } from "./db/stores/agentStore.js";
 import { ConnectionStore } from "./connections/store.js";
 import { AnalysisStore } from "./db/stores/analysisStore.js";
+import { DocumentStore } from "./db/stores/documentStore.js";
 import { AutomationStore } from "./automationStore.js";
 import { ConnectorRefreshStore } from "./db/stores/connectorRefreshStore.js";
 import { SqliteIngestionStore } from "./db/stores/ingestionStore.js";
@@ -34,6 +35,12 @@ export interface StorageRuntime {
   readonly chats: ChatStore;
   readonly runs: RunStore;
   readonly analyses: AnalysisStore;
+  /**
+   * Owner-scoped editable documents (schema v20, M13). Revisions/publications
+   * are immutable rows; the durable artifact-cleanup intents consumed by
+   * `documentCleanup.ts` are exposed through this exact instance.
+   */
+  readonly documents: DocumentStore;
   readonly sources: SourceStore;
   readonly libraries: LibraryStore;
   readonly agents: AgentStore;
@@ -123,6 +130,7 @@ export async function initializeStorageRuntime(optionsValue: StorageRuntimeOptio
         chats: new ChatStore(ledger),
         runs: new RunStore(ledger),
         analyses: new AnalysisStore(ledger),
+        documents: new DocumentStore(ledger),
         libraries: new LibraryStore(ledger),
         agents: new AgentStore(ledger),
         connections: new ConnectionStore(ledger),

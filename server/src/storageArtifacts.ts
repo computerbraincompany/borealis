@@ -278,6 +278,102 @@ export async function removeReportArtifacts(input: {
   return true;
 }
 
+// ---------------------------------------------------------------------------
+// Document publications (M13): exact account/document/publication scoping
+// under the report directory's private `documents` namespace.
+// ---------------------------------------------------------------------------
+
+function documentArtifactsRoot(): string {
+  return path.join(config.reportDir, "documents");
+}
+
+/** Lexical publication directory for one render attempt (never created here). */
+export function documentPublicationDirectory(accountId: string, documentId: string, publicationId: string): string {
+  if (!UUID_RE.test(accountId) || !UUID_RE.test(documentId) || !UUID_RE.test(publicationId)) {
+    throw new Error("invalid document artifact identity");
+  }
+  return path.join(documentArtifactsRoot(), accountId, documentId, publicationId);
+}
+
+/** Create the exact three-level account/document/publication directory. */
+export async function createDocumentPublicationDirectory(
+  accountId: string,
+  documentId: string,
+  publicationId: string
+): Promise<string> {
+  const expected = documentPublicationDirectory(accountId, documentId, publicationId);
+  const root = await realRoot(documentArtifactsRoot());
+  const accountDirectory = path.join(root, accountId);
+  const documentDirectory = path.join(accountDirectory, documentId);
+  const publicationDirectory = path.join(documentDirectory, publicationId);
+  await fs.mkdir(accountDirectory).catch((error: NodeJS.ErrnoException) => {
+    if (error.code !== "EEXIST") throw error;
+  });
+  if (!(await isExactDirectory(accountDirectory, accountDirectory))) throw new Error("unsafe storage namespace");
+  await fs.mkdir(documentDirectory).catch((error: NodeJS.ErrnoException) => {
+    if (error.code !== "EEXIST") throw error;
+  });
+  if (!(await isExactDirectory(documentDirectory, documentDirectory))) throw new Error("unsafe storage namespace");
+  await fs.mkdir(publicationDirectory);
+  if (!(await isExactDirectory(publicationDirectory, publicationDirectory)))
+    throw new Error("unsafe storage namespace");
+  if (publicationDirectory !== expected) throw new Error("document publication path drifted");
+  return publicationDirectory;
+}
+
+/** Remove only an exact UUID-scoped document directory after canonical proof. */
+export async function removeDocumentArtifacts(input: { accountId: string; documentId: string }): Promise<boolean> {
+  if (!UUID_RE.test(input.accountId) || !UUID_RE.test(input.documentId)) return false;
+  const root = await realRoot(documentArtifactsRoot());
+  const lexicalRoot = path.resolve(documentArtifactsRoot());
+  const accountDirectory = path.join(lexicalRoot, input.accountId);
+  const expectedDirectory = path.join(accountDirectory, input.documentId);
+  const canonicalAccountDirectory = path.join(root, input.accountId);
+  const canonicalExpectedDirectory = path.join(root, input.accountId, input.documentId);
+  if (!isWithin(canonicalExpectedDirectory, root)) return false;
+  const accountStat = await fs.lstat(accountDirectory).catch(() => undefined);
+  if (!accountStat) return true;
+  if (!(await isExactDirectory(accountDirectory, canonicalAccountDirectory))) return false;
+  const documentStat = await fs.lstat(expectedDirectory).catch(() => undefined);
+  if (!documentStat) return true;
+  if (!(await isExactDirectory(expectedDirectory, canonicalExpectedDirectory))) return false;
+  await fs.rm(expectedDirectory, { recursive: true, force: true });
+  return true;
+}
+
+/** Remove only the exact publication directory recorded by a cleanup intent. */
+export async function removeDocumentPublicationArtifacts(input: {
+  accountId: string;
+  documentId: string;
+  publicationId: string;
+  directory: string;
+}): Promise<boolean> {
+  if (!UUID_RE.test(input.accountId) || !UUID_RE.test(input.documentId) || !UUID_RE.test(input.publicationId)) {
+    return false;
+  }
+  const root = await realRoot(documentArtifactsRoot());
+  const lexicalRoot = path.resolve(documentArtifactsRoot());
+  const expectedDirectory = path.join(lexicalRoot, input.accountId, input.documentId, input.publicationId);
+  if (path.resolve(input.directory) !== expectedDirectory) return false;
+  const canonicalExpectedDirectory = path.join(root, input.accountId, input.documentId, input.publicationId);
+  const accountDirectory = path.join(lexicalRoot, input.accountId);
+  const documentDirectory = path.join(accountDirectory, input.documentId);
+  if (!isWithin(canonicalExpectedDirectory, root)) return false;
+  const publicationStat = await fs.lstat(expectedDirectory).catch(() => undefined);
+  if (!publicationStat) return true;
+  if (
+    !(await isExactDirectory(accountDirectory, path.join(root, input.accountId))) ||
+    !(await isExactDirectory(documentDirectory, path.join(root, input.accountId, input.documentId))) ||
+    !(await isExactDirectory(expectedDirectory, canonicalExpectedDirectory))
+  ) {
+    return false;
+  }
+  await fs.rm(expectedDirectory, { recursive: true, force: true });
+  await fs.rmdir(documentDirectory).catch(() => {});
+  await fs.rmdir(accountDirectory).catch(() => {});
+  return true;
+}
+
 /** Resolve an owned report file for read access, failing closed on path drift. */
 export async function resolveReportArtifact(input: {
   accountId: string;
