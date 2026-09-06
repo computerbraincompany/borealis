@@ -1080,6 +1080,76 @@ The containing UUID cache directory is removed when empty; already-absent and
 still-nonempty are the only tolerated directory-removal outcomes. Cleanup logs
 contain aggregate counts, never connector IDs, paths, or raw filesystem errors.
 
+### Connections (Connected agents — implemented in this wave)
+
+The connection ledger (schema v17), server-side secret custody, and the management
+endpoints below are implemented and green-tested in this wave of
+`docs/MCP_CONNECTIONS.md`. The remaining stages are not yet current API: the real
+Streamable HTTP and stdio transports replace the transport-provider seam in
+`server/src/mcp/client.ts` (until stage 2, `test`/`discover` deterministically return
+`503 CONNECTION_TRANSPORT_UNAVAILABLE`), OAuth sign-in replaces the authorization seam
+(until stage 3, `authorize` returns `501 CONNECTION_AUTH_UNSUPPORTED`; local
+revocation is already real), and agent tool bindings plus the Connections UI arrive in
+later stages. This section documents the shipped contract; later stages extend it in
+place.
+
+| Endpoint | Contract |
+| --- | --- |
+| `GET /api/connections` | Keyset `{items,next_cursor}` catalog of the account's connections, newest first. |
+| `POST /api/connections` | `{name,kind,config,enabled?,credentials?}`; validates and stores configuration and credentials only — it never discovers or executes tools. Name 1–80 characters, unique per account; maximum 20 connections per account; returns `201` with the redacted detail. |
+| `GET /api/connections/:id` | Redacted detail including the current discovery's `tools`; never includes credential material. |
+| `PATCH /api/connections/:id` | Requires `expected_revision` (a stale value returns `409 CONNECTION_REVISION_CONFLICT`). Optional `name`, `config`, `enabled`, and `credentials`: an object fully replaces stored credentials, `null` removes them, omission leaves them untouched. A name or config edit increments `revision` and resets the bounded status to `untested`; an `enabled` toggle never changes the revision. |
+| `DELETE /api/connections/:id` | Disconnects (removes the credential record), deletes the connection, cascades its tool snapshots, and runs the agent-binding cascade hook so agent bindings become visibly unavailable in later stages. |
+| `POST /api/connections/:id/test` | One bounded initialize/list-tools probe; no content-bearing tool call. Returns the refreshed detail with `status: "ready"` on success. |
+| `POST /api/connections/:id/discover` | Same bounded probe, then publishes the validated tool snapshot and returns the detail with the new `discovery_revision` and `tools`. |
+| `POST /api/connections/:id/authorize` | Starts a one-use expiring sign-in session. Seam only in this wave: returns `501 CONNECTION_AUTH_UNSUPPORTED` until the OAuth provider lands. |
+| `DELETE /api/connections/:id/authorization` | Revokes local credentials, marks the connection `disconnected`, and returns the detail; provider-side revocation is added with the OAuth stage as best effort. |
+
+All routes authenticate in `onRequest` before body parsing and are strictly
+account-scoped (a foreign or unknown ID is `404`). `kind` is `mcp_http` or
+`mcp_stdio`; the webdav adapter reserved for M14 registers through the same
+kind-adapter seam with its own migration. `config` is validated against a strict
+kind-specific shape and holds only non-secret material: `mcp_http` accepts exactly
+`{url}` (a full endpoint path is allowed; HTTPS is required except for explicitly
+configured loopback/`.local` targets; URL credentials, query, and fragment are
+rejected), and `mcp_stdio` accepts `{command,args?,cwd?}` — an absolute installed
+executable, at most 32 arguments of 200 characters, and an optional absolute working
+directory, spawned without a shell and never through a package runner. Test and
+discover operations are hard-bounded at 15 seconds.
+
+Stable `CONNECTION_*` codes carry fixed generic public messages:
+`CONNECTION_NOT_FOUND` `404`, `CONNECTION_CONFIG_INVALID` `400`,
+`CONNECTION_NAME_TAKEN` `409`, `CONNECTION_REVISION_CONFLICT` `409`,
+`CONNECTION_LIMIT_REACHED` `409`, `CONNECTION_DISABLED` `409`,
+`CONNECTION_INVALID_STATE` `409`, `CONNECTION_AUTH_REQUIRED` `409`,
+`CONNECTION_AUTH_UNSUPPORTED` `501`, `CONNECTION_CUSTODY_UNAVAILABLE` `503`,
+`CONNECTION_TRANSPORT_UNAVAILABLE` `503`, `CONNECTION_HANDSHAKE_FAILED` `502`,
+`CONNECTION_DISCOVERY_OVER_LIMIT` `502`, `CONNECTION_DISCOVERY_INVALID` `502`,
+`CONNECTION_TIMEOUT` `504`. Provider error bodies, endpoint failures, and credential
+material never reach the client.
+
+Discovery snapshots are budgeted at 200 tools, 16 KiB per descriptor, and 512 KiB per
+catalog; an over-budget or malformed catalog is an explicit
+`CONNECTION_DISCOVERY_OVER_LIMIT`/`CONNECTION_DISCOVERY_INVALID` failure that keeps the
+previously published snapshot intact. Tool identities are stable per connection across
+rediscoveries, and `connections.discovery_revision` advances only on a published
+snapshot.
+
+Credential material is separated from every ledger row and DTO: it crosses only from a
+request body into secret custody or from custody into a transport. Browser development
+stores AES-256-GCM records under `<data dir>/secrets/<account>/<connection>.json`
+(mode `0600`, atomic rename, no symlink following, each record cryptographically bound
+to its account/connection scope) sealed by an operator-managed private key at
+`<data dir>/connections.key` (mode `0600`, generated once); the
+`CONNECTION_SECRETS_DIR` and `CONNECTIONS_KEY_FILE` overrides relocate them. Packaged
+desktop replaces this file custody with OS-protected storage owned by the main process
+through the same injectable custody interface. Missing or unreadable custody never
+crashes a request and never yields plaintext: reads report
+`credential_state: "unavailable"`, and a test/discover attempt records a `disconnected`
+status with `CONNECTION_CUSTODY_UNAVAILABLE` until credentials are replaced or removed.
+These durable paths join the workspace archive manifests with the stage that completes
+the rollout.
+
 ### Reports and charts
 
 | Endpoint                    | Response                                                                                                                                                                                                                        |
