@@ -16,7 +16,7 @@ Read [the handoff](../docs/DEVELOPMENT_HANDOFF.md) before executing.
 | M14 living libraries/search/WebDAV | TODO | — | — |
 | M15 local research/comparison tables | TODO | — | — |
 | M16 reviewed recurring briefs | TODO | — | — |
-| Common product E2E harness | TODO | — | — |
+| Common product E2E harness | IN PROGRESS | fixtures `2b9f01f` + `876bce0` | Protocol fixtures (scripted OpenAI provider SSE/tool-call/float-embeddings, MCP stdio+Streamable-HTTP incl. >64 KiB/invalid-schema/201-tool/bear modes, OAuth issuer PKCE+rotation+expiry, Basic-auth WebDAV PROPFIND/GET/redirect-refusal) + byte-stable ten-document supplier corpus + finance 100/125 fixtures under `scripts/e2e/fixtures/` and `data/e2e/`; `node scripts/e2e/fixtures/selftest.mjs` PASS 69 checks on main 2026-09-06, no leaked children. Harness drivers A–F + root `test:e2e:product*` commands still TODO. |
 | Current docs and archive/restore integration | TODO | — | — |
 
 Use TODO, IN PROGRESS, DONE, or BLOCKED with specific evidence. Expand each row
