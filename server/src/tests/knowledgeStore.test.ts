@@ -164,8 +164,14 @@ async function seed(
   return { ledger, store, account, foreign, libraryId, connectionId: connection.id, revision: connection.revision };
 }
 
-function scanEntries(entries: readonly PreviewScanEntryInput[]) {
-  return { visited_entries: entries.length, directories: 2, aggregate_bytes: 1_000, entries };
+function scanEntries(entries: readonly PreviewScanEntryInput[], skippedCount = 0) {
+  return {
+    visited_entries: entries.length,
+    directories: 2,
+    aggregate_bytes: 1_000,
+    skipped_count: skippedCount,
+    entries,
+  };
 }
 
 describe("knowledge store", () => {
@@ -1069,5 +1075,98 @@ describe("knowledge store", () => {
     await ledger.run("DELETE FROM sources WHERE id=? AND account_id=?", [sourceId, account]);
     expect(await store.getItem(account, itemId)).toBeUndefined();
     expect(await store.countManagedItems(account, connectionId)).toBe(0);
+  });
+});
+
+describe("M14 stage 2 regressions", () => {
+  it("counts reactivated identities against the 100-member library capacity", async () => {
+    const { ledger, store, account, connectionId, libraryId } = await seed();
+    // A full library of 100 unrelated ready members plus one managed item
+    // whose identity was explicitly removed (its membership row is gone).
+    for (let index = 0; index < 100; index += 1) {
+      const fillerId = await insertSource(ledger, account, { readyGeneration: 1 });
+      await ledger.run("INSERT INTO library_sources (library_id,source_id,account_id) VALUES (?,?,?)", [
+        libraryId,
+        fillerId,
+        account,
+      ]);
+    }
+    const keptSourceId = await insertSource(ledger, account, { readyGeneration: 4 });
+    const itemId = await insertItem(ledger, account, connectionId, "gone.md", keptSourceId, hash("v1"));
+    const removed = await store.removeItem(account, itemId);
+    expect(removed?.lifecycle).toBe("removed");
+    expect(
+      (await ledger.get<{ n: bigint }>("SELECT COUNT(*) AS n FROM library_sources WHERE library_id=?", [libraryId]))?.n
+    ).toBe(100n);
+
+    const preview = await store.createPreview(account, connectionId, bounds);
+    const completed = await store.completePreview(
+      account,
+      preview.id,
+      scanEntries([{ relative_path: "gone.md", classification: "new", content_hash: hash("v2"), size_bytes: 2 }])
+    );
+    // Reactivating the retained identity would be the 101st member. The
+    // stage 2 fix counts it against the limit, so nothing commits.
+    await expect(
+      store.applyPreview(account, preview.id, {
+        expected_revision: 2,
+        selections: [
+          {
+            entry_id: completed.entries[0]!.entry_id,
+            selection_token: completed.entries[0]!.selection_token,
+            staged: staged("gone.md", "v2"),
+          },
+        ],
+      })
+    ).rejects.toMatchObject({ code: "KNOWLEDGE_LIBRARY_FULL" });
+    expect(
+      (await ledger.get<{ n: bigint }>("SELECT COUNT(*) AS n FROM library_sources WHERE library_id=?", [libraryId]))?.n
+    ).toBe(100n);
+    expect((await store.getItem(account, itemId))?.lifecycle).toBe("removed");
+    expect((await store.getPreview(account, preview.id))?.status).toBe("complete");
+
+    // With one slot free the same reactivation commits and lands at 100.
+    await ledger.run(
+      "DELETE FROM library_sources WHERE library_id=? AND account_id=? AND rowid IN (SELECT rowid FROM library_sources WHERE library_id=? AND account_id=? LIMIT 1)",
+      [libraryId, account, libraryId, account]
+    );
+    const applied = await store.applyPreview(account, preview.id, {
+      expected_revision: 2,
+      selections: [
+        {
+          entry_id: completed.entries[0]!.entry_id,
+          selection_token: completed.entries[0]!.selection_token,
+          staged: staged("gone.md", "v2"),
+        },
+      ],
+    });
+    expect(applied.items[0]!.action).toBe("updated");
+    expect(
+      (await ledger.get<{ n: bigint }>("SELECT COUNT(*) AS n FROM library_sources WHERE library_id=?", [libraryId]))?.n
+    ).toBe(100n);
+  });
+
+  it("persists the scan's skip-report count on the completed preview", async () => {
+    const { store, account, connectionId } = await seed();
+    const preview = await store.createPreview(account, connectionId, bounds);
+    const completed = await store.completePreview(
+      account,
+      preview.id,
+      scanEntries([{ relative_path: "a.md", classification: "new", content_hash: hash("a"), size_bytes: 1 }], 7)
+    );
+    expect(completed.preview.skipped_count).toBe(7);
+    expect((await store.getPreview(account, preview.id))?.skipped_count).toBe(7);
+
+    const other = await store.createPreview(account, connectionId, bounds);
+    const clean = await store.completePreview(
+      account,
+      other.id,
+      scanEntries([{ relative_path: "b.md", classification: "new", content_hash: hash("b"), size_bytes: 1 }])
+    );
+    expect(clean.preview.skipped_count).toBe(0);
+
+    await expect(
+      store.completePreview(account, other.id, Object.assign(scanEntries([]), { skipped_count: -1 }))
+    ).rejects.toBeInstanceOf(RangeError);
   });
 });

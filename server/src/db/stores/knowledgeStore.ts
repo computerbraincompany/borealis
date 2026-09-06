@@ -832,6 +832,13 @@ export interface CompletePreviewInput {
   readonly visited_entries: number;
   readonly directories: number;
   readonly aggregate_bytes: number;
+  /**
+   * Entries the upstream scan reported as skipped (hidden, symlink, excluded,
+   * depth, or limit). Persisted on the preview row so the preview surface can
+   * show what the scan did NOT ingest; skipped paths themselves never become
+   * selectable entries.
+   */
+  readonly skipped_count: number;
   readonly entries: readonly PreviewScanEntryInput[];
 }
 
@@ -1385,10 +1392,12 @@ export class KnowledgeStore {
     const visited = input.visited_entries;
     const directories = input.directories;
     const aggregateBytes = input.aggregate_bytes;
+    const skippedCount = input.skipped_count;
     for (const [field, value] of [
       ["visited_entries", visited],
       ["directories", directories],
       ["aggregate_bytes", aggregateBytes],
+      ["skipped_count", skippedCount],
     ] as const) {
       if (!Number.isSafeInteger(value) || value < 0) throw new RangeError(`${field} is invalid`);
     }
@@ -1484,7 +1493,7 @@ export class KnowledgeStore {
           `UPDATE knowledge_previews
              SET status='complete',revision=?,visited_entries=?,directories=?,aggregate_bytes=?,
                  new_count=?,changed_count=?,unchanged_count=?,duplicate_count=?,missing_count=?,
-                 unsupported_count=?,updated_at=?
+                 unsupported_count=?,skipped_count=?,updated_at=?
            WHERE id=? AND account_id=? AND revision=? AND status='pending'`,
           [
             revision,
@@ -1497,6 +1506,7 @@ export class KnowledgeStore {
             counts.duplicate,
             counts.missing,
             counts.unsupported,
+            skippedCount,
             timestamp,
             previewId,
             accountId,
@@ -1737,6 +1747,9 @@ export class KnowledgeStore {
       let libraryId: string | null = null;
       // Membership additions include new sources and reactivated identities
       // (whose explicit remove action had taken them out of the library).
+      // The capacity check must count BOTH: a reactivation restores a
+      // `library_sources` row below, so ignoring it let a preview commit push
+      // the target library past the 100-member limit.
       const reactivationCount = changedPlans.filter((plan) => plan.reactivate).length;
       if (newCount > 0) {
         if (!connection.library_id) throw new KnowledgeLibraryUnavailableError();
@@ -1756,7 +1769,7 @@ export class KnowledgeStore {
             )?.n ?? 0,
             "library member count"
           );
-          if (members + newCount > MAX_LIBRARY_MEMBERS) {
+          if (members + newCount + reactivationCount > MAX_LIBRARY_MEMBERS) {
             throw new KnowledgeQuotaError(
               `the target library may hold at most ${MAX_LIBRARY_MEMBERS} sources`,
               "KNOWLEDGE_LIBRARY_FULL"

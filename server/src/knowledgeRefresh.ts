@@ -257,6 +257,10 @@ export function classifyKnowledgeScan(
     visited_entries: scan.visited_entries,
     directories: scan.directories,
     aggregate_bytes: scan.aggregate_bytes,
+    // The scan's skip report (hidden/symlink/excluded/depth/limit) is
+    // persisted as a durable count on the preview row so the preview surface
+    // never silently drops entries the scan deliberately skipped.
+    skipped_count: scan.skipped.length,
   };
 }
 
