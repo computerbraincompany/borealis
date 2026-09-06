@@ -539,6 +539,7 @@ describe("automation scheduler drain on server shutdown", () => {
       expect(runtimes).toHaveLength(1);
       const runtimeA = runtimes[0]!;
       expect(runtimeA.object.startAutomationScheduler).toHaveBeenCalledOnce();
+      expect(runtimeA.object.startAnalysisRunner).toHaveBeenCalledOnce();
       expect(mocks.shutdownActiveRuns).not.toHaveBeenCalled();
       expect(runtimeA.object.close).not.toHaveBeenCalled();
 

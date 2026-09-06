@@ -373,10 +373,8 @@ export function queryDataset(
       accountId,
       sql,
       allowedTables: [...allowedTables],
-      ...(analysis?.parameters
-        ? { parameters: analysis.parameters.map((p) => ({ type: p.type, value: p.value })) }
-        : {}),
-      ...(analysis?.pinnedInputs ? { pinnedInputs: analysis.pinnedInputs.map((p) => ({ ...p })) } : {}),
+      ...(analysis?.parameters !== undefined ? { parameters: analysis.parameters } : {}),
+      ...(analysis?.pinnedInputs !== undefined ? { pinnedInputs: analysis.pinnedInputs } : {}),
     },
     signal
   );

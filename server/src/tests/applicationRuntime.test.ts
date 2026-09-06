@@ -895,4 +895,70 @@ describe("application runtime close failure injection", () => {
       expect(ownedEvents(h, "B")).toEqual([]);
     });
   }
+
+  it("binds exactly one analysis runner over its own stores and drains it before closure", async () => {
+    const h = await newHarness();
+    const paths = await h.paths("analysis-1");
+    const held = deferred();
+    let stopCalls = 0;
+    let capturedStore: unknown;
+    let capturedSources: unknown;
+    const runtime = await h.mod.createApplicationRuntime({
+      lifecycle: h.seams("A", {
+        createAnalysisRunner: (deps) => {
+          capturedStore = deps.store;
+          capturedSources = deps.sources;
+          return {
+            start: () => {
+              h.events.push("A:analysis-start");
+            },
+            stop: () => {
+              stopCalls += 1;
+              h.events.push("A:analysis-stop");
+              return held.promise;
+            },
+            runAnalysisService: async () => {
+              throw new Error("not exercised by this characterization");
+            },
+            isRunning: () => false,
+            activeRunCount: () => 0,
+          };
+        },
+      }),
+      syncConnector: async () => undefined,
+      ...paths,
+    });
+    // The executor is built over this runtime's own store facades.
+    expect(capturedStore).toBe(runtime.storage.analyses);
+    expect(capturedSources).toBe(runtime.storage.sources);
+    expect(stopCalls).toBe(0);
+
+    runtime.startAnalysisRunner();
+    expect(h.events).toContain("A:analysis-start");
+
+    // Synchronous quiescence: stop is invoked, and its drain gates everything.
+    const drain = runtime.stopAnalysisRunner();
+    expect(stopCalls).toBe(1);
+    expect(await isPending(drain)).toBe(true);
+
+    // The owned close joins the same drain: storage/settings stay open until
+    // every interrupted analysis run has finalized its durable row.
+    const closing = runtime.close({ externalStorageConsumersDrained: true });
+    expect(await isPending(closing)).toBe(true);
+    expect(h.events).not.toContain("A:storage-close");
+    expect(h.events).not.toContain("A:settings-close");
+
+    held.resolve();
+    await drain;
+    await closing;
+    expect(h.events).toContain("A:storage-close");
+    expect(h.events).toContain("A:settings-close");
+
+    // The owned close joined the same drain (stop is invoked once directly
+    // and once by the attempt-all close); a repeat close performs no new
+    // executor work at all.
+    const callsAfterClose = stopCalls;
+    await runtime.close({ externalStorageConsumersDrained: true });
+    expect(stopCalls).toBe(callsAfterClose);
+  });
 });

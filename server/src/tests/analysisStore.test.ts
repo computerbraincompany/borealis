@@ -804,4 +804,59 @@ describe("AnalysisStore", () => {
     );
     await expect(store.getAnalysisRun(randomUUID(), analysis.id, ok.run.id)).resolves.toBeUndefined();
   });
+
+  describe("execution-side durability helpers (stage 2)", () => {
+    it("claims only queued runs in acceptance order with their frozen provenance", async () => {
+      const { ledger, store } = await setup();
+      const account = await insertUser(ledger, "claim");
+      const { analysis } = await createReadyAnalysis(store, account, ledger);
+      const first = await store.acceptAnalysisRun(account, analysis.id, { values: { month: "2026-08" } });
+      await store.markAnalysisRunRunning(account, analysis.id, first.run.id);
+      const second = await createReadyAnalysis(store, account, ledger);
+      const secondRun = await store.acceptAnalysisRun(account, second.analysis.id, { values: { month: "2026-09" } });
+
+      const claims = await store.listQueuedAnalysisRuns(10);
+      expect(claims.map((run) => run.id)).toEqual([secondRun.run.id]);
+      expect(claims[0]?.sources).toEqual(secondRun.run.sources);
+      expect(claims[0]?.parameterBindings).toEqual([
+        { name: "month", type: "string", value: "2026-09" },
+        { name: "limit", type: "integer", value: 5 },
+        { name: "flag", type: "boolean", value: null },
+      ]);
+      await expect(store.listQueuedAnalysisRuns(0)).rejects.toBeInstanceOf(RangeError);
+    });
+
+    it("freezes revision SQL per run number and reports ownership loss as null", async () => {
+      const { ledger, store } = await setup();
+      const account = await insertUser(ledger, "rev");
+      const { analysis } = await createReadyAnalysis(store, account, ledger);
+      expect(await store.getAnalysisRevisionSql(account, analysis.id, 1)).toBe(analysis.revision.sql);
+
+      const updated = await store.updateAnalysis(account, analysis.id, 1, { sql: "SELECT 2 AS two" });
+      // An accepted run reads its own frozen revision, never the mutable head.
+      expect(await store.getAnalysisRevisionSql(account, analysis.id, 1)).toBe(analysis.revision.sql);
+      expect(await store.getAnalysisRevisionSql(account, analysis.id, 2)).toBe(updated.revision.sql);
+      expect(await store.getAnalysisRevisionSql(account, analysis.id, 99)).toBeNull();
+      expect(await store.getAnalysisRevisionSql(account, randomUUID(), 1)).toBeNull();
+    });
+
+    it("exposes the cancellation probe and returns null once the run is not owned", async () => {
+      const { ledger, store } = await setup();
+      const account = await insertUser(ledger, "probe");
+      const { analysis } = await createReadyAnalysis(store, account, ledger);
+      const accepted = await store.acceptAnalysisRun(account, analysis.id, { values: { month: "2026-08" } });
+      expect(await store.getAnalysisRunCancelState(account, analysis.id, accepted.run.id)).toEqual({
+        status: "queued",
+        cancelRequested: false,
+      });
+      await store.requestAnalysisRunCancel(account, analysis.id, accepted.run.id);
+      expect(await store.getAnalysisRunCancelState(account, analysis.id, accepted.run.id)).toEqual({
+        status: "cancelled",
+        cancelRequested: true,
+      });
+      expect(await store.getAnalysisRunCancelState(account, randomUUID(), accepted.run.id)).toBeNull();
+      await store.deleteAnalysis(account, analysis.id);
+      expect(await store.getAnalysisRunCancelState(account, analysis.id, accepted.run.id)).toBeNull();
+    });
+  });
 });

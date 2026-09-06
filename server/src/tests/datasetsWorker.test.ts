@@ -666,3 +666,372 @@ describe("DuckDB dataset worker", () => {
     );
   });
 });
+
+async function waitForIdleAnalysisPins(): Promise<void> {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    if ((await __datasetWorkerDebugState()).analysisPins === 0) return;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error("analysis input pins were not released");
+}
+
+describe("saved-analysis prepared binding and immutable input pins", () => {
+  it("binds every declared scalar type positionally through the prepared path", async () => {
+    const accountId = account();
+    const source = await csvFile("bound.csv", "d,amount\n2026-01-15,10\n2026-02-15,20\n2026-03-15,30\n");
+    await registerDataset({ accountId, name: "bound", location: source, kind: "path", originalName: "bound.csv" });
+
+    const result = await queryDataset(
+      accountId,
+      "SELECT ? AS s, ? AS n, ? AS i, ? AS b, ? AS d, ? IS NULL AS is_null, 'a?b' AS lit",
+      [],
+      undefined,
+      {
+        parameters: [
+          { type: "string", value: "x?y" },
+          { type: "number", value: 2.5 },
+          { type: "integer", value: 9007199254740991 },
+          { type: "boolean", value: true },
+          { type: "date", value: "2026-02-28" },
+          { type: "string", value: null },
+        ],
+      }
+    );
+    expect(result).toMatchObject({
+      columns: ["s", "n", "i", "b", "d", "is_null", "lit"],
+      row_count: 1,
+      returned_row_count: 1,
+      columns_truncated: false,
+      truncated: false,
+    });
+    const [row] = result.rows;
+    expect(row?.[0]).toBe("x?y");
+    expect(row?.[1]).toBe(2.5);
+    expect(row?.[2]).toBe(9007199254740991);
+    expect(row?.[3]).toBe(true);
+    expect(row?.[4]).toBe("2026-02-28");
+    expect(row?.[5]).toBe(true);
+    expect(row?.[6]).toBe("a?b");
+  });
+
+  it("binds typed values into real predicates while parameter-like literals stay data", async () => {
+    const accountId = account();
+    const source = await csvFile("pred.csv", "d,amount\n2026-01-15,10\n2026-02-15,20\n2026-03-15,30\n");
+    await registerDataset({ accountId, name: "pred", location: source, kind: "path", originalName: "pred.csv" });
+
+    const filtered = await queryDataset(
+      accountId,
+      "SELECT sum(amount) AS total, ? AS marker FROM pred WHERE d >= ? AND amount >= ? AND ? = 'a?b'",
+      ["pred"],
+      undefined,
+      {
+        parameters: [
+          { type: "string", value: "kept?literal" },
+          { type: "date", value: "2026-02-01" },
+          { type: "integer", value: 25 },
+          { type: "string", value: "a?b" },
+        ],
+      }
+    );
+    expect(filtered.rows).toEqual([[30, "kept?literal"]]);
+
+    // A value containing SQL syntax stays data; the query still runs.
+    const injection = await queryDataset(
+      accountId,
+      "SELECT count(*) AS kept FROM pred WHERE ? = ? AND 'a?b' <> ?",
+      ["pred"],
+      undefined,
+      {
+        parameters: [
+          { type: "string", value: "'; DROP TABLE pred; --" },
+          { type: "string", value: "'; DROP TABLE pred; --" },
+          { type: "string", value: "z?z" },
+        ],
+      }
+    );
+    expect(injection.rows).toEqual([[3]]);
+    await expect(queryDataset(accountId, "SELECT count(*) AS kept FROM pred", ["pred"])).resolves.toMatchObject({
+      rows: [[3]],
+    });
+  });
+
+  it("rejects placeholder arity mismatches and mistyped bindings before execution", async () => {
+    const accountId = account();
+    await expectStatus(
+      queryDataset(accountId, "SELECT ?, ?", [], undefined, { parameters: [{ type: "string", value: "a" }] }),
+      400
+    );
+    await expectStatus(
+      queryDataset(accountId, "SELECT ?", [], undefined, {
+        parameters: [
+          { type: "string", value: "a" },
+          { type: "string", value: "b" },
+        ],
+      }),
+      400
+    );
+    await expectStatus(
+      queryDataset(accountId, "SELECT ? WHERE 'a?b' = ?", [], undefined, {
+        parameters: [
+          { type: "string", value: "1" },
+          { type: "string", value: "2" },
+          { type: "string", value: "3" },
+        ],
+      }),
+      400
+    );
+    // Mistyped values never reach the binder.
+    await expectStatus(
+      queryDataset(accountId, "SELECT ?", [], undefined, { parameters: [{ type: "number", value: "5" }] }),
+      400
+    );
+    await expectStatus(
+      queryDataset(accountId, "SELECT ?", [], undefined, { parameters: [{ type: "integer", value: 1.5 }] }),
+      400
+    );
+    await expectStatus(
+      queryDataset(accountId, "SELECT ?", [], undefined, { parameters: [{ type: "number", value: Number.NaN }] }),
+      400
+    );
+    await expectStatus(
+      queryDataset(accountId, "SELECT ?", [], undefined, { parameters: [{ type: "number", value: Infinity }] }),
+      400
+    );
+    await expectStatus(
+      queryDataset(accountId, "SELECT ?", [], undefined, { parameters: [{ type: "date", value: "2026-02-30" }] }),
+      400
+    );
+    await expectStatus(
+      queryDataset(accountId, "SELECT ?", [], undefined, { parameters: [{ type: "date", value: "2026-2-3" }] }),
+      400
+    );
+    await expectStatus(
+      queryDataset(accountId, "SELECT ?", [], undefined, {
+        parameters: [{ type: "string", value: "x".repeat(2_001) }],
+      }),
+      400
+    );
+    // Malformed payloads may still cross a hostile/buggy client; the worker
+    // boundary rejects them structurally.
+    await expectStatus(
+      queryDataset(accountId, "SELECT ?", [], undefined, {
+        parameters: [{ type: "sql" }] as unknown as [{ type: "string"; value: null }],
+      }),
+      400
+    );
+    await expectStatus(
+      queryDataset(accountId, "SELECT ?", [], undefined, {
+        parameters: "SELECT 1" as unknown as readonly { type: "string"; value: null }[],
+      }),
+      400
+    );
+    await expectStatus(
+      queryDataset(accountId, "SELECT ?", [], undefined, {
+        parameters: Array.from({ length: 21 }, () => ({ type: "string" as const, value: "a" })),
+      }),
+      422
+    );
+    // Unparameterized requests must not smuggle placeholders through.
+    await expectStatus(queryDataset(accountId, "SELECT ?", []), 400);
+  });
+
+  it("keeps read-only and single-statement validation on the analysis path", async () => {
+    const accountId = account();
+    await expectStatus(
+      queryDataset(accountId, "CREATE TABLE injected AS SELECT ?", [], undefined, {
+        parameters: [{ type: "integer", value: 1 }],
+      }),
+      400
+    );
+    await expectStatus(
+      queryDataset(accountId, "SELECT 1; DROP TABLE bound", [], undefined, {
+        parameters: [{ type: "integer", value: 1 }],
+      }),
+      400
+    );
+    await registerDataset({
+      accountId,
+      name: "readonly_target",
+      location: await csvFile("readonly-target.csv", "value\n1\n"),
+      kind: "path",
+      originalName: "readonly-target.csv",
+    });
+    await expectStatus(
+      queryDataset(
+        accountId,
+        "WITH x AS (SELECT 1 AS value) INSERT INTO readonly_target SELECT * FROM x",
+        ["readonly_target"],
+        undefined,
+        { parameters: [] }
+      ),
+      400
+    );
+  });
+
+  it("executes pinned inputs and releases every lease on completion", async () => {
+    const accountId = account();
+    const source = await csvFile("pinned.csv", "value\n7\n");
+    await registerDataset({ accountId, name: "pinned", location: source, kind: "path", originalName: "pinned.csv" });
+    const result = await queryDataset(accountId, "SELECT value FROM pinned WHERE value = ?", ["pinned"], undefined, {
+      parameters: [{ type: "integer", value: 7 }],
+      pinnedInputs: [{ name: "pinned", location: source }],
+    });
+    expect(result.rows).toEqual([[7]]);
+    expect((await __datasetWorkerDebugState()).analysisPins).toBe(0);
+  });
+
+  it("fails closed when a pinned location drifted or vanished", async () => {
+    const accountId = account();
+    const directory = await temporaryDirectory();
+    const v1 = path.join(directory, "v1.csv");
+    const v2 = path.join(directory, "v2.csv");
+    await writeFile(v1, "value\n1\n", "utf8");
+    await writeFile(v2, "value\n99\n", "utf8");
+    await registerDataset({ accountId, name: "drift", location: v1, kind: "path", originalName: "v1.csv" });
+
+    // A connector refresh that activated a newer version makes the old pin a
+    // stale/unavailable input — the worker must never read the new bytes.
+    await registerDataset({ accountId, name: "drift", location: v2, kind: "path", originalName: "v2.csv" });
+    await expectStatus(
+      queryDataset(accountId, "SELECT value FROM drift", ["drift"], undefined, {
+        parameters: [],
+        pinnedInputs: [{ name: "drift", location: v1 }],
+      }),
+      409
+    );
+
+    await rm(v2, { force: true });
+    await expectStatus(
+      queryDataset(accountId, "SELECT value FROM drift", ["drift"], undefined, {
+        parameters: [],
+        pinnedInputs: [{ name: "drift", location: v2 }],
+      }),
+      404
+    );
+    expect((await __datasetWorkerDebugState()).analysisPins).toBe(0);
+  });
+
+  it("refuses cache-version deletion while a pinned query runs and fails that query stale", async () => {
+    const accountId = account();
+    const directory = await temporaryDirectory();
+    const v1 = path.join(directory, "lease-v1.csv");
+    const v2 = path.join(directory, "lease-v2.csv");
+    await writeFile(v1, "value\n1\n", "utf8");
+    await writeFile(v2, "value\n2\n", "utf8");
+    await registerDataset({ accountId, name: "lease", location: v1, kind: "path", originalName: "lease-v1.csv" });
+
+    await __configureDatasetWorkerForTests({
+      queryTimeoutMs: 30_000,
+      queryPreflightDelay: { phase: "scope_load", delayMs: 1_000 },
+    });
+    try {
+      const pinned = expectStatus(
+        queryDataset(accountId, "SELECT value FROM lease", ["lease"], undefined, {
+          parameters: [],
+          pinnedInputs: [{ name: "lease", location: v1 }],
+        }),
+        409
+      );
+      await waitForQueryPreflightDelay();
+      // A refresh completes while the run is executing.
+      await registerDataset({ accountId, name: "lease", location: v2, kind: "path", originalName: "lease-v2.csv" });
+      // Deleting the file the run pinned is refused — the bytes cannot be
+      // substituted or removed mid-run.
+      await expectStatus(beginInactiveLocationCleanup(accountId, "lease", v1), 409);
+      await pinned;
+      await waitForIdleAnalysisPins();
+      // After release, cleanup of the now-inactive version proceeds.
+      await expect(beginInactiveLocationCleanup(accountId, "lease", v1)).resolves.toBeUndefined();
+      await expect(endInactiveLocationCleanup(accountId, "lease", v1)).resolves.toBeUndefined();
+    } finally {
+      await __configureDatasetWorkerForTests({ queryPreflightDelay: null });
+    }
+  }, 20_000);
+
+  it("starts the query deadline before a pinned scope is loaded and releases the pins", async () => {
+    const accountId = account();
+    const source = await csvFile("deadline.csv", "value\n1\n");
+    await registerDataset({
+      accountId,
+      name: "deadline",
+      location: source,
+      kind: "path",
+      originalName: "deadline.csv",
+    });
+    await __configureDatasetWorkerForTests({
+      queryTimeoutMs: 250,
+      queryPreflightDelay: { phase: "scope_load", delayMs: 5_000 },
+    });
+    try {
+      const timedOut = expectStatus(
+        queryDataset(accountId, "SELECT value FROM deadline WHERE value = ?", ["deadline"], undefined, {
+          parameters: [{ type: "integer", value: 1 }],
+          pinnedInputs: [{ name: "deadline", location: source }],
+        }),
+        504
+      );
+      await waitForQueryPreflightDelay();
+      await timedOut;
+      await waitForIdleAnalysisPins();
+      await expect(queryDataset(accountId, "SELECT value FROM deadline", ["deadline"])).resolves.toMatchObject({
+        rows: [[1]],
+      });
+    } finally {
+      await __configureDatasetWorkerForTests({ queryTimeoutMs: 30_000, queryPreflightDelay: null });
+    }
+  }, 20_000);
+
+  it("releases pins and prepared statements when a pinned run is cancelled mid-flight", async () => {
+    const accountId = account();
+    const source = await csvFile("cancel-pin.csv", "value\n1\n");
+    await registerDataset({ accountId, name: "cancel_pin", location: source, kind: "path", originalName: "c.csv" });
+    const controller = new AbortController();
+    await __configureDatasetWorkerForTests({
+      queryTimeoutMs: 30_000,
+      queryPreflightDelay: { phase: "scope_load", delayMs: 5_000 },
+    });
+    try {
+      const cancelled = queryDataset(
+        accountId,
+        "SELECT value FROM cancel_pin WHERE value = ?",
+        ["cancel_pin"],
+        controller.signal,
+        {
+          parameters: [{ type: "integer", value: 1 }],
+          pinnedInputs: [{ name: "cancel_pin", location: source }],
+        }
+      ).then(
+        () => undefined,
+        (error: unknown) => error
+      );
+      await waitForQueryPreflightDelay();
+      controller.abort();
+      await expect(cancelled).resolves.toMatchObject({ name: "AbortError" });
+      await waitForIdleAnalysisPins();
+      expect((await __datasetWorkerDebugState()).activeQueryNativePrepares).toBe(0);
+      await expect(queryDataset(accountId, "SELECT 2 AS value", [])).resolves.toMatchObject({ rows: [[2]] });
+    } finally {
+      controller.abort();
+      await __configureDatasetWorkerForTests({ queryTimeoutMs: 30_000, queryPreflightDelay: null });
+    }
+  }, 20_000);
+
+  it("preserves the worker row/completeness ceilings for parameterized results", async () => {
+    const accountId = account();
+    const rows = Array.from({ length: 600 }, (_, index) => index + 1).join("\n");
+    const source = await csvFile("wide.csv", `value\n${rows}\n`);
+    await registerDataset({ accountId, name: "bounded", location: source, kind: "path", originalName: "wide.csv" });
+    const result = await queryDataset(
+      accountId,
+      "SELECT value FROM bounded WHERE value > ? ORDER BY value",
+      ["bounded"],
+      undefined,
+      { parameters: [{ type: "integer", value: 0 }] }
+    );
+    expect(result.rows).toHaveLength(500);
+    expect(result.row_count).toBe(500);
+    expect(result.returned_row_count).toBe(500);
+    expect(result.truncated).toBe(true);
+    expect(result.columns_truncated).toBe(false);
+  });
+});
