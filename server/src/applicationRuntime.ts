@@ -503,7 +503,8 @@ export async function createApplicationRuntime(options: ApplicationRuntimeOption
           owned.migration?.close() ?? Promise.resolve(),
           lifecycle.stopEngine(),
           lifecycle.quiesceAndDrainConnections(),
-        ]);      const failed: string[] = [];
+        ]);
+      const failed: string[] = [];
       if (runnerResult.status === "fulfilled") owned.runnerReleased = true;
       else failed.push("scheduler");
       if (analysisRunnerResult.status === "fulfilled") {
