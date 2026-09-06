@@ -11,6 +11,7 @@ import { DocumentStore } from "./db/stores/documentStore.js";
 import { AutomationStore } from "./automationStore.js";
 import { ConnectorRefreshStore } from "./db/stores/connectorRefreshStore.js";
 import { SqliteIngestionStore } from "./db/stores/ingestionStore.js";
+import { KnowledgeStore } from "./db/stores/knowledgeStore.js";
 import { LibraryStore } from "./db/stores/libraryStore.js";
 import { RunStore } from "./db/stores/runStore.js";
 import { SourceIngestionTransitions } from "./db/stores/sourceIngestionTransitions.js";
@@ -50,6 +51,12 @@ export interface StorageRuntime {
    * instance during composition; the ledger never holds credential material.
    */
   readonly connections: ConnectionStore;
+  /**
+   * Account-scoped living-knowledge ledger (schema v19). WebDAV credential
+   * material is never held here; the shared connection secret store keeps
+   * it under the same account/connection key. No chat state is referenced.
+   */
+  readonly knowledge: KnowledgeStore;
   readonly automations: AutomationStore;
   readonly sourceIngestion: SourceIngestionTransitions;
   readonly connectorRefresh: ConnectorRefreshStore;
@@ -134,6 +141,7 @@ export async function initializeStorageRuntime(optionsValue: StorageRuntimeOptio
         libraries: new LibraryStore(ledger),
         agents: new AgentStore(ledger),
         connections: new ConnectionStore(ledger),
+        knowledge: new KnowledgeStore(ledger),
         automations: new AutomationStore(ledger),
         sources: new SourceStore(ledger),
         sourceIngestion: new SourceIngestionTransitions(ledger),
