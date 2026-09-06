@@ -13,7 +13,16 @@
  *   E2E_MCP_OAUTH_CHALLENGE=1     always answer 401 with a Bearer challenge
  *                                 advertising OAuth (WWW-Authenticate
  *                                 resource_metadata) instead of serving MCP.
- *   E2E_MCP_ISSUER_ORIGIN=<url>   issuer advertised in that challenge.
+ *   E2E_MCP_OAUTH_VERIFY=1        require `Authorization: Bearer <token>` on
+ *                                 `/mcp` and validate it against the issuer's
+ *                                 POST /token/introspect; active access
+ *                                 tokens serve MCP, everything else gets the
+ *                                 same OAuth challenge as CHALLENGE mode
+ *                                 (plus the /.well-known/oauth-protected-
+ *                                 resource document). Requires
+ *                                 E2E_MCP_ISSUER_ORIGIN.
+ *   E2E_MCP_ISSUER_ORIGIN=<url>   issuer advertised in the challenge and
+ *                                 used for introspection in VERIFY mode.
  *   E2E_MCP_BULK_TOOLS, E2E_MCP_SLOW_MS  as in the stdio fixture.
  *
  * Never logs bodies, tokens, or credentials. Bound request bodies. SIGTERM
@@ -39,6 +48,40 @@ const bulkCount = clampInt(process.env.E2E_MCP_BULK_TOOLS, 0, 500, 0);
 const slowMs = clampInt(process.env.E2E_MCP_SLOW_MS, 10, 120_000, 31_000);
 const bearer = process.env.E2E_MCP_BEARER ?? "";
 const oauthChallenge = process.env.E2E_MCP_OAUTH_CHALLENGE === "1";
+const oauthVerify = process.env.E2E_MCP_OAUTH_VERIFY === "1";
+
+function protectedResourceDocument(req) {
+  return {
+    resource: protectedResourceUrl(req),
+    authorization_servers: [issuerOrigin(req)],
+    bearer_methods_supported: ["header"],
+  };
+}
+
+function sendOauthChallenge(req, res) {
+  sendJson(res, 401, { error: { message: "authorization required" } }, {
+    "WWW-Authenticate": `Bearer resource_metadata="${issuerOrigin(req)}/.well-known/oauth-authorization-server"`,
+  });
+}
+
+/** Introspect a bearer token against the issuer; never logs the value. */
+async function bearerActive(token) {
+  const issuer = process.env.E2E_MCP_ISSUER_ORIGIN;
+  if (!issuer || !token) return false;
+  try {
+    const response = await fetch(`${issuer}/token/introspect`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ token }),
+      redirect: "manual",
+    });
+    if (!response.ok) return false;
+    const info = await response.json();
+    return info?.active === true && info?.token_type === "access_token";
+  } catch {
+    return false;
+  }
+}
 
 function clampInt(raw, min, max, fallback) {
   const value = Number.parseInt(raw ?? "", 10);
@@ -67,21 +110,35 @@ const tracked = createTrackedServer(async (req, res) => {
     if (oauthChallenge) {
       // Advertise that this endpoint needs OAuth (RFC 9728-style challenge).
       if (path === "/.well-known/oauth-protected-resource") {
-        sendJson(res, 200, {
-          resource: protectedResourceUrl(req),
-          authorization_servers: [issuerOrigin(req)],
-          bearer_methods_supported: ["header"],
-        });
+        sendJson(res, 200, protectedResourceDocument(req));
         return;
       }
       if (path === "/mcp") {
-        sendJson(res, 401, { error: { message: "authorization required" } }, {
-          "WWW-Authenticate": `Bearer resource_metadata="${issuerOrigin(req)}/.well-known/oauth-authorization-server"`,
-        });
+        sendOauthChallenge(req, res);
         return;
       }
       sendJson(res, 404, { error: { message: "not found" } });
       return;
+    }
+
+    if (oauthVerify) {
+      // Serve MCP only with a bearer token the issuer still reports active.
+      if (path === "/.well-known/oauth-protected-resource") {
+        sendJson(res, 200, protectedResourceDocument(req));
+        return;
+      }
+      if (path === "/mcp") {
+        const header = req.headers.authorization ?? "";
+        const match = /^Bearer\s+(.+)$/i.exec(header);
+        if (!match || !(await bearerActive(match[1]))) {
+          sendOauthChallenge(req, res);
+          return;
+        }
+        // Authenticated: continue into the normal session handling below.
+      } else {
+        sendJson(res, 404, { error: { message: "not found" } });
+        return;
+      }
     }
 
     if (bearer && path === "/mcp") {
@@ -178,5 +235,5 @@ emitReady({
   fixture: "mcp-server-http",
   origin: `http://127.0.0.1:${port}`,
   endpoint: `http://127.0.0.1:${port}/mcp`,
-  auth_required: oauthChallenge ? "oauth" : bearer ? "bearer" : "none",
+  auth_required: oauthChallenge ? "oauth" : oauthVerify ? "oauth-verify" : bearer ? "bearer" : "none",
 });

@@ -63,14 +63,19 @@ sleep so tests can exercise the sleeping path quickly. Closing stdin exits 0.
 ### `fixtures/mcp-server-http.mjs` — MCP over Streamable HTTP (journey A)
 
 Ready line carries `endpoint` = `http://127.0.0.1:PORT/mcp` and
-`auth_required` (`none|bearer|oauth`). Stateful sessions; clients send
-`Accept: application/json, text/event-stream` and echo `mcp-protocol-version`
-on session requests. Toggles: `E2E_MCP_BEARER` enforces exactly that bearer
-token (401 otherwise); `E2E_MCP_OAUTH_CHALLENGE=1` makes every MCP request
-401 with a `WWW-Authenticate: Bearer resource_metadata=...` challenge
-pointing at `E2E_MCP_ISSUER_ORIGIN` (plus a
-`/.well-known/oauth-protected-resource` document). Same tool inventory as the
-stdio fixture.
+`auth_required` (`none|bearer|oauth|oauth-verify`). Stateful sessions; clients
+send `Accept: application/json, text/event-stream` and echo
+`mcp-protocol-version` on session requests. Toggles: `E2E_MCP_BEARER`
+enforces exactly that bearer token (401 otherwise);
+`E2E_MCP_OAUTH_CHALLENGE=1` makes every MCP request 401 with a
+`WWW-Authenticate: Bearer resource_metadata=...` challenge pointing at
+`E2E_MCP_ISSUER_ORIGIN` (plus a `/.well-known/oauth-protected-resource`
+document); `E2E_MCP_OAUTH_VERIFY=1` (requires `E2E_MCP_ISSUER_ORIGIN`) is the
+full journey-A path: the same PRM document and challenge advertise OAuth, but
+requests carrying `Authorization: Bearer <token>` are validated against the
+issuer's `POST /token/introspect` and only active access tokens serve MCP —
+so sign-in, refresh rotation, expiry, and revocation are all observable
+end-to-end. Same tool inventory as the stdio fixture.
 
 ### `fixtures/oauth-issuer.mjs` — authorization-code + PKCE issuer (journey A)
 

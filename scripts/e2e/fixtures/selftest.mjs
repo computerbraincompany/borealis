@@ -381,9 +381,35 @@ async function groupMcpHttp() {
   const prm = await fetch(`${oauthReady.origin}/.well-known/oauth-protected-resource`);
   ok("mcp-http: protected-resource metadata served", prm.status === 200);
 
+  // Full OAuth verification mode: only an active issuer-minted bearer token
+  // serves MCP; everything else keeps receiving the OAuth challenge.
+  const issuer = spawnFixture("oauth-issuer-for-mcp", "oauth-issuer.mjs", {});
+  const issuerReady = await issuer.ready;
+  const verify = spawnFixture("mcp-http-oauth-verify", "mcp-server-http.mjs", { E2E_MCP_OAUTH_VERIFY: "1", E2E_MCP_ISSUER_ORIGIN: issuerReady.origin });
+  const verifyReady = await verify.ready;
+  const unverified = await mcpInitialize(verifyReady.endpoint);
+  ok("mcp-http: verify mode 401 + challenge without a bearer", unverified.status === 401 && String(unverified.wwwAuth).includes("resource_metadata="));
+  const verifyRedirect = "http://127.0.0.1:1/callback";
+  const vReg = await (await fetch(`${issuerReady.origin}/register`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ redirect_uris: [verifyRedirect] }) })).json();
+  const vVerifier = b64url(randomBytes(48));
+  const vChallenge = b64url(createHash("sha256").update(vVerifier).digest());
+  const vApproved = await fetch(`${issuerReady.origin}/authorize?response_type=code&client_id=${vReg.client_id}&redirect_uri=${encodeURIComponent(verifyRedirect)}&state=verify-state&code_challenge=${vChallenge}&code_challenge_method=S256`, { redirect: "manual" });
+  const vCode = new URL(vApproved.headers.get("location")).searchParams.get("code");
+  const vTokenRes = await fetch(`${issuerReady.origin}/token`, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ grant_type: "authorization_code", code: vCode, client_id: vReg.client_id, redirect_uri: verifyRedirect, code_verifier: vVerifier }) });
+  const vTokens = await vTokenRes.json();
+  const verifiedInit = await mcpInitialize(verifyReady.endpoint, { token: vTokens.access_token });
+  ok("mcp-http: verify mode serves MCP with an active issuer token", verifiedInit.status === 200 && !!verifiedInit.sessionId);
+  const inactiveInit = await mcpInitialize(verifyReady.endpoint, { token: "not-an-active-token" });
+  ok("mcp-http: verify mode rejects an inactive token", inactiveInit.status === 401);
+
   const stopMain = await stopFixture(fixture);
   const stopOauth = await stopFixture(oauth);
-  ok("mcp-http: SIGTERM exit 0 with PIDs gone", stopMain.exited?.code === 0 && stopMain.gone && stopOauth.exited?.code === 0 && stopOauth.gone);
+  const stopIssuer = await stopFixture(issuer);
+  const stopVerify = await stopFixture(verify);
+  ok(
+    "mcp-http: SIGTERM exit 0 with PIDs gone",
+    stopMain.exited?.code === 0 && stopMain.gone && stopOauth.exited?.code === 0 && stopOauth.gone && stopIssuer.exited?.code === 0 && stopIssuer.gone && stopVerify.exited?.code === 0 && stopVerify.gone
+  );
 }
 
 async function groupOauth() {
