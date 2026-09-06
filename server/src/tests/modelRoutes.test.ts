@@ -963,6 +963,60 @@ describe("remote egress consent gate", () => {
     expect(acceptChatTurnMock).toHaveBeenCalledOnce();
   });
 
+  it("never accepts a chat turn for a new provider that the durable A consent does not name", async () => {
+    const sourceScope = Object.freeze({
+      mode: "selected" as const,
+      attached: Object.freeze([]),
+      readySourceIds: Object.freeze([]),
+      readyTableNames: Object.freeze([]),
+    });
+    acceptChatTurnMock.mockResolvedValue({
+      runId: "55555555-5555-4555-8555-555555555555",
+      chatId,
+      model: "saved-chat-model",
+      agent: null,
+      sourceScope,
+      userMessage: {
+        id: 14,
+        role: "user",
+        content: "Use my data",
+        meta: { model: "saved-chat-model", source_mode: "selected", source_ids: [] },
+        created_at: "2026-08-29T00:00:00Z",
+      },
+    });
+    runAgentMock.mockResolvedValue(completion());
+    const app = await buildApp();
+    await runtimeSettingsStore().patch({ llmBaseUrl: "https://api.provider-a.example" });
+    const acknowledged = await app.inject({ method: "POST", url: "/api/consent/remote-egress", headers: authHeader });
+    expect(acknowledged.statusCode).toBe(200);
+
+    // Switching to provider B cannot reuse A's consent: the turn is refused
+    // before any durable acceptance or run work.
+    await runtimeSettingsStore().patch({ llmBaseUrl: "https://api.provider-b.example" });
+    const stale = await app.inject({
+      method: "POST",
+      url: `/api/chats/${chatId}/messages`,
+      headers: authHeader,
+      payload: { content: "Use my data" },
+    });
+    expect(stale.statusCode).toBe(403);
+    expect(stale.json()).toMatchObject({ code: "REMOTE_EGRESS_CONSENT_REQUIRED" });
+    expect(acceptChatTurnMock).not.toHaveBeenCalled();
+    expect(beginRunMock).not.toHaveBeenCalled();
+
+    // Re-acknowledging for B unblocks the turn without a restart.
+    const reack = await app.inject({ method: "POST", url: "/api/consent/remote-egress", headers: authHeader });
+    expect(reack.statusCode).toBe(200);
+    const resumed = await app.inject({
+      method: "POST",
+      url: `/api/chats/${chatId}/messages`,
+      headers: authHeader,
+      payload: { content: "Use my data" },
+    });
+    expect(resumed.statusCode).toBe(200);
+    expect(resumed.body).toContain('"type":"run-started"');
+  });
+
   it("never gates loopback providers", async () => {
     acceptChatTurnMock.mockResolvedValue({
       runId: "55555555-5555-4555-8555-555555555555",

@@ -12,9 +12,11 @@ import {
   type EmbeddingMigrationStatus,
 } from "../embeddingMigration.js";
 import { installHttpBoundary } from "../httpErrors.js";
-import type { RemoteEgressTarget } from "../egressPolicy.js";
+import { enforceRemoteEgressConsent, type RemoteEgressTarget } from "../egressPolicy.js";
 import type { ModelPairQualificationResult } from "../llm.js";
 import { createEmbeddingMigrationRoutes, MODEL_PAIR_NOT_QUALIFIED_CODE } from "../routes/embeddingMigration.js";
+import { closeRuntimeSettings, initializeRuntimeSettings, runtimeSettingsStore } from "../runtimeSettings.js";
+import { closeStorageRuntime, initializeStorageRuntime, storageRuntime } from "../storageRuntime.js";
 import { createSettingsStore, type EffectiveLlmSettings, type SettingsStore } from "../settingsStore.js";
 
 const ACCOUNT = "11111111-1111-4111-8111-111111111111";
@@ -58,6 +60,8 @@ const apps: FastifyInstance[] = [];
 
 afterEach(async () => {
   vi.restoreAllMocks();
+  closeRuntimeSettings();
+  await closeStorageRuntime();
   await Promise.all(apps.splice(0).map((app) => app.close()));
   await Promise.all(directories.splice(0).map((directory) => fs.rm(directory, { recursive: true, force: true })));
 });
@@ -238,5 +242,67 @@ describe("managed embedding migration routes", () => {
     expect(
       (await app.inject({ method: "POST", url: "/api/models/embedding-migration/apply", headers: auth })).json()
     ).toMatchObject({ phase: "apply_pending", restart_required: false });
+  });
+});
+
+describe("provider-bound consent at the migration start boundary", () => {
+  it("refuses to start a migration after switching away from the acknowledged origin", async () => {
+    const store = await makeStore();
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), "borealis-migration-consent-"));
+    directories.push(directory);
+    await initializeStorageRuntime({
+      sqlitePath: path.join(directory, "ledger.sqlite"),
+      lanceDirectory: path.join(directory, "lancedb"),
+      embeddingDimension: 3,
+    });
+    await storageRuntime().ledger.run("INSERT INTO users (id,email,password_hash) VALUES (?,?,?)", [
+      ACCOUNT,
+      "owner@example.test",
+      "hash",
+    ]);
+    await initializeRuntimeSettings({ settingsFile: path.join(directory, "settings.json"), env: {} });
+    await runtimeSettingsStore().patch({ llmBaseUrl: "https://api.provider-a.example" });
+    await storageRuntime().chats.acknowledgeRemoteEgress(
+      ACCOUNT,
+      new Date().toISOString(),
+      "https://api.provider-a.example"
+    );
+    await runtimeSettingsStore().patch({ llmBaseUrl: "https://api.provider-b.example" });
+
+    const coordinator = operations();
+    const qualify = vi.fn(async () => qualified);
+    const app = await buildApp({
+      store,
+      coordinator,
+      qualify,
+      consent: (reply, account) => enforceRemoteEgressConsent(reply, account),
+    });
+
+    const stale = await app.inject({
+      method: "POST",
+      url: "/api/models/embedding-migration/start",
+      headers: auth,
+      payload: { target_embed_model: "new-embed", target_dimension: 5 },
+    });
+    expect(stale.statusCode).toBe(403);
+    expect(stale.json()).toMatchObject({ code: "REMOTE_EGRESS_CONSENT_REQUIRED" });
+    // Refusal happens before qualification transport and before coordinator work.
+    expect(qualify).not.toHaveBeenCalled();
+    expect(coordinator.start).not.toHaveBeenCalled();
+
+    // Re-acknowledging B without a restart reopens the boundary.
+    await storageRuntime().chats.acknowledgeRemoteEgress(
+      ACCOUNT,
+      new Date().toISOString(),
+      "https://api.provider-b.example"
+    );
+    const started = await app.inject({
+      method: "POST",
+      url: "/api/models/embedding-migration/start",
+      headers: auth,
+      payload: { target_embed_model: "new-embed", target_dimension: 5 },
+    });
+    expect(started.statusCode).toBe(202);
+    expect(coordinator.start).toHaveBeenCalledOnce();
   });
 });

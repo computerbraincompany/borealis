@@ -62,6 +62,7 @@ import { wakeIngestionWorkers } from "../ingest.js";
 import { formatByteLimit } from "../routes/sources.js";
 import { routes } from "../routes.js";
 import { closeStorageRuntime, initializeStorageRuntime, storageRuntime } from "../storageRuntime.js";
+import { closeRuntimeSettings, initializeRuntimeSettings, runtimeSettingsStore } from "../runtimeSettings.js";
 import {
   cleanupCreatedUploadResource,
   createUploadResourceDirectory,
@@ -149,10 +150,15 @@ beforeEach(async () => {
     "foreign@example.test",
     "hash",
   ]);
+  await initializeRuntimeSettings({
+    settingsFile: path.join(runtimeDirectory, "settings.json"),
+    env: {},
+  });
 });
 
 afterEach(async () => {
   await Promise.all(apps.splice(0).map((app) => app.close()));
+  closeRuntimeSettings();
   await closeEmbeddingMigrationCoordinator();
   await closeStorageRuntime();
   await fs.rm(testState.uploadDir, { recursive: true, force: true });
@@ -549,3 +555,94 @@ async function writeActiveMigrationState(): Promise<void> {
 function randomChunkId(): string {
   return "55555555-5555-4555-8555-555555555555";
 }
+
+describe("provider-bound remote egress consent on ingestion routes", () => {
+  it("consent for A reserves neither an upload nor a reingest after switching to B", async () => {
+    await runtimeSettingsStore().patch({ llmBaseUrl: "https://api.provider-a.example" });
+    await storageRuntime().chats.acknowledgeRemoteEgress(
+      ACCOUNT,
+      new Date().toISOString(),
+      "https://api.provider-a.example"
+    );
+    const app = await buildApp();
+    const sourceId = "77777777-7777-4777-8777-777777777777";
+    await storageRuntime().sourceIngestion.createUploadSource(ACCOUNT, {
+      id: sourceId,
+      baseName: "notes",
+      kind: "document",
+      displayName: "Notes.txt",
+      filePath: "/safe/notes.txt",
+      mime: "text/plain",
+      sizeBytes: 5,
+    });
+
+    await runtimeSettingsStore().patch({ llmBaseUrl: "https://api.provider-b.example" });
+
+    const reingest = await app.inject({
+      method: "POST",
+      url: `/api/sources/${sourceId}/reingest`,
+      headers: auth,
+    });
+    expect(reingest.statusCode).toBe(403);
+    expect(reingest.json()).toMatchObject({ code: "REMOTE_EGRESS_CONSENT_REQUIRED" });
+    expect(wakeMock).not.toHaveBeenCalled();
+    // The upload reservation is untouched: no reingest generation was reserved.
+    const job = await storageRuntime().ledger.get<{ generation: bigint | number }>(
+      "SELECT generation FROM ingestion_jobs WHERE source_id=?",
+      [sourceId]
+    );
+    expect(Number(job?.generation)).toBe(1);
+
+    const upload = await app.inject({
+      method: "POST",
+      url: "/api/sources/upload",
+      ...multipart("ledger.csv", Buffer.from("amount\n42\n")),
+    });
+    expect(upload.statusCode).toBe(403);
+    expect(upload.json()).toMatchObject({ code: "REMOTE_EGRESS_CONSENT_REQUIRED" });
+    expect(createDirectoryMock).not.toHaveBeenCalled();
+
+    // Acknowledging B reopens both boundaries without a restart.
+    await storageRuntime().chats.acknowledgeRemoteEgress(
+      ACCOUNT,
+      new Date().toISOString(),
+      "https://api.provider-b.example"
+    );
+    const resumed = await app.inject({
+      method: "POST",
+      url: `/api/sources/${sourceId}/reingest`,
+      headers: auth,
+    });
+    expect(resumed.statusCode).toBe(200);
+    expect(resumed.json()).toMatchObject({ processing: true });
+    expect(wakeMock).toHaveBeenCalled();
+  });
+
+  it("never gates ingestion reservations for loopback providers", async () => {
+    // The ambient default is loopback even though a remote pair exists.
+    await storageRuntime().chats.acknowledgeRemoteEgress(
+      ACCOUNT,
+      new Date().toISOString(),
+      "https://api.provider-a.example"
+    );
+    const app = await buildApp();
+    const sourceId = "88888888-8888-4888-8888-888888888888";
+    await storageRuntime().sourceIngestion.createUploadSource(ACCOUNT, {
+      id: sourceId,
+      baseName: "local",
+      kind: "document",
+      displayName: "Local.txt",
+      filePath: "/safe/local.txt",
+      mime: "text/plain",
+      sizeBytes: 5,
+    });
+
+    const reingest = await app.inject({
+      method: "POST",
+      url: `/api/sources/${sourceId}/reingest`,
+      headers: auth,
+    });
+    expect(reingest.statusCode).toBe(200);
+    expect(reingest.json()).toMatchObject({ processing: true });
+  });
+});

@@ -829,6 +829,89 @@ describe("durable embedding migration coordinator", () => {
     ]);
   });
 
+  it("fails closed when any affected account acknowledged a different provider origin", async () => {
+    const embedFactory = vi.fn(
+      (settings: EffectiveLlmSettings) => async (texts: string[]) =>
+        texts.map((_text, index) => unitVector(settings.embeddingDimension, index))
+    );
+    const harness = await createHarness({ embed: embedFactory });
+    await harness.store.patch({ llmBaseUrl: "https://provider.example.test" });
+    await seedAccount(harness.runtime, OTHER_ACCOUNT, "other@example.test");
+    await seedReadySource(harness.runtime, OTHER_ACCOUNT, "second passage", [0, 1, 0]);
+    await harness.runtime.ledger.run("UPDATE users SET remote_egress_ack_at=?,remote_egress_ack_origin=? WHERE id=?", [
+      new Date().toISOString(),
+      "https://provider.example.test",
+      ACCOUNT,
+    ]);
+    // This account did acknowledge remote egress, but a different origin.
+    await harness.runtime.ledger.run("UPDATE users SET remote_egress_ack_at=?,remote_egress_ack_origin=? WHERE id=?", [
+      new Date().toISOString(),
+      "https://other.example.test",
+      OTHER_ACCOUNT,
+    ]);
+
+    await expect(harness.coordinator.start({ model: "new-embed", dimension: 5 })).resolves.toMatchObject({
+      phase: "failed",
+      error_code: "REMOTE_EGRESS_CONSENT_REQUIRED",
+    });
+    expect(embedFactory).not.toHaveBeenCalled();
+  });
+
+  it("stops before the next batch transport when an acknowledgment is replaced mid-build", async () => {
+    const runtimeBox: { runtime?: StorageRuntime } = {};
+    let embedCalls = 0;
+    const harness = await createHarness({
+      embed: (settings) => async (texts) => {
+        embedCalls += 1;
+        if (embedCalls === 1 && runtimeBox.runtime) {
+          // The account replaces its acknowledgment with provider B while this
+          // migration is building against provider A.
+          await runtimeBox.runtime.ledger.run("UPDATE users SET remote_egress_ack_origin=? WHERE id=?", [
+            "https://replacement.example.test",
+            ACCOUNT,
+          ]);
+        }
+        return texts.map((_text, index) => unitVector(settings.embeddingDimension, index));
+      },
+    });
+    runtimeBox.runtime = harness.runtime;
+    await harness.store.patch({ llmBaseUrl: "https://provider.example.test" });
+    await harness.runtime.ledger.run("UPDATE users SET remote_egress_ack_at=?,remote_egress_ack_origin=? WHERE id=?", [
+      new Date().toISOString(),
+      "https://provider.example.test",
+      ACCOUNT,
+    ]);
+    // More than one embedding batch: 17 single-chunk sources -> batches of 16 and 1.
+    for (let index = 0; index < 16; index += 1) {
+      await seedReadySource(harness.runtime, ACCOUNT, `passage ${index}`, [1, 0, 0]);
+    }
+
+    await harness.coordinator.start({ model: "new-embed", dimension: 5 });
+    const failed = await waitForPhase(harness.coordinator, "failed");
+    expect(failed).toMatchObject({ error_code: "REMOTE_EGRESS_CONSENT_REQUIRED" });
+    // Exactly one batch reached the provider; the replaced consent stopped the
+    // second batch before transport.
+    expect(embedCalls).toBe(1);
+
+    // Only the stable aggregate code is persisted: no origin, credential, or
+    // affected account identity enters migration state.
+    const persisted = await fs.readFile(harness.stateFile, "utf8");
+    expect(persisted).toContain("REMOTE_EGRESS_CONSENT_REQUIRED");
+    expect(persisted).not.toContain("replacement.example.test");
+    expect(persisted).not.toContain(ACCOUNT);
+
+    // After re-acknowledging the exact migration target, retry resumes without
+    // re-sending the first batch's already-vectorized chunks.
+    await harness.runtime.ledger.run("UPDATE users SET remote_egress_ack_origin=? WHERE id=?", [
+      "https://provider.example.test",
+      ACCOUNT,
+    ]);
+    await harness.coordinator.retry();
+    await waitForPhase(harness.coordinator, "ready_to_apply");
+    // Resume continues from the durable cursor: only the stopped batch embeds.
+    expect(embedCalls).toBe(2);
+  });
+
   it("rejects a symlinked durable state file without following it", async () => {
     const harness = await createHarness();
     const outside = path.join(harness.root, "outside.json");

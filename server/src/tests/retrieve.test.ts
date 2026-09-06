@@ -53,6 +53,9 @@ describe("scoped retrieval", () => {
         score: 0.9,
       },
     ]);
+    // The query-embedding boundary receives the owning account so the exact
+    // provider-origin consent check runs for every retrieval.
+    expect(embedMock).toHaveBeenCalledWith(["canary"], { accountId: "account", signal: undefined });
     expect(retrieveWithVectorMock).toHaveBeenCalledWith(runtime.ingestion, runtime.vectors, {
       accountId: "account",
       allowedSourceIds: allowed,
@@ -70,6 +73,7 @@ describe("scoped retrieval", () => {
     await expect(
       retrieve("account", "canary", ["11111111-1111-4111-8111-111111111111"], 6, controller.signal)
     ).rejects.toThrow("cancelled");
+    expect(embedMock.mock.calls[0]?.[1]).toMatchObject({ accountId: "account", signal: controller.signal });
     expect(runtimeMock).not.toHaveBeenCalled();
   });
 });

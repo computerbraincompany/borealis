@@ -3,6 +3,16 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const consent = vi.hoisted(() => ({
+  acknowledgment: { acknowledgedAt: null as string | null, origin: null as string | null },
+}));
+vi.mock("../storageRuntime.js", () => ({
+  storageRuntime: () => ({
+    chats: { getRemoteEgressAcknowledgment: async () => ({ ...consent.acknowledgment }) },
+    ledger: { run: async () => undefined },
+  }),
+}));
 import OpenAI from "openai";
 import {
   chatOnce,
@@ -20,6 +30,7 @@ import {
   runtimeSettingsStore,
 } from "../runtimeSettings.js";
 import { TOOL_DEFS } from "../tools.js";
+import { RemoteEgressConsentRequiredError } from "../egressPolicy.js";
 
 const ACCOUNT = "11111111-1111-4111-8111-111111111111";
 
@@ -346,5 +357,96 @@ describe("transient stream retry", () => {
     expect(isTransientStreamFailure(new OpenAI.APIError(400, undefined as any, "bad request", {} as any))).toBe(false);
     expect(isTransientStreamFailure(new OpenAI.APIUserAbortError())).toBe(false);
     expect(isTransientStreamFailure(new Error("model stream budget exceeded"))).toBe(false);
+  });
+});
+
+describe("exact-snapshot provider consent races", () => {
+  const ORIGIN_A = "https://provider-a.example.test";
+  const ORIGIN_B = "https://provider-b.example.test";
+
+  beforeEach(() => {
+    consent.acknowledgment = { acknowledgedAt: null, origin: null };
+  });
+
+  it("makes zero requests to B when the provider switched to B before capture", async () => {
+    await runtimeSettingsStore().patch({ llmBaseUrl: ORIGIN_A });
+    consent.acknowledgment = { acknowledgedAt: "2026-09-06T00:00:00.000Z", origin: ORIGIN_A };
+    await runtimeSettingsStore().patch({ llmBaseUrl: ORIGIN_B });
+
+    const clientB = await getLlmClient();
+    const chatCreate = vi.spyOn(clientB.chat.completions, "create");
+    const embedCreate = vi.spyOn(clientB.embeddings, "create");
+
+    await expect(streamingChat([], { accountId: ACCOUNT, model: "m" }, () => {})).rejects.toBeInstanceOf(
+      RemoteEgressConsentRequiredError
+    );
+    await expect(embed(["query"], { accountId: ACCOUNT })).rejects.toBeInstanceOf(RemoteEgressConsentRequiredError);
+    expect(chatCreate).not.toHaveBeenCalled();
+    expect(embedCreate).not.toHaveBeenCalled();
+  });
+
+  it("cannot retarget an authorized in-flight A call to B, and only the next capture sees B", async () => {
+    await runtimeSettingsStore().patch({ llmBaseUrl: ORIGIN_A });
+    consent.acknowledgment = { acknowledgedAt: "2026-09-06T00:00:00.000Z", origin: ORIGIN_A };
+    const clientA = await getLlmClient();
+
+    let firstDeltaSeen!: () => void;
+    const firstSeen = new Promise<void>((resolve) => {
+      firstDeltaSeen = resolve;
+    });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    async function* chunks() {
+      yield { choices: [{ delta: { content: "ok" } }] };
+      await gate;
+      yield { choices: [{ delta: { content: "!" } }] };
+    }
+    const createA = vi.spyOn(clientA.chat.completions, "create").mockReturnValue(chunks() as any);
+
+    const pending = streamingChat([], { accountId: ACCOUNT, model: "m" }, (text) => {
+      if (text) firstDeltaSeen();
+    });
+    await firstSeen;
+    // The provider switches mid-flight; the captured revision must complete.
+    await runtimeSettingsStore().patch({ llmBaseUrl: ORIGIN_B });
+    const clientB = await getLlmClient();
+    const createB = vi.spyOn(clientB.chat.completions, "create");
+    release();
+
+    const result = await pending;
+    expect(result.choices[0].message.content).toBe("ok!");
+    expect(createA).toHaveBeenCalledTimes(1);
+    expect(createB).not.toHaveBeenCalled();
+
+    // The next round captures B and is rejected until B is acknowledged.
+    await expect(streamingChat([], { accountId: ACCOUNT, model: "m" }, () => {})).rejects.toBeInstanceOf(
+      RemoteEgressConsentRequiredError
+    );
+    expect(createB).not.toHaveBeenCalled();
+
+    consent.acknowledgment = { acknowledgedAt: "2026-09-06T00:00:00.000Z", origin: ORIGIN_B };
+    async function* done() {
+      yield { choices: [{ delta: { content: "b" } }] };
+    }
+    createB.mockReturnValue(done() as any);
+    const resumed = await streamingChat([], { accountId: ACCOUNT, model: "m" }, () => {});
+    expect(resumed.choices[0].message.content).toBe("b");
+    expect(createB).toHaveBeenCalledTimes(1);
+  });
+
+  it("denies an unacknowledged destination for query embeddings and unblocks after acknowledging B", async () => {
+    await runtimeSettingsStore().patch({ llmBaseUrl: ORIGIN_B });
+    const clientB = await getLlmClient();
+    const embedCreate = vi.spyOn(clientB.embeddings, "create");
+
+    await expect(embed(["query"], { accountId: ACCOUNT })).rejects.toBeInstanceOf(RemoteEgressConsentRequiredError);
+    expect(embedCreate).not.toHaveBeenCalled();
+
+    consent.acknowledgment = { acknowledgedAt: "2026-09-06T00:00:00.000Z", origin: ORIGIN_B };
+    embedCreate.mockResolvedValue({ data: [{ embedding: [0.5] }] } as any);
+    await expect(embed(["query"], { accountId: ACCOUNT })).resolves.toEqual([[0.5]]);
+    expect(embedCreate).toHaveBeenCalledTimes(1);
   });
 });

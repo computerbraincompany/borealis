@@ -70,6 +70,37 @@ describe("durable ingestion embedding authorization", () => {
     expect(mocks.recordEgressEvent).toHaveBeenCalledWith("remote_ingest", "account-a", "provider.example.test");
   });
 
+  it("denies an A timestamp paired with a B origin before any executor or transport work", async () => {
+    mocks.getRuntimeSettings.mockResolvedValue(snapshot(REMOTE, 2));
+    // The stored pair acknowledges a different provider origin than the job's
+    // captured snapshot targets.
+    mocks.getRemoteEgressAcknowledgment.mockResolvedValue({
+      acknowledgedAt: "2026-09-01T00:00:00.000Z",
+      origin: "https://other.example.test",
+    });
+
+    await expect(createAuthorizedIngestionEmbeddingSession("account-a")).rejects.toBeInstanceOf(
+      RemoteEgressConsentRequiredError
+    );
+    expect(mocks.createEmbeddingExecutor).not.toHaveBeenCalled();
+    expect(mocks.recordEgressEvent).not.toHaveBeenCalled();
+    expect(mocks.getRuntimeSettings).toHaveBeenCalledTimes(1);
+  });
+
+  it("denies a legacy timestamp-only pair with a null origin", async () => {
+    mocks.getRuntimeSettings.mockResolvedValue(snapshot(REMOTE, 2));
+    mocks.getRemoteEgressAcknowledgment.mockResolvedValue({
+      acknowledgedAt: "2026-09-01T00:00:00.000Z",
+      origin: null,
+    });
+
+    await expect(createAuthorizedIngestionEmbeddingSession("account-a")).rejects.toBeInstanceOf(
+      RemoteEgressConsentRequiredError
+    );
+    expect(mocks.createEmbeddingExecutor).not.toHaveBeenCalled();
+    expect(mocks.recordEgressEvent).not.toHaveBeenCalled();
+  });
+
   it("authorizes independently for each owning account", async () => {
     mocks.getRuntimeSettings.mockResolvedValue(snapshot(REMOTE, 2));
     mocks.getRemoteEgressAcknowledgment.mockImplementation(async (accountId: string) =>
