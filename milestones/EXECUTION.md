@@ -9,7 +9,7 @@ Read [the handoff](../docs/DEVELOPMENT_HANDOFF.md) before executing.
 
 | Work | State | Implementation commit | Verification evidence |
 | ---- | ----- | --------------------- | --------------------- |
-| Prerequisite closure 001,003–009,011–016,020 | IN PROGRESS | 001 `50d70b7`, 003 `795ebad`, 011 `042bec1`, 004 `9c14f40`, 009 `f3dc381`, 015 `5640f66`, 005 `c150ac7`, 006 `418f7a9` (real v14) | 8 of 13 merged to main 2026-09-06 after per-diff review; integrated gates green after each merge (863 unit + 92 integration pre-v14; worktree runs post-006 880/94). v14 = nullable `users.remote_egress_ack_origin`, append-only, v014.sql shipped; every gated transport now binds one captured authorized provider snapshot. Plans 007/012(v15)/013 executing in parallel worktrees (serverApp.ts overlap 007∩013 pre-flagged for merge-time resolution). Remaining order: → 008 → 014 → 016 → 020(v16). Protocol: one subagent per plan in `../north-clone-wt/<plan>`, plan-scoped ownership; coordinator reviews diffs, rebases in-worktree + ff-merges, runs integrated gates. Load flake: re-run 5 s-budget subprocess tests before treating as failure. |
+| Prerequisite closure 001,003–009,011–016,020 | IN PROGRESS | 001 `50d70b7`, 003 `795ebad`, 011 `042bec1`, 004 `9c14f40`, 009 `f3dc381`, 015 `5640f66`, 005 `c150ac7`, 006 `418f7a9` (v14), 012 `642032d` (v15), 013 `1a6be8e` | 10 of 13 merged 2026-09-06 after per-diff review; merged-main gates green after each batch (885 unit + 97 integration with v15; web 316; policy/desktop-verify pass at baseline). 012 and 013 each also passed the full root `pnpm verify` in their worktrees before merge. 007 (contained-engine control) still executing; 013's serverApp.ts hunks pre-flagged for a clean 007 rebase. Remaining order: 007 → 008 → 014 → 016 → 020(v16). Protocol: one subagent per plan in `../north-clone-wt/<plan>`, plan-scoped ownership; coordinator reviews diffs, rebases in-worktree + ff-merges, runs integrated gates. Load flake: re-run 5 s-budget subprocess tests before treating as failure. |
 | Connected agents: MCP, OAuth, job setup | TODO | — | — |
 | M12 saved analyses | TODO | — | — |
 | M13 report/document workbench | TODO | — | — |
@@ -29,9 +29,9 @@ required contract must still be satisfied.
 | Version | Owner | State |
 | ------- | ----- | ----- |
 | v1–v13 | Existing applied history, including rich agent editor | Implemented baseline; upgrade tests required |
-| v14 | Advisor 006 provider-bound consent | Reserved, not implemented at handoff |
-| v15 | Advisor 012 automation ownership | Reserved, not implemented at handoff |
-| v16 | Advisor 020 typed connector repair | Reserved, not implemented at handoff |
+| v14 | Advisor 006 provider-bound consent | Implemented `418f7a9` 2026-09-06 (`users.remote_egress_ack_origin`, fixture v014, upgrade tests green) |
+| v15 | Advisor 012 automation ownership | Implemented `642032d` 2026-09-06 (owned `connector_id`/`chat_id` + generated `target_id`, FK cascades, partial unique schedule, fixture v015) |
+| v16 | Advisor 020 typed connector repair | Reserved; implemented when plan 020 lands |
 | v17+ | Allocate in actual serialized integration order | Unallocated; no placeholders or jumps |
 
 ## Integrated acceptance

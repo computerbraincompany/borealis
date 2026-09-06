@@ -42,8 +42,8 @@ requests it.
 | [009](009-eliminate-unsolicited-ui-egress.md)          | Eliminate unsolicited UI egress                                       |       P1 |      M | —                                 | DONE 2026-09-06 `f3dc381` |
 | [010](010-authorize-shared-report-artifacts.md)        | Authorize shared report artifacts consistently                        |       P1 |      S | —                                 | TODO   |
 | [011](011-preserve-source-cleanup-intents.md)          | Preserve source cleanup intents until artifact removal is proven      |       P1 |      S | —                                 | DONE 2026-09-06 `042bec1` |
-| [012](012-enforce-automation-target-ownership.md)      | Enforce automation target ownership in SQLite                         |       P1 |      M | 003, 006, 031                     | TODO   |
-| [013](013-drain-automation-scheduler-on-shutdown.md)   | Drain the automation scheduler before storage shutdown                |       P1 |      M | 006                               | TODO   |
+| [012](012-enforce-automation-target-ownership.md)      | Enforce automation target ownership in SQLite                         |       P1 |      M | 003, 006, 031                     | DONE 2026-09-06 `642032d` (real schema v15 shipped; M09 narration of `deleteConnectorAutomations` superseded by FK cascade) |
+| [013](013-drain-automation-scheduler-on-shutdown.md)   | Drain the automation scheduler before storage shutdown                |       P1 |      M | 006                               | DONE 2026-09-06 `1a6be8e` |
 | [014](014-create-owned-application-runtime.md)         | Create an owned application runtime                                   |       P2 |      L | 004, 007, 008, 009, 013           | TODO   |
 | [015](015-shorten-vector-promotion-transaction.md)     | Move vector verification outside the promotion write transaction      |       P1 |      M | 004                               | DONE 2026-09-06 `5640f66` |
 | [016](016-bound-periodic-storage-reconciliation.md)    | Bound periodic storage reconciliation                                 |       P2 |      L | 011, 014, 015                     | TODO   |
