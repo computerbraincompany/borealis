@@ -1,5 +1,12 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { ApiError, type ModelsResponse, type ProviderSettingsResponse, type SystemHealthResponse } from "@/lib/api";
+import {
+  ApiError,
+  connectionsApi,
+  type ConnectionDto,
+  type ModelsResponse,
+  type ProviderSettingsResponse,
+  type SystemHealthResponse,
+} from "@/lib/api";
 
 const mocks = vi.hoisted(() => ({
   clearSession: vi.fn(),
@@ -304,6 +311,35 @@ describe("SettingsView", () => {
     ).toBeInTheDocument();
     expect(screen.getByText("Chat and embedding requests cannot reach the configured endpoint.")).toBeInTheDocument();
     expect(screen.getByText("Unavailable")).toBeInTheDocument();
+  });
+
+  it("wires the Connections section to the management panel, mounted only when opened", async () => {
+    const row: ConnectionDto = {
+      id: "conn-1",
+      name: "Ops tools",
+      kind: "mcp_http",
+      revision: 2,
+      discovery_revision: 1,
+      enabled: true,
+      status: "ready",
+      status_code: null,
+      config: { kind: "mcp_http", url: "https://ops.example.test/mcp" },
+      credential_state: "none",
+      created_at: "2026-01-01T00:00:00Z",
+      updated_at: "2026-01-01T00:00:00Z",
+    };
+    const list = vi.spyOn(connectionsApi, "list").mockResolvedValue({ items: [row], next_cursor: null });
+    try {
+      render(<SettingsView />);
+      expect(list).not.toHaveBeenCalled();
+
+      selectSettingsSection("Connections");
+      expect(await screen.findByText("Ops tools")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /Add connection/i })).toBeInTheDocument();
+      expect(list).toHaveBeenCalledTimes(1);
+    } finally {
+      list.mockRestore();
+    }
   });
 
   it("changes the persisted appearance and exposes the signed-in account controls", () => {
