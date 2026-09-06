@@ -12,6 +12,7 @@ import { SourceIngestionTransitionError } from "../db/stores/sourceIngestionTran
 import { SourceStoreError, type SourceRecord } from "../db/stores/sourceStore.js";
 import { dataService } from "../dataService.js";
 import { isTabularSource, sanitizeDatasetName, wakeIngestionWorkers } from "../ingest.js";
+import { SUPPORTED_UPLOAD_EXTENSIONS } from "../ingestSupport.js";
 import { publicIngestionFailure } from "../ingestionFailures.js";
 import { completeSourceDeleteIntents } from "../sourceCleanup.js";
 import { enforceRemoteEgressConsent } from "../egressPolicy.js";
@@ -20,22 +21,6 @@ import { storageRuntime } from "../storageRuntime.js";
 import { cleanupCreatedUploadResource, createUploadResourceDirectory } from "../storageArtifacts.js";
 import { BODYLESS_MUTATION_LIMIT_BYTES, IDENTIFIER_LIST_JSON_BODY_LIMIT_BYTES } from "./bodyLimits.js";
 import { catalogStatusBodySchema, idParamsSchema } from "./schemas.js";
-
-const SUPPORTED_UPLOAD_EXTENSIONS = new Set([
-  ".txt",
-  ".md",
-  ".markdown",
-  ".text",
-  ".log",
-  ".pdf",
-  ".docx",
-  ".csv",
-  ".tsv",
-  ".xlsx",
-  ".parquet",
-  ".jsonl",
-  ".json",
-]);
 
 /**
  * Human-readable byte budget for the bounded upload-limit disclosure:

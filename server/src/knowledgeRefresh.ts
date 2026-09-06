@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import {
   KnowledgeConnectionConfigError,
   KnowledgePreviewNotFoundError,
@@ -134,6 +136,15 @@ export interface KnowledgeStageRequest {
   readonly relative_path: string;
   /** Stable managed source when replacing content in place; null for new. */
   readonly source_id: string | null;
+  /**
+   * Preallocated source UUID for a `new`/`duplicate` selection. The preview
+   * commit binds this exact id, so transports stage directly into the
+   * ordinary `uploads/<account>/<source>` directory of the source that will
+   * own the bytes — the same account/source-scoped storage layout every
+   * browser upload uses. Absent for refresh-driven staging, where the
+   * managed `source_id` already owns the bytes.
+   */
+  readonly proposed_source_id?: string | null;
   /** Current durable source path so the adapter can stage beside it. */
   readonly source_file_path: string | null;
 }
@@ -209,7 +220,10 @@ export function classifyKnowledgeScan(
       classification,
       content_hash: file.content_hash,
       size_bytes: file.size_bytes,
-      existing_source_id: existing && existing.lifecycle !== "removed" ? existing.source_id : null,
+      // A `new` scan of a path whose identity is retained-but-removed still
+      // names the original source: the commit reactivates that identity, and
+      // transports stage into the upload directory that source already owns.
+      existing_source_id: existing?.source_id ?? null,
       mtime_hint: file.mtime_hint ?? null,
       etag_hint: file.etag_hint ?? null,
     });
@@ -342,7 +356,7 @@ export class KnowledgeRefreshService {
   }
 
   private adapterFor(kind: KnowledgeConnectionKind): KnowledgeTransportAdapter {
-    const adapter = this.ports.adapter ? this.ports.adapter(kind) : undefined;
+    const adapter = this.ports.adapter ? this.ports.adapter(kind) : defaultKnowledgeTransportAdapter(kind);
     if (!adapter) throw new KnowledgeTransportUnavailableError(kind);
     return adapter;
   }
@@ -465,11 +479,16 @@ export class KnowledgeRefreshService {
       if (entry.classification === "changed" && entry.existing_source_id) {
         sourceFilePath = (await this.store.sourceIngestionState(accountId, entry.existing_source_id))?.filePath ?? null;
       }
+      // A `new`/`duplicate` path gets its source UUID allocated here so the
+      // transport can stage into the ordinary account/source upload directory
+      // the commit will then bind, rather than a foreign staging path.
+      const proposedSourceId = entry.classification === "changed" ? null : (entry.existing_source_id ?? randomUUID());
       const staged = await adapter.stage(
         context,
         {
           relative_path: entry.relative_path,
           source_id: entry.classification === "changed" ? entry.existing_source_id : null,
+          proposed_source_id: proposedSourceId,
           source_file_path: sourceFilePath,
         },
         signal
@@ -477,7 +496,14 @@ export class KnowledgeRefreshService {
       if (staged.content_hash !== entry.content_hash) {
         throw new KnowledgePreviewStaleError("the upstream content changed between preview and commit");
       }
-      selections.push(Object.freeze({ entry_id: entry.entry_id, selection_token: selection.selection_token, staged }));
+      selections.push(
+        Object.freeze({
+          entry_id: entry.entry_id,
+          selection_token: selection.selection_token,
+          staged,
+          proposed_source_id: proposedSourceId,
+        })
+      );
     }
     return this.store.applyPreview(accountId, preview.id, { expected_revision: input.expected_revision, selections });
   }
@@ -1068,6 +1094,28 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
     };
     signal.addEventListener("abort", onAbort, { once: true });
   });
+}
+
+/**
+ * Process-wide transport adapter registry. Stage-2 composition (folder and
+ * WebDAV transports) registers its concrete adapters here so the default
+ * service resolves them without every caller threading ports; a service
+ * constructed with an explicit `adapter` port (tests) never consults the
+ * registry. Registration replaces the adapter for one kind and is the only
+ * mutation surface.
+ */
+const adapterRegistry = new Map<KnowledgeConnectionKind, KnowledgeTransportAdapter>();
+
+export function registerKnowledgeTransportAdapter(adapter: KnowledgeTransportAdapter): void {
+  adapterRegistry.set(adapter.kind, adapter);
+}
+
+export function clearKnowledgeTransportAdapters(): void {
+  adapterRegistry.clear();
+}
+
+export function defaultKnowledgeTransportAdapter(kind: KnowledgeConnectionKind): KnowledgeTransportAdapter | undefined {
+  return adapterRegistry.get(kind);
 }
 
 let configured: KnowledgeRefreshPorts = {};

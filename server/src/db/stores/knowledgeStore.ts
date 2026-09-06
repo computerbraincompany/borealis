@@ -848,6 +848,12 @@ export interface PreviewSelection {
   readonly entry_id: string;
   readonly selection_token: string;
   readonly staged: StagedKnowledgeEntry;
+  /**
+   * Transport-staged new sources carry the preallocated UUID whose
+   * account/source upload directory already owns the bytes; the commit binds
+   * that exact id. Absent falls back to a freshly allocated source UUID.
+   */
+  readonly proposed_source_id?: string | null;
 }
 
 export interface ApplyPreviewInput {
@@ -1612,6 +1618,11 @@ export class KnowledgeStore {
       if (staged.kind !== "document" && staged.kind !== "tabular") {
         throw new KnowledgePreviewSelectionError("staged kind must be document or tabular");
       }
+      if (selection.proposed_source_id !== undefined && selection.proposed_source_id !== null) {
+        if (typeof selection.proposed_source_id !== "string" || !UUID_PATTERN.test(selection.proposed_source_id)) {
+          throw new KnowledgePreviewSelectionError("proposed_source_id must be a canonical UUID");
+        }
+      }
     }
     const timestamp = this.timestamp();
 
@@ -1767,7 +1778,9 @@ export class KnowledgeStore {
 
       for (const plan of newPlans) {
         const itemId = randomUUID();
-        const sourceId = randomUUID();
+        // Bind the transport's preallocated id when the bytes were already
+        // staged into that source's upload directory; otherwise allocate one.
+        const sourceId = plan.selection.proposed_source_id?.toLowerCase() ?? randomUUID();
         const name = allocateKnowledgeSourceName(transaction, accountId, plan.entry.relative_path);
         const displayName = knowledgeDisplayName(plan.entry.relative_path);
         transaction.run(

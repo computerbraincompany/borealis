@@ -12,6 +12,61 @@ GlobalWorkerOptions.workerSrc = pathToFileURL(require.resolve("pdfjs-dist/legacy
 
 const EXT_TEXT = new Set([".txt", ".md", ".markdown", ".text", ".log"]);
 const EXT_TABULAR = new Set([".csv", ".tsv", ".xlsx", ".parquet", ".jsonl", ".json"]);
+
+/**
+ * The single upload-allowlist truth, shared by the browser upload route, the
+ * M14 knowledge transports (folder/WebDAV scan classification), and browser
+ * directory-import manifests. Legacy `.xls`/`.doc` remain unsupported and are
+ * refused with their own actionable upload error.
+ */
+export const SUPPORTED_UPLOAD_EXTENSIONS = Object.freeze(
+  new Set([
+    ".txt",
+    ".md",
+    ".markdown",
+    ".text",
+    ".log",
+    ".pdf",
+    ".docx",
+    ".csv",
+    ".tsv",
+    ".xlsx",
+    ".parquet",
+    ".jsonl",
+    ".json",
+  ])
+);
+
+const EXT_MIME: Readonly<Record<string, string>> = Object.freeze({
+  ".txt": "text/plain",
+  ".md": "text/markdown",
+  ".markdown": "text/markdown",
+  ".text": "text/plain",
+  ".log": "text/plain",
+  ".pdf": "application/pdf",
+  ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  ".csv": "text/csv",
+  ".tsv": "text/tab-separated-values",
+  ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  ".parquet": "application/vnd.apache.parquet",
+  ".jsonl": "application/x-ndjson",
+  ".json": "application/json",
+});
+
+/** True when a path's extension is on the shared ingestion allowlist. */
+export function isSupportedSourcePath(filePath: string): boolean {
+  return SUPPORTED_UPLOAD_EXTENSIONS.has(path.extname(filePath).toLowerCase());
+}
+
+/** Deterministic extension-derived MIME type for staged/copy sources. */
+export function sourceMimeForPath(filePath: string): string {
+  return EXT_MIME[path.extname(filePath).toLowerCase()] ?? "application/octet-stream";
+}
+
+/** Storage kind derived from the extension only, exactly like upload MIME kinds. */
+export function sourceKindForPath(filePath: string): "document" | "tabular" {
+  return isTabularSource(filePath, sourceMimeForPath(filePath)) ? "tabular" : "document";
+}
 const MAX_PDF_PAGES = 500;
 const MAX_DOCX_MEMBERS = 2_048;
 const MAX_DOCX_EXPANDED_BYTES = 100 * 1024 * 1024;
