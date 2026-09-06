@@ -611,8 +611,11 @@ export function createBriefRunner(dependencies: BriefRunnerDependencies) {
         fromStage: run.stage,
         outcome,
         expectedStageOperationId: run.stageOperationId,
-        failureCode: outcome === "failed" ? (failureCode ?? "BRIEF_RUN_FAILED") : null,
-        failureReason: outcome === "failed" ? boundedReason(failureReason ?? "the brief could not complete") : null,
+        // Skipped/blocked outcomes keep their bounded content-free code so
+        // the run detail shows WHY; only `failed` requires a reason.
+        failureCode: failureCode ?? (outcome === "failed" ? "BRIEF_RUN_FAILED" : null),
+        failureReason:
+          outcome === "failed" ? boundedReason(failureReason ?? "the brief could not complete") : boundedReason(failureReason ?? "") || null,
       });
     } catch (error) {
       // A concurrent decision owns the row; never overwrite it.
@@ -634,6 +637,12 @@ export function createBriefRunner(dependencies: BriefRunnerDependencies) {
   }
 
   // -- Refresh stage ------------------------------------------------------------
+
+  interface BriefSnapshotEntry {
+    readonly source_id: string;
+    readonly ready_generation: number;
+    readonly content_identity: string;
+  }
 
   interface RefreshReceipt {
     readonly source_id: string;
@@ -864,7 +873,7 @@ export function createBriefRunner(dependencies: BriefRunnerDependencies) {
     const items: Array<{ id: string; source_id: string; lifecycle: string }> = [];
     let after = null as { timestamp: string; id: string } | null;
     for (let guard = 0; guard < 4; guard += 1) {
-      const page = await knowledge.listItems(accountId, connectionId, { limit: 500, after });
+      const page = await knowledge.listItems(accountId, connectionId, { limit: 100, after });
       items.push(...page.items.map((item) => ({ id: item.id, source_id: item.source_id, lifecycle: item.lifecycle })));
       if (!page.next) return items;
       after = page.next;
@@ -881,7 +890,7 @@ export function createBriefRunner(dependencies: BriefRunnerDependencies) {
   async function waitPhase(
     execution: ActiveExecution,
     runValue: StoredBriefRun
-  ): Promise<readonly ExpectedSourceSnapshotEntry[]> {
+  ): Promise<readonly BriefSnapshotEntry[]> {
     let run = runValue;
     const receipts = run.refreshReceipts as readonly RefreshReceipt[];
     for (;;) {
@@ -892,7 +901,7 @@ export function createBriefRunner(dependencies: BriefRunnerDependencies) {
       );
       const byId = new Map(records.map((record) => [record.id, record]));
       let allReady = true;
-      const snapshot: ExpectedSourceSnapshotEntry[] = [];
+      const snapshot: BriefSnapshotEntry[] = [];
       for (const receipt of receipts) {
         const record = byId.get(receipt.source_id);
         if (!record) {
@@ -924,16 +933,16 @@ export function createBriefRunner(dependencies: BriefRunnerDependencies) {
           );
         }
         snapshot.push({
-          sourceId: record.id,
-          readyGeneration: ready,
-          contentIdentity: analysisSourceContentIdentity({
+          source_id: record.id,
+          ready_generation: ready,
+          content_identity: analysisSourceContentIdentity({
             readyGeneration: ready,
             sizeBytes: record.sizeBytes,
             filePath: record.filePath,
           }),
         });
       }
-      if (allReady) return snapshot.sort((left, right) => (left.sourceId < right.sourceId ? -1 : 1));
+      if (allReady) return snapshot.sort((left, right) => (left.source_id < right.source_id ? -1 : 1));
       await sleep(waitPollIntervalMs, execution.controller.signal);
     }
   }
@@ -1215,6 +1224,10 @@ export function createBriefRunner(dependencies: BriefRunnerDependencies) {
       );
     }
 
+    // Stage boundary: a cancellation/deadline that arrived while awaiting the
+    // model stops the run before any draft exists (artifacts-to-date stay).
+    run = await guard(execution, run, "total");
+
     // Build the draft tree inside M13 ceilings: labeled previews with
     // verified provenance, honest comparison/freshness labels, no citations.
     const currentPreview = buildBriefPreviewTable(currentResult, BRIEF_PREVIEW_CELLS_MAX, "Current result");
@@ -1311,10 +1324,17 @@ export function createBriefRunner(dependencies: BriefRunnerDependencies) {
 
   /** Execution success accounting + step-8 notifications (deduplicated per run+kind). */
   async function accountSuccess(execution: ActiveExecution, run: StoredBriefRun): Promise<void> {
-    await guard(execution, run, "total").catch((error) => {
-      if (error instanceof BriefRunStateError) return;
-      throw error;
-    });
+    // Called only once the draft and its references are durably committed:
+    // the 30-minute execution budget covers work THROUGH the draft commit,
+    // and review time is excluded by construction. A late deadline therefore
+    // must not fail an already-drafted run out of `awaiting_review`; only an
+    // explicit cancellation request (which finalizes `cancelled` and preserves
+    // the artifacts-to-date) may intercede here.
+    const live = await runs.getRun(run.accountId, run.id);
+    if (live.cancelRequested) {
+      execution.cancelObserved = true;
+      throw abortError();
+    }
     await runs.applyExecutionOutcome(run.accountId, run.id, "succeeded");
     const summary = run.comparisonSummary as BriefComparisonPayload | null;
     if (run.baselineRunId === null) {
@@ -1619,10 +1639,10 @@ export function defaultBriefRunner(): BriefRunner | undefined {
 
 function decodeSnapshotEntries(value: readonly unknown[]): readonly ExpectedSourceSnapshotEntry[] {
   return value.map((entry) => {
-    const record = (typeof value === "object" && entry ? entry : {}) as Record<string, unknown>;
+    const record = (entry && typeof entry === "object" ? entry : {}) as Record<string, unknown>;
     return {
-      sourceId: String(record.source_id ?? record.sourceId ?? ""),
-      readyGeneration: Number(record.ready_generation ?? record.readyGeneration ?? 0),
+      sourceId: String(record.source_id ?? ""),
+      readyGeneration: Number(record.ready_generation ?? 0),
       contentIdentity:
         record.content_identity === undefined || record.content_identity === null
           ? null
