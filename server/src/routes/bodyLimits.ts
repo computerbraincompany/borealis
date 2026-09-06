@@ -29,7 +29,11 @@ import {
   ANALYSIS_SQL_MAX_CHARS,
   ANALYSIS_TITLE_MAX_CHARS,
 } from "../analysisTypes.js";
-import { MAX_KNOWLEDGE_RELATIVE_PATH_CHARS } from "../db/stores/knowledgeStore.js";
+import {
+  MAX_KNOWLEDGE_CONNECTION_NAME_CHARS,
+  MAX_KNOWLEDGE_RELATIVE_PATH_CHARS,
+  MAX_PREVIEW_SCAN_ENTRIES,
+} from "../db/stores/knowledgeStore.js";
 import { MAX_DIRECTORY_IMPORT_ITEMS } from "../db/stores/directoryImportStore.js";
 
 import { DOCUMENT_REVISION_PAYLOAD_MAX_CHARS } from "../documentTypes.js";
@@ -86,6 +90,35 @@ export const DIRECTORY_IMPORT_JSON_BODY_LIMIT_BYTES =
     (MAX_KNOWLEDGE_RELATIVE_PATH_CHARS * MAX_JSON_BYTES_PER_CODE_POINT + 36 * MAX_JSON_BYTES_PER_CODE_POINT + 128) +
   (36 + 24) * MAX_JSON_BYTES_PER_CODE_POINT +
   OBJECT_KEYS_AND_SYNTAX_HEADROOM_BYTES;
+
+/**
+ * Knowledge connection create/edit contract (M14 stage 4): bounded name, the
+ * WebDAV collection URL and username validated by `knowledgeStore.ts`, one
+ * application password bounded by the shared secret-store value limit, a
+ * 64-hex desktop grant id, and the target library UUID — all escaped
+ * astrally. The durable semantic bounds live in `db/stores/knowledgeStore.ts`
+ * and `connections/secrets.ts`; the password never persists outside custody.
+ */
+const MAX_KNOWLEDGE_WEBDAV_URL_CHARS = 2_000;
+const MAX_KNOWLEDGE_WEBDAV_USERNAME_CHARS = 256;
+export const KNOWLEDGE_CONNECTION_JSON_BODY_LIMIT_BYTES =
+  (MAX_KNOWLEDGE_CONNECTION_NAME_CHARS +
+    MAX_KNOWLEDGE_WEBDAV_URL_CHARS +
+    MAX_KNOWLEDGE_WEBDAV_USERNAME_CHARS +
+    MAX_SECRET_VALUE_CHARS +
+    64 +
+    36) *
+    MAX_JSON_BYTES_PER_CODE_POINT +
+  OBJECT_KEYS_AND_SYNTAX_HEADROOM_BYTES;
+
+/**
+ * Preview apply contract (M14 stage 4): up to one thousand entry UUID plus
+ * 64-hex selection-token pairs. Both are fixed-shape identifiers, so the
+ * per-ASCII escape bound applies. The durable semantic bound is the preview
+ * entry budget in `db/stores/knowledgeStore.ts`.
+ */
+export const KNOWLEDGE_APPLY_JSON_BODY_LIMIT_BYTES =
+  MAX_PREVIEW_SCAN_ENTRIES * (36 + 64) * MAX_JSON_BYTES_PER_ASCII_CHARACTER + OBJECT_KEYS_AND_SYNTAX_HEADROOM_BYTES;
 
 /**
  * Connection create/edit contract: bounded name, endpoint URL or absolute

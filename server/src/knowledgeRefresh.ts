@@ -408,9 +408,61 @@ export class KnowledgeRefreshService {
   }
 
   /**
+   * Registers the durable pending preview row and detaches the bounded
+   * upstream scan onto a detached run promise. The route surface returns the
+   * pending preview id immediately; the caller polls
+   * `getPreview`/`GET /api/knowledge-previews/:id` for `complete`/`failed`.
+   * A scan that fails (over bounds, unauthorized, or timed out) records a
+   * durable failed preview and never activates anything.
+   */
+  async beginPreview(
+    accountId: string,
+    connectionId: string,
+    bounds: KnowledgeScanBounds = DEFAULT_KNOWLEDGE_SCAN_BOUNDS,
+    options: { signal?: AbortSignal } = {}
+  ): Promise<{
+    preview: KnowledgePreviewRecord;
+    run: Promise<{ preview: KnowledgePreviewRecord; entries: readonly KnowledgePreviewEntryRecord[] }>;
+  }> {
+    const signal = options.signal ?? neverSignal;
+    const connection = await this.store.requireConnection(accountId, connectionId);
+    const adapter = this.adapterFor(connection.kind);
+    const validated = validateKnowledgeScanBounds(bounds);
+    // Early failures (foreign connection, missing adapter, insert error) throw
+    // before any preview row exists.
+    const preview = await this.store.createPreview(accountId, connectionId, validated);
+    const run = (async () => {
+      const managed = await this.managedItems(accountId, connectionId);
+      try {
+        signal.throwIfAborted();
+        const context = await this.transportContext(accountId, connection);
+        const scan = await adapter.scan(context, validated, managed, signal);
+        signal.throwIfAborted();
+        const completed = await this.store.completePreview(accountId, preview.id, classifyKnowledgeScan(managed, scan));
+        await this.store.recordConnectionStatus(accountId, connectionId, "ready", null);
+        return completed;
+      } catch (error) {
+        const code = scanErrorCode(error);
+        await this.store.failPreview(accountId, preview.id, code).catch(() => undefined);
+        const status =
+          code === "KNOWLEDGE_UPSTREAM_UNAUTHORIZED" || code === "KNOWLEDGE_CREDENTIALS_MISSING"
+            ? "disconnected"
+            : "error";
+        await this.store.recordConnectionStatus(accountId, connectionId, status, code).catch(() => undefined);
+        throw error;
+      }
+    })();
+    // The detached run must never surface as an unhandled rejection while the
+    // route polls the pending row; an awaiting caller (createPreview) still
+    // observes the original rejection through its own `await run`.
+    run.catch(() => undefined);
+    return Object.freeze({ preview, run });
+  }
+
+  /**
    * Runs one bounded upstream scan and persists the classified diff as a
-   * preview. A scan that fails (over bounds, unauthorized, or timed out)
-   * records a durable failed preview and never activates anything.
+   * preview, awaiting the detached run. A scan that fails records a durable
+   * failed preview and never activates anything.
    */
   async createPreview(
     accountId: string,
@@ -418,30 +470,8 @@ export class KnowledgeRefreshService {
     bounds: KnowledgeScanBounds = DEFAULT_KNOWLEDGE_SCAN_BOUNDS,
     options: { signal?: AbortSignal } = {}
   ): Promise<{ preview: KnowledgePreviewRecord; entries: readonly KnowledgePreviewEntryRecord[] }> {
-    const signal = options.signal ?? neverSignal;
-    const connection = await this.store.requireConnection(accountId, connectionId);
-    const adapter = this.adapterFor(connection.kind);
-    const validated = validateKnowledgeScanBounds(bounds);
-    const preview = await this.store.createPreview(accountId, connectionId, validated);
-    const managed = await this.managedItems(accountId, connectionId);
-    try {
-      signal.throwIfAborted();
-      const context = await this.transportContext(accountId, connection);
-      const scan = await adapter.scan(context, validated, managed, signal);
-      signal.throwIfAborted();
-      const completed = await this.store.completePreview(accountId, preview.id, classifyKnowledgeScan(managed, scan));
-      await this.store.recordConnectionStatus(accountId, connectionId, "ready", null);
-      return completed;
-    } catch (error) {
-      const code = scanErrorCode(error);
-      await this.store.failPreview(accountId, preview.id, code).catch(() => undefined);
-      const status =
-        code === "KNOWLEDGE_UPSTREAM_UNAUTHORIZED" || code === "KNOWLEDGE_CREDENTIALS_MISSING"
-          ? "disconnected"
-          : "error";
-      await this.store.recordConnectionStatus(accountId, connectionId, status, code).catch(() => undefined);
-      throw error;
-    }
+    const { run } = await this.beginPreview(accountId, connectionId, bounds, options);
+    return run;
   }
 
   /**

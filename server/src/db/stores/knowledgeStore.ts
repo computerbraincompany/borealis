@@ -1143,6 +1143,25 @@ export class KnowledgeStore {
     return changed.changes === 1;
   }
 
+  /**
+   * Cross-account scan for the desktop watch pump: every account's enabled
+   * `desktop_folder` connection. Deliberately not a public surface — watch is
+   * a desktop-only capability and the pump only runs inside the trusted
+   * desktop composition. Returns opaque `{ accountId, connectionId }` pairs.
+   */
+  async listWatchEnabledConnections(): Promise<readonly { accountId: string; connectionId: string }[]> {
+    const rows = await this.ledger.all<{ account_id: unknown; id: unknown }>(
+      `SELECT account_id,id FROM knowledge_connections
+       WHERE watch_enabled=1 AND kind='desktop_folder' ORDER BY account_id,id`
+    );
+    return rows.map((row) =>
+      Object.freeze({
+        accountId: storedText(row.account_id, "knowledge connection account id"),
+        connectionId: storedText(row.id, "knowledge connection id"),
+      })
+    );
+  }
+
   // --------------------------------------------------------------------- items
 
   async listItems(

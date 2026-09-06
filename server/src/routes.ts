@@ -17,6 +17,7 @@ import { jobRoutes } from "./routes/jobs.js";
 import { connectorRoutes } from "./routes/connectors.js";
 import { documentRoutes } from "./routes/documents.js";
 import { embeddingMigrationRoutes } from "./routes/embeddingMigration.js";
+import { knowledgeRoutes } from "./routes/knowledge.js";
 import { libraryRoutes } from "./routes/libraries.js";
 import { modelRoutes } from "./routes/models.js";
 import { preferencesRoutes } from "./routes/preferences.js";
@@ -88,6 +89,7 @@ export async function routes(app: FastifyInstance, options: RoutesOptions = {}):
   await app.register(sourceRoutes);
   await app.register(sourceSearchRoutes);
   await app.register(libraryRoutes);
+  await app.register(knowledgeRoutes, { desktop: options.desktop ?? false });
   await app.register(agentRoutes);
   await app.register(agentSkillRoutes);
   await app.register(containedRoutes, { desktop: options.desktop ?? false });
