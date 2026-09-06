@@ -54,6 +54,8 @@ function mockRuntime() {
     stopDocumentRewriteRunner: vi.fn(() => Promise.resolve()),
     startResearchRunner: vi.fn(),
     stopResearchRunner: vi.fn(() => Promise.resolve()),
+    startBriefRunner: vi.fn(),
+    stopBriefRunner: vi.fn(() => Promise.resolve()),
     quiesceDownloads: vi.fn(() => Promise.resolve()),
     close: vi.fn(async () => undefined),
   };
