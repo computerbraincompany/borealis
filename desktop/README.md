@@ -161,6 +161,39 @@ integration and permission grants disabled. Main-window navigation stays on the
 application origin. Only a controlled `about:blank` preview popup is allowed;
 it has an empty preload and displays report HTML in an opaque-origin sandbox.
 
+The main-window preload exposes exactly three frozen operations and no
+general IPC: the one-shot `consumeBootstrap` session handoff; `chooseFolder`
+for living-library folder connections, which returns an opaque
+`{grant_id,label,preview}` (entry count plus a truncated flag) and never a
+path — main forwards the resolved canonical directory to the backend grant
+registry over the private utility-process port only; and `openSignInLink` for
+Connected-agent OAuth, which opens the system browser only for an exact URL
+presented together with the one-time intent token the backend minted for that
+exact URL. Main verifies-and-consumes that token with the backend over an
+`open-verify` utility-message pair before `shell.openExternal` ever runs, and
+only HTTPS targets (or explicitly loopback HTTP development targets) without
+URL credentials are considered, so a renderer can never open an arbitrary URL.
+The OAuth issuer's redirect then reaches the backend's own narrow loopback
+`GET /callback` listener (one-use state, five-minute expiry, no session
+credentials, replay-refusing), which stays backend-owned on both platforms.
+
+Connection secret custody is split the same way. Encrypted credential records
+keep the browser-development layout under `secrets/` in the data directory,
+but the sealing key is owned entirely by Electron main: a 32-byte data key is
+generated once and sealed at rest through `safeStorage` at
+`connection-custody/sealed-key.bin` below userData. The backend utility
+process may ask only the two strictly schema-checked questions — `read` (never
+create; silent regeneration would orphan every existing record) and `ensure`
+(create exactly once when OS-protected storage is available) — and main's only
+possible answer is the data key itself; there is no `list`, no per-record
+crypto, and no general secret API. The sealed envelope unseals only on this
+machine's login keychain, and Borealis never exports it. When the keychain is
+unavailable or a sealed key cannot be unsealed (for example after a restore on
+another machine), credential reads report the actionable unavailable state and
+every MCP or knowledge connection becomes an explicit disconnected/reconnect
+state — an MCP probe records `CONNECTION_CUSTODY_UNAVAILABLE` — never plaintext
+and never a crash.
+
 Production fuses disable `RunAsNode`, `NODE_OPTIONS`, Node inspector arguments,
 browser-process V8 snapshots, and extra `file:` privileges; they enable cookie
 encryption, embedded-ASAR integrity validation, ASAR-only application loading,
@@ -264,6 +297,8 @@ absolute `--user-data-dir` override):
 | `contained.json`           | Contained-engine paths/arguments; atomically replaced with mode `0600`.                                              |
 | `settings.json`            | Provider settings, written atomically with mode `0600`.                                                              |
 | `jwt.secret`               | Generated signing secret, created once with mode `0600` unless `JWT_SECRET` is supplied.                             |
+| `secrets/`                 | Mode-`0700` account-scoped directories of AES-256-GCM sealed connection credential records (mode `0600`); machine-bound and never archived. |
+| `connection-custody/`      | `sealed-key.bin`: main's `safeStorage`-sealed 32-byte connection data key; unseals only on this machine's login keychain. |
 
 Electron also stores its browser profile/cache under this directory. The
 desktop host does not load `.env` files. Inherited provider environment
@@ -276,7 +311,15 @@ Quit Borealis before using the supported workspace archive CLI. SQLite and
 LanceDB are one logical store and stay together in its encrypted, hashed
 `.borealis-workspace` container, along with SQLite WAL state, uploads, reports,
 downloaded models, contained configuration, provider settings, and the signing
-secret. The CLI uses the same instance lock as desktop startup: a persistent
+secret. Machine-bound connection custody is the deliberate exception: the
+`secrets/` credential namespace never archives, and the `safeStorage`-sealed
+key unseals only on the original machine's login keychain, so a restore
+never carries credentials. Every previously `ready` MCP or knowledge
+connection therefore comes back as an actionable disconnected state that
+requires reconnecting (and desktop folder connections require re-selecting
+the folder), while ledger rows, tool snapshots, indexed sources, documents,
+analyses, and knowledge items are retained unchanged. The CLI uses the same
+instance lock as desktop startup: a persistent
 private mode-`0700` namespace with atomically published, never-reused
 mode-`0600` owner records. Normal Electron startup does not pre-create userData
 or its durable subdirectories; the backend acquires that exact lock before it
@@ -318,3 +361,4 @@ directory does not record those operator overrides.
 | Settings field is disabled or an edit has no effect                                                  | Check inherited provider environment overrides. Editing `server/.env` does not configure the desktop host.                                                                                                                                                                                                               |
 | Login page after session expiry or clearing storage                                                  | Quit and reopen the app to renew the local account session.                                                                                                                                                                                                                                                              |
 | Packaged-native smoke cannot find the app                                                            | Run `package:unsigned` first; the smoke expects the generated `release/mac-arm64/Borealis.app`.                                                                                                                                                                                                                          |
+| Connections are `disconnected` with a reconnect code after a restore or keychain change              | Custody is machine-bound by design: re-enter credentials in Settings → Connections and re-select any desktop folder connection. Archives never carry credentials, and the sealed custody key only unseals in the original login keychain.               |
