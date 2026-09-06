@@ -1285,11 +1285,21 @@ async function rebaseRestoredWorkspacePaths(
       database.pragma("foreign_keys = ON");
       database.transaction(() => {
         rebaseSqliteTextColumns(database, "sources", ["file_path"], rebase);
+        // Plan-020 note: from schema v16 the connector-refresh protocol
+        // locations live in `connector_refresh_states` (rebased below) and
+        // `sources.meta` protocol keys exist only in pre-v16 archives, where
+        // they survive until the startup v16 migration backfills them.
         rebaseSqliteJsonObjectPaths(
           database,
           "sources",
           "meta",
           ["connector_previous_location", "connector_candidate_location", "connector_activation_previous_location"],
+          rebase
+        );
+        rebaseSqliteTextColumns(
+          database,
+          "connector_refresh_states",
+          ["candidate_location", "activation_previous_location", "cleanup_previous_location"],
           rebase
         );
         rebaseSqliteTextColumns(database, "pending_source_deletes", ["file_path"], rebase);
