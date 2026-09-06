@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { openSqliteLedger } from "../db/sqlite.js";
 import type { SqliteLedger } from "../db/types.js";
-import { LATEST_SQLITE_SCHEMA_VERSION, SCHEMA_V26 } from "../db/migrations.js";
+import { LATEST_SQLITE_SCHEMA_VERSION, SCHEMA_V26, SCHEMA_V27 } from "../db/migrations.js";
 import { AnalysisStore } from "../db/stores/analysisStore.js";
 import {
   BriefRecipeNotFoundError,
@@ -129,9 +129,11 @@ async function makeRecipe(
 
 describe("brief recipe schema foundation", () => {
   it("ships a byte-identical v026 fixture and keeps the documented v25 gap", async () => {
-    expect(LATEST_SQLITE_SCHEMA_VERSION).toBe(26);
+    expect(LATEST_SQLITE_SCHEMA_VERSION).toBe(27);
     const fixtureSql = await fs.readFile(fileURLToPath(new URL("./fixtures/sqlite/v026.sql", import.meta.url)), "utf8");
     expect(fixtureSql).toBe(SCHEMA_V26);
+    const v27Fixture = await fs.readFile(fileURLToPath(new URL("./fixtures/sqlite/v027.sql", import.meta.url)), "utf8");
+    expect(v27Fixture).toBe(SCHEMA_V27);
     await expect(listHistoricalFixtureVersions()).resolves.toEqual(expectedFixtureVersions());
   });
 
@@ -930,5 +932,62 @@ describe("recovery records across restart", () => {
       await reopened.close();
     }
     // `close()` is idempotent, so the afterEach ledger cleanup stays valid.
+  });
+});
+
+describe("brief per-recipe notification preference (schema v27)", () => {
+  it("defaults enabled, toggles without touching the revision, and suppresses every notification kind", async () => {
+    const fx = await fixture();
+    const { recipe } = await makeRecipe(fx, [await seedSource(fx.ledger, fx.account, "s-notify")]);
+    expect(recipe.notificationsEnabled).toBe(true);
+
+    // Toggling is head-only: no revision bump, no reschedule.
+    const disabled = await fx.recipes.setNotificationsEnabled(fx.account, recipe.id, false);
+    expect(disabled.notificationsEnabled).toBe(false);
+    expect(disabled.revision).toBe(recipe.revision);
+    expect(disabled.nextOccurrenceKey).toBe(recipe.nextOccurrenceKey);
+
+    // Claims/events run: notifications are suppressed while disabled.
+    fx.clock = new Date(Date.parse(disabled.nextRunAt));
+    const [run] = await fx.runs.claimDueRuns();
+    await expect(fx.runs.recordNotification(fx.account, run.id, "first_draft")).resolves.toEqual({
+      id: "",
+      created: false,
+    });
+    // Dedupe semantics untouched: re-enabling later still allows one row.
+    await fx.recipes.setNotificationsEnabled(fx.account, recipe.id, true);
+    await expect(fx.runs.recordNotification(fx.account, run.id, "first_draft")).resolves.toMatchObject({
+      created: true,
+    });
+    const dup = await fx.runs.recordNotification(fx.account, run.id, "first_draft");
+    expect(dup.created).toBe(false);
+  });
+
+  it("pausing still happens with notifications disabled; only the paused event is suppressed", async () => {
+    const fx = await fixture();
+    const { recipe } = await makeRecipe(fx, [await seedSource(fx.ledger, fx.account, "s-pause")]);
+    await fx.recipes.setNotificationsEnabled(fx.account, recipe.id, false);
+    fx.clock = new Date(Date.parse(recipe.nextRunAt));
+    const [run] = await fx.runs.claimDueRuns();
+    // Drive the failure counter to the pause boundary through the store.
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      await fx.ledger.run("UPDATE brief_recipes SET consecutive_failures=? WHERE id=?", [
+        attempt === 4 ? 5 : attempt + 1,
+        recipe.id,
+      ]);
+    }
+    await fx.ledger.run("UPDATE brief_recipes SET consecutive_failures=0 WHERE id=?", [recipe.id]);
+    const paused = await fx.runs.applyExecutionOutcome(fx.account, run.id, "failed");
+    // One failed increment from a counter of zero cannot pause; jump to the
+    // boundary deterministically instead.
+    expect(paused.paused).toBe(false);
+    await fx.ledger.run("UPDATE brief_recipes SET consecutive_failures=4 WHERE id=?", [recipe.id]);
+    const [run2] = [await fx.runs.getRun(fx.account, run.id)];
+    const outcome = await fx.runs.applyExecutionOutcome(fx.account, run2.id, "failed");
+    expect(outcome.paused).toBe(true);
+    const head = await fx.recipes.getRecipe(fx.account, recipe.id);
+    expect(head?.state).toBe("paused");
+    const events = await fx.ledger.all("SELECT kind FROM brief_notifications WHERE run_id=?", [run2.id]);
+    expect(events).toHaveLength(0);
   });
 });

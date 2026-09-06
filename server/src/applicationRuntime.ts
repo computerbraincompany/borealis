@@ -412,13 +412,13 @@ async function unwindConstruction(
   // limited to these phases.
   const [downloadResult, migrationResult, connectionsResult, rewriteResult, researchResult, briefResult] =
     await Promise.allSettled([
-    owned.downloadBegun && !owned.downloadReleased ? lifecycle.quiesceAndDrainDownloads() : Promise.resolve(),
-    owned.migration && !owned.migrationReleased ? owned.migration.close() : Promise.resolve(),
-    lifecycle.quiesceAndDrainConnections(),
-    owned.rewriteRunner && !owned.rewriteRunnerReleased ? owned.rewriteRunner.stop() : Promise.resolve(),
-    owned.researchRunner && !owned.researchRunnerReleased ? owned.researchRunner.stop() : Promise.resolve(),
-    owned.briefRunner && !owned.briefRunnerReleased ? owned.briefRunner.stop() : Promise.resolve(),
-  ]);
+      owned.downloadBegun && !owned.downloadReleased ? lifecycle.quiesceAndDrainDownloads() : Promise.resolve(),
+      owned.migration && !owned.migrationReleased ? owned.migration.close() : Promise.resolve(),
+      lifecycle.quiesceAndDrainConnections(),
+      owned.rewriteRunner && !owned.rewriteRunnerReleased ? owned.rewriteRunner.stop() : Promise.resolve(),
+      owned.researchRunner && !owned.researchRunnerReleased ? owned.researchRunner.stop() : Promise.resolve(),
+      owned.briefRunner && !owned.briefRunnerReleased ? owned.briefRunner.stop() : Promise.resolve(),
+    ]);
   if (owned.briefRunner && briefResult.status === "fulfilled") owned.briefRunnerReleased = true;
   if (owned.rewriteRunner && rewriteResult.status === "fulfilled") owned.rewriteRunnerReleased = true;
   if (owned.researchRunner && researchResult.status === "fulfilled") owned.researchRunnerReleased = true;

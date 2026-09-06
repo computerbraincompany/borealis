@@ -139,7 +139,12 @@ async function workflow(): Promise<Workflow> {
         sourceState: async () => ({ sourceStatus: "ready", readyGeneration: 1, jobStatus: null, jobGeneration: null }),
         generateNarrative: async () => "The tracked total is as stored.",
         resolveChatModel: async () => "workflow-chat",
-        authorizeEgress: async () => ({ revision: 1, origin: "http://127.0.0.1:1234", locality: "local", host: "127.0.0.1" }),
+        authorizeEgress: async () => ({
+          revision: 1,
+          origin: "http://127.0.0.1:1234",
+          locality: "local",
+          host: "127.0.0.1",
+        }),
         auditEgress: () => undefined,
         tickIntervalMs: 3_600_000,
         cancelPollIntervalMs: 10,
@@ -223,9 +228,10 @@ async function runDue(w: Workflow, recipeId: string, runner: BriefRunner) {
 }
 
 async function notificationKinds(w: Workflow, runId: string): Promise<string[]> {
-  const rows = await w.ledger.all<{ kind: string }>("SELECT kind FROM brief_notifications WHERE run_id=? ORDER BY kind", [
-    runId,
-  ]);
+  const rows = await w.ledger.all<{ kind: string }>(
+    "SELECT kind FROM brief_notifications WHERE run_id=? ORDER BY kind",
+    [runId]
+  );
   return rows.map((row) => row.kind);
 }
 

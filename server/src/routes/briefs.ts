@@ -111,6 +111,13 @@ const RUN_CREATE_BODY_SCHEMA = {
   properties: { operation_id: { type: "string", pattern: UUID_PATTERN } },
 } as const;
 
+const NOTIFICATIONS_BODY_SCHEMA = {
+  type: "object",
+  required: ["enabled"],
+  additionalProperties: false,
+  properties: { enabled: { type: "boolean" } },
+} as const;
+
 const RUN_PARAMS_SCHEMA = {
   type: "object",
   required: ["id", "runId"],
@@ -129,6 +136,7 @@ function publicBriefRecipe(recipe: StoredBriefRecipe) {
     revision: recipe.revision,
     state: recipe.state,
     paused_reason: recipe.pausedReason,
+    notifications_enabled: recipe.notificationsEnabled,
     consecutive_failures: recipe.consecutiveFailures,
     analysis_id: recipe.content.analysis_id,
     analysis_revision: recipe.content.analysis_revision,
@@ -360,6 +368,32 @@ export async function briefRoutes(app: FastifyInstance): Promise<void> {
       }
     );
   }
+
+  // Per-recipe local-notification preference (M16 step 8). Head-only state:
+  // not a content revision, no reschedule; suppression covers every future
+  // notification kind, while the automatic five-failure pause still happens.
+  app.patch(
+    "/api/briefs/:id/notifications",
+    {
+      onRequest: requireAuth,
+      bodyLimit: COMPACT_JSON_BODY_LIMIT_BYTES,
+      schema: { params: idParamsSchema, body: NOTIFICATIONS_BODY_SCHEMA },
+    },
+    async (req, reply) => {
+      try {
+        const body = req.body as { enabled: boolean };
+        const recipe = await storageRuntime().briefRecipes.setNotificationsEnabled(
+          getAccountId(req),
+          (req.params as { id: string }).id,
+          body.enabled === true
+        );
+        return reply.send(publicBriefRecipe(recipe));
+      } catch (error) {
+        if (sendBriefError(reply, error)) return;
+        throw error;
+      }
+    }
+  );
 
   app.delete(
     "/api/briefs/:id",

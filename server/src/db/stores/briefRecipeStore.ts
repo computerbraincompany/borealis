@@ -57,6 +57,11 @@ export interface StoredBriefRecipe {
   readonly revision: number;
   readonly state: BriefRecipeState;
   readonly pausedReason: string | null;
+  /**
+   * Per-recipe local-notification preference (schema v27, M16 step 8).
+   * Head-only mutable state: toggling is not recipe revision content.
+   */
+  readonly notificationsEnabled: boolean;
   readonly consecutiveFailures: number;
   readonly lastRunAt: string | null;
   readonly nextRunAt: string;
@@ -728,6 +733,36 @@ export class BriefRecipeStore {
     return recipe;
   }
 
+  /**
+   * Per-recipe notification toggle (M16 step 8). Head-only: it appends no
+   * revision, changes no frozen content, and reschedules nothing. Suppression
+   * happens in `briefRunStore` at notification-record time; the automatic
+   * five-failure pause transition is unaffected (pausing is state, not a
+   * notification).
+   */
+  async setNotificationsEnabled(
+    accountIdValue: string,
+    recipeIdValue: string,
+    enabled: boolean
+  ): Promise<StoredBriefRecipe> {
+    const accountId = uuidIdentity(accountIdValue, "account id");
+    const recipeId = uuidIdentity(recipeIdValue, "recipe id");
+    const updated = await this.ledger.run(
+      "UPDATE brief_recipes SET notifications_enabled=?,updated_at=? WHERE id=? AND account_id=?",
+      [enabled ? 1 : 0, this.now().toISOString(), recipeId, accountId]
+    );
+    if (updated.changes !== 1) {
+      const exists = await this.ledger.get("SELECT 1 FROM brief_recipes WHERE id=? AND account_id=?", [
+        recipeId,
+        accountId,
+      ]);
+      if (!exists) throw new BriefRecipeNotFoundError();
+    }
+    const recipe = await this.getRecipe(accountId, recipeId);
+    if (!recipe) throw new BriefRecipeNotFoundError();
+    return recipe;
+  }
+
   async deleteRecipe(accountIdValue: string, recipeIdValue: string): Promise<boolean> {
     const accountId = uuidIdentity(accountIdValue, "account id");
     const recipeId = uuidIdentity(recipeIdValue, "recipe id");
@@ -785,6 +820,7 @@ export class BriefRecipeStore {
       revision: decodeSafeInteger(row.revision, "recipe revision"),
       state: row.state === "paused" ? "paused" : "active",
       pausedReason: row.paused_reason == null ? null : String(row.paused_reason),
+      notificationsEnabled: decodeSafeInteger(row.notifications_enabled ?? 1, "notifications enabled") !== 0,
       consecutiveFailures: decodeSafeInteger(row.consecutive_failures ?? 0, "consecutive failures"),
       lastRunAt: row.last_run_at == null ? null : String(row.last_run_at),
       nextRunAt: String(row.next_run_at),

@@ -621,7 +621,9 @@ export function createBriefRunner(dependencies: BriefRunnerDependencies) {
         // the run detail shows WHY; only `failed` requires a reason.
         failureCode: failureCode ?? (outcome === "failed" ? "BRIEF_RUN_FAILED" : null),
         failureReason:
-          outcome === "failed" ? boundedReason(failureReason ?? "the brief could not complete") : boundedReason(failureReason ?? "") || null,
+          outcome === "failed"
+            ? boundedReason(failureReason ?? "the brief could not complete")
+            : boundedReason(failureReason ?? "") || null,
       });
     } catch (error) {
       // A concurrent decision owns the row; never overwrite it.

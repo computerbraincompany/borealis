@@ -27,7 +27,8 @@ export const HISTORICAL_FIXTURE_SEED = {
 /**
  * Pre-merge fixture-inventory exception. Schema v25 belongs to the parallel
  * in-flight M15 research branch; until its `v025.sql` fixture merges, exactly
- * that one slot is legitimately absent (this branch's own allocation is v26).
+ * that one slot is legitimately absent (this branch's own allocations are the
+ * contiguous v26 reviewed-brief ledger and v27 notification-preference slots).
  * This list is the single documented gap: the coordinator empties it when v25
  * lands, and the inventory assertion becomes contiguous with no other test
  * edits. Nothing here fakes a v25 schema: unknown files and every other

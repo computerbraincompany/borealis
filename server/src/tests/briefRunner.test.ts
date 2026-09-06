@@ -335,7 +335,18 @@ async function dueAndRun(h: Harness, recipeId: string, runner: BriefRunner): Pro
   const page = await h.runs.listRuns(h.account, recipeId, { limit: 50, after: null });
   const newest = page.items[0];
   if (!newest) throw new Error("no run claimed");
-  if (newest.stage === "failed" && !["BRIEF_REFRESH_FAILED","BRIEF_STALE_INPUTS","BRIEF_NARRATIVE_FAILED","BRIEF_DEADLINE_EXCEEDED","BRIEF_REFRESH_TIMEOUT","BRIEF_DRAFT_REJECTED","BRIEF_ANALYSIS_FAILED"].includes(newest.failureCode ?? "")) {
+  if (
+    newest.stage === "failed" &&
+    ![
+      "BRIEF_REFRESH_FAILED",
+      "BRIEF_STALE_INPUTS",
+      "BRIEF_NARRATIVE_FAILED",
+      "BRIEF_DEADLINE_EXCEEDED",
+      "BRIEF_REFRESH_TIMEOUT",
+      "BRIEF_DRAFT_REJECTED",
+      "BRIEF_ANALYSIS_FAILED",
+    ].includes(newest.failureCode ?? "")
+  ) {
     throw new Error(`run failed unexpectedly: ${newest.failureCode} :: ${newest.failureReason}`);
   }
   return newest;
@@ -719,7 +730,12 @@ describe("brief runner wait, supersession, and deadlines", () => {
     h.fakes.syncBehavior = async () => {
       await bumpSourceGeneration(h, source, 3);
     };
-    h.fakes.sourceState = async () => ({ sourceStatus: "ready", readyGeneration: 3, jobStatus: "done", jobGeneration: 2 });
+    h.fakes.sourceState = async () => ({
+      sourceStatus: "ready",
+      readyGeneration: 3,
+      jobStatus: "done",
+      jobGeneration: 2,
+    });
     const { recipeId } = await makeRecipe(h, {
       sourceIds: [source],
       comparisonKey: ["metric_label"],
@@ -758,7 +774,12 @@ describe("brief runner wait, supersession, and deadlines", () => {
     h.fakes.syncBehavior = async () => {
       // The sync succeeds but the reserved generation never promotes.
     };
-    h.fakes.sourceState = async () => ({ sourceStatus: "index", readyGeneration: 1, jobStatus: "running", jobGeneration: 2 });
+    h.fakes.sourceState = async () => ({
+      sourceStatus: "index",
+      readyGeneration: 1,
+      jobStatus: "running",
+      jobGeneration: 2,
+    });
     const { recipeId } = await makeRecipe(h, {
       sourceIds: [source],
       comparisonKey: ["metric_label"],
@@ -837,7 +858,11 @@ describe("brief runner cancellation and admission", () => {
   it("executes at most one brief per account and two globally", async () => {
     const h = await harness();
     const accountB = randomUUID();
-    await h.ledger.run("INSERT INTO users (id,email,password_hash) VALUES (?,?,?)", [accountB, "b@brief-runner.test", "hash"]);
+    await h.ledger.run("INSERT INTO users (id,email,password_hash) VALUES (?,?,?)", [
+      accountB,
+      "b@brief-runner.test",
+      "hash",
+    ]);
     const sourceB = randomUUID();
     await h.ledger.run(
       `INSERT INTO sources (id,account_id,name,kind,display_name,file_path,status,meta,ready_generation,size_bytes)
@@ -995,7 +1020,10 @@ describe("brief runner claim, coalescing, and recovery", () => {
     const runner = h.buildRunner();
     runner.kick();
     await waitFor(async () => (await h.runs.getRun(h.account, run.id)).stage !== "queued", "manual run started");
-    await waitFor(async () => (await h.runs.getRun(h.account, run.id)).stage === "awaiting_review", "manual run reviewed");
+    await waitFor(
+      async () => (await h.runs.getRun(h.account, run.id)).stage === "awaiting_review",
+      "manual run reviewed"
+    );
     const final = await h.runs.getRun(h.account, run.id);
     expect(final.stage).toBe("awaiting_review");
     expect(final.trigger).toBe("manual");
@@ -1062,9 +1090,10 @@ describe("brief runner crash recovery (at-most-one committed artifact per logica
       expect(await h.ledger.all("SELECT id FROM analysis_runs")).toHaveLength(1);
       expect(await h.ledger.all("SELECT id FROM analysis_results")).toHaveLength(1);
       expect(h.fakes.draftCalls).toHaveLength(1);
-      const notifications = await h.ledger.all<{ kind: string }>("SELECT kind FROM brief_notifications WHERE run_id=?", [
-        final.id,
-      ]);
+      const notifications = await h.ledger.all<{ kind: string }>(
+        "SELECT kind FROM brief_notifications WHERE run_id=?",
+        [final.id]
+      );
       expect(notifications.map((row) => row.kind)).toEqual(["first_draft"]);
       // The analysis operation id derives from the run, so acceptance replayed
       // the original durable run rather than creating another.
@@ -1097,7 +1126,10 @@ describe("brief runner crash recovery (at-most-one committed artifact per logica
     const retry = await h.runs.createManualRun(h.account, recipeId, randomUUID());
     const retryRunner = h.buildRunner();
     retryRunner.kick();
-    await waitFor(async () => (await h.runs.getRun(h.account, retry.run.id)).stage === "awaiting_review", "retry reviewed");
+    await waitFor(
+      async () => (await h.runs.getRun(h.account, retry.run.id)).stage === "awaiting_review",
+      "retry reviewed"
+    );
   });
 
   it("shutdown interrupts in-flight work and the next owner resumes from the committed stage", async () => {
@@ -1126,7 +1158,10 @@ describe("brief runner crash recovery (at-most-one committed artifact per logica
     h.fakes.narrativeBehavior = async () => "ok after restart";
     const second = h.buildRunner();
     second.start();
-    await waitFor(async () => (await h.runs.getRun(h.account, mid.id)).stage === "awaiting_review", "resumed to review");
+    await waitFor(
+      async () => (await h.runs.getRun(h.account, mid.id)).stage === "awaiting_review",
+      "resumed to review"
+    );
     expect(h.fakes.draftCalls).toHaveLength(1);
     expect(await h.ledger.all("SELECT id FROM analysis_runs")).toHaveLength(1);
   });

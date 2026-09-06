@@ -751,6 +751,14 @@ export class BriefRunStore {
       ]);
       if (!run) throw new BriefRunNotFoundError();
       const recipeId = String(run.recipe_id);
+      const notificationsEnabled =
+        decodeSafeInteger(
+          transaction.get<{ notifications_enabled?: unknown }>(
+            "SELECT notifications_enabled FROM brief_recipes WHERE id=? AND account_id=?",
+            [recipeId, accountId]
+          )?.notifications_enabled ?? 1,
+          "notifications enabled"
+        ) !== 0;
       if (outcome === "failed") {
         const cas = transaction.run(
           `UPDATE brief_recipes SET
@@ -774,7 +782,7 @@ export class BriefRunStore {
         );
         const failures = decodeSafeInteger(head?.consecutive_failures ?? 0, "consecutive failures");
         const paused = head?.state === "paused";
-        if (paused) {
+        if (paused && notificationsEnabled) {
           transaction.run(
             `INSERT INTO brief_notifications (id,account_id,recipe_id,run_id,kind,detail)
              VALUES (?,?,?,?, 'paused','the recipe was paused after 5 consecutive execution failures')
@@ -852,6 +860,17 @@ export class BriefRunStore {
         accountId,
       ]);
       if (!run) throw new BriefRunNotFoundError();
+      // Per-recipe notification disable (schema v27): a live recipe with the
+      // knob off records nothing new (the (run, kind) dedupe is untouched);
+      // a deleted recipe no longer carries a preference, so the event still
+      // lands on the retained run for inspection.
+      const preference = transaction.get<{ notifications_enabled?: unknown }>(
+        "SELECT notifications_enabled FROM brief_recipes WHERE id=? AND account_id=?",
+        [String(run.recipe_id), accountId]
+      );
+      if (preference && decodeSafeInteger(preference.notifications_enabled ?? 1, "notifications enabled") === 0) {
+        return { id: "", created: false };
+      }
       const existing = transaction.get<{ id?: unknown }>(
         "SELECT id FROM brief_notifications WHERE run_id=? AND kind=?",
         [runId, kind]
