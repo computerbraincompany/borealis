@@ -16,6 +16,7 @@ const ConnectorsView = lazy(() =>
   import("@/pages/ConnectorsView").then((module) => ({ default: module.ConnectorsView })),
 );
 const ReportsView = lazy(() => import("@/pages/ReportsView").then((module) => ({ default: module.ReportsView })));
+const AnalysesView = lazy(() => import("@/pages/AnalysesView").then((module) => ({ default: module.AnalysesView })));
 const SettingsView = lazy(() => import("@/pages/SettingsView").then((module) => ({ default: module.SettingsView })));
 
 function RouteFallback({ label }: { label: string }) {
@@ -67,7 +68,7 @@ export default function App() {
     return <AuthPage />;
   }
 
-  // route: /chat[:/id] | /sources | /connectors | /reports | /settings | /login
+  // route: /chat[:/id] | /sources | /connectors | /reports | /analyses | /settings | /login
   if (route.startsWith("/login")) {
     window.location.hash = "/chat";
     return null;
@@ -93,6 +94,7 @@ export default function App() {
   else if (workspaceRoute.startsWith("/automations")) page = <AutomationsView />;
   else if (workspaceRoute.startsWith("/connectors")) page = <ConnectorsView />;
   else if (workspaceRoute.startsWith("/reports")) page = <ReportsView />;
+  else if (workspaceRoute.startsWith("/analyses")) page = <AnalysesView />;
   else page = <ChatView chatId={undefined} />;
 
   return (

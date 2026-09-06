@@ -54,16 +54,30 @@ function ChartCanvas({ data, expanded = false }: { data: ChartPayload; expanded?
   return <div ref={ref} style={{ height: expanded ? 480 : 280 }} className="w-full min-w-0" />;
 }
 
-export function ChartCard({ chartId, className }: { chartId: string; className?: string }) {
+export function ChartCard({
+  chartId,
+  className,
+  loadChart,
+}: {
+  chartId: string;
+  className?: string;
+  /**
+   * Optional alternate payload source (e.g. the saved-analysis result
+   * chart-spec copy). The default loader is the stored-chart registry.
+   */
+  loadChart?: () => Promise<ChartPayload>;
+}) {
   const [data, setData] = useState<ChartPayload | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const loadChartRef = useRef(loadChart);
+  loadChartRef.current = loadChart;
 
   useEffect(() => {
     let cancelled = false;
     setData(null);
     setError(null);
-    chartsApi
-      .get(chartId)
+    const request = loadChartRef.current ? loadChartRef.current() : chartsApi.get(chartId);
+    request
       .then((d) => {
         if (cancelled) return;
         setData(d);

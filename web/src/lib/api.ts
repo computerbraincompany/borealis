@@ -331,7 +331,16 @@ export interface QueryResultArtifact {
   rows: QueryResultCell[][];
   row_count: number;
   truncated: boolean;
+  /**
+   * Opaque id of the persisted full-query capture backing this receipt.
+   * Present only on receipts whose complete SQL was verifiably captured;
+   * legacy receipts omit it and are never promotable from the sliced text.
+   */
+  capture_id?: string;
+  can_save_analysis?: true;
 }
+
+const CAPTURE_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 const MAX_QUERY_RESULTS = 3;
 const MAX_QUERY_SQL_LENGTH = 2000;
@@ -412,6 +421,15 @@ export function parseQueryResultArtifacts(value: unknown): QueryResultArtifact[]
     }
     if (!valid) continue;
 
+    // The capture affordance is trusted only as a lowercase capture UUID
+    // paired with the explicit server flag; anything else is dropped so the
+    // UI's promotion path keys off `capture_id`/`can_save_analysis` alone.
+    const captureId =
+      typeof artifact.capture_id === "string" && CAPTURE_ID_PATTERN.test(artifact.capture_id)
+        ? artifact.capture_id
+        : undefined;
+    const canSave = artifact.can_save_analysis === true && captureId !== undefined;
+
     artifacts.push({
       id: artifact.id,
       sql: artifact.sql,
@@ -419,6 +437,7 @@ export function parseQueryResultArtifacts(value: unknown): QueryResultArtifact[]
       rows,
       row_count: artifact.row_count as number,
       truncated: artifact.truncated,
+      ...(canSave ? { capture_id: captureId, can_save_analysis: true as const } : {}),
     });
   }
 
@@ -1453,6 +1472,265 @@ export const chartsApi = {
   list: () => api<ChartArtifactSummary[]>("/api/charts"),
   get: (id: string) => api<ChartPayload>(`/api/charts/${id}`),
 };
+
+// ------------------------------------------------------------------ analyses
+export type AnalysisParameterType = "string" | "number" | "integer" | "boolean" | "date";
+export type AnalysisParameterValue = string | number | boolean | null;
+
+export interface AnalysisParameterDeclaration {
+  name: string;
+  type: AnalysisParameterType;
+  required: boolean;
+  nullable: boolean;
+  default?: AnalysisParameterValue;
+  label?: string;
+  description?: string;
+}
+
+export interface AnalysisParameterBinding {
+  name: string;
+  type: AnalysisParameterType;
+  value: AnalysisParameterValue;
+}
+
+export interface AnalysisSourceBinding {
+  source_id: string;
+  ready_generation: number | null;
+  content_identity: string | null;
+  unavailable_at: string | null;
+  bound_at: string;
+}
+
+export interface Analysis {
+  id: string;
+  current_revision: number;
+  title: string;
+  description: string;
+  sql: string;
+  parameters: AnalysisParameterDeclaration[];
+  source_ids: string[];
+  comparison_key: string[] | null;
+  origin: { chat_id: string | null; run_id: string | null; capture_id: string | null };
+  revision_created_at: string;
+  sources: AnalysisSourceBinding[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AnalysisSummaryItem {
+  id: string;
+  title: string;
+  description: string;
+  current_revision: number;
+  source_count: number;
+  unavailable_source_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export type AnalysisRunStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled" | "stale-inputs";
+
+export const TERMINAL_ANALYSIS_RUN_STATUSES: readonly AnalysisRunStatus[] = Object.freeze([
+  "succeeded",
+  "failed",
+  "cancelled",
+  "stale-inputs",
+]);
+
+export interface AnalysisRunSource {
+  source_id: string;
+  ready_generation: number;
+  content_identity: string;
+}
+
+export interface AnalysisRunSummary {
+  id: string;
+  analysis_id: string;
+  revision: number;
+  status: AnalysisRunStatus;
+  cancel_requested: boolean;
+  operation_id: string | null;
+  schema_fingerprint: string | null;
+  error_code: string | null;
+  error_reason: string | null;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+}
+
+export interface AnalysisRun extends AnalysisRunSummary {
+  parameter_values: AnalysisParameterBinding[];
+  sources: AnalysisRunSource[];
+}
+
+export interface AnalysisAcceptedRun {
+  outcome: "queued" | "replayed" | "stale-inputs";
+  run: AnalysisRun;
+}
+
+export interface AnalysisResultSummary {
+  id: string;
+  run_id: string;
+  revision: number;
+  returned_rows: number;
+  source_row_total: number | null;
+  row_count_exact: boolean;
+  complete: boolean;
+  completeness_reasons: string[];
+  schema_fingerprint: string | null;
+  created_at: string;
+}
+
+export interface AnalysisResultColumn {
+  name: string;
+  type: "empty" | "number" | "string" | "boolean" | "mixed";
+}
+
+export interface AnalysisResultDetail {
+  id: string;
+  analysis_id: string;
+  run_id: string;
+  revision: number;
+  columns: AnalysisResultColumn[];
+  rows: QueryResultCell[][];
+  returned_rows: number;
+  source_row_total: number | null;
+  row_count_exact: boolean;
+  completeness: { complete: boolean; reasons: string[] };
+  parameter_values: AnalysisParameterBinding[];
+  source_provenance: AnalysisRunSource[];
+  schema_fingerprint: string | null;
+  created_at: string;
+}
+
+export interface AnalysisComparisonTable {
+  columns: string[];
+  rows: QueryResultCell[][];
+  returned_rows: number;
+  complete: boolean;
+  completeness_reasons: string[];
+  preview_truncated: boolean;
+}
+
+export interface AnalysisComparison {
+  left_result_id: string;
+  right_result_id: string;
+  mode: "keyed" | "side-by-side";
+  key_columns: string[];
+  reason_code: string | null;
+  reason_detail: string | null;
+  exhaustive: boolean;
+  parameters: {
+    same: boolean;
+    changed: Array<{ name: string; left: AnalysisParameterValue; right: AnalysisParameterValue }>;
+  };
+  sources: Array<{
+    source_id: string;
+    status: "same" | "added" | "removed" | "version-changed";
+    left: { ready_generation: number; content_identity: string } | null;
+    right: { ready_generation: number; content_identity: string } | null;
+  }>;
+  schema: {
+    same: boolean;
+    left_only: string[];
+    right_only: string[];
+    changed_types: Array<{ name: string; from: string; to: string }>;
+    order_changed: boolean;
+  };
+  added?: QueryResultCell[][];
+  removed?: QueryResultCell[][];
+  changed?: Array<{
+    key: QueryResultCell[];
+    changes: Array<{ column: string; before: QueryResultCell; after: QueryResultCell; delta: number | null }>;
+  }>;
+  added_total?: number | null;
+  removed_total?: number | null;
+  changed_total?: number | null;
+  truncated?: boolean;
+  left_table: AnalysisComparisonTable;
+  right_table: AnalysisComparisonTable;
+}
+
+export type AnalysisExportFormat = "csv" | "json" | "manifest";
+
+export interface AnalysisCreateBody {
+  title: string;
+  description?: string;
+  sql: string;
+  parameters?: AnalysisParameterDeclaration[];
+  source_ids?: string[];
+  comparison_key?: string[] | null;
+}
+
+export interface AnalysisEditBody extends Partial<AnalysisCreateBody> {
+  expected_revision: number;
+}
+
+function analysisExportPath(analysisId: string, resultId: string, format: AnalysisExportFormat): string {
+  return `/api/analyses/${analysisId}/results/${resultId}/export?format=${format}`;
+}
+
+export const analysesApi = {
+  list: async (options: CatalogPageOptions = {}) =>
+    parseTypedCatalogEnvelope<AnalysisSummaryItem>(
+      await api<unknown>(catalogPath("/api/analyses", options), { signal: options.signal }),
+    ),
+  create: (body: AnalysisCreateBody, signal?: AbortSignal) =>
+    api<Analysis>("/api/analyses", { method: "POST", body: JSON.stringify(body), signal }),
+  get: (id: string, signal?: AbortSignal) => api<Analysis>(`/api/analyses/${id}`, { signal }),
+  update: (id: string, body: AnalysisEditBody, signal?: AbortSignal) =>
+    api<Analysis>(`/api/analyses/${id}`, { method: "PATCH", body: JSON.stringify(body), signal }),
+  remove: (id: string, signal?: AbortSignal) => api<{ ok: true }>(`/api/analyses/${id}`, { method: "DELETE", signal }),
+  /** Promote a VERIFIED full-query capture only; legacy receipts 404 on the server. */
+  fromQuery: (captureId: string, title: string, signal?: AbortSignal) =>
+    api<Analysis>("/api/analyses/from-query", {
+      method: "POST",
+      body: JSON.stringify({ capture_id: captureId, title }),
+      signal,
+    }),
+  listRuns: async (id: string, options: CatalogPageOptions = {}) =>
+    parseTypedCatalogEnvelope<AnalysisRunSummary>(
+      await api<unknown>(catalogPath(`/api/analyses/${id}/runs`, options), { signal: options.signal }),
+    ),
+  run: (
+    id: string,
+    body: { values?: Record<string, AnalysisParameterValue>; operation_id?: string; expected_revision?: number },
+    signal?: AbortSignal,
+  ) => api<AnalysisAcceptedRun>(`/api/analyses/${id}/runs`, { method: "POST", body: JSON.stringify(body), signal }),
+  getRun: (id: string, runId: string, signal?: AbortSignal) =>
+    api<AnalysisRun>(`/api/analyses/${id}/runs/${runId}`, { signal }),
+  cancelRun: (id: string, runId: string, signal?: AbortSignal) =>
+    api<{ ok: true; status: AnalysisRunStatus }>(`/api/analyses/${id}/runs/${runId}`, { method: "DELETE", signal }),
+  listResults: async (id: string, options: CatalogPageOptions = {}) =>
+    parseTypedCatalogEnvelope<AnalysisResultSummary>(
+      await api<unknown>(catalogPath(`/api/analyses/${id}/results`, options), { signal: options.signal }),
+    ),
+  getResult: (id: string, resultId: string, signal?: AbortSignal) =>
+    api<AnalysisResultDetail>(`/api/analyses/${id}/results/${resultId}`, { signal }),
+  removeResult: (id: string, resultId: string, signal?: AbortSignal) =>
+    api<{ ok: true }>(`/api/analyses/${id}/results/${resultId}`, { method: "DELETE", signal }),
+  compare: (id: string, left: string, right: string, signal?: AbortSignal) =>
+    api<AnalysisComparison>(`/api/analyses/${id}/compare?left=${left}&right=${right}`, { signal }),
+  /** Canonical chart-spec copy bound to a stored result id (server-side copy). */
+  resultChart: (id: string, resultId: string, signal?: AbortSignal) =>
+    api<{ result_id: string; spec: Record<string, unknown> }>(`/api/analyses/${id}/results/${resultId}/chart`, {
+      signal,
+    }),
+  /** Download the stored snapshot only — never re-runs a query. */
+  downloadExport: async (id: string, resultId: string, format: AnalysisExportFormat) => {
+    const blob = await apiBlob(analysisExportPath(id, resultId, format));
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `analysis-${resultId.slice(0, 8)}.${format === "manifest" ? "json" : format}`;
+    anchor.click();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+  },
+};
+
+export function isTerminalAnalysisRunStatus(status: AnalysisRunStatus): boolean {
+  return TERMINAL_ANALYSIS_RUN_STATUSES.includes(status);
+}
 
 /** Fetch the SSE agent stream, invoking onEvent for each parsed event. Returns when the stream ends. */
 export async function streamAgentChat(

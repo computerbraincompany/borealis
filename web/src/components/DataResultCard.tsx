@@ -1,8 +1,170 @@
-import { useId } from "react";
-import { ChevronRight, Download, Table2 } from "lucide-react";
-import type { QueryResultArtifact, QueryResultCell } from "@/lib/api";
+import { useEffect, useId, useRef, useState } from "react";
+import { BookMarked, ChevronRight, Download, PencilLine, Table2 } from "lucide-react";
+import { analysesApi, formatApiError, type QueryResultArtifact, type QueryResultCell } from "@/lib/api";
+import { stashPromotionSql } from "@/lib/analysisPromotion";
 import { downloadCsv } from "@/lib/csv";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+
+/**
+ * Promotion affordance keyed strictly off `capture_id`/`can_save_analysis`
+ * (M12). A verified capture promotes server-side from the durable full-query
+ * capture; a legacy receipt never replays its sliced SQL and instead hands a
+ * draft to the Analyses editor, which requires the complete statement.
+ */
+function AnalysisPromotion({ artifact }: { artifact: QueryResultArtifact }) {
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [title, setTitle] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [dialogError, setDialogError] = useState<string | null>(null);
+  const requestRef = useRef(0);
+  const abortRef = useRef<AbortController | null>(null);
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      requestRef.current += 1;
+      abortRef.current?.abort();
+    };
+  }, []);
+
+  const closeDialog = () => {
+    if (saving) return; // busy-dialog rule: never hide the failure slot
+    requestRef.current += 1;
+    abortRef.current?.abort();
+    abortRef.current = null;
+    setDialogError(null);
+    setDialogOpen(false);
+  };
+
+  const save = async () => {
+    const name = title.trim();
+    if (!name || !artifact.capture_id || saving) return;
+    const requestId = ++requestRef.current;
+    abortRef.current?.abort();
+    const abort = new AbortController();
+    abortRef.current = abort;
+    setSaving(true);
+    setDialogError(null);
+    try {
+      await analysesApi.fromQuery(artifact.capture_id, name, abort.signal);
+      if (!mountedRef.current || requestRef.current !== requestId || abort.signal.aborted) return;
+      setSaved(true);
+      setDialogOpen(false);
+    } catch (failure: unknown) {
+      if (mountedRef.current && requestRef.current === requestId && !abort.signal.aborted) {
+        setDialogError(formatApiError(failure, "Could not save this query as an analysis"));
+      }
+    } finally {
+      if (mountedRef.current && requestRef.current === requestId) setSaving(false);
+    }
+  };
+
+  const promoteInEditor = () => {
+    // Explicit editor path for receipts without a verified capture: the
+    // sliced SQL is a draft only; the editor requires the complete statement.
+    stashPromotionSql(artifact.sql);
+    window.location.hash = "/analyses?promote=1";
+  };
+
+  if (artifact.can_save_analysis && artifact.capture_id) {
+    if (saved) {
+      return (
+        <a
+          href="#/analyses"
+          className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-primary/25 bg-primary/5 px-2 py-1 text-[11px] font-medium text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          <BookMarked className="h-3 w-3" aria-hidden="true" />
+          Saved — open in Analyses
+        </a>
+      );
+    }
+    return (
+      <>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="shrink-0"
+          onClick={() => {
+            setTitle("");
+            setDialogError(null);
+            setDialogOpen(true);
+          }}
+          aria-label="Save query as analysis"
+        >
+          <BookMarked aria-hidden="true" />
+          Save as analysis
+        </Button>
+        <Dialog open={dialogOpen} onOpenChange={(open) => !open && closeDialog()}>
+          <DialogContent className="max-w-md" aria-busy={saving}>
+            <DialogHeader>
+              <DialogTitle>Save query as analysis</DialogTitle>
+              <DialogDescription>
+                The saved analysis runs the complete captured SQL against the query's exact sources — outside chat, with
+                typed parameters.
+              </DialogDescription>
+            </DialogHeader>
+            {dialogError && (
+              <p role="alert" className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                {dialogError}
+              </p>
+            )}
+            <form
+              className="space-y-3"
+              onSubmit={(event) => {
+                event.preventDefault();
+                void save();
+              }}
+            >
+              <Input
+                value={title}
+                onChange={(event) => setTitle(event.target.value)}
+                maxLength={200}
+                placeholder="Analysis title"
+                aria-label="Analysis title"
+                autoFocus
+              />
+              <DialogFooter>
+                <Button type="button" variant="ghost" size="sm" disabled={saving} onClick={closeDialog}>
+                  Cancel
+                </Button>
+                <Button type="submit" size="sm" disabled={saving || !title.trim()}>
+                  {saving ? "Saving…" : "Save analysis"}
+                </Button>
+              </DialogFooter>
+            </form>
+          </DialogContent>
+        </Dialog>
+      </>
+    );
+  }
+
+  return (
+    <Button
+      type="button"
+      variant="outline"
+      size="sm"
+      className="shrink-0"
+      onClick={promoteInEditor}
+      title="This receipt has no verified full-query capture; the editor requires the complete SQL"
+      aria-label="Save as analysis (requires complete SQL)"
+    >
+      <PencilLine aria-hidden="true" />
+      Save as analysis
+    </Button>
+  );
+}
 
 function CellValue({ value }: { value: QueryResultCell }) {
   if (value === null) {
@@ -53,6 +215,7 @@ export function DataResultCard({ artifact, index }: { artifact: QueryResultArtif
           <Download aria-hidden="true" />
           Download CSV
         </Button>
+        <AnalysisPromotion artifact={artifact} />
       </div>
 
       <div
