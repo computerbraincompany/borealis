@@ -25,12 +25,12 @@ export const HISTORICAL_FIXTURE_SEED = {
 } as const;
 
 /**
- * Pre-merge fixture-inventory exception. Schema v23 belongs to the parallel
- * in-flight M13 document_rewrites branch; until its `v023.sql` fixture merges,
- * exactly that one slot is legitimately absent (this branch's own allocation
- * is v24). This list is the single documented gap: the coordinator empties it
- * when v23 lands, and the inventory assertion becomes contiguous with no other
- * test edits. Nothing here fakes a v23 schema: unknown files and every other
+ * Pre-merge fixture-inventory exception. Schema v25 belongs to the parallel
+ * in-flight M15 research branch; until its `v025.sql` fixture merges, exactly
+ * that one slot is legitimately absent (this branch's own allocation is v26).
+ * This list is the single documented gap: the coordinator empties it when v25
+ * lands, and the inventory assertion becomes contiguous with no other test
+ * edits. Nothing here fakes a v25 schema: unknown files and every other
  * missing version still fail closed.
  */
 export const PENDING_MERGE_SCHEMA_VERSIONS: readonly number[] = Object.freeze([]);
@@ -165,7 +165,7 @@ export async function createHistoricalSqliteFixture(startVersion: number): Promi
         // A historical installation never sits on a pending-merge version, so
         // the fixture chain walks exactly the contiguous history the shipped
         // migrations actually applied: pending slots are stepped over, never
-        // faked.
+        // faked (the real migrations fill them once their branch merges).
         if (PENDING_MERGE_SCHEMA_VERSIONS.includes(version)) continue;
         const sql = await fs.readFile(path.join(fixtureDirectory, fixtureFilename(version)), "utf8");
         applyFixtureDelta(database, version, sql);
