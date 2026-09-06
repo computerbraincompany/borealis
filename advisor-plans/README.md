@@ -46,11 +46,11 @@ requests it.
 | [013](013-drain-automation-scheduler-on-shutdown.md)   | Drain the automation scheduler before storage shutdown                |       P1 |      M | 006                               | DONE 2026-09-06 `1a6be8e` |
 | [014](014-create-owned-application-runtime.md)         | Create an owned application runtime                                   |       P2 |      L | 004, 007, 008, 009, 013           | DONE 2026-09-06 `8e92643` |
 | [015](015-shorten-vector-promotion-transaction.md)     | Move vector verification outside the promotion write transaction      |       P1 |      M | 004                               | DONE 2026-09-06 `5640f66` |
-| [016](016-bound-periodic-storage-reconciliation.md)    | Bound periodic storage reconciliation                                 |       P2 |      L | 011, 014, 015                     | IN PROGRESS 2026-09-06 |
+| [016](016-bound-periodic-storage-reconciliation.md)    | Bound periodic storage reconciliation                                 |       P2 |      L | 011, 014, 015                     | DONE 2026-09-06 `e310a80` |
 | [017](017-move-document-extraction-to-worker.md)       | Move document extraction to a bounded worker                          |       P2 |      L | 004, 036                          | TODO   |
 | [018](018-throttle-public-authentication.md)           | Throttle public authentication before password work                   |       P2 |      M | 007, 014                          | TODO   |
 | [019](019-add-packaged-electron-lifecycle-test.md)     | Add packaged Electron lifecycle acceptance coverage                   |       P2 |      L | 002, 014, 032, 033, 036           | TODO   |
-| [020](020-type-connector-refresh-protocol-state.md)    | Type connector-refresh protocol state in a durable table              |       P2 |      L | 003, 006, 012, 014–016, 031       | TODO   |
+| [020](020-type-connector-refresh-protocol-state.md)    | Type connector-refresh protocol state in a durable table              |       P2 |      L | 003, 006, 012, 014–016, 031       | IN PROGRESS 2026-09-06 (reserved schema v16) |
 | [021](021-stabilize-exceljs-parser-boundary.md)        | Stabilize the ExcelJS parser boundary                                 |       P3 |      L | —                                 | TODO   |
 | [022](022-make-server-web-contracts-executable.md)     | Make server/web API contracts executable                              |       P3 |      L | 007, 010, 014, 018, 031, 034, 035 | TODO   |
 | [024](024-preserve-connector-cache-cleanup.md)         | Preserve connector-cache cleanup until deletion is proven             |       P1 |      M | —                                 | DONE   |
