@@ -138,23 +138,60 @@ function validateDesktopBinding(host: string): void {
   if (host !== "127.0.0.1") throw new Error("desktop server must bind to 127.0.0.1");
 }
 
-async function closeHttpAfterDrainingRuns(app: FastifyInstance): Promise<void> {
-  let httpClosed = false;
+/**
+ * Synchronously quiesces the automation scheduler and returns its retained
+ * drain promise, or an already-settled promise when the scheduler never
+ * started. Quiescing stops new claim dispatch before HTTP draining begins;
+ * the drain awaits bounded in-flight connector/agent executor work.
+ */
+function quiesceAutomationScheduler(started: boolean): Promise<void> {
+  if (!started) return Promise.resolve();
+  return Promise.resolve(automationRunner().stop()).catch(() => {});
+}
+
+/**
+ * Quiesce both ingress sources — the HTTP app being closed and the automation
+ * scheduler's retained drain — while repeatedly cancelling this process's
+ * active chat runs. A request accepted just before close(), or a claim batch
+ * already inside acceptChatTurn, can reach beginRun after an earlier registry
+ * snapshot, so cancellation continues on the short bounded poll until both
+ * sources are observed settled, then runs one final cancellation snapshot.
+ * Connector sync claims have no chat controller; the scheduler drain itself
+ * awaits their bounded connector/data-service work before storage close.
+ */
+async function drainIngressAndCancelRuns(
+  app: FastifyInstance | undefined,
+  schedulerDrain: Promise<void>
+): Promise<void> {
+  let httpClosed = app === undefined;
   const httpClose = app
-    .close()
+    ? app
+        .close()
+        .catch(() => {})
+        .finally(() => {
+          httpClosed = true;
+        })
+    : Promise.resolve();
+  let schedulerSettled = false;
+  const schedulerClosed = schedulerDrain
     .catch(() => {})
     .finally(() => {
-      httpClosed = true;
+      schedulerSettled = true;
     });
-  // A request accepted just before close() can reach beginRun after the first
-  // registry snapshot. Keep draining until Fastify proves every request ended.
   do {
     await shutdownActiveRuns().catch(() => {});
-    if (!httpClosed) {
-      await Promise.race([httpClose, new Promise<void>((resolve) => setTimeout(resolve, 25))]);
+    if (!httpClosed || !schedulerSettled) {
+      // Race only the sources not yet observed settled plus the bounded poll;
+      // including an already-settled source would spin this loop on microtasks.
+      const pending: Promise<unknown>[] = [new Promise<void>((resolve) => setTimeout(resolve, 25))];
+      if (!httpClosed) pending.push(httpClose);
+      if (!schedulerSettled) pending.push(schedulerClosed);
+      await Promise.race(pending);
     }
-  } while (!httpClosed);
-  await httpClose;
+  } while (!httpClosed || !schedulerSettled);
+  // One final snapshot covers controllers registered up to the last possible
+  // beginRun boundary before either source settled.
+  await shutdownActiveRuns().catch(() => {});
 }
 
 /** Open embedded services, recover durable state, and publish the loopback server. */
@@ -200,12 +237,14 @@ export async function startBorealisServer(options: StartBorealisServerOptions = 
     let closePromise: Promise<void> | undefined;
     const close = (): Promise<void> => {
       closePromise ??= (async () => {
-        await closeHttpAfterDrainingRuns(activeApp);
+        // Quiesce the scheduler the moment close begins — before HTTP
+        // draining — so new claim dispatch stops first, then cancel actively
+        // while both ingress sources drain and close storage only after the
+        // scheduler drain and the final cancellation snapshot settle.
+        const schedulerDrain = quiesceAutomationScheduler(automationSchedulerStarted);
+        automationSchedulerStarted = false;
+        await drainIngressAndCancelRuns(activeApp, schedulerDrain);
         await stopIngestionWorkers().catch(() => {});
-        if (automationSchedulerStarted) {
-          automationRunner().stop();
-          automationSchedulerStarted = false;
-        }
         await startupReconciliation;
         await shutdownDatasetWorker().catch(() => {});
         try {
@@ -220,7 +259,14 @@ export async function startBorealisServer(options: StartBorealisServerOptions = 
     };
     return Object.freeze({ app: activeApp, host, port: actualPort, ...(bootstrap ? { bootstrap } : {}), close });
   } catch (error) {
-    await app?.close().catch(() => {});
+    // A later listen/bootstrap failure can strand the scheduler started
+    // before it. Quiesce it first, then apply the same continuous
+    // cancellation/drain to the partially built HTTP app and scheduler: an
+    // interval-fired agent turn may cross acceptChatTurn/beginRun after
+    // cleanup begins, so a one-shot shutdownActiveRuns is not sufficient.
+    const schedulerDrain = quiesceAutomationScheduler(automationSchedulerStarted);
+    automationSchedulerStarted = false;
+    await drainIngressAndCancelRuns(app, schedulerDrain);
     if (workersStarted) await stopIngestionWorkers().catch(() => {});
     await shutdownDatasetWorker().catch(() => {});
     try {

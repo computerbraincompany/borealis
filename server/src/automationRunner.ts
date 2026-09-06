@@ -31,7 +31,16 @@ export function createAutomationRunner(dependencies: AutomationRunnerDependencie
   const store = dependencies.store;
   const now = dependencies.now ?? (() => new Date());
   let timer: NodeJS.Timeout | undefined;
-  let ticking = false;
+  // The active tick is tracked as a handle so `stop()` can return its drain
+  // promise and a concurrent `tick()` can join it. The `finally` clears the
+  // reference by identity so an old tick can never clear a newer one after a
+  // restart.
+  let activeTick: { readonly done: Promise<void> } | undefined;
+  // `stop()` marks the runner quiescing synchronously: new manual ticks are
+  // no-ops and claim dispatch halts between claims until an explicit
+  // `start()` clears the flag. A fresh runner is not quiescing so tests may
+  // drive `tick()` manually.
+  let quiescing = false;
 
   async function recordAgentCancellation(automationId: string, accountId: string): Promise<void> {
     await store.recordRun(automationId, accountId, "skipped", "the run was cancelled");
@@ -172,12 +181,15 @@ export function createAutomationRunner(dependencies: AutomationRunnerDependencie
     }
   }
 
-  async function tick(): Promise<void> {
-    if (ticking) return;
-    ticking = true;
+  async function dispatchClaims(): Promise<void> {
     try {
       const claims = await store.claimDue(now());
       for (const claim of claims) {
+        // Once shutdown has quiesced the runner, finish only the claim whose
+        // executor was already entered. Returned-but-unstarted claims never
+        // enter an executor and get no synthesized history; their schedule
+        // advancement from the atomic claim remains the durable behavior.
+        if (quiescing) break;
         try {
           if (claim.kind === "connector_sync") {
             await executeConnectorSync(claim.id, claim.accountId, claim.targetId);
@@ -193,20 +205,40 @@ export function createAutomationRunner(dependencies: AutomationRunnerDependencie
       }
     } catch {
       // The tick is best-effort; the next interval retries.
-    } finally {
-      ticking = false;
     }
   }
 
+  function tick(): Promise<void> {
+    if (quiescing) return Promise.resolve();
+    if (activeTick) return activeTick.done;
+    const handle: { done: Promise<void> } = { done: Promise.resolve() };
+    activeTick = handle;
+    // The drain promise settles only after the active reference is cleared, so
+    // awaiting `stop()` also proves no tick remains active.
+    handle.done = dispatchClaims().finally(() => {
+      if (activeTick === handle) activeTick = undefined;
+    });
+    return handle.done;
+  }
+
   function start(): void {
+    quiescing = false;
     if (timer) return;
     timer = setInterval(() => void tick(), dependencies.tickIntervalMs ?? TICK_INTERVAL_MS);
     timer.unref();
   }
 
-  function stop(): void {
+  /**
+   * Synchronously marks the runner stopped: the interval is cleared and no
+   * new claim dispatch begins before the first await. The returned promise
+   * settles only after the active tick settles, so shutdown can drain in-flow
+   * executor work before closing the stores it reads and writes.
+   */
+  function stop(): Promise<void> {
+    quiescing = true;
     if (timer) clearInterval(timer);
     timer = undefined;
+    return activeTick?.done ?? Promise.resolve();
   }
 
   return { start, stop, tick, isRunning: () => timer !== undefined };
