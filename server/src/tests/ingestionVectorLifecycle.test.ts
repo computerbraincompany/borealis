@@ -663,6 +663,47 @@ describe("SQLite + LanceDB ingestion lifecycle", () => {
     await expect(resource.vectors.hasAll([first[1]!], sourceId, 2)).resolves.toBe(false);
   });
 
+  it("moves a failed vector operation behind untouched work even at a tied clock", async () => {
+    const resource = await stores();
+    const accountId = randomUUID();
+    const fixedClock = new Date(0).toISOString();
+    await seedUser(resource.ledger, accountId, "fair@example.test");
+    // Deterministic identity order: op-a fails, op-b/op-c stay untouched.
+    for (const sourceId of ["op-a", "op-b", "op-c"]) {
+      await resource.ledger.run(
+        `INSERT INTO pending_vector_ops
+           (source_id,account_id,operation,generation,attempts,created_at,updated_at)
+         VALUES (?,?,'delete_generation',1,0,?,?)`,
+        [sourceId, accountId, fixedClock, fixedClock]
+      );
+    }
+
+    const deleteSpy = vi.spyOn(resource.vectors, "deleteSource");
+    deleteSpy.mockRejectedValueOnce(new Error("simulated vector purge failure"));
+    await expect(resource.lifecycle.drainPendingVectorOperations(1)).resolves.toMatchObject({
+      repaired_vectors: 0,
+      failed_operations: 1,
+    });
+    await expect(
+      resource.ledger.get<{ attempts: bigint }>("SELECT attempts FROM pending_vector_ops WHERE source_id=?", ["op-a"])
+    ).resolves.toEqual({ attempts: 1n });
+
+    // Rewinding every row to the same clock proves the attempts key — not
+    // wall time — moves failed work behind untouched rows.
+    await resource.ledger.run("UPDATE pending_vector_ops SET updated_at=?", [fixedClock]);
+    const secondPage = await resource.store.listPendingVectorOperations(2);
+    expect(secondPage.map((operation) => [operation.sourceId, operation.attempts])).toEqual([
+      ["op-b", 0],
+      ["op-c", 0],
+    ]);
+
+    await resource.lifecycle.drainPendingVectorOperations(2);
+    await expect(resource.store.listPendingVectorOperations(10)).resolves.toEqual([
+      { sourceId: "op-a", accountId, operation: "delete_generation", generation: 1, attempts: 1 },
+    ]);
+    expect(deleteSpy.mock.calls.map(([sourceId]) => sourceId)).toEqual(["op-a", "op-b", "op-c"]);
+  });
+
   it("recovers inherited running leases and purges only the abandoned generation", async () => {
     const resource = await stores();
     const accountId = randomUUID();

@@ -43,6 +43,14 @@ const PENDING_DELETE_COLUMNS = `
   attempts, last_error, created_at, updated_at
 `;
 
+/**
+ * Fixed connection-local TEMP identity table used only while the single
+ * startup source-delete repair pump pages its frozen snapshot. This is
+ * disposable control state: the durable intents stay in
+ * `pending_source_deletes`, and no snapshot state survives the connection.
+ */
+export const PENDING_SOURCE_DELETE_SNAPSHOT_TABLE = "borealis_pending_source_delete_snapshot";
+
 export type SourceStatus = "ready" | "index" | "error";
 export type ConnectorType = "url_csv" | "url_json";
 export type ConnectorSyncStatus = "idle" | "syncing" | "indexing" | "error";
@@ -215,6 +223,10 @@ interface ConnectorRow {
   created_at: unknown;
 }
 
+interface SnapshotPageRow extends PendingDeleteRow {
+  snapshot_ordinal: unknown;
+}
+
 interface PendingDeleteRow {
   source_id: unknown;
   account_id: unknown;
@@ -232,8 +244,30 @@ export interface SourceStoreOptions {
   readonly now?: () => Date;
 }
 
+/** One frozen snapshot identity; `intent` is absent when cleanup already cleared the row. */
+export interface PendingSourceDeleteSnapshotEntry {
+  readonly ordinal: number;
+  readonly intent?: PendingSourceDelete;
+}
+
+/**
+ * Startup-only, store-instance-private handle over one connection-local TEMP
+ * identity snapshot. It exposes only bounded keyset pages after a prior
+ * ordinal plus an idempotent `close()`. Only the single startup repair pump
+ * may own a snapshot at a time; this state is never durable and never
+ * route-reachable.
+ */
+export interface PendingSourceDeleteSnapshot {
+  read(afterOrdinal: number, limit: number): Promise<readonly PendingSourceDeleteSnapshotEntry[]>;
+  close(): Promise<void>;
+}
+
 export class SourceStore {
   private readonly now: () => Date;
+  /** Exact token of the one active TEMP snapshot capture; synchronously reserved. */
+  private pendingDeleteSnapshotToken: object | undefined;
+  /** Set once a capture failure cannot prove its TEMP table is gone. */
+  private pendingDeleteSnapshotPoisoned = false;
 
   constructor(
     private readonly ledger: SqliteLedger,
@@ -581,6 +615,133 @@ export class SourceStore {
       [requiredId(accountId, "accountId"), listLimit(limit)]
     );
     return rows.map(decodePendingDelete);
+  }
+
+  /**
+   * Internal repair primitive: one globally bounded retry-fair page across
+   * every account. Untouched rows (lower `attempts`) always sort ahead of
+   * retried work, so a repeatedly failing row cannot pin the first page even
+   * when `updated_at` values tie or the wall clock moves backward. Returned
+   * rows and downstream work are bounded; the selection scan itself remains
+   * backlog-dependent until Plan 020 adds the exact v16 index on
+   * `(attempts, updated_at, account_id, source_id)`. It is not an
+   * account-facing API and must never accept an account identifier from a
+   * request.
+   */
+  async listPendingSourceDeletesAcrossAccounts(limit = DEFAULT_LIST_LIMIT): Promise<PendingSourceDelete[]> {
+    const rows = await this.ledger.all<PendingDeleteRow>(
+      `SELECT ${PENDING_DELETE_COLUMNS} FROM pending_source_deletes
+       ORDER BY attempts, updated_at, account_id, source_id LIMIT ?`,
+      [listLimit(limit)]
+    );
+    return rows.map(decodePendingDelete);
+  }
+
+  /**
+   * Freeze one finite connection-local identity snapshot of every current
+   * pending source deletion so the single startup repair pump can page to
+   * exhaustion with bounded memory. The synchronous token reservation
+   * precedes the first await; a second capture on this store fails closed
+   * before it could drop or change the active snapshot. Plan 020 keeps this
+   * disposable: durable cleanup authority remains `pending_source_deletes`.
+   */
+  async capturePendingSourceDeleteSnapshot(): Promise<PendingSourceDeleteSnapshot> {
+    if (this.pendingDeleteSnapshotPoisoned) {
+      invalid("a previous pending source delete snapshot could not prove ownership");
+    }
+    if (this.pendingDeleteSnapshotToken !== undefined) {
+      invalid("a pending source delete snapshot is already active");
+    }
+    const token: object = {};
+    this.pendingDeleteSnapshotToken = token;
+    try {
+      await this.ledger.withImmediateTransaction((transaction) => {
+        // Drop any stale fixed-name table left with no active token, then
+        // populate the fresh snapshot exactly once in deterministic order.
+        transaction.run(`DROP TABLE IF EXISTS temp.${PENDING_SOURCE_DELETE_SNAPSHOT_TABLE}`);
+        transaction.run(
+          `CREATE TEMP TABLE ${PENDING_SOURCE_DELETE_SNAPSHOT_TABLE} (
+             snapshot_ordinal INTEGER PRIMARY KEY AUTOINCREMENT,
+             account_id TEXT NOT NULL,
+             source_id TEXT NOT NULL,
+             UNIQUE(account_id, source_id)
+           ) STRICT`
+        );
+        transaction.run(
+          `INSERT INTO temp.${PENDING_SOURCE_DELETE_SNAPSHOT_TABLE} (account_id, source_id)
+           SELECT account_id, source_id FROM main.pending_source_deletes
+           ORDER BY created_at, account_id, source_id`
+        );
+      });
+    } catch (error) {
+      // Attempt drop/release before rejecting; unknown TEMP state poisons
+      // further captures instead of letting a new pass overwrite it.
+      if (await this.dropPendingSourceDeleteSnapshotTable()) {
+        if (this.pendingDeleteSnapshotToken === token) this.pendingDeleteSnapshotToken = undefined;
+      } else {
+        this.pendingDeleteSnapshotPoisoned = true;
+      }
+      throw error;
+    }
+    return Object.freeze({
+      read: (afterOrdinal: number, limit: number) => this.readPendingSourceDeleteSnapshot(token, afterOrdinal, limit),
+      close: () => this.closePendingSourceDeleteSnapshot(token),
+    });
+  }
+
+  private async readPendingSourceDeleteSnapshot(
+    token: object,
+    afterOrdinal: number,
+    limit: number
+  ): Promise<readonly PendingSourceDeleteSnapshotEntry[]> {
+    if (this.pendingDeleteSnapshotToken !== token) invalid("pending source delete snapshot is no longer active");
+    if (!Number.isSafeInteger(afterOrdinal) || afterOrdinal < 0)
+      invalid("snapshot cursor must be a non-negative integer");
+    const rows = await this.ledger.all<SnapshotPageRow>(
+      `SELECT s.snapshot_ordinal AS snapshot_ordinal,
+              p.source_id AS source_id, p.account_id AS account_id, p.name AS name,
+              p.file_path AS file_path, p.connector_id AS connector_id,
+              p.dataset_locations AS dataset_locations, p.attempts AS attempts,
+              p.last_error AS last_error, p.created_at AS created_at, p.updated_at AS updated_at
+         FROM temp.${PENDING_SOURCE_DELETE_SNAPSHOT_TABLE} AS s
+         LEFT JOIN main.pending_source_deletes AS p
+           ON p.account_id=s.account_id AND p.source_id=s.source_id
+        WHERE s.snapshot_ordinal>?
+        ORDER BY s.snapshot_ordinal LIMIT ?`,
+      [afterOrdinal, listLimit(limit)]
+    );
+    return Object.freeze(
+      rows.map((row) => {
+        const ordinal = decodeSafeInteger(row.snapshot_ordinal, "snapshot_ordinal");
+        // A concurrent cleanup may have deleted the captured identity. The
+        // ordinal is still returned so the keyset cursor always advances.
+        if (row.source_id === null || row.account_id === null) return Object.freeze({ ordinal });
+        return Object.freeze({ ordinal, intent: decodePendingDelete(row) });
+      })
+    );
+  }
+
+  private async closePendingSourceDeleteSnapshot(token: object): Promise<void> {
+    // Identity-checked and idempotent: drop only our own table, release only
+    // our own token, and never touch a newer active snapshot.
+    if (this.pendingDeleteSnapshotToken !== token) return;
+    this.pendingDeleteSnapshotToken = undefined;
+    // A failed drop leaves at most a stale fixed-name table with no active
+    // token, which the next capture drops before repopulating.
+    await this.dropPendingSourceDeleteSnapshotTable();
+  }
+
+  /** True only when the fixed-name TEMP snapshot table is positively gone. */
+  private async dropPendingSourceDeleteSnapshotTable(): Promise<boolean> {
+    try {
+      await this.ledger.run(`DROP TABLE IF EXISTS temp.${PENDING_SOURCE_DELETE_SNAPSHOT_TABLE}`);
+      const remaining = await this.ledger.get<{ name: string }>(`SELECT name FROM temp.sqlite_master WHERE name=?`, [
+        PENDING_SOURCE_DELETE_SNAPSHOT_TABLE,
+      ]);
+      return remaining === undefined;
+    } catch {
+      return false;
+    }
   }
 
   async updatePendingSourceDelete(

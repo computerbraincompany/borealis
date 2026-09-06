@@ -587,6 +587,13 @@ export class SqliteIngestionStore {
     });
   }
 
+  /**
+   * Bounded dataset-cache cleanup page. The attempts-first ordering keeps
+   * untouched work ahead of retried work when timestamps tie or move
+   * backward. Returned rows and downstream work are bounded; the selection
+   * scan itself remains backlog-dependent until Plan 020 adds the exact v16
+   * index on `(attempts, updated_at, account_id, name, location)`.
+   */
   async listDatasetCleanupJobs(
     input: {
       accountId?: string;
@@ -606,7 +613,7 @@ export class SqliteIngestionStore {
     }>(
       `SELECT account_id,name,location,attempts FROM dataset_cache_cleanup_jobs
        WHERE (? IS NULL OR account_id=?) AND (? IS NULL OR name=?)
-       ORDER BY updated_at LIMIT ?`,
+       ORDER BY attempts, updated_at, account_id, name, location LIMIT ?`,
       [input.accountId ?? null, input.accountId ?? null, input.name ?? null, input.name ?? null, limit]
     );
     return Object.freeze(
@@ -917,6 +924,13 @@ export class SqliteIngestionStore {
     });
   }
 
+  /**
+   * Bounded pending-vector-operation page. The attempts-first ordering keeps
+   * untouched work ahead of retried work when timestamps tie or move
+   * backward. Returned rows and downstream work are bounded; the selection
+   * scan itself remains backlog-dependent until Plan 020 adds the exact v16
+   * index on `(attempts, updated_at, source_id, operation, generation)`.
+   */
   async listPendingVectorOperations(limit = 100): Promise<readonly PendingVectorOperation[]> {
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1_000) {
       throw new IngestionStoreError("INVALID_INPUT", "pending vector operation limit is invalid");
@@ -929,7 +943,7 @@ export class SqliteIngestionStore {
       attempts: bigint;
     }>(
       `SELECT source_id, account_id, operation, generation, attempts
-       FROM pending_vector_ops ORDER BY updated_at, source_id, operation, generation LIMIT ?`,
+       FROM pending_vector_ops ORDER BY attempts, updated_at, source_id, operation, generation LIMIT ?`,
       [limit]
     );
     return Object.freeze(

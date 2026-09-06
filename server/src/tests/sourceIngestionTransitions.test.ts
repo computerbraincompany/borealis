@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
 import { encodeJson } from "../db/codecs.js";
+import { SqliteIngestionStore } from "../db/stores/ingestionStore.js";
 import {
   SourceIngestionTransitions,
   type CreateConnectorPrepareInput,
@@ -442,6 +443,51 @@ describe("source/ingestion SQLite transitions", () => {
       readyGeneration: 1,
       meta: { keep: true },
     });
+  });
+});
+
+describe("dataset-cache cleanup retry order", () => {
+  it("keeps untouched cleanup jobs ahead of retried work even at a tied clock", async () => {
+    const { ledger, accountId } = await fixture();
+    const ingestion = new SqliteIngestionStore(ledger);
+    const fixed = NOW.toISOString();
+    for (const [name, location] of [
+      ["jobs_a", "/cache/fair-a.csv"],
+      ["jobs_b", "/cache/fair-b.csv"],
+      ["jobs_c", "/cache/fair-c.csv"],
+    ]) {
+      await ledger.run(
+        `INSERT INTO dataset_cache_cleanup_jobs (account_id,name,location,attempts,created_at,updated_at)
+         VALUES (?,?,?,0,?,?)`,
+        [accountId, name, location, fixed, fixed]
+      );
+    }
+
+    await expect(ingestion.listDatasetCleanupJobs({ limit: 1 })).resolves.toEqual([
+      { accountId, name: "jobs_a", location: "/cache/fair-a.csv", attempts: 0 },
+    ]);
+
+    await ingestion.resolveDatasetCleanupJob(
+      { accountId, name: "jobs_a", location: "/cache/fair-a.csv", attempts: 0 },
+      "failed"
+    );
+    await expect(ingestion.getDatasetCleanupJob(accountId, "jobs_a", "/cache/fair-a.csv")).resolves.toMatchObject({
+      attempts: 1,
+    });
+    // Simulate a wall clock that ties or moves backward: every row shares
+    // one updated_at, so only the attempts key can keep fairness.
+    await ledger.run("UPDATE dataset_cache_cleanup_jobs SET updated_at=?", [fixed]);
+
+    // A bounded page takes the untouched work first; the failed row waits.
+    await expect(ingestion.listDatasetCleanupJobs({ limit: 2 })).resolves.toEqual([
+      { accountId, name: "jobs_b", location: "/cache/fair-b.csv", attempts: 0 },
+      { accountId, name: "jobs_c", location: "/cache/fair-c.csv", attempts: 0 },
+    ]);
+    await expect(ingestion.listDatasetCleanupJobs({ limit: 3 })).resolves.toEqual([
+      { accountId, name: "jobs_b", location: "/cache/fair-b.csv", attempts: 0 },
+      { accountId, name: "jobs_c", location: "/cache/fair-c.csv", attempts: 0 },
+      { accountId, name: "jobs_a", location: "/cache/fair-a.csv", attempts: 1 },
+    ]);
   });
 });
 

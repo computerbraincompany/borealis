@@ -40,6 +40,14 @@ const WORKER_CONCURRENCY = 2;
 const PREPARE_WORKER_CONCURRENCY = 2;
 const LEASE_TIMEOUT_MS = 10 * 60_000;
 const MAX_JOB_ATTEMPTS = 3;
+// Fixed per-invocation bounds for the periodic storage reconciliation. One
+// tick processes at most one page from each durable queue; later ticks make
+// further progress. The whole-ledger/vector sweep never belongs here — it is
+// the startup-only `repairAtStartup`.
+const PERIODIC_PENDING_VECTOR_OPERATIONS = 100;
+const PERIODIC_PENDING_SOURCE_DELETES = 100;
+const PERIODIC_DATASET_CLEANUP_JOBS = 20;
+const STARTUP_SOURCE_DELETE_PAGE = 100;
 
 export type IngestSourceOptions = IngestionExecutionInput;
 
@@ -63,13 +71,28 @@ interface RegistryRow {
 }
 
 let cachedEngine: CachedEngine | undefined;
+/** Monotonic ingestion-worker lifecycle epoch counter; never decreases. */
+let workerEpochSequence = 0;
+/** Published epoch for the active worker lifecycle; 0 before start/after stop. */
+let activeWorkerEpoch = 0;
+/**
+ * True from the synchronous invalidation in `stopIngestionWorkers` until that
+ * stop has drained every owned pump slot, and again whenever an epoch is
+ * published. Epoch 0 is therefore the open direct-call epoch only while no
+ * stop is in progress: the legacy path (`processOneJob` /
+ * `processOnePreparingConnectorRefresh` waking a pump outside a start) keeps
+ * draining durable queues, while every wake, pump, inner loop, and `finally`
+ * captured before the invalidation is rejected for the whole drain window —
+ * and a `finally` from a dead published epoch can never revive its epoch.
+ */
+let workersStopping = false;
 let ingestionPump: Promise<void> | undefined;
 let ingestionRepump = false;
 let ingestionAbortController: AbortController | undefined;
 let connectorPreparePump: Promise<void> | undefined;
 let connectorPrepareRepump = false;
-let workersStarted = false;
-let workersStopping = false;
+let leaseRecoveryPump: Promise<void> | undefined;
+let reconciliationPump: Promise<void> | undefined;
 let leaseTimer: NodeJS.Timeout | undefined;
 let reconciliationTimer: NodeJS.Timeout | undefined;
 
@@ -116,9 +139,14 @@ export async function enqueueIngestion(accountId: string, sourceId: string): Pro
   return reservation.generation;
 }
 
-export async function processDatasetCacheCleanup(accountId?: string, name?: string): Promise<number> {
+/**
+ * Drain a bounded dataset-cache cleanup page. Optional account/name filters
+ * and the store-owned default limit remain unchanged for non-periodic
+ * callers; the store retains limit validation.
+ */
+export async function processDatasetCacheCleanup(accountId?: string, name?: string, limit?: number): Promise<number> {
   const runtime = storageRuntime();
-  const jobs = await runtime.ingestion.listDatasetCleanupJobs({ accountId, name });
+  const jobs = await runtime.ingestion.listDatasetCleanupJobs({ accountId, name, limit });
   let completed = 0;
   for (const job of jobs) {
     if (await processDurableDatasetCleanupJob(runtime.ingestion, dataService, job)) completed += 1;
@@ -154,64 +182,96 @@ export async function processOneJob(
   }, false);
 }
 
-function scheduleIngestionPump(): void {
-  if (workersStopping) return;
+/**
+ * True while the captured epoch may still begin new store/data-service work.
+ * A published epoch is active only while it remains the active one; epoch 0
+ * (the pre-start legacy direct-call path) is active only until the first
+ * stop invalidates admission. A later start never revives epoch 0 work.
+ */
+function isWorkerEpochActive(epoch: number): boolean {
+  return epoch === 0 ? activeWorkerEpoch === 0 && !workersStopping : epoch === activeWorkerEpoch;
+}
+
+/**
+ * Claims and processes durable ingestion jobs for exactly one worker
+ * lifecycle epoch. Every inner loop, repump decision, and wake rechecks that
+ * its captured epoch is still active before beginning another store
+ * operation; a `finally` from an invalidated epoch can neither clear nor
+ * repump a newer promise slot.
+ */
+function scheduleIngestionPump(epoch: number): void {
+  if (!isWorkerEpochActive(epoch)) return;
   ingestionRepump = true;
   if (ingestionPump) return;
   const controller = ingestionAbortController ?? new AbortController();
   ingestionAbortController = controller;
   const signal = controller.signal;
-  ingestionPump = Promise.resolve()
+  const pump = Promise.resolve()
     .then(async () => {
       do {
         ingestionRepump = false;
-        if (signal.aborted) return;
+        if (signal.aborted || !isWorkerEpochActive(epoch)) return;
         await Promise.all(
           Array.from({ length: WORKER_CONCURRENCY }, async () => {
-            while (!signal.aborted && (await processOneJob(ingestSource, signal))) {
-              // Drain every currently available durable job.
+            while (!signal.aborted && isWorkerEpochActive(epoch) && (await processOneJob(ingestSource, signal))) {
+              // Drain every currently available durable job within this epoch.
             }
           })
         );
-      } while (ingestionRepump && !signal.aborted);
+      } while (ingestionRepump && !signal.aborted && isWorkerEpochActive(epoch));
     })
     .catch(() => appLog.warn({ error_code: "INGESTION_PUMP_FAILED" }, "ingestion worker pump failed"))
     .finally(() => {
-      ingestionPump = undefined;
-      if (ingestionRepump && !signal.aborted && !workersStopping) scheduleIngestionPump();
+      // Identity-checked: an older completion never erases a later promise.
+      if (ingestionPump === pump) ingestionPump = undefined;
+      if (ingestionRepump && !signal.aborted && isWorkerEpochActive(epoch)) scheduleIngestionPump(epoch);
     });
+  ingestionPump = pump;
 }
 
 export function wakeIngestionWorkers(): void {
-  scheduleIngestionPump();
+  // No wake can escape the synchronous epoch invalidation while a stop is
+  // draining. Outside a stop, the direct-call epoch 0 path keeps the legacy
+  // `processOneJob`/`processOnePreparingConnectorRefresh` pumps draining
+  // durable queues before any start and after a settled stop, exactly as
+  // before; a published epoch captures its own identity so a later start's
+  // pumps can never be repumped by an old `finally`. Work reserved while
+  // stopped is not lost: the next successful start wakes both durable
+  // queues under its new epoch.
+  if (!isWorkerEpochActive(activeWorkerEpoch)) return;
+  scheduleIngestionPump(activeWorkerEpoch);
 }
 
-function scheduleConnectorPreparePump(): void {
-  if (workersStopping) return;
+/** Durable connector-prepare pump for exactly one worker lifecycle epoch. */
+function scheduleConnectorPreparePump(epoch: number): void {
+  if (!isWorkerEpochActive(epoch)) return;
   connectorPrepareRepump = true;
   if (connectorPreparePump) return;
-  connectorPreparePump = Promise.resolve()
+  const pump = Promise.resolve()
     .then(async () => {
       do {
         connectorPrepareRepump = false;
+        if (!isWorkerEpochActive(epoch)) return;
         await Promise.all(
           Array.from({ length: PREPARE_WORKER_CONCURRENCY }, async () => {
-            while (await processOnePreparingConnectorRefresh()) {
-              // Drain every currently available durable prepare job.
+            while (isWorkerEpochActive(epoch) && (await processOnePreparingConnectorRefresh())) {
+              // Drain every currently available durable prepare job within this epoch.
             }
           })
         );
-      } while (connectorPrepareRepump);
+      } while (connectorPrepareRepump && isWorkerEpochActive(epoch));
     })
     .catch(() => appLog.warn({ error_code: "CONNECTOR_PREPARE_PUMP_FAILED" }, "connector prepare worker pump failed"))
     .finally(() => {
-      connectorPreparePump = undefined;
-      if (connectorPrepareRepump && !workersStopping) scheduleConnectorPreparePump();
+      if (connectorPreparePump === pump) connectorPreparePump = undefined;
+      if (connectorPrepareRepump && isWorkerEpochActive(epoch)) scheduleConnectorPreparePump(epoch);
     });
+  connectorPreparePump = pump;
 }
 
 export function wakeConnectorPrepareWorkers(): void {
-  scheduleConnectorPreparePump();
+  if (!isWorkerEpochActive(activeWorkerEpoch)) return;
+  scheduleConnectorPreparePump(activeWorkerEpoch);
 }
 
 export async function resumePreparingConnectorRefreshes(): Promise<number> {
@@ -352,84 +412,181 @@ export async function recoverPreparingConnectorLeases(startup = false): Promise<
   );
 }
 
-async function repairPendingSourceDeletes(): Promise<number> {
+/**
+ * Startup-only pending source deletion pass over one frozen connection-local
+ * identity snapshot. Every intent present at capture time is attempted at
+ * most once through bounded pages: a concurrently inserted intent waits for
+ * periodic repair, a failed intent remains durable for periodic retry, and a
+ * deleted captured row cannot stall the cursor because the ordinal is
+ * advanced regardless. Invoked per intent so one permanent failure cannot
+ * retain otherwise-good markers through the batch-all-or-nothing cleanup
+ * coordinator (plan 011). The TEMP snapshot is dropped in `finally`; it is
+ * disposable control state, never the recovery record.
+ */
+export async function repairPendingSourceDeletesAtStartup(): Promise<number> {
   const runtime = storageRuntime();
-  const accounts = await runtime.ledger.all<{ account_id: string }>(
-    "SELECT DISTINCT account_id FROM pending_source_deletes ORDER BY account_id"
-  );
+  const snapshot = await runtime.sources.capturePendingSourceDeleteSnapshot();
   let completed = 0;
-  for (const row of accounts) {
-    const intents = await runtime.sources.listPendingSourceDeletes(row.account_id, 1_000);
-    const outcome = await completeSourceDeleteIntents(intents);
-    if (outcome.completed) completed += outcome.intents;
+  try {
+    let cursor = 0;
+    for (;;) {
+      const page = await snapshot.read(cursor, STARTUP_SOURCE_DELETE_PAGE);
+      if (page.length === 0) break;
+      for (const entry of page) {
+        if (!entry.intent) continue;
+        const outcome = await completeSourceDeleteIntents([entry.intent]);
+        if (outcome.completed) completed += outcome.intents;
+      }
+      cursor = page[page.length - 1].ordinal;
+    }
+  } finally {
+    await snapshot.close();
   }
   return completed;
 }
 
+/**
+ * One bounded steady-state reconciliation pass. It performs only: (1) at most
+ * 100 pending vector operations, (2) one globally bounded 100-intent pending
+ * source-delete page with each intent cleaned individually for failure
+ * isolation, and (3) at most 20 dataset-cache cleanup jobs. It never calls
+ * the startup sweep, the whole-ledger vector state read, the LanceDB row
+ * scan, the DuckDB registry restoration, or any distinct-account scan. At
+ * most one page per queue is processed per invocation even when successful
+ * cleanup frees room for more; durable attempts-first ordering provides
+ * progress on later ticks.
+ */
+export async function runPeriodicStorageReconciliation(): Promise<void> {
+  await runSourceMaintenance(async () => {
+    const runtime = storageRuntime();
+    await runtime.vectorLifecycle.drainPendingVectorOperations(PERIODIC_PENDING_VECTOR_OPERATIONS);
+    const intents = await runtime.sources.listPendingSourceDeletesAcrossAccounts(PERIODIC_PENDING_SOURCE_DELETES);
+    // Per-intent isolation is required, not unbounded fan-out:
+    // completeSourceDeleteIntents deliberately retains every marker in a
+    // failed input batch.
+    for (const intent of intents) await completeSourceDeleteIntents([intent]);
+    await processDatasetCacheCleanup(undefined, undefined, PERIODIC_DATASET_CLEANUP_JOBS);
+  }, undefined);
+}
+
+/**
+ * Coalesced 60-second reconciliation pump for exactly one worker epoch. The
+ * bounded pass belongs only to a published epoch; the pre-start direct-call
+ * epoch never earns timer work.
+ */
+function scheduleReconciliationPump(epoch: number): void {
+  if (epoch === 0 || !isWorkerEpochActive(epoch)) return;
+  if (reconciliationPump) return;
+  const pump = runWithRequestContext("storage-reconciliation.periodic", () => runPeriodicStorageReconciliation())
+    .catch(() => appLog.warn({ error_code: "STORAGE_RECONCILIATION_FAILED" }, "storage reconciliation failed"))
+    .finally(() => {
+      if (reconciliationPump === pump) reconciliationPump = undefined;
+    });
+  reconciliationPump = pump;
+}
+
+/**
+ * Narrow package-internal epoch-gated trigger for the periodic
+ * reconciliation callback. It shares the interval's production helper, is
+ * never reachable through a route or runtime dependency, and exists because
+ * the 60-second interval cannot be driven deterministically in tests.
+ */
+export function triggerStorageReconciliation(): void {
+  scheduleReconciliationPump(activeWorkerEpoch);
+}
+
+/** Coalesced 15-second lease-recovery pump for exactly one worker epoch. */
+function scheduleLeaseRecoveryPump(epoch: number): void {
+  if (epoch === 0 || !isWorkerEpochActive(epoch)) return;
+  if (leaseRecoveryPump) return;
+  const pump = Promise.resolve()
+    .then(async () => {
+      // Finish an already-started call, then stop on epoch invalidation: no
+      // later recovery call and no wake join the dead epoch.
+      await recoverExpiredIngestionLeases();
+      if (!isWorkerEpochActive(epoch)) return;
+      await recoverPreparingConnectorLeases();
+      if (!isWorkerEpochActive(epoch)) return;
+      wakeConnectorPrepareWorkers();
+      wakeIngestionWorkers();
+    })
+    .catch(() => appLog.warn({ error_code: "LEASE_RECOVERY_FAILED" }, "ingestion lease recovery failed"))
+    .finally(() => {
+      if (leaseRecoveryPump === pump) leaseRecoveryPump = undefined;
+    });
+  leaseRecoveryPump = pump;
+}
+
+/** Narrow package-internal epoch-gated trigger mirroring the lease timer. */
+export function triggerLeaseRecovery(): void {
+  scheduleLeaseRecoveryPump(activeWorkerEpoch);
+}
+
 /** Recover durable state before opening the listening socket, then start bounded pumps. */
 export async function startIngestionWorkers(): Promise<void> {
-  if (workersStarted) return;
+  if (activeWorkerEpoch !== 0) return;
   await recoverExpiredIngestionLeases(true);
   await recoverPreparingConnectorLeases(true);
   await runSourceMaintenance(
-    () => storageRuntime().vectorLifecycle.repairAtStartup({ completePendingSourceDeletes: repairPendingSourceDeletes }),
+    () =>
+      storageRuntime().vectorLifecycle.repairAtStartup({
+        completePendingSourceDeletes: repairPendingSourceDeletesAtStartup,
+      }),
     undefined
   );
   await processDatasetCacheCleanup();
-  workersStopping = false;
   if (!ingestionAbortController || ingestionAbortController.signal.aborted) {
     ingestionAbortController = new AbortController();
   }
-  workersStarted = true;
+  // Publish a fresh active epoch (reopening wake admission) before the
+  // initial wakes and timers. Work reserved while stopped is not lost: these
+  // wakes drain both durable queues under the new epoch.
+  activeWorkerEpoch = ++workerEpochSequence;
+  workersStopping = false;
+  const epoch = activeWorkerEpoch;
   wakeConnectorPrepareWorkers();
   wakeIngestionWorkers();
 
-  leaseTimer = setInterval(() => {
-    void recoverExpiredIngestionLeases()
-      .then(() => recoverPreparingConnectorLeases())
-      .then(() => {
-        wakeConnectorPrepareWorkers();
-        wakeIngestionWorkers();
-      })
-      .catch(() => appLog.warn({ error_code: "LEASE_RECOVERY_FAILED" }, "ingestion lease recovery failed"));
-  }, 15_000);
+  leaseTimer = setInterval(() => scheduleLeaseRecoveryPump(epoch), 15_000);
   leaseTimer.unref();
-
-  let reconciling = false;
-  reconciliationTimer = setInterval(() => {
-    if (reconciling) return;
-    reconciling = true;
-    void runWithRequestContext("storage-reconciliation.periodic", async () => {
-      await runSourceMaintenance(
-        () => storageRuntime().vectorLifecycle.repairAtStartup({ completePendingSourceDeletes: repairPendingSourceDeletes }),
-        undefined
-      );
-      await restoreDatasets(1);
-      await processDatasetCacheCleanup();
-    })
-      .catch(() => appLog.warn({ error_code: "STORAGE_RECONCILIATION_FAILED" }, "storage reconciliation failed"))
-      .finally(() => {
-        reconciling = false;
-      });
-  }, 60_000);
+  reconciliationTimer = setInterval(() => scheduleReconciliationPump(epoch), 60_000);
   reconciliationTimer.unref();
 }
 
 export async function stopIngestionWorkers(): Promise<void> {
-  if (leaseTimer) clearInterval(leaseTimer);
-  if (reconciliationTimer) clearInterval(reconciliationTimer);
-  leaseTimer = undefined;
-  reconciliationTimer = undefined;
-  workersStarted = false;
+  // Synchronously, before the first await: invalidate the epoch and close
+  // wake admission (including the pre-start epoch 0), clear both unref'd
+  // timers, and reset both repump flags so queued wakes cannot escape the
+  // old epoch.
+  activeWorkerEpoch = 0;
   workersStopping = true;
+  if (leaseTimer) clearInterval(leaseTimer);
+  leaseTimer = undefined;
+  if (reconciliationTimer) clearInterval(reconciliationTimer);
+  reconciliationTimer = undefined;
   ingestionRepump = false;
   connectorPrepareRepump = false;
   const controller = ingestionAbortController;
   controller?.abort(new DOMException("ingestion workers stopped", "AbortError"));
-  await Promise.allSettled([ingestionPump, connectorPreparePump].filter(Boolean) as Promise<void>[]);
+  // Drain every owned pump slot until none remains. The epoch gates make the
+  // loop converge; the repeated snapshot also covers a promise published by
+  // an already-queued microtask just before quiescence.
+  for (;;) {
+    const pending = [leaseRecoveryPump, reconciliationPump, ingestionPump, connectorPreparePump].filter(
+      (pump): pump is Promise<void> => pump !== undefined
+    );
+    if (pending.length === 0) break;
+    await Promise.allSettled(pending);
+  }
+  // Only now that all four slots are empty may this owner release the
+  // cached engine and return to the application-runtime close sequence.
+  // Reopening admission after the full drain preserves the pre-existing
+  // direct-call contract (the legacy epoch-0 pumps of `processOneJob` and
+  // `processOnePreparingConnectorRefresh`); dead published epochs stay dead
+  // because their identity no longer matches, and `start` republishes.
+  workersStopping = false;
   if (ingestionAbortController === controller) ingestionAbortController = undefined;
   cachedEngine = undefined;
-  workersStopping = false;
 }
 
 export interface RestoreSummary {

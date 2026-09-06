@@ -4,12 +4,16 @@ import { encodeJson } from "../db/codecs.js";
 import { openSqliteLedger } from "../db/sqlite.js";
 import {
   createSourceStore,
+  PENDING_SOURCE_DELETE_SNAPSHOT_TABLE,
   type CreateConnectorInput,
   type CreateSourceInput,
+  type PendingSourceDeleteSnapshot,
   type SourceStore,
 } from "../db/stores/sourceStore.js";
 import type { SqliteLedger } from "../db/types.js";
 import { createTempSqliteLedger, type TempSqliteLedger } from "./sqliteTestHarness.js";
+
+const REPAIR_CLOCK = "2026-08-26T10:00:00.000Z";
 
 const resources: TempSqliteLedger[] = [];
 
@@ -366,6 +370,216 @@ describe("SQLite SourceStore", () => {
     await second.close();
   });
 });
+
+describe("global pending source-delete repair page", () => {
+  it("bounds the total across accounts and orders by attempts, then time, then identity", async () => {
+    const { ledger, store } = await fixture();
+    await seedRepairIntent(ledger, "acct-a", "s-01");
+    await seedRepairIntent(ledger, "acct-a", "s-02");
+    await seedRepairIntent(ledger, "acct-b", "b-01");
+
+    const full = await store.listPendingSourceDeletesAcrossAccounts(10);
+    expect(full.map((intent) => [intent.accountId, intent.sourceId])).toEqual([
+      ["acct-a", "s-01"],
+      ["acct-a", "s-02"],
+      ["acct-b", "b-01"],
+    ]);
+    expect(full[2]).toMatchObject({ accountId: "acct-b", name: "t_b-01", attempts: 0, lastError: null });
+
+    // The global limit bounds the returned total across every account.
+    await expect(store.listPendingSourceDeletesAcrossAccounts(2)).resolves.toMatchObject([
+      { accountId: "acct-a", sourceId: "s-01" },
+      { accountId: "acct-a", sourceId: "s-02" },
+    ]);
+
+    // A failed row moves behind every untouched row even at a tied clock.
+    const failed = await store.updatePendingSourceDelete("acct-a", "s-01", {
+      lastError: "SOURCE_CLEANUP_RETRY",
+      incrementAttempts: true,
+      updatedAt: REPAIR_CLOCK,
+    });
+    expect(failed).toMatchObject({ attempts: 1, updatedAt: REPAIR_CLOCK });
+    await expect(store.listPendingSourceDeletesAcrossAccounts(3)).resolves.toMatchObject([
+      { accountId: "acct-a", sourceId: "s-02", attempts: 0 },
+      { accountId: "acct-b", sourceId: "b-01", attempts: 0 },
+      { accountId: "acct-a", sourceId: "s-01", attempts: 1 },
+    ]);
+
+    await expect(store.listPendingSourceDeletesAcrossAccounts(0)).rejects.toMatchObject({
+      code: "SOURCE_STORE_INVALID_ARGUMENT",
+    });
+    await expect(store.listPendingSourceDeletesAcrossAccounts(1_001)).rejects.toMatchObject({
+      code: "SOURCE_STORE_INVALID_ARGUMENT",
+    });
+
+    // The account-scoped method stays tenant-isolated.
+    const scoped = await store.listPendingSourceDeletes("acct-a", 10);
+    expect(scoped.map((intent) => intent.sourceId)).toEqual(["s-01", "s-02"]);
+    expect(scoped.every((intent) => intent.accountId === "acct-a")).toBe(true);
+  });
+});
+
+describe("startup pending source-delete snapshot boundary", () => {
+  interface PassResult {
+    pages: number[];
+    intents: [string, string][];
+    missingOrdinals: number[];
+    maxOrdinal: number;
+  }
+
+  async function drainSnapshot(
+    snapshot: PendingSourceDeleteSnapshot,
+    afterSecondPage?: () => Promise<void>
+  ): Promise<PassResult> {
+    const pages: number[] = [];
+    const intents: [string, string][] = [];
+    const missingOrdinals: number[] = [];
+    let cursor = 0;
+    let maxOrdinal = 0;
+    try {
+      for (;;) {
+        const page = await snapshot.read(cursor, 100);
+        pages.push(page.length);
+        if (page.length === 0) break;
+        for (const entry of page) {
+          maxOrdinal = entry.ordinal;
+          if (entry.intent) intents.push([entry.intent.accountId, entry.intent.sourceId]);
+          else missingOrdinals.push(entry.ordinal);
+        }
+        cursor = page[page.length - 1].ordinal;
+        if (pages.length === 2 && afterSecondPage) await afterSecondPage();
+      }
+    } finally {
+      await snapshot.close();
+    }
+    return { pages, intents, missingOrdinals, maxOrdinal };
+  }
+
+  async function snapshotTablePresent(ledger: SqliteLedger): Promise<boolean> {
+    const row = await ledger.get<{ name: string }>(`SELECT name FROM temp.sqlite_master WHERE name=?`, [
+      PENDING_SOURCE_DELETE_SNAPSHOT_TABLE,
+    ]);
+    return row !== undefined;
+  }
+
+  it("pages every captured identity exactly once while concurrent churn cannot extend or pin it", async () => {
+    const { ledger, store } = await fixture();
+    const base = Date.parse(REPAIR_CLOCK);
+    const captured: string[] = [];
+    for (let index = 0; index < 250; index += 1) {
+      const sourceId = `src-${String(index).padStart(3, "0")}`;
+      captured.push(sourceId);
+      await seedRepairIntent(ledger, index % 2 === 0 ? "acct-a" : "acct-b", sourceId, {
+        createdAt: new Date(base + index * 1_000).toISOString(),
+      });
+    }
+    const deletedCaptured = "src-249";
+    const insertedLate = "src-late";
+
+    const snapshot = await store.capturePendingSourceDeleteSnapshot();
+    expect(await snapshotTablePresent(ledger)).toBe(true);
+
+    const pass = await drainSnapshot(snapshot, async () => {
+      // A concurrent cleanup clears one captured future row, and a new
+      // durable insert appears after the snapshot was frozen.
+      await ledger.run("DELETE FROM pending_source_deletes WHERE source_id=?", [deletedCaptured]);
+      await seedRepairIntent(ledger, "acct-b", insertedLate, {
+        createdAt: new Date(base + 9_999_000).toISOString(),
+      });
+    });
+
+    expect(pass.pages).toEqual([100, 100, 50, 0]);
+    expect(pass.maxOrdinal).toBe(250);
+    // Every surviving captured intent is returned once; the deleted captured
+    // row still advances the cursor (its ordinal is present with no intent).
+    expect(pass.intents).toHaveLength(249);
+    expect(pass.missingOrdinals).toEqual([250]);
+    expect(pass.intents.map(([, sourceId]) => sourceId)).toEqual(
+      captured.filter((sourceId) => sourceId !== deletedCaptured)
+    );
+    // The late insert is outside the frozen snapshot and waits for periodic repair.
+    expect(pass.intents.some(([, sourceId]) => sourceId === insertedLate)).toBe(false);
+    await expect(
+      ledger.get(`SELECT source_id FROM pending_source_deletes WHERE source_id=?`, [insertedLate])
+    ).resolves.toMatchObject({ source_id: insertedLate });
+    expect(await snapshotTablePresent(ledger)).toBe(false);
+  });
+
+  it("drops the TEMP snapshot when a pass throws mid-page and leaves durable rows intact", async () => {
+    const { ledger, store } = await fixture();
+    for (let index = 0; index < 120; index += 1) {
+      await seedRepairIntent(ledger, "acct-a", `abort-${String(index).padStart(3, "0")}`);
+    }
+    const snapshot = await store.capturePendingSourceDeleteSnapshot();
+    const before = await ledger.get<{ n: bigint }>("SELECT COUNT(*) AS n FROM pending_source_deletes");
+
+    let failure: unknown;
+    try {
+      await snapshot.read(0, 100);
+      throw new Error("injected cleanup failure");
+    } catch (error) {
+      failure = error;
+    } finally {
+      await snapshot.close();
+    }
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).toBe("injected cleanup failure");
+    expect(await snapshotTablePresent(ledger)).toBe(false);
+    const after = await ledger.get<{ n: bigint }>("SELECT COUNT(*) AS n FROM pending_source_deletes");
+    expect(after).toEqual(before);
+    // The durable intents remain retryable by the next capture/periodic page.
+    await expect(store.listPendingSourceDeletesAcrossAccounts(10)).resolves.toHaveLength(10);
+  });
+
+  it("admits only one active snapshot, fails closed on a second capture, and rejects reads after close", async () => {
+    const { ledger, store } = await fixture();
+    for (let index = 0; index < 15; index += 1) {
+      await seedRepairIntent(ledger, "acct-a", `solo-${String(index).padStart(2, "0")}`);
+    }
+
+    const first = await store.capturePendingSourceDeleteSnapshot();
+    await expect(store.capturePendingSourceDeleteSnapshot()).rejects.toMatchObject({
+      code: "SOURCE_STORE_INVALID_ARGUMENT",
+    });
+    // The failed second capture dropped/changed nothing.
+    await expect(first.read(0, 10)).resolves.toHaveLength(10);
+    await first.close();
+    await first.close(); // idempotent
+    await expect(first.read(0, 10)).rejects.toMatchObject({ code: "SOURCE_STORE_INVALID_ARGUMENT" });
+
+    // A stale fixed-name table left with no active token is dropped by the
+    // next capture before repopulating.
+    await ledger.run(`CREATE TEMP TABLE ${PENDING_SOURCE_DELETE_SNAPSHOT_TABLE} (junk TEXT)`);
+    expect(await snapshotTablePresent(ledger)).toBe(true);
+    const second = await store.capturePendingSourceDeleteSnapshot();
+    await expect(second.read(0, 100)).resolves.toHaveLength(15);
+    await second.close();
+    expect(await snapshotTablePresent(ledger)).toBe(false);
+
+    await expect(second.read(0, 0)).rejects.toMatchObject({ code: "SOURCE_STORE_INVALID_ARGUMENT" });
+  });
+});
+
+async function seedRepairIntent(
+  ledger: SqliteLedger,
+  accountId: string,
+  sourceId: string,
+  options: { attempts?: number; createdAt?: string; updatedAt?: string; name?: string } = {}
+): Promise<void> {
+  await ledger.run(
+    `INSERT INTO pending_source_deletes
+       (source_id,account_id,name,file_path,dataset_locations,attempts,created_at,updated_at)
+     VALUES (?,?,?,NULL,'[]',?,?,?)`,
+    [
+      sourceId,
+      accountId,
+      options.name ?? `t_${sourceId}`,
+      options.attempts ?? 0,
+      options.createdAt ?? REPAIR_CLOCK,
+      options.updatedAt ?? REPAIR_CLOCK,
+    ]
+  );
+}
 
 async function fixture(): Promise<Fixture> {
   const resource = await createTempSqliteLedger();
