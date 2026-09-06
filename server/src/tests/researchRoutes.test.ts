@@ -536,24 +536,45 @@ describe("research routes — review and reserved stages", () => {
     expect(stale.statusCode).toBe(409);
     expect(stale.json().code).toBe("RESEARCH_REVISION_CONFLICT");
 
+    // Stage 3: a completed run creates a reviewed M13 DRAFT (revision 1,
+    // outside any publication chain) and exports its exact stored table.
     const artifacts = await app.inject({
       method: "POST",
       url: `/api/research-runs/${runId}/artifacts`,
       headers: ownerAuth,
       body: {},
     });
-    expect(artifacts.statusCode).toBe(501);
-    expect(artifacts.json()).toMatchObject({ code: "RESEARCH_EXPORT_NOT_READY" });
+    expect(artifacts.statusCode).toBe(201);
+    const artifact = artifacts.json();
+    expect(artifact).toMatchObject({ run_id: runId, document_revision: 1 });
+    expect(artifact.projection).toMatchObject({ output_kind: "memo", run_status: "completed" });
 
     const exportCsv = await app.inject({
       method: "GET",
       url: `/api/research-runs/${runId}/export?format=csv`,
       headers: ownerAuth,
     });
-    expect(exportCsv.statusCode).toBe(501);
-    expect(exportCsv.json()).toMatchObject({ code: "RESEARCH_EXPORT_NOT_READY" });
+    expect(exportCsv.statusCode).toBe(200);
+    expect(exportCsv.body.charCodeAt(0)).toBe(0xfeff); // UTF-8 BOM
+    expect(exportCsv.body).toContain("limit_state:");
+    // The memo run has no comparison cells: header-only success, not a failure.
+    const manifest = await app.inject({
+      method: "GET",
+      url: `/api/research-runs/${runId}/export?format=manifest`,
+      headers: ownerAuth,
+    });
+    expect(manifest.statusCode).toBe(200);
+    expect(manifest.json().artifact).toBe("research_run_export_manifest");
 
-    // Reserved routes still enforce ownership.
+    // A malformed format is a schema rejection, not an ownership probe.
+    const badFormat = await app.inject({
+      method: "GET",
+      url: `/api/research-runs/${runId}/export?format=json`,
+      headers: ownerAuth,
+    });
+    expect(badFormat.statusCode).toBe(400);
+
+    // Export/artifact routes still enforce ownership.
     const foreignPlan = await app.inject({
       method: "POST",
       url: `/api/research/${definition.id}/plan`,
@@ -563,9 +584,16 @@ describe("research routes — review and reserved stages", () => {
     expect(foreignPlan.statusCode).toBe(404);
     const foreignExport = await app.inject({
       method: "GET",
-      url: `/api/research-runs/${runId}/export?format=json`,
+      url: `/api/research-runs/${runId}/export?format=csv`,
       headers: foreignAuth,
     });
     expect(foreignExport.statusCode).toBe(404);
+    const foreignArtifact = await app.inject({
+      method: "POST",
+      url: `/api/research-runs/${runId}/artifacts`,
+      headers: foreignAuth,
+      body: {},
+    });
+    expect(foreignArtifact.statusCode).toBe(404);
   });
 });

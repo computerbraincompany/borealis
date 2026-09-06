@@ -14,8 +14,25 @@
  * contract, so a missing runner just defers to the next startup resume). Plan
  * generation performs one bounded model call and NEVER starts execution — the
  * proposal is returned for review and becomes durable only via an explicit
- * CAS `PATCH`. Artifact publication and export remain stage 3 (reserved 501
- * `RESEARCH_EXPORT_NOT_READY`).
+ * CAS `PATCH`.
+ *
+ * Stage 3 replaces the reserved endpoints with the real comparison/output
+ * surface, all implemented over the stored ledger rows in
+ * `researchComparison.ts`:
+ * - `GET /:id/table` gains bounded page-local sort/filter view options and an
+ *   optional `against` run for the changed-cell diff between revisions
+ *   (original/extracted/corrected views; the keyset cursor still rides the
+ *   row identity and `view_state` discloses the ordering basis);
+ * - `GET /research-runs/:id/export?format=csv|manifest` exports the exact
+ *   stored result revision (formula-safe CSV plus the JSON evidence/locator
+ *   manifest; zero-row/zero-cell runs are a successful export; the 1 MiB
+ *   limit state is rendered explicitly and never silently truncated);
+ * - `POST /research-runs/:id/artifacts` creates an M13 reviewed DRAFT from a
+ *   COMPLETED or `needs_review` run only — never `failed`/`cancelled` (a
+ *   cancelled/failed run has no committed child turn to publish through) —
+ *   with the memo/comparison projection bounds, labeled omissions, and
+ *   gap/conflict disclosures of `researchComparison.ts`. Drafts are
+ *   owner-only and outside any publication chain.
  *
  * All routes authenticate in `onRequest` before body parsing and carry
  * schema-derived body ceilings. Responses never include the captured provider
@@ -42,6 +59,7 @@ import {
   ResearchActiveRunError,
   ResearchInputsNotReadyError,
   ResearchRevisionConflictError,
+  ResearchRunStateError,
   ResearchStoreError,
   type ResearchRunCounts,
   type ResearchRunSummary,
@@ -52,14 +70,28 @@ import {
   type StoredResearchRun,
   type StoredResearchStep,
 } from "../db/stores/researchStore.js";
+import { createDocumentDraft } from "../documentService.js";
 import { discoverChatModels } from "../llm.js";
 import { sameLlmModel } from "../llmAliases.js";
+import {
+  applyResearchTablePageView,
+  buildResearchArtifactProjection,
+  buildResearchComparisonCsv,
+  buildResearchRunManifest,
+  diffResearchRunTables,
+  loadResearchRunEvidence,
+  loadResearchRunTable,
+  researchExportFilename,
+  type ResearchTableViewOptions,
+} from "../researchComparison.js";
 import { generateResearchPlanProposal } from "../researchPlanner.js";
 import {
+  RESEARCH_CELL_STATUSES,
   RESEARCH_QUESTION_MAX_CHARS,
   RESEARCH_TITLE_MAX_CHARS,
   ResearchValidationError,
   researchTableLimitState,
+  type ResearchCellStatus,
   type ResearchColumnDeclaration,
 } from "../researchSchemas.js";
 import { defaultResearchRunner } from "../researchRunner.js";
@@ -75,11 +107,6 @@ import { idParamsSchema, UUID_PATTERN } from "./schemas.js";
 const DEFAULT_RESEARCH_PAGE_LIMIT = 25;
 const MAX_RESEARCH_PAGE_LIMIT = 100;
 const MAX_EVIDENCE_PAGE_LIMIT = 50;
-
-const EXPORT_RESERVED_BODY = {
-  error: "research artifact/export generation is not implemented yet",
-  code: "RESEARCH_EXPORT_NOT_READY",
-} as const;
 
 const COLUMN_SCHEMA = {
   type: "object",
@@ -196,6 +223,42 @@ const PLAN_PROPOSAL_BODY_SCHEMA = {
   properties: {
     expected_revision: { type: "integer", minimum: 1, maximum: Number.MAX_SAFE_INTEGER },
   },
+} as const;
+
+/** Artifact creation takes no body: the projection is derived from stored rows. */
+const ARTIFACT_BODY_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  maxProperties: 0,
+} as const;
+
+/**
+ * Table reads extend the keyset catalog query with bounded page-local
+ * view options (server-side sort/filter over the returned keyset page,
+ * disclosed by `view_state`) and an optional `against` run identity for the
+ * changed-cell diff between result revisions.
+ */
+const TABLE_QUERY_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    limit: CATALOG_QUERY_SCHEMA.properties.limit,
+    cursor: CATALOG_QUERY_SCHEMA.properties.cursor,
+    sort_column: { type: "string", pattern: UUID_PATTERN },
+    sort_dir: { type: "string", enum: ["asc", "desc"] },
+    sort_view: { type: "string", enum: ["effective", "machine", "correction"] },
+    filter_column: { type: "string", pattern: UUID_PATTERN },
+    filter_status: { type: "string", enum: [...RESEARCH_CELL_STATUSES] },
+    filter_text: { type: "string", minLength: 1, maxLength: 200 },
+    against: { type: "string", pattern: UUID_PATTERN },
+  },
+} as const;
+
+const EXPORT_QUERY_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["format"],
+  properties: { format: { type: "string", enum: ["csv", "manifest"] } },
 } as const;
 
 /** Keyset parsing with a research-specific default (25) and per-table max. */
@@ -756,32 +819,65 @@ export async function researchRoutes(app: FastifyInstance): Promise<void> {
 
   app.get(
     "/api/research-runs/:id/table",
-    { onRequest: requireAuth, schema: { params: idParamsSchema, querystring: CATALOG_QUERY_SCHEMA } },
+    { onRequest: requireAuth, schema: { params: idParamsSchema, querystring: TABLE_QUERY_SCHEMA } },
     async (req, reply) => {
       try {
         const accountId = getAccountId(req);
         const runId = (req.params as { id: string }).id;
-        const run = await storageRuntime().research.getResearchRun(accountId, runId);
+        const store = storageRuntime().research;
+        const run = await store.getResearchRun(accountId, runId);
         if (!run) return reply.code(404).send({ error: "not found", code: "RESEARCH_RUN_NOT_FOUND" });
-        const table = await storageRuntime().research.getResearchTable(
+        const table = await store.getResearchTable(
           accountId,
           runId,
           parseResearchPage("research_table", req.query, MAX_RESEARCH_PAGE_LIMIT)
         );
         if (!table) return reply.code(404).send({ error: "not found", code: "RESEARCH_RUN_NOT_FOUND" });
+        const query = (req.query ?? {}) as Record<string, unknown>;
+        const viewOptions: ResearchTableViewOptions = {
+          sortColumnId: typeof query.sort_column === "string" ? query.sort_column : null,
+          sortDir: query.sort_dir === "desc" ? "desc" : query.sort_dir === "asc" ? "asc" : undefined,
+          sortView:
+            query.sort_view === "machine" || query.sort_view === "correction" || query.sort_view === "effective"
+              ? query.sort_view
+              : undefined,
+          filterColumnId: typeof query.filter_column === "string" ? query.filter_column : null,
+          filterStatus:
+            typeof query.filter_status === "string" &&
+            (RESEARCH_CELL_STATUSES as readonly string[]).includes(query.filter_status)
+              ? (query.filter_status as ResearchCellStatus)
+              : null,
+          filterText: typeof query.filter_text === "string" ? query.filter_text : null,
+        };
+        const view = applyResearchTablePageView(table.page.items, table.columns, viewOptions);
         // Rows are keyed by source identity, not timestamps; the cursor rides
         // the endpoint binding with the run creation time as the stable tuple.
         const nextCursor = table.page.next ? encodeCatalogCursor("research_table", table.page.next) : null;
+        let comparison: ReturnType<typeof diffResearchRunTables> | null = null;
+        if (typeof query.against === "string") {
+          const target = await loadResearchRunTable(store, accountId, query.against);
+          if (!target) return reply.code(404).send({ error: "not found", code: "RESEARCH_RUN_NOT_FOUND" });
+          if (target.run.definitionId !== run.definitionId) {
+            throw new ResearchValidationError("the comparison target must be a run of the same definition");
+          }
+          // The revision diff is always over the FULL stored table; the
+          // page-local sort/filter view never mutates what is compared.
+          const current = await loadResearchRunTable(store, accountId, runId);
+          if (!current) throw new ResearchValidationError("the run vanished mid-comparison");
+          comparison = diffResearchRunTables(target, current);
+        }
         return reply.send({
           run_id: runId,
           columns: publicColumns(table.columns),
-          items: table.page.items.map((item) => ({
+          items: view.items.map((item) => ({
             row_source_id: item.row_source_id,
             row_generation: item.row_generation,
             cells: item.cells.map(publicCell),
           })),
           next_cursor: nextCursor,
           limit_state: researchTableLimitState(table.serializedBytes),
+          view_state: view.viewState,
+          ...(comparison === null ? {} : { comparison }),
         });
       } catch (error) {
         if (sendResearchError(reply, error)) return;
@@ -835,42 +931,106 @@ export async function researchRoutes(app: FastifyInstance): Promise<void> {
     }
   );
 
-  // -- Artifacts and export (reserved: stage 2–3) -----------------------------------
+  // -- Artifacts (M13 reviewed draft) and export (CSV/JSON manifest) ---------------
 
+  /**
+   * Creates an M13 reviewed DRAFT (revision 1, no publication chain) from a
+   * finished run's stored rows. `failed`/`cancelled` runs are refused: they
+   * have no committed child turn to publish through. The response states
+   * exactly what was projected and what was omitted.
+   */
   app.post(
     "/api/research-runs/:id/artifacts",
     {
       onRequest: requireAuth,
       bodyLimit: BODYLESS_MUTATION_LIMIT_BYTES,
-      schema: { params: idParamsSchema, body: PLAN_PROPOSAL_BODY_SCHEMA },
+      schema: { params: idParamsSchema, body: ARTIFACT_BODY_SCHEMA },
     },
     async (req, reply) => {
-      const run = await storageRuntime().research.getResearchRun(getAccountId(req), (req.params as { id: string }).id);
-      if (!run) return reply.code(404).send({ error: "not found", code: "RESEARCH_RUN_NOT_FOUND" });
-      // M13 reviewed-artifact publication over the captured dossier arrives
-      // with stage 3. Nothing executes and no artifact is created here.
-      return reply.code(501).send(EXPORT_RESERVED_BODY);
+      try {
+        const accountId = getAccountId(req);
+        const runId = (req.params as { id: string }).id;
+        const store = storageRuntime().research;
+        const run = await store.getResearchRun(accountId, runId);
+        if (!run) return reply.code(404).send({ error: "not found", code: "RESEARCH_RUN_NOT_FOUND" });
+        if (run.status !== "completed" && run.status !== "needs_review") {
+          throw new ResearchRunStateError(
+            "only finished (completed or needs_review) runs can create reviewed artifacts"
+          );
+        }
+        const revision = await store.getResearchRevisionContent(accountId, run.definitionId, run.definitionRevision);
+        if (!revision) throw new ResearchRunStateError("the run's pinned definition revision row vanished");
+        const view = await loadResearchRunTable(store, accountId, runId);
+        if (!view) throw new ResearchRunStateError("the run vanished mid-projection");
+        const [evidence, claims] = await Promise.all([
+          loadResearchRunEvidence(store, accountId, runId),
+          store.listResearchClaims(accountId, runId),
+        ]);
+        const sourceRecords = await storageRuntime().sources.getSourcesByIds(
+          accountId,
+          run.sources.map((source) => source.sourceId)
+        );
+        const sourceNames = new Map(sourceRecords.map((source) => [source.id, source.displayName || source.name]));
+        const projection = buildResearchArtifactProjection({
+          run,
+          revision,
+          claims,
+          evidence,
+          rows: view.rows,
+          serializedBytes: view.serializedBytes,
+          sourceNames,
+        });
+        const created = await createDocumentDraft({ accountId, title: projection.title, tree: projection.tree });
+        return reply.code(201).send({
+          run_id: runId,
+          document_id: created.document.id,
+          document_revision_id: created.revision.id,
+          document_revision: created.revision.revision,
+          projection: projection.projection,
+        });
+      } catch (error) {
+        if (sendResearchError(reply, error)) return;
+        throw error;
+      }
     }
   );
 
+  /**
+   * Exact stored-revision export. CSV is the full long-form bounded table
+   * (machine originals and correction overlays side by side, formula-safe
+   * escaping, UTF-8 BOM, explicit limit-state comment); the manifest is the
+   * typed-exact JSON companion with locators, hashes, cell bindings,
+   * correction provenance, and limit/budget states. Zero rows/zero cells is
+   * a valid successful export. No retrieval, model, or source read happens
+   * on this path.
+   */
   app.get(
     "/api/research-runs/:id/export",
-    {
-      onRequest: requireAuth,
-      schema: {
-        params: idParamsSchema,
-        querystring: {
-          type: "object",
-          additionalProperties: false,
-          properties: { format: { type: "string", enum: ["csv", "json"] } },
-        },
-      },
-    },
+    { onRequest: requireAuth, schema: { params: idParamsSchema, querystring: EXPORT_QUERY_SCHEMA } },
     async (req, reply) => {
-      const run = await storageRuntime().research.getResearchRun(getAccountId(req), (req.params as { id: string }).id);
-      if (!run) return reply.code(404).send({ error: "not found", code: "RESEARCH_RUN_NOT_FOUND" });
-      // Exact-revision CSV/JSON export arrives with stage 3.
-      return reply.code(501).send(EXPORT_RESERVED_BODY);
+      try {
+        const accountId = getAccountId(req);
+        const runId = (req.params as { id: string }).id;
+        const store = storageRuntime().research;
+        const view = await loadResearchRunTable(store, accountId, runId);
+        if (!view) return reply.code(404).send({ error: "not found", code: "RESEARCH_RUN_NOT_FOUND" });
+        const evidence = await loadResearchRunEvidence(store, accountId, runId);
+        const format = (req.query as { format: "csv" | "manifest" }).format;
+        const definition = await store.getResearchDefinition(accountId, view.run.definitionId);
+        const filename = researchExportFilename(definition?.revision.title ?? "Research", runId, format);
+        const body =
+          format === "csv"
+            ? buildResearchComparisonCsv(view)
+            : `${JSON.stringify(buildResearchRunManifest(view, evidence), null, 2)}\n`;
+        return reply
+          .header("Content-Disposition", `attachment; filename="${filename}"`)
+          .header("Cache-Control", "no-store")
+          .type(format === "csv" ? "text/csv; charset=utf-8" : "application/json; charset=utf-8")
+          .send(body);
+      } catch (error) {
+        if (sendResearchError(reply, error)) return;
+        throw error;
+      }
     }
   );
 }
