@@ -18,7 +18,11 @@ import {
 } from "../db/stores/analysisStore.js";
 import type { SqliteLedger } from "../db/types.js";
 import { AnalysisValidationError } from "../analysisTypes.js";
-import { createHistoricalSqliteFixture, expectedFixtureVersions } from "./sqliteMigrationFixture.js";
+import {
+  createHistoricalSqliteFixture,
+  expectedFixtureVersions,
+  PENDING_MERGE_SCHEMA_VERSIONS,
+} from "./sqliteMigrationFixture.js";
 import { createTempSqliteLedger, type TempSqliteLedger } from "./sqliteTestHarness.js";
 
 const resources: TempSqliteLedger[] = [];
@@ -124,9 +128,12 @@ async function markRunning(
 describe("AnalysisStore", () => {
   it("ships a byte-identical v018 fixture that upgrades a seeded v16 installation", async () => {
     // The v018.sql fixture is byte-identical to the migration delta. The
-    // inventory holds exactly one contiguous fixture per version.
+    // inventory holds exactly one fixture per version except the documented
+    // pending-merge slot.
     expect(expectedFixtureVersions()).toEqual(
-      Array.from({ length: LATEST_SQLITE_SCHEMA_VERSION }, (_, index) => index + 1)
+      Array.from({ length: LATEST_SQLITE_SCHEMA_VERSION }, (_, index) => index + 1).filter(
+        (version) => !PENDING_MERGE_SCHEMA_VERSIONS.includes(version)
+      )
     );
     const fixtureSql = await fs.readFile(fileURLToPath(new URL("./fixtures/sqlite/v018.sql", import.meta.url)), "utf8");
     expect(fixtureSql).toBe(SCHEMA_V18);

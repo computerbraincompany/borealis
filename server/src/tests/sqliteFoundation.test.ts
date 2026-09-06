@@ -328,8 +328,8 @@ describe("SQLite ledger foundation", () => {
 
   it("ships exactly one immutable historical fixture for every schema version", async () => {
     // PENDING_MERGE_SCHEMA_VERSIONS is the single documented pre-merge gap
-    // (v17 belongs to the parallel MCP-connections branch). When that fixture
-    // merges and the list empties, this assertion is contiguous again.
+    // (v19 belongs to the parallel M14 branch). When that fixture merges and
+    // the list empties, this assertion is contiguous again.
     await expect(listHistoricalFixtureVersions()).resolves.toEqual(expectedFixtureVersions());
   });
 
@@ -428,8 +428,8 @@ describe("SQLite ledger foundation", () => {
             ])
           );
           // v18 saved-analysis tables survive upgrades from every historical
-          // installation, including this branch's documented v16-to-v18 step
-          // over the pending-merge v17 slot.
+          // installation, and the v20 document tables land through this
+          // branch's documented step over the pending-merge v19 slot.
           expect([...tables]).toEqual(
             expect.arrayContaining([
               "analyses",
@@ -439,6 +439,12 @@ describe("SQLite ledger foundation", () => {
               "analysis_run_sources",
               "analysis_results",
               "query_captures",
+              "documents",
+              "document_revisions",
+              "document_publications",
+              "document_publication_intents",
+              "document_artifact_cleanup_jobs",
+              "document_publication_cleanup_jobs",
             ])
           );
           expect(await columnNames(ledger, "users")).toEqual(
@@ -481,6 +487,7 @@ describe("SQLite ledger foundation", () => {
               "automations_account_catalog_idx",
               "reports_account_catalog_idx",
               "connections_account_catalog_idx",
+              "documents_account_catalog_idx",
             ])
           );
           const recipientIndex = await ledger.get<{ sql: string }>(
@@ -1258,8 +1265,9 @@ describe("SQLite ledger foundation", () => {
             user_version: BigInt(LATEST_SQLITE_SCHEMA_VERSION),
           });
           // v16 protocol state is proven to survive upgrade into the exact
-          // current latest schema (v17 connections + v18 analyses ride on top).
-          expect(LATEST_SQLITE_SCHEMA_VERSION).toBe(18);
+          // current latest schema (v17 connections, v18 analyses, and the
+          // v20 document tables ride on top; v19 is the parallel-branch slot).
+          expect(LATEST_SQLITE_SCHEMA_VERSION).toBe(20);
 
           const rows = await ledger.all<Record<string, unknown>>(
             `SELECT source_id,phase,generation,refresh_version,candidate_location,

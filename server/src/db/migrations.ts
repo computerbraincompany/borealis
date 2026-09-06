@@ -1,6 +1,6 @@
 import { SqliteMigrationError } from "./types.js";
 
-export const LATEST_SQLITE_SCHEMA_VERSION = 18;
+export const LATEST_SQLITE_SCHEMA_VERSION = 20;
 
 interface MigrationDatabase {
   exec(sql: string): unknown;
@@ -957,6 +957,160 @@ CREATE TABLE query_captures (
 CREATE INDEX query_captures_run_idx ON query_captures (account_id, run_id, id);
 `;
 
+// Schema v20 — editable documents (M13 stage 1). One-slot merge gap: version
+// 19 belongs to the parallel M14 branch and is legitimately absent here (see
+// PENDING_MERGE_SCHEMA_VERSIONS in the historical-fixture helper). The
+// coordinator revalidates contiguity at merge: v19 must enter the migration
+// array before this v20 entry (or v20 is renumbered) — never applied after.
+//
+// Owner-scoped documents are stable identities distinct from legacy report
+// rows. `documents.current_revision` is the head counter (optimistic CAS like
+// `analyses`); every `document_revisions` row is an immutable full snapshot
+// with its own UUID, a `base_revision_id` provenance link, and the frozen
+// tree payload — the 400,000-character CHECK is the durable last line for the
+// store's evidence-inclusive budget (`documentTypes.ts` rejects oversize
+// edits before the transaction). The immutability triggers make raw UPDATE
+// statements on revisions and publications fail closed; the revision DELETE
+// path is store-only via cascade from the parent document (foreign-key
+// actions do not fire triggers while `recursive_triggers` stays off). Origin
+// links are opaque bounded text — never foreign keys — so report/chat/run/
+// analysis deletion can never rewrite or remove a copied document.
+// `document_publications` freezes one immutable version row per publication
+// (title, rendered paths, supersedes chain) with versions assigned only by
+// the store's completion transaction after required artifacts exist;
+// `document_publication_intents` carries the render protocol: one active
+// intent per document (partial unique index), idempotent operation UUIDs, and
+// crash-recoverable status. Both cleanup tables follow the v2/v16
+// durable-intent pattern: the document deletion trigger reserves filesystem
+// work before the row vanishes, and interrupted renders queue exact-directory
+// cleanup with the fairness order. Retention: unlimited revisions per
+// document at these bounds — no count quota is enforced or reserved.
+export const SCHEMA_V20 = `
+CREATE TABLE documents (
+  id TEXT PRIMARY KEY,
+  account_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  title TEXT NOT NULL CHECK (length(title) BETWEEN 1 AND 200),
+  current_revision INTEGER NOT NULL DEFAULT 1 CHECK (current_revision >= 1),
+  origin_report_id TEXT CHECK (origin_report_id IS NULL OR length(origin_report_id) <= 256),
+  origin_chat_id TEXT CHECK (origin_chat_id IS NULL OR length(origin_chat_id) <= 256),
+  origin_run_id TEXT CHECK (origin_run_id IS NULL OR length(origin_run_id) <= 256),
+  origin_analysis_result_id TEXT
+    CHECK (origin_analysis_result_id IS NULL OR length(origin_analysis_result_id) <= 256),
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  UNIQUE (id, account_id)
+) STRICT;
+CREATE INDEX documents_account_catalog_idx ON documents (account_id, created_at DESC, id DESC);
+
+CREATE TABLE document_revisions (
+  id TEXT PRIMARY KEY,
+  document_id TEXT NOT NULL,
+  revision INTEGER NOT NULL CHECK (revision >= 1),
+  account_id TEXT NOT NULL,
+  title TEXT NOT NULL CHECK (length(title) BETWEEN 1 AND 200),
+  payload TEXT NOT NULL CHECK (json_valid(payload) AND length(payload) BETWEEN 1 AND 400000),
+  author_kind TEXT NOT NULL CHECK (author_kind IN ('user','model','automation')),
+  base_revision_id TEXT REFERENCES document_revisions(id),
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  UNIQUE (document_id, revision),
+  UNIQUE (id, account_id),
+  FOREIGN KEY (document_id, account_id) REFERENCES documents(id, account_id) ON DELETE CASCADE
+) STRICT;
+CREATE INDEX document_revisions_document_idx ON document_revisions (document_id, revision DESC);
+
+CREATE TRIGGER document_revisions_no_update
+BEFORE UPDATE ON document_revisions
+BEGIN
+  SELECT RAISE(ABORT, 'document revisions are immutable');
+END;
+
+CREATE TABLE document_publications (
+  id TEXT PRIMARY KEY,
+  account_id TEXT NOT NULL,
+  document_id TEXT NOT NULL,
+  revision_id TEXT NOT NULL,
+  revision INTEGER NOT NULL CHECK (revision >= 1),
+  version INTEGER NOT NULL CHECK (version >= 1),
+  title TEXT NOT NULL CHECK (length(title) BETWEEN 1 AND 200),
+  supersedes TEXT REFERENCES document_publications(id),
+  html_path TEXT NOT NULL CHECK (length(html_path) BETWEEN 1 AND 32768),
+  pdf_path TEXT NOT NULL CHECK (length(pdf_path) BETWEEN 1 AND 32768),
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  UNIQUE (document_id, version),
+  UNIQUE (id, account_id),
+  FOREIGN KEY (document_id, account_id) REFERENCES documents(id, account_id) ON DELETE CASCADE,
+  FOREIGN KEY (revision_id, account_id) REFERENCES document_revisions(id, account_id) ON DELETE CASCADE
+) STRICT;
+CREATE INDEX document_publications_document_activity_idx
+  ON document_publications (document_id, version DESC);
+
+CREATE TRIGGER document_publications_no_update
+BEFORE UPDATE ON document_publications
+BEGIN
+  SELECT RAISE(ABORT, 'document publications are immutable');
+END;
+
+CREATE TABLE document_publication_intents (
+  id TEXT PRIMARY KEY,
+  account_id TEXT NOT NULL,
+  document_id TEXT NOT NULL,
+  revision_id TEXT NOT NULL,
+  revision INTEGER NOT NULL CHECK (revision >= 1),
+  operation_id TEXT NOT NULL CHECK (length(operation_id) BETWEEN 1 AND 64),
+  explicit_revision_selection INTEGER NOT NULL DEFAULT 0 CHECK (explicit_revision_selection IN (0,1)),
+  status TEXT NOT NULL DEFAULT 'rendering'
+    CHECK (status IN ('rendering','ready','completed','failed')),
+  artifact_directory TEXT NOT NULL CHECK (length(artifact_directory) BETWEEN 1 AND 32768),
+  html_path TEXT CHECK (html_path IS NULL OR length(html_path) BETWEEN 1 AND 32768),
+  pdf_path TEXT CHECK (pdf_path IS NULL OR length(pdf_path) BETWEEN 1 AND 32768),
+  error_code TEXT CHECK (error_code IS NULL OR length(error_code) BETWEEN 1 AND 128),
+  error_reason TEXT CHECK (error_reason IS NULL OR length(error_reason) <= 500),
+  publication_id TEXT REFERENCES document_publications(id) ON DELETE SET NULL,
+  attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  UNIQUE (account_id, document_id, operation_id),
+  FOREIGN KEY (document_id, account_id) REFERENCES documents(id, account_id) ON DELETE CASCADE,
+  FOREIGN KEY (revision_id, account_id) REFERENCES document_revisions(id, account_id) ON DELETE CASCADE
+) STRICT;
+CREATE UNIQUE INDEX document_publication_intents_one_active_uidx
+  ON document_publication_intents (document_id) WHERE status IN ('rendering','ready');
+CREATE INDEX document_publication_intents_repair_idx
+  ON document_publication_intents (status, updated_at, id);
+
+CREATE TABLE document_artifact_cleanup_jobs (
+  document_id TEXT PRIMARY KEY,
+  account_id TEXT NOT NULL,
+  attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+  last_error TEXT,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+) STRICT;
+CREATE INDEX document_artifact_cleanup_jobs_retry_idx
+  ON document_artifact_cleanup_jobs (attempts, updated_at, document_id);
+
+CREATE TRIGGER document_delete_cleanup
+BEFORE DELETE ON documents
+BEGIN
+  INSERT INTO document_artifact_cleanup_jobs (document_id,account_id)
+  VALUES (OLD.id,OLD.account_id)
+  ON CONFLICT(document_id) DO NOTHING;
+END;
+
+CREATE TABLE document_publication_cleanup_jobs (
+  id TEXT PRIMARY KEY,
+  account_id TEXT NOT NULL,
+  document_id TEXT NOT NULL,
+  artifact_directory TEXT NOT NULL CHECK (length(artifact_directory) BETWEEN 1 AND 32768),
+  attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+  last_error TEXT,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+) STRICT;
+CREATE INDEX document_publication_cleanup_jobs_retry_idx
+  ON document_publication_cleanup_jobs (attempts, updated_at, id);
+`;
+
 const migrations = [
   { version: 1, sql: SCHEMA_V1 },
   { version: 2, sql: SCHEMA_V2 },
@@ -976,6 +1130,9 @@ const migrations = [
   { version: 16, sql: SCHEMA_V16 },
   { version: 17, sql: SCHEMA_V17 },
   { version: 18, sql: SCHEMA_V18 },
+  // v19 is intentionally absent: it is the parallel M14 slot, coordinated at
+  // merge (see the SCHEMA_V20 header). Do not insert v19 after this entry.
+  { version: 20, sql: SCHEMA_V20 },
 ] as const;
 
 function schemaVersion(database: MigrationDatabase): number {
