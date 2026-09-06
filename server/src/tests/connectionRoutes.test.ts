@@ -9,6 +9,7 @@ import { FileConnectionSecretStore, FileKeyCustody } from "../connections/secret
 import {
   McpTransportAuthError,
   McpTransportHandshakeError,
+  McpTransportUnavailableError,
   setMcpTransportProvider,
   type McpToolDescriptor,
   type McpTransportProvider,
@@ -395,14 +396,21 @@ describe("connection routes", () => {
     detail = await app.inject({ method: "GET", url: `/api/connections/${created.id}`, headers: ownerAuth });
     expect(detail.json()).toMatchObject({ status: "error", status_code: "CONNECTION_TIMEOUT" });
 
-    // The stage-1 default provider (no transport wired yet) is stable 503 and
-    // leaves the connection's status evidence untouched.
-    setMcpTransportProvider(undefined);
+    // A wiring-gap (deterministic-unavailable) provider is stable 503 and
+    // leaves the connection's status evidence untouched. Production defaults
+    // to the SDK transport now; this explicit swap is the unit-test surface.
+    const unavailableProvider: McpTransportProvider = Object.freeze({
+      connect: async (): Promise<never> => {
+        throw new McpTransportUnavailableError();
+      },
+    });
+    const restoreUnavailable = setMcpTransportProvider(unavailableProvider);
     const unavailable = await app.inject({ method: "POST", url: testUrl, headers: ownerAuth });
     expect(unavailable.statusCode).toBe(503);
     expect(unavailable.json()).toMatchObject({ code: "CONNECTION_TRANSPORT_UNAVAILABLE" });
     detail = await app.inject({ method: "GET", url: `/api/connections/${created.id}`, headers: ownerAuth });
     expect(detail.json()).toMatchObject({ status: "error", status_code: "CONNECTION_TIMEOUT" });
+    restoreUnavailable();
     setMcpTransportProvider(fake);
   });
 
