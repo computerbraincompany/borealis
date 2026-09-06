@@ -355,12 +355,17 @@ authorization. Unbound chats retain the default seven built-in tools.
 #### Configuration and skills
 
 Agent create and patch bodies accept `description` (up to 240 characters), `icon`,
-`color`, `tools`, and `skill_ids` alongside `name` and `instructions`. Patches save
-one atomic revision. Instructions retain the 8,000-character limit. Omitted
-capability fields preserve defaults on creation and existing values on edits;
-`tools: []` explicitly disables every built-in tool. Agent list/detail responses
-include this configuration, and revisions include their original configuration.
-Bound chat responses include the agent's icon and color.
+`color`, `tools`, `skill_ids`, `mcp_tools`, and `job_setup` alongside `name` and
+`instructions`. Patches save one atomic revision. Instructions retain the
+8,000-character limit. Omitted capability fields preserve defaults on creation
+and existing values on edits; `tools: []` explicitly disables every built-in
+tool. `tools` keeps its exact built-in-only meaning; connected-tool selections
+live in the separate `mcp_tools` collection and job presets in `job_setup`,
+both defined under "Connected tools in durable chat turns" and "Jobs" in the
+Connections section, where their server-side validation is also specified.
+Agent list/detail responses include this configuration, and revisions include
+their original configuration. Bound chat responses include the agent's icon
+and color.
 
 `GET /api/agent-capabilities` returns the seven supported built-in tool IDs.
 Selected skills belong to the authenticated account. Up to eight skills may be
@@ -382,7 +387,9 @@ All endpoints authenticate before body parsing. Create/update bodies use the
 bounded long-text JSON ceiling. Markdown import in the editor extracts simple
 `name`/`description` front matter and submits the remaining instructions through
 the same skill-create endpoint. It does not install packages or execute files.
-MCP is a separate rollout stage described in `docs/AGENT_EDITOR_ROLLOUT.md`.
+Connected-tool bindings and the durable turn snapshot ship with stage 4 (see
+"Connected tools in durable chat turns" under Connections); the agent-editor
+selection UI remains a later stage of `docs/AGENT_EDITOR_ROLLOUT.md`.
 
 ### Libraries
 
@@ -652,7 +659,7 @@ to appear in the current catalog.
 | Endpoint                            | Request and response                                                                                                                           |
 | ----------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
 | `GET /api/chats`                    | Paginated `{items,next_cursor}` of `{id,title,model,source_mode,agent,created_at,updated_at}`, ordered by latest activity, then ID.            |
-| `POST /api/chats`                   | Optional `title`, `model`, and source-scope union; returns the chat summary. Uses the account's default chat model when set, else the workspace default. |
+| `POST /api/chats`                   | Optional `title`, `model`, source-scope union, and `job` block (chat creation from a job — see "Jobs"); returns the chat summary, plus the `job` projection when created from a job. Uses the account's default chat model when set, else the workspace default. |
 | `GET /api/chats/:id`                | Summary, sources, bounded history page, and active run; accepts `limit` and `before_message_id`.                                               |
 | `PATCH /api/chats/:id`              | Exactly one of `{"title":"..."}` or `{"model":"..."}`; returns the updated summary.                                                            |
 | `PUT /api/chats/:id/sources`        | Source-scope union; returns `{source_mode,sources}`.                                                                                           |
@@ -1091,11 +1098,13 @@ real bounded initialize/list-tools probes; `authorize`/`authorization` run the
 real authorization-code flow with PKCE against the committed issuer fixture).
 All OAuth calls use the pinned SDK's supported client auth layer
 (`@modelcontextprotocol/sdk` 1.30.0 `client/auth.js` primitives; negotiated MCP
-protocol version `2025-11-25`). The remaining stages are not yet current API:
-agent tool bindings, tool dispatch in chat turns, and the Connections UI arrive
-in later stages, and the packaged desktop keeps the main-process callback/key
-custody variant as its stage-5 seam. This section documents the shipped
-contract; later stages extend it in place.
+protocol version `2025-11-25`). The stage-4 backend is now shipped on top of
+this foundation: agent connected-tool bindings, the frozen per-turn snapshot
+in `chat_runs.agent_mcp_tools` (schema v21), MCP tool dispatch inside durable
+chat turns, and the versioned job-setup contracts documented below and under
+"Agent tools". The Connections/agent-editor UI and the packaged desktop
+main-process callback/key custody variant remain the stage-5 seam. This
+section documents the shipped contract; later stages extend it in place.
 
 Transport behavior: HTTP connections accept a full endpoint path, require HTTPS
 except explicitly configured loopback/`.local` development targets, pin the
@@ -1208,6 +1217,85 @@ status with `CONNECTION_CUSTODY_UNAVAILABLE` until credentials are replaced or r
 These durable paths join the workspace archive manifests with the stage that completes
 the rollout.
 
+#### Connected tools in durable chat turns (stage 4, schema v21)
+
+Agent revisions may select connected tools through a dedicated `mcp_tools`
+collection that is separate from `tools` (which keeps its exact built-in-only
+meaning for old clients). Each binding is
+`{connection_id, tool_id, discovery_revision, allow_write?}` — at most 16 per
+agent — and is validated inside the agent create/patch transaction: the
+connection must exist for the account and be enabled, the tool must be present
+in the connection's current published discovery snapshot, its captured input
+schema must pass the strict schema-support gate (unsupported shapes are
+refused at selection and never advertised as callable), and a tool the
+conservative descriptor classifier flags as write-oriented requires the
+explicit per-binding `allow_write: true` acknowledgement. Read-oriented
+default-deny is this wave's policy, and a server's `readOnlyHint` annotation
+is never trusted as proof either way.
+
+Turn acceptance captures the frozen per-run mapping in the same SQLite
+transaction as the message and run row (`chat_runs.agent_mcp_tools`, a
+JSON array capped by the store at 400,000 characters with a wider durable
+schema CHECK): `{alias, connection_id, tool_id, discovery_revision, name,
+description, input_schema, authorization_reference}`. The alias is the
+deterministic opaque model-facing name `mcp_<32 hex>` derived from the
+(connection, tool) pair — stable across selections and orderings, unique
+within a revision, and the only form the provider and SSE stream ever see.
+`authorization_reference` is a non-secret custody identity: `absent`,
+`oauth:<digest>` over the stable sign-in entries (volatile token and expiry
+entries are excluded, so a serialized refresh keeps the same authorized grant
+identity), or `secret:<digest>` over the static credential set. Tokens,
+endpoints, and credential values never enter the column, message metadata, or
+SSE; acceptance fails closed when a binding's live custody state cannot be
+captured as a usable reference.
+
+Dispatch is enforced per call, not per turn: before each execution the server
+re-checks that the connection still exists and is enabled and that live
+custody still yields the captured reference, so revocation, credential
+replacement, or disabling blocks the NEXT call while the turn itself
+continues. A refused or failed call reaches the model only as
+`{"error":"CONNECTION_*"}` (stable code) and the UI only as one of the fixed
+sanitized step summaries. Arguments are validated against the frozen captured
+schema — a discovery refresh mid-run changes neither the frozen descriptor
+nor what validates the model's arguments — and the call runs with the 30-second
+tool deadline bounded inside the run budget, with 32 KiB argument and 64 KiB
+result ceilings enforced as explicit failures rather than truncation.
+Non-text content blocks are reported explicitly and never auto-fetched. The
+model receives only the server-normalized `{ok,text,unsupported_content?}`
+result marked as untrusted external content. Completed runs are durable
+history: a restart never replays an external tool call, and startup recovery
+only fails interrupted runs.
+
+#### Jobs: versioned job setup and chat creation from a job
+
+The same agent configuration carries an optional `job_setup` block:
+`{starter_prompts: string[] (≤5, 2,000 characters each), output_template:
+{kind:"instruction", instruction: ≤8,000 characters} | null, library_ids:
+string[] (≤10 owned UUIDs)}`. The output template is a discriminated
+reference; only the bounded `instruction` variant ships now, and the M13
+document-template catalog will add its variant to this codec (unknown
+variants fail closed today). Job setup changes follow agent revision
+semantics: they affect the NEXT accepted turn only.
+
+| Endpoint       | Contract                                                                                   |
+| -------------- | ------------------------------------------------------------------------------------------ |
+| `GET /api/jobs` | The two bundled editable starter jobs (finance analysis, diligence memo) as seedable server-served definitions: name, description, icon, color, instructions, built-in `tools`, and `job_setup`. They carry no implicit attached data (`library_ids: []`) and require no remote service (no `mcp_tools`). A user edits one by seeding it through `POST /api/agents` — afterwards it is an ordinary versioned agent. |
+
+`POST /api/chats` accepts an optional `job` block,
+`{suggested_library_ids: string[] (≤10, owned)}` (or `job: {}`). The server
+validates the libraries (unknown or foreign ids return `400`), expands them
+into the explicit READY source ids in stable selected-scope order through the
+normal selected-scope contract, and returns the created chat plus a `job`
+projection `{starter_prompts, output_template, suggested_library_ids,
+suggested_source_ids}` — prompts and template come from the bound agent's
+`job_setup` and are only returned to the client. The server never sends a
+message because of a job; job-based creation creates no run or message. The
+new chat stays `selected` with no attached sources until the user confirms
+the expanded list (an explicit `source_mode`/`source_ids` in the same request
+is the confirmed scope and is honored). Expansion never falls back to `all`
+and never truncates: more than 100 distinct ready sources fails with
+`409 JOB_SCOPE_LIMIT` and creates no chat.
+
 ### Reports and charts
 
 | Endpoint                    | Response                                                                                                                                                                                                                        |
@@ -1312,6 +1400,15 @@ HTTP endpoints:
 | `render_chart`  | Validates the canonical spec and stages a chart for this run.                                                  |
 | `create_report` | Stages at most one report per run, using only charts owned by the same run.                                    |
 | `fetch_url`     | Fetches a public URL explicitly present in the current user message, independently of stored-source selection. |
+
+In addition to the built-ins, an agent's frozen connected-tool selections are
+advertised to the model under their opaque `mcp_*` aliases with the captured
+schemas and execute inside the same loop through the connection service —
+per-call enable/revocation/credential-identity re-checks, frozen-schema
+argument validation, a 30-second deadline inside the run budget, 32 KiB
+argument and 64 KiB result ceilings, and stable `CONNECTION_*` error codes
+with fixed sanitized SSE summaries. See "Connected tools in durable chat
+turns" above for the full contract.
 
 Agent web fetches discard fragments, reject URL credentials and non-default
 ports, pin DNS to public addresses, and revalidate every redirect. An HTTPS URL
