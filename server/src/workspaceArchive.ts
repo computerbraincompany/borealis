@@ -52,6 +52,26 @@ const PORTABLE_ROOT_ADDITIONS = Object.freeze(
   ])
 );
 
+/**
+ * Machine-bound connection custody (Connected agents M17 / living knowledge
+ * M14): the encrypted `secrets/` record namespace and the operator-managed
+ * `connections.key` custody file are intentionally never portable. An
+ * archive excludes both regardless of content, and a restore therefore
+ * re-enters every attested connection state through an explicit actionable
+ * disconnected/reconnect transition (see
+ * `markRestoredConnectionStatesRequiringReconnect`). Adding either name as an
+ * explicit relocated addition is rejected for the same reason. OAuth sessions
+ * and desktop-folder grants ride inside this custody (or live only in
+ * process memory) and are correspondingly non-portable; the ledger rows,
+ * tool snapshots, and saved outputs they describe always archive normally.
+ */
+const NONPORTABLE_ROOT_NAMES = Object.freeze(
+  new Map<string, "directory" | "file">([
+    ["secrets", "directory"],
+    ["connections.key", "file"],
+  ])
+);
+
 type ModeClass = "directory" | "executable" | "file" | "secret";
 
 interface ArchiveManifestEntry {
@@ -664,6 +684,7 @@ async function collectSourceEntries(
   const workspaceNames = await fs.readdir(workspace);
   workspaceNames.sort(compareArchiveNames);
   for (const relative of workspaceNames) {
+    if (NONPORTABLE_ROOT_NAMES.has(relative)) continue;
     const source = path.join(workspace, relative);
     await walkSource(source, relative, entries, seen);
   }
@@ -1187,6 +1208,9 @@ async function normalizeArchiveAdditions(
   const normalized: NormalizedArchiveAddition[] = [];
   for (const addition of additions) {
     const name = validateAdditionName(addition.name);
+    if (NONPORTABLE_ROOT_NAMES.has(name)) {
+      throw new TypeError("connection custody material is never portable");
+    }
     if (names.has(name)) throw new TypeError("addition names must be unique");
     names.add(name);
     const requested = validateAbsoluteDirectoryPath(addition.path, "addition path");
@@ -1307,6 +1331,30 @@ async function rebaseRestoredWorkspacePaths(
         rebaseSqliteTextColumns(database, "dataset_cache_cleanup_jobs", ["location"], rebase);
         rebaseSqliteTextColumns(database, "reports", ["html_path", "pdf_path"], rebase);
         rebaseSqliteTextColumns(database, "report_artifact_cleanup_jobs", ["html_path", "pdf_path"], rebase);
+        // M13 document publications write their HTML/PDF artifacts into the
+        // report directory's private `documents` namespace, so their durable
+        // locations rebase exactly like report artifacts. The publication
+        // ledger's immutability trigger is suppressed only for this path
+        // rewrite inside the restore transaction (see the helper).
+        rebaseSqliteTextColumnsUnderImmutability(database, "document_publications", ["html_path", "pdf_path"], rebase);
+        rebaseSqliteTextColumns(
+          database,
+          "document_publication_intents",
+          ["artifact_directory", "html_path", "pdf_path"],
+          rebase
+        );
+        rebaseSqliteTextColumns(database, "document_publication_cleanup_jobs", ["artifact_directory"], rebase);
+        // M14 knowledge refresh staging files live under the uploads
+        // namespace; their crash-recovery locations rebase with them.
+        // `knowledge_items`/`knowledge_preview_entries` carry relative
+        // paths only. The audit of `connections.config` (MCP stdio
+        // command/cwd are machine executables outside workspace custody) and
+        // of `knowledge_connections.config` (the desktop-folder `root_path`
+        // is the provenance record of an externally granted folder, never a
+        // path under workspace custody) found no workspace-scoped paths to
+        // rebase in either ledger column.
+        rebaseSqliteTextColumns(database, "knowledge_refresh_items", ["candidate_path"], rebase);
+        markRestoredConnectionStatesRequiringReconnect(database);
       })();
       database.pragma("wal_checkpoint(TRUNCATE)");
     } finally {
@@ -1366,6 +1414,102 @@ function rebaseSqliteTextColumns(
     const before = columns.map((column) => row[column]);
     const after = before.map((value) => (typeof value === "string" ? rebase(value) : value));
     if (after.some((value, index) => value !== before[index])) update.run(...after, row._rowid);
+  }
+}
+
+/**
+ * Rebase the named text columns of a table whose UPDATE statements are
+ * blocked by durable immutability triggers (M13 publishes an immutability
+ * trigger on `document_publications`, whose rows carry workspace-scoped
+ * artifact paths). Inside the restore transaction every trigger declared on
+ * the table is dropped with its exact persisted definition and recreated
+ * from that stored SQL afterwards; a trigger without a recoverable
+ * definition fails the restore rather than rewriting an attested table.
+ * SQLite DDL is transactional, so any later failure rolls both back.
+ */
+function rebaseSqliteTextColumnsUnderImmutability(
+  database: Database.Database,
+  table: string,
+  columns: readonly string[],
+  rebase: (value: string) => string
+): void {
+  if (!sqliteTableExists(database, table)) return;
+  const triggers = database
+    .prepare(`SELECT name, sql FROM sqlite_master WHERE type='trigger' AND tbl_name=? ORDER BY name`)
+    .all(table) as Array<{ name: unknown; sql: unknown }>;
+  if (triggers.length === 0) {
+    rebaseSqliteTextColumns(database, table, columns, rebase);
+    return;
+  }
+  const definitions = triggers.map((trigger) => {
+    if (typeof trigger.name !== "string" || typeof trigger.sql !== "string") {
+      throw new Error("restored immutability trigger is unrecoverable");
+    }
+    return Object.freeze({ name: trigger.name, sql: trigger.sql });
+  });
+  for (const definition of definitions) {
+    database.exec(`DROP TRIGGER "${definition.name.replaceAll('"', '""')}"`);
+  }
+  rebaseSqliteTextColumns(database, table, columns, rebase);
+  for (const definition of definitions) {
+    database.exec(definition.sql);
+  }
+}
+
+/**
+ * Custody material (`secrets/` records and `connections.key`, including
+ * OAuth sessions and WebDAV credentials) is never archived, so a restored
+ * workspace can never carry usable external credentials. Rather than leave
+ * ledger rows attesting a state that the new custody cannot honor, the
+ * restore transaction transitions them to the actionable disconnected states
+ * the transports already speak:
+ *
+ * - every `ready` MCP connection becomes `disconnected` with status code
+ *   `CONNECTION_RESTORE_RECONNECT_REQUIRED` (re-test/re-authorize);
+ * - every `ready` knowledge connection becomes `disconnected` — WebDAV with
+ *   `KNOWLEDGE_RESTORE_RECONNECT_REQUIRED` (re-enter credentials) and
+ *   desktop folders with `KNOWLEDGE_FOLDER_RESELECT_REQUIRED` (grants are
+ *   memory-only, so the folder must be re-selected);
+ * - `credential_configured` is cleared for every WebDAV connection on the
+ *   restored copy, because no credential record survived there.
+ *
+ * Untested and already-actionable rows keep their state. Nothing is
+ * discarded: configurations, tool snapshots, items, previews, refresh
+ * history, and saved outputs all restore unchanged.
+ */
+function markRestoredConnectionStatesRequiringReconnect(database: Database.Database): void {
+  if (sqliteTableExists(database, "connections")) {
+    database
+      .prepare(
+        `UPDATE connections
+            SET status='disconnected',
+                status_code='CONNECTION_RESTORE_RECONNECT_REQUIRED',
+                updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+          WHERE status='ready'`
+      )
+      .run();
+  }
+  if (sqliteTableExists(database, "knowledge_connections")) {
+    database
+      .prepare(
+        `UPDATE knowledge_connections
+            SET status='disconnected',
+                status_code=CASE WHEN kind='desktop_folder'
+                  THEN 'KNOWLEDGE_FOLDER_RESELECT_REQUIRED'
+                  ELSE 'KNOWLEDGE_RESTORE_RECONNECT_REQUIRED' END,
+                credential_configured=0,
+                updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+          WHERE status='ready'`
+      )
+      .run();
+    database
+      .prepare(
+        `UPDATE knowledge_connections
+            SET credential_configured=0,
+                updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+          WHERE kind='webdav' AND credential_configured=1 AND status<>'ready'`
+      )
+      .run();
   }
 }
 
