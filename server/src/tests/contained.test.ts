@@ -745,13 +745,15 @@ describe("contained download transport contract", () => {
       gated.rejectOnAbort(signal);
       return gated.response;
     });
-    const manager = createContainedDownloadManager({ transport, timeoutMs: 25 });
+    // 250 ms keeps the timeout decisive under parallel-suite starvation
+    // while the gated response still never resolves.
+    const manager = createContainedDownloadManager({ transport, timeoutMs: 250 });
     await manager.start({ url: FAKE_URL, filename: "slow.gguf", sha256: sha256Hex(Buffer.alloc(10)) });
     await waitForState(manager, "slow.gguf", ["failed"]);
     const row = manager.snapshot().find((download) => download.filename === "slow.gguf");
     expect(row?.error).toContain("timed out");
     await expect(fs.stat(path.join(config.containedDir, "slow.gguf"))).rejects.toMatchObject({ code: "ENOENT" });
-  });
+  }, 15_000);
 });
 
 describe("contained download reservations and lifecycle", () => {

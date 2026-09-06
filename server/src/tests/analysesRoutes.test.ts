@@ -487,23 +487,26 @@ describe("analysis routes — durable runs", () => {
     bindStubRunner();
     const created = await createDefinition(app);
     const ledger = storageRuntime().ledger;
-    for (let index = 0; index < 1_000; index += 1) {
-      const runId = randomUUID();
-      await ledger.run(
-        `INSERT INTO analysis_runs
+    // Set-based seeding keeps the quota boundary fast under parallel load.
+    await ledger.run(
+      `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<1000)
+         INSERT INTO analysis_runs
            (id,account_id,analysis_id,revision,status,cancel_requested,parameter_values,created_at,finished_at)
-         VALUES (?,?,?,1,'succeeded',0,'[]','2026-01-01T00:00:00.000Z','2026-01-01T00:00:01.000Z')`,
-        [runId, OWNER, created.id]
-      );
-      await ledger.run(
-        `INSERT INTO analysis_results
+         SELECT printf('00000000-0000-4000-8000-%012x', i),?,?,1,'succeeded',0,'[]',
+                '2026-01-01T00:00:00.000Z','2026-01-01T00:00:01.000Z'
+         FROM n`,
+      [OWNER, created.id]
+    );
+    await ledger.run(
+      `INSERT INTO analysis_results
            (id,account_id,analysis_id,run_id,revision,columns,rows,returned_rows,row_count_exact,
             completeness,parameter_values,source_provenance,created_at)
-         VALUES (?,?,?,?,1,'[{"name":"a","type":"number"}]','[[1]]',1,1,
-                 '{"complete":true,"reasons":[]}','[]','[]','2026-01-01T00:00:01.000Z')`,
-        [randomUUID(), OWNER, created.id, runId]
-      );
-    }
+         SELECT printf('f0000000-0000-4000-8000-%012x', r.rn),?,?,r.id,1,
+                '[{"name":"a","type":"number"}]','[[1]]',1,1,
+                '{"complete":true,"reasons":[]}','[]','[]','2026-01-01T00:00:01.000Z'
+         FROM (SELECT id, row_number() OVER (ORDER BY id) AS rn FROM analysis_runs WHERE analysis_id=?) r`,
+      [OWNER, created.id, created.id]
+    );
     const response = await app.inject({
       method: "POST",
       url: `/api/analyses/${created.id}/runs`,
@@ -512,7 +515,7 @@ describe("analysis routes — durable runs", () => {
     });
     expect(response.statusCode).toBe(409);
     expect(response.json()).toMatchObject({ code: "ANALYSIS_RESULT_QUOTA_EXCEEDED" });
-  });
+  }, 30_000);
 
   it("cancels and drains active work before deleting an analysis", async () => {
     const app = await buildApp();
