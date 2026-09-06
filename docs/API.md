@@ -1717,6 +1717,70 @@ MiB with an explicit `at_limit` state. Restart retries an interrupted step at
 most once under the same identity; budget exhaustion is a `needs_review` settle
 in the stage-2 runner, never a claim of exhaustive completion.
 
+### Reviewed briefs (M16 — stage 1: store, calendar, and recipe API)
+
+Reviewed briefs schedule a saved analysis over an explicit source set and
+deliver a report draft into a review inbox. Stage 1 ships the durable recipe
+ledger, the civil calendar, the run stage machine, and the recipe routes
+below. The execution pipeline (input refresh → generation-ready wait →
+analysis → draft creation → review → publish) is stage 2: manual
+`POST /api/briefs/:id/runs` and scheduled claims persist a durable `queued`
+run and stop there. The review inbox, decision, and notification routes
+arrive with stage 3; the durable `brief_review_events` and
+`brief_notifications` tables already exist.
+
+A recipe binds exactly one saved analysis at its current definition revision.
+Recipe source membership must equal the bound revision's selected source set
+exactly — changing membership requires an explicit M12 revision followed by a
+recipe update, and a later analysis edit never silently retargets a recipe.
+Parameter values are typed and validated against the bound revision's
+declarations at write. Source membership is capped at 100 (rejected, never
+truncated), the name at 80 characters, the report title at 200, and the draft
+instruction at 8,000 characters. Refresh bindings map recipe sources to a
+connector or a knowledge connection of the same account; creating or editing
+a recipe that carries refresh bindings requires remote-egress consent
+(`403 REMOTE_EGRESS_CONSENT_REQUIRED`) because it schedules
+payload-bearing refreshes.
+
+Schedules are civil, not cron: `daily`, `weekly` on one weekday (0 =
+Sunday), or `monthly` on day 1–28, at a fixed hour/minute in one validated
+IANA time zone. Every occurrence is identified by its civil date-time key
+(`YYYY-MM-DDTHH:MM` in the recipe zone). A nonexistent spring-forward time
+runs at the first valid local instant after the gap; a repeated autumn time
+runs once at the earlier instant, and the civil key makes a restart unable to
+run the second instance. All missed occurrences coalesce into one catch-up
+run that advances to the next future civil occurrence; repeated restarts of
+the same window create nothing new. While a run is active, later due
+occurrences coalesce to at most one pending catch-up; `awaiting_review` is
+terminal for scheduling and never blocks later occurrences. Five consecutive
+execution failures pause the recipe with a durable reason (skipped/blocked
+consent or migration outcomes and rejected drafts never count, and success
+resets the counter). The app/server must be running for schedules to fire —
+there is no OS scheduler. Deleting the bound analysis pauses the recipe with
+`the bound analysis was deleted` instead of retargeting it; run history
+survives recipe deletion through each run's immutable recipe snapshot.
+
+| Endpoint                          | Contract                                                                                                                                          |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /api/briefs`                 | Endpoint-bound keyset catalog (`cursor`/`limit`).                                                                                                  |
+| `POST /api/briefs`                | Validated body `{name, analysis_id, parameter_values?, report_title, report_instruction, source_ids[1..100], refresh_bindings?, schedule}`. `201`. Validation failures `400`; duplicate name `400`. |
+| `GET /api/briefs/:id`             | Recipe detail plus `next_occurrences`: the next three civil keys with their resolved UTC instants.                                                  |
+| `PATCH /api/briefs/:id`           | Body `{expected_revision, ...editable fields}`. A stale revision answers `409 BRIEF_REVISION_CONFLICT`; nothing is written. Membership/parameter drift against the analysis head answers `400`. |
+| `POST /api/briefs/:id/pause`      | Pauses scheduling; repeated calls are no-ops. Resume re-advances the civil cursor strictly after now.                                              |
+| `POST /api/briefs/:id/resume`     | Resumes with `active` state and a fresh cursor.                                                                                                     |
+| `DELETE /api/briefs/:id`          | Removes the recipe head and revision snapshots. Existing runs/reviews survive through their snapshots. `{"ok":true}`.                              |
+| `POST /api/briefs/:id/runs`       | Run-now with body `{operation_id}` (UUID idempotency key). `202 {"run":{...},"replayed":bool}` with the durable `queued` run; a retried key replays the original run; an active run answers `409 BRIEF_ACTIVE_RUN`. |
+| `GET /api/briefs/:id/runs`        | Keyset run history (bounded summaries: stage, deadlines, coalescing counts, artifact ids, generic failure reason).                                  |
+
+Run stages are `queued → refreshing → waiting_ready → analyzing → drafting →
+awaiting_review → publishing`, with terminal `failed`, `cancelled`, `skipped`,
+`approved`, and `rejected`. Stage transitions are short conditional
+(conditional-and-set) writes guarded by a per-attempt operation id, so a
+stale worker can never advance a newer attempt; the 15-minute refresh-stage
+deadline and the 30-minute total-to-review deadline are persisted with the
+run (human review time excluded) and survive restart. Failure reasons are
+content-free and capped at 500 characters.
+
 ## Agent tools
 
 These operations run inside an accepted chat turn, not as independently callable
