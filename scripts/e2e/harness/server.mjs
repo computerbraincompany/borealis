@@ -66,54 +66,74 @@ export async function startServer({ workspace, repoRoot, provider, models }) {
   for (const key of Object.keys(env)) if (env[key] === undefined) delete env[key];
 
   const logFile = path.join(workspace.logsDir, "server.log");
-  let ready;
-  let readySettled;
-  const readyPromise = new Promise((resolve, reject) => {
-    readySettled = { resolve, reject };
-  });
 
-  const entry = spawnOwned({
-    command: process.execPath,
-    args: [serverEntry],
-    // A neutral cwd so no stray .env next to the sources can leak in.
-    cwd: workspace.root,
-    env,
-    label: "server",
-    onStdoutLine: (line) => {
-      fs.appendFileSync(logFile, `${line}\n`);
-      if (ready) return;
-      let parsed;
-      try {
-        parsed = JSON.parse(line);
-      } catch {
-        return;
-      }
-      if (parsed && parsed.msg === READY_MSG && Number.isSafeInteger(parsed.port)) {
-        ready = { port: parsed.port, host: String(parsed.host ?? "127.0.0.1") };
-        readySettled.resolve(ready);
-      }
-    },
-  });
-  entry.child.stderr.on("data", (piece) => fs.appendFileSync(logFile, String(piece).slice(0, 4_000)));
-  entry.child.on("exit", () => readySettled.reject(new HarnessError("SERVER_EXITED_EARLY")));
-  workspace.trackPid(entry.pid, "server");
+  /**
+   * Spawn one server process and resolve its listen coordinates from its own
+   * ready log line. Used for the first boot and for mid-journey restarts
+   * (durability proof); every spawn is pid-tracked and owns its own promise.
+   */
+  async function spawnListeningProcess(processEnv) {
+    let ready;
+    let readySettled;
+    const readyPromise = new Promise((resolve, reject) => {
+      readySettled = { resolve, reject };
+    });
 
-  const deadline = setTimeout(() => readySettled.reject(new HarnessError("SERVER_READY_TIMEOUT")), 60_000);
-  let listenInfo;
-  try {
-    // The exit listener rejects this promise on an early death, so a single
-    // await covers ready, timeout, and early exit.
-    listenInfo = await readyPromise;
-  } finally {
-    clearTimeout(deadline);
+    const entry = spawnOwned({
+      command: process.execPath,
+      args: [serverEntry],
+      // A neutral cwd so no stray .env next to the sources can leak in.
+      cwd: workspace.root,
+      env: processEnv,
+      label: "server",
+      onStdoutLine: (line) => {
+        fs.appendFileSync(logFile, `${line}\n`);
+        if (ready) return;
+        let parsed;
+        try {
+          parsed = JSON.parse(line);
+        } catch {
+          return;
+        }
+        if (parsed && parsed.msg === READY_MSG && Number.isSafeInteger(parsed.port)) {
+          ready = { port: parsed.port, host: String(parsed.host ?? "127.0.0.1") };
+          readySettled.resolve(ready);
+        }
+      },
+    });
+    entry.child.stderr.on("data", (piece) => fs.appendFileSync(logFile, String(piece).slice(0, 4_000)));
+    entry.child.on("exit", () => readySettled.reject(new HarnessError("SERVER_EXITED_EARLY")));
+    workspace.trackPid(entry.pid, "server");
+
+    const deadline = setTimeout(() => readySettled.reject(new HarnessError("SERVER_READY_TIMEOUT")), 60_000);
+    let listenInfo;
+    try {
+      // The exit listener rejects this promise on an early death, so a single
+      // await covers ready, timeout, and early exit.
+      listenInfo = await readyPromise;
+    } finally {
+      clearTimeout(deadline);
+    }
+    if (!listenInfo) throw new HarnessError("SERVER_EXITED_EARLY");
+    return { entry, listenInfo };
   }
-  if (!listenInfo) throw new HarnessError("SERVER_EXITED_EARLY");
 
-  const origin = `http://${listenInfo.host}:${listenInfo.port}`;
+  let currentEntry = null;
+  let currentPort = 0;
+
+  const first = await spawnListeningProcess(env);
+  currentEntry = first.entry;
+  currentPort = first.listenInfo.port;
+
+  const origin = `http://${first.listenInfo.host}:${first.listenInfo.port}`;
   const server = {
     origin,
-    port: listenInfo.port,
-    pid: entry.pid,
+    get port() {
+      return currentPort;
+    },
+    get pid() {
+      return currentEntry.pid;
+    },
     logFile,
     fetchJson: (route, options) => fetchJson(`${origin}${route}`, options),
 
@@ -167,8 +187,27 @@ export async function startServer({ workspace, repoRoot, provider, models }) {
 
     /** Orderly SIGTERM (the production shutdown path) with bounded escalation. */
     async stop() {
-      const result = await stopOwned(entry, { graceMs: 25_000 });
+      const result = await stopOwned(currentEntry, { graceMs: 25_000 });
       return result;
+    },
+
+    /**
+     * Mid-journey backend restart (acceptance durability proof): quiesce on
+     * the product's own readiness gate, request orderly shutdown of the
+     * current process, then boot a fresh process against the SAME isolated
+     * data directory pinned to the SAME loopback port, so the browser
+     * session's origin and stored JWT remain valid across the restart
+     * (`jwt.secret` lives in the isolated workspace and is not regenerated).
+     */
+    async restart({ token } = {}) {
+      await server.quiesceWorkers({ token });
+      const stopped = await server.stop();
+      assert(stopped.gone && !stopped.escalated, "SERVER_RESTART_STOP_UNCLEAN");
+      const next = await spawnListeningProcess({ ...env, PORT: String(currentPort) });
+      currentEntry = next.entry;
+      assert(next.listenInfo.port === currentPort, "SERVER_RESTART_PORT_MOVED");
+      await server.waitBaseline();
+      return { pid: next.entry.pid, port: currentPort };
     },
   };
   return server;

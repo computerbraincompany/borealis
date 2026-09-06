@@ -24,7 +24,7 @@ live model or external network.
 - `SIGTERM`/`SIGINT` (and stdin close for the stdio fixture) shut down
   cleanly with exit code `0`. Fixtures never spawn children.
 - Self-test: `node scripts/e2e/fixtures/selftest.mjs` (optionally one group:
-  `provider|mcp-stdio|mcp-http|issuer|webdav|corpus`). Starts everything,
+  `provider|mcp-stdio|mcp-http|issuer|webdav|corpus|finance`). Starts everything,
   drives each failure mode, exits `0` on success, and proves every spawned
   PID is gone afterwards.
 
@@ -48,7 +48,11 @@ Endpoints: `POST /v1/chat/completions` (stream-only), `POST /v1/embeddings`
 (deterministic unit-norm float arrays; `encoding_format: "base64"` honoured as
 float32-LE base64), `GET /v1/models`, and `GET /fixture/state` which returns
 the content-free Authorization-header record (`present`/`scheme` only — never
-values) plus call counters.
+values) plus call counters. `POST /fixture/script` installs a new step script
+at runtime (`{"steps":[...],"on_exhausted"?:...}`, same step validation as the
+env script) and resets the step pointer, so a journey can drive a
+deterministic tool-call roundtrip against the one provider instance the
+harness launched; step shape only — script content is never logged.
 
 ### `fixtures/mcp-server-stdio.mjs` — MCP over stdio (journey A)
 

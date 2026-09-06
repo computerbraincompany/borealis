@@ -61,11 +61,17 @@ async function createSession({ browser, origin, workspace }) {
   // 401 resource failures during the auth bootstrap phase are expected while
   // the SPA probes session-backed surfaces before a token exists.
   const phaseAllowlist = [/the server responded with a status of 401/i];
+  // Journeys that deliberately probe negative paths (foreign-account 404,
+  // stale-CAS 409, selected-empty 400) expect those exact resource failures;
+  // `allowStatuses` adds exactly the requested codes — never a blanket
+  // "allow 4xx" — so any other HTTP failure still fails the journey.
+  const expectedStatuses = [];
 
   page.on("console", (message) => {
     if (message.type() !== "error") return;
     const text = message.text();
-    if (authBootstrap && phaseAllowlist.some((pattern) => pattern.test(text))) {
+    const patterns = authBootstrap ? [...phaseAllowlist, ...expectedStatuses] : expectedStatuses;
+    if (patterns.some((pattern) => pattern.test(text))) {
       collected.push({ kind: "console", text: text.slice(0, 300), allowed: true });
       return;
     }
@@ -86,6 +92,19 @@ async function createSession({ browser, origin, workspace }) {
 
     setAuthBootstrap(value) {
       authBootstrap = Boolean(value);
+    },
+
+    /**
+     * Permit exactly the listed HTTP status codes as expected resource
+     * failures for deliberate negative-path probes (fail-closed for
+     * everything else). Each code becomes one exact Chromium resource-failure
+     * console pattern; there is no wildcard.
+     */
+    allowStatuses(codes) {
+      for (const code of codes) {
+        assert(Number.isInteger(code) && code >= 400 && code <= 599, "ALLOW_STATUS_CODE_INVALID", String(code));
+        expectedStatuses.push(new RegExp(`the server responded with a status of ${code}\\b`, "i"));
+      }
     },
 
     async gotoHash(route) {
@@ -137,12 +156,47 @@ async function createSession({ browser, origin, workspace }) {
 
     async apiFetch(route, options = {}) {
       const token = await session.token();
+      const method = options.method ?? "GET";
+      const body = options.body ?? null;
+      const result = await page.evaluate(
+        async ({ route, token, method, body }) => {
+          const headers = { Authorization: `Bearer ${token}` };
+          if (body !== null) headers["Content-Type"] = "application/json";
+          const res = await fetch(route, {
+            method,
+            headers,
+            body: body === null ? undefined : JSON.stringify(body),
+          });
+          const type = res.headers.get("content-type") || "";
+          const json = type.includes("json") ? await res.json().catch(() => null) : null;
+          return { status: res.status, body: json };
+        },
+        { route, token, method, body }
+      );
+      if (options.expectStatus !== undefined) {
+        assert(result.status === options.expectStatus, "API_STATUS_UNEXPECTED", `${route} → ${result.status}`);
+      }
+      return result;
+    },
+
+    /**
+     * Same-account authenticated fetch that returns the RAW response text
+     * (plus content type), for byte-level export assertions (CSV/JSON
+     * payloads) that `apiFetch`'s JSON-only parsing cannot carry.
+     */
+    async apiFetchText(route, options = {}) {
+      const token = await session.token();
       const result = await page.evaluate(
         async ({ route, token }) => {
           const res = await fetch(route, { headers: { Authorization: `Bearer ${token}` } });
           const type = res.headers.get("content-type") || "";
-          const body = type.includes("json") ? await res.json().catch(() => null) : null;
-          return { status: res.status, body };
+          const disposition = res.headers.get("content-disposition") || "";
+          // `res.text()` follows the WHATWG decoder and strips a leading UTF-8
+          // BOM, so the byte-level presence is reported separately.
+          const bytes = new Uint8Array(await res.arrayBuffer());
+          const hasBom = bytes.length >= 3 && bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf;
+          const text = new TextDecoder("utf-8", { ignoreBOM: true }).decode(bytes);
+          return { status: res.status, contentType: type, disposition, hasBom, byteLength: bytes.length, text };
         },
         { route, token }
       );

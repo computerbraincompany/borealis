@@ -129,9 +129,11 @@ export async function stopOwned(entry, { graceMs = 15_000, viaStdinClose = false
 }
 
 /** Fetch JSON with a hard deadline; returns { status, body } (body may be null). */
-export async function fetchJson(url, { timeoutMs = 10_000, headers } = {}) {
+export async function fetchJson(url, { timeoutMs = 10_000, headers, method = "GET", requestBody } = {}) {
   const response = await fetch(url, {
+    method,
     headers,
+    body: requestBody,
     signal: AbortSignal.timeout(timeoutMs),
     redirect: "error",
   });

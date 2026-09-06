@@ -118,19 +118,29 @@ reports `not_implemented`), `--workspace=DIR`, and `--keep-on-failure`.
   spec into a claimed pass.
 - `ctx` provides: `journeyId`, `repoRoot`, `workspace` (artifact dirs,
   pid tracking, containment-protected paths), `server` (`origin`,
-  `fetchJson`, `waitBaseline`, `quiesceWorkers`, `stop`), `provider`
-  (`origin`, `models`, `state()` — content-free call counters), `browser`
-  (`newSession`), `fixtures` (fixture-name → ready-line config, e.g. WebDAV
-  origins, OAuth issuer origin, MCP endpoints — inject real endpoints from
-  `ready` payloads, never assume ports), `artifactsDir`, `injectFailure`.
+  `fetchJson`, `waitBaseline`, `quiesceWorkers`, `stop`,
+  `restart({ token })` — quiesce, orderly stop, and re-boot on the exact same
+  isolated data directory and loopback port so browser sessions/JWT survive
+  the restart for durability proofs), `provider` (`origin`, `models`,
+  `state()` — content-free call counters, `setScript({ steps, onExhausted })`
+  — install a deterministic step script at runtime and reset the pointer, so
+  journeys drive scripted tool-call roundtrips on the one launched provider),
+  `browser` (`newSession`), `fixtures` (fixture-name → ready-line config, e.g.
+  WebDAV origins, OAuth issuer origin, MCP endpoints — inject real endpoints
+  from `ready` payloads, never assume ports), `artifactsDir`, `injectFailure`.
 - Sessions come from `browser.newSession({ origin })`:
   `register()`/`login()` drive the real rendered auth forms;
   `apiFetch(route)` reuses the UI's stored token so API assertions test the
-  same authenticated account; `screenshot()` returns content-free names;
-  `assertClean()` **fails the journey** on any unexpected console error or
-  React `act(...)` warning (the only allowlist is `401` resource failures
-  while the auth bootstrap flag is active — keep that window as narrow as
-  possible).
+  same authenticated account (GET, or `{ method, body }` for JSON mutations);
+  `apiFetchText(route)` returns raw response text plus content type,
+  disposition, and byte-level BOM presence for export-byte assertions;
+  `screenshot()` returns content-free names; `assertClean()` **fails the
+  journey** on any unexpected console error or React `act(...)` warning (the
+  only default allowlist is `401` resource failures while the auth bootstrap
+  flag is active — keep that window as narrow as possible). Deliberate
+  negative-path probes (foreign-account `404`, stale-CAS `409`, etc.) call
+  `allowStatuses([404])` to admit exactly those codes — never a blanket
+  wildcard.
 - End every journey that touched persisted state or the data plane with
   `await server.quiesceWorkers({ token })` before returning, so the entry's
   orderly shutdown is proven rather than raced.

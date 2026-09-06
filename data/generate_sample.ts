@@ -7,10 +7,16 @@ type PythonFloat = Readonly<{ kind: "python-float"; value: number }>;
 type CsvValue = string | number | PythonFloat;
 type CsvRow = readonly CsvValue[];
 
-const OUTPUT_DIRECTORY = join(
-  dirname(fileURLToPath(import.meta.url)),
-  "sample",
-);
+/**
+ * Output defaults to the committed `data/sample/` fixtures. The product
+ * acceptance harness may point `E2E_SAMPLE_DIR` at an isolated disposable
+ * directory to regenerate the byte-identical fixtures without touching the
+ * repository; with the variable unset, behavior is exactly the historical
+ * default.
+ */
+const OUTPUT_DIRECTORY = process.env.E2E_SAMPLE_DIR
+  ? process.env.E2E_SAMPLE_DIR
+  : join(dirname(fileURLToPath(import.meta.url)), "sample");
 const DAY_IN_MILLISECONDS = 86_400_000;
 const MONTHLY_SALARY = 6_200;
 

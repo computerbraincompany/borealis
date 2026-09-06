@@ -11,6 +11,11 @@
  *   POST /v1/embeddings         deterministic unit-length float vectors
  *   GET  /v1/models             configured chat + embed model ids
  *   GET  /fixture/state         content-free auth-header record (never values)
+ *   POST /fixture/script        runtime script install {"steps":[...],
+ *                               "on_exhausted"?:"repeat-last"|"fail"} —
+ *                               replaces the script and resets the step
+ *                               pointer so journeys drive deterministic
+ *                               tool-call roundtrips on one provider instance
  *
  * Script steps (env E2E_OPENAI_SCRIPT, inline JSON or "@path"):
  *   {"type":"text","pieces":["Hel","lo"]}
@@ -45,12 +50,13 @@ import {
 
 const MAX_CHAT_BYTES = 8 * 1024 * 1024;
 const MAX_EMBED_BYTES = 1 * 1024 * 1024;
+const MAX_SCRIPT_BYTES = 256 * 1024;
 const FIXED_CREATED_SECONDS = 1_754_400_000;
 
 const chatModel = process.env.E2E_OPENAI_CHAT_MODEL || "fixture-chat-v1";
 const embedModel = process.env.E2E_OPENAI_EMBED_MODEL || "fixture-embed-v1";
 const embedDim = clampInt(process.env.E2E_OPENAI_EMBED_DIM, 1, 256, 64);
-const onExhausted = process.env.E2E_OPENAI_ON_EXHAUSTED === "fail" ? "fail" : "repeat-last";
+let onExhausted = process.env.E2E_OPENAI_ON_EXHAUSTED === "fail" ? "fail" : "repeat-last";
 
 function clampInt(raw, min, max, fallback) {
   const value = Number.parseInt(raw ?? "", 10);
@@ -71,8 +77,17 @@ function loadScript() {
   return parsed;
 }
 
-const script = loadScript();
+let script = loadScript();
 let nextStep = 0;
+
+/** Validate a runtime script payload with the same rules as the env script. */
+function validSteps(parsed) {
+  return (
+    Array.isArray(parsed) &&
+    parsed.length > 0 &&
+    parsed.every((step) => step && typeof step.type === "string")
+  );
+}
 
 function takeStep() {
   if (nextStep < script.length) {
@@ -178,7 +193,43 @@ const tracked = createTrackedServer(async (req, res) => {
       return;
     }
     if (req.method === "GET" && path === "/fixture/state") {
-      sendJson(res, 200, { chat_calls: counters.chat, embedding_calls: counters.embeddings, auth: authRecord });
+      sendJson(res, 200, {
+        chat_calls: counters.chat,
+        embedding_calls: counters.embeddings,
+        auth: authRecord,
+        script_remaining: script.length - nextStep,
+        on_exhausted: onExhausted,
+      });
+      return;
+    }
+    // Runtime script installation (journeys): replaces the replay script and
+    // resets the step pointer so a journey can drive a deterministic
+    // tool-call roundtrip against the one provider instance the harness
+    // launched. Step/shape validation mirrors `loadScript`. Nothing is logged.
+    if (req.method === "POST" && path === "/fixture/script") {
+      const body = await readBoundedBody(req, MAX_SCRIPT_BYTES);
+      if (body === null) return;
+      let parsed;
+      try {
+        parsed = JSON.parse(body.toString("utf8"));
+      } catch {
+        sendJson(res, 400, { error: { message: "invalid json" } });
+        return;
+      }
+      const steps = parsed?.steps;
+      const exhausted = parsed?.on_exhausted;
+      if (!parsed || typeof parsed !== "object" || !validSteps(steps)) {
+        sendJson(res, 400, { error: { message: "steps must be a non-empty array of typed steps" } });
+        return;
+      }
+      if (exhausted !== undefined && exhausted !== "repeat-last" && exhausted !== "fail") {
+        sendJson(res, 400, { error: { message: "on_exhausted must be repeat-last or fail" } });
+        return;
+      }
+      script = steps;
+      nextStep = 0;
+      if (exhausted !== undefined) onExhausted = exhausted;
+      sendJson(res, 200, { ok: true, steps: steps.length });
       return;
     }
     if (req.method === "POST" && path === "/v1/chat/completions") {
@@ -216,6 +267,7 @@ const tracked = createTrackedServer(async (req, res) => {
         "Cache-Control": "no-cache, no-transform",
         Connection: "keep-alive",
       });
+
       switch (step.type) {
         case "text":
           for (const frame of textFrames(model, step.pieces ?? ["ok"])) {

@@ -115,6 +115,24 @@ export async function launchProvider({ workspace, script, chatModel = "fixture-c
     assert(res.status === 200, "PROVIDER_STATE_UNAVAILABLE");
     return res.body;
   };
+  /**
+   * Install a deterministic step script at runtime (resets the provider's
+   * step pointer). Used by journeys that need a scripted tool-call
+   * roundtrip against the one provider instance the entry launched.
+   */
+  handle.setScript = async ({ steps, onExhausted } = {}) => {
+    assert(Array.isArray(steps) && steps.length > 0, "PROVIDER_SCRIPT_MISSING_STEPS");
+    const body = { steps };
+    if (onExhausted !== undefined) body.on_exhausted = onExhausted;
+    const res = await fetchJson(`${handle.origin}/fixture/script`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      requestBody: JSON.stringify(body),
+      timeoutMs: 5_000,
+    });
+    assert(res.status === 200, "PROVIDER_SCRIPT_REJECTED", String(res.status));
+    return res.body;
+  };
   return handle;
 }
 

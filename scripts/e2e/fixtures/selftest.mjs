@@ -304,6 +304,27 @@ async function groupProvider() {
   const models = await (await fetch(`${ready.origin}/v1/models`)).json();
   ok("provider: /v1/models advertises chat+embed ids", models.data.some((m) => m.id === "fixture-chat-v1") && models.data.some((m) => m.id === "fixture-embed-v1"));
 
+  // Runtime script install: replaces the script and resets the step pointer.
+  const installed = await fetch(`${ready.origin}/fixture/script`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ steps: [{ type: "text", pieces: ["run", "time"] }, { type: "http_error", status: 418 }], on_exhausted: "fail" }),
+  });
+  const installedBody = await installed.json();
+  ok("provider: runtime script install accepted", installed.status === 200 && installedBody.ok === true && installedBody.steps === 2);
+  const replay = parseSseFrames((await chat()).raw)
+    .map((frame) => frame.json?.choices?.[0]?.delta?.content ?? "")
+    .join("");
+  ok("provider: runtime script replays from reset pointer", replay === "runtime");
+  const teapot = await chat();
+  ok("provider: installed http_error step served after the text step", teapot.response.status === 418);
+  const badScript = await fetch(`${ready.origin}/fixture/script`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ steps: [{ nope: true }] }),
+  });
+  ok("provider: invalid runtime script rejected 400", badScript.status === 400);
+
   ok("provider: unknown path is 404", (await fetch(`${ready.origin}/v1/completions`, { method: "POST", body: "{}" })).status === 404);
 
   const state = await (await fetch(`${ready.origin}/fixture/state`)).json();
@@ -604,6 +625,36 @@ async function groupCorpus() {
   );
 }
 
+async function groupFinanceAggregates() {
+  const helper = await import("./lib/finance-expected.mjs");
+  const transactions = await readFile(join(REPO_ROOT, "data", "sample", "transactions.csv"), "utf8");
+  const mismatches = helper.verifyCommittedExpected(transactions);
+  ok(
+    "finance aggregates: runtime recomputation equals the committed expected values",
+    mismatches.length === 0
+  );
+  const june = helper.expectedAnalysisRows(transactions, "2025-06");
+  ok(
+    "finance aggregates: June expected rows shape and probes",
+    june.length === helper.COMMITTED_EXPECTED.june_keys &&
+      june.every(
+        ([month, , , , formulaProbe, quoteProbe]) =>
+          month === "2025-06" && formulaProbe === `=${month}|Borealis-E2E` && quoteProbe === `"low, ${month}"`
+      ) &&
+      june[0][1] === "Dining out"
+  );
+  const marker = helper.withMarker(transactions);
+  const changedJune = helper
+    .expectedAnalysisRows(marker, "2025-06")
+    .find(([month, category]) => month === "2025-06" && category === "Groceries");
+  ok(
+    "finance aggregates: deterministic marker applies exactly one group",
+    changedJune[2] === helper.COMMITTED_EXPECTED.june_groceries_tx_count + helper.COMMITTED_EXPECTED.marker_delta_tx_count &&
+      Math.abs(changedJune[3] - (helper.COMMITTED_EXPECTED.june_groceries_net + helper.COMMITTED_EXPECTED.marker_delta_net)) < 1e-9 &&
+      helper.expectedAnalysisRows(marker, "2025-05").length === helper.COMMITTED_EXPECTED.may_keys
+  );
+}
+
 /* ============================================================ orchestration */
 
 const groups = [
@@ -613,6 +664,7 @@ const groups = [
   ["issuer", groupOauth],
   ["webdav", groupWebdav],
   ["corpus", groupCorpus],
+  ["finance", groupFinanceAggregates],
 ];
 
 const watchdog = setTimeout(() => {
