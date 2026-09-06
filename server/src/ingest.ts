@@ -372,7 +372,7 @@ export async function startIngestionWorkers(): Promise<void> {
   await recoverExpiredIngestionLeases(true);
   await recoverPreparingConnectorLeases(true);
   await runSourceMaintenance(
-    () => storageRuntime().vectorLifecycle.repair({ completePendingSourceDeletes: repairPendingSourceDeletes }),
+    () => storageRuntime().vectorLifecycle.repairAtStartup({ completePendingSourceDeletes: repairPendingSourceDeletes }),
     undefined
   );
   await processDatasetCacheCleanup();
@@ -401,7 +401,7 @@ export async function startIngestionWorkers(): Promise<void> {
     reconciling = true;
     void runWithRequestContext("storage-reconciliation.periodic", async () => {
       await runSourceMaintenance(
-        () => storageRuntime().vectorLifecycle.repair({ completePendingSourceDeletes: repairPendingSourceDeletes }),
+        () => storageRuntime().vectorLifecycle.repairAtStartup({ completePendingSourceDeletes: repairPendingSourceDeletes }),
         undefined
       );
       await restoreDatasets(1);

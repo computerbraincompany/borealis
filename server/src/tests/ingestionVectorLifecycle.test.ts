@@ -288,7 +288,7 @@ describe("SQLite + LanceDB ingestion lifecycle", () => {
       })
     ).resolves.toMatchObject([{ chunk_id: newChunk, content: "new passage" }]);
 
-    const repaired = await resource.lifecycle.repair();
+    const repaired = await resource.lifecycle.repairAtStartup();
     expect(repaired.repaired_vectors).toBeGreaterThanOrEqual(1);
     await expect(resource.vectors.hasAll([oldChunk], sourceId, 1)).resolves.toBe(false);
     await expect(resource.vectors.hasAll([newChunk], sourceId, 2)).resolves.toBe(true);
@@ -580,7 +580,7 @@ describe("SQLite + LanceDB ingestion lifecycle", () => {
       tx.run("DELETE FROM sources WHERE id=? AND account_id=?", [sourceId, accountId]);
     });
 
-    const repaired = await resource.lifecycle.repair();
+    const repaired = await resource.lifecycle.repairAtStartup();
     expect(repaired.repaired_vectors).toBe(1);
     await expect(resource.vectors.hasAll([chunkId], sourceId, 1)).resolves.toBe(false);
     await expect(
@@ -616,7 +616,7 @@ describe("SQLite + LanceDB ingestion lifecycle", () => {
         topK: 1,
       })
     ).resolves.toEqual([]);
-    await expect(resource.lifecycle.repair()).resolves.toMatchObject({ repaired_vectors: 1 });
+    await expect(resource.lifecycle.repairAtStartup()).resolves.toMatchObject({ repaired_vectors: 1 });
     await expect(resource.vectors.hasAll([chunkId], sourceId, 1)).resolves.toBe(false);
   });
 

@@ -154,7 +154,15 @@ export class IngestionVectorLifecycle {
     });
   }
 
-  async repair(options: { completePendingSourceDeletes?: () => Promise<number> } = {}): Promise<VectorRepairSummary> {
+  /**
+   * The full two-store sweep. It loads the complete SQLite repair state and
+   * every LanceDB row, so it is startup-only by contract: the periodic pump
+   * must use the bounded `drainPendingVectorOperations` queue instead, and a
+   * generic alias is deliberately not retained.
+   */
+  async repairAtStartup(
+    options: { completePendingSourceDeletes?: () => Promise<number> } = {}
+  ): Promise<VectorRepairSummary> {
     const pending = await this.drainPendingVectorOperations();
     let repairedDeletes = 0;
     let failedOperations = pending.failed_operations;
