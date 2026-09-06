@@ -7,20 +7,31 @@ const apiMocks = vi.hoisted(() => ({
   get: vi.fn(),
   update: vi.fn(),
   remove: vi.fn(),
+  connectionsList: vi.fn(),
+  connectionsGet: vi.fn(),
+  librariesList: vi.fn(),
+  jobsList: vi.fn(),
 }));
 
-vi.mock("@/lib/api", () => ({
-  formatApiError: (_error: unknown, fallback: string) => fallback,
-  agentsApi: {
-    list: apiMocks.list,
-    create: apiMocks.create,
-    get: apiMocks.get,
-    update: apiMocks.update,
-    remove: apiMocks.remove,
-  },
-  agentSkillsApi: { list: apiMocks.skills },
-  MAX_AGENT_INSTRUCTION_CHARS: 8_000,
-}));
+vi.mock("@/lib/api", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/api")>("@/lib/api");
+  return {
+    ...actual,
+    formatApiError: (_error: unknown, fallback: string) => fallback,
+    agentsApi: {
+      list: apiMocks.list,
+      create: apiMocks.create,
+      get: apiMocks.get,
+      update: apiMocks.update,
+      remove: apiMocks.remove,
+    },
+    agentSkillsApi: { list: apiMocks.skills },
+    connectionsApi: { list: apiMocks.connectionsList, get: apiMocks.connectionsGet },
+    librariesApi: { list: apiMocks.librariesList },
+    jobsApi: { list: apiMocks.jobsList },
+    MAX_AGENT_INSTRUCTION_CHARS: 8_000,
+  };
+});
 
 vi.mock("@/components/ui/dialog", () => ({
   Dialog: ({ open, children }: { open: boolean; children: React.ReactNode }) => (open ? <div>{children}</div> : null),
@@ -48,6 +59,10 @@ describe("AgentsView", () => {
     Object.values(apiMocks).forEach((mock) => mock.mockReset());
     apiMocks.skills.mockResolvedValue({ items: [] });
     apiMocks.list.mockResolvedValue({ items: [agent], next_cursor: null });
+    apiMocks.connectionsList.mockResolvedValue({ items: [], next_cursor: null });
+    apiMocks.connectionsGet.mockResolvedValue(null);
+    apiMocks.librariesList.mockResolvedValue({ items: [], next_cursor: null });
+    apiMocks.jobsList.mockResolvedValue([]);
     apiMocks.get.mockResolvedValue({
       ...agent,
       revisions: [

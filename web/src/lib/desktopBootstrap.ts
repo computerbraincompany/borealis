@@ -7,6 +7,14 @@ export interface DesktopBootstrapSession {
 
 export interface BorealisDesktopBridge {
   consumeBootstrap(): Promise<DesktopBootstrapSession | null>;
+  /**
+   * Opens the MCP connection sign-in link in the system browser. Present-only
+   * on stage-5 builds. The token must be the one-time intent the backend
+   * minted for this exact URL on `authorize`; main verifies it with the
+   * backend and only then runs `shell.openExternal`. It is not a general
+   * URL-opening surface.
+   */
+  openSignInLink?(token: unknown, url: unknown): Promise<{ opened: boolean }>;
 }
 
 declare global {
@@ -45,6 +53,42 @@ export function hasDesktopBridge(): boolean {
  * keeps the token out of component state and persistent Chromium storage. The
  * Electron main process mints another bootstrap token on the next launch.
  */
+/** True when the stage-5 sign-in-link bridge operation is present. */
+export function hasDesktopSignInLinkBridge(): boolean {
+  return typeof window.borealisDesktop?.openSignInLink === "function";
+}
+
+function isDesktopOpenableUrl(value: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return false;
+  }
+  if (parsed.username !== "" || parsed.password !== "") return false;
+  if (parsed.protocol === "https:") return parsed.hostname.length > 0;
+  if (parsed.protocol !== "http:") return false;
+  // Mirror the main-process allowlist: plain HTTP only for the explicit
+  // loopback/.local development targets the connection boundary admits.
+  const host = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  if (/^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host) || host === "::1") return true;
+  return host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local");
+}
+
+/**
+ * Ask main to open the validated sign-in URL in the system browser using the
+ * backend-issued one-time intent token. The link is only ever opened on an
+ * explicit user click; this performs no navigation of its own.
+ */
+export async function openDesktopSignInLink(token: string, url: string): Promise<boolean> {
+  const bridge = window.borealisDesktop;
+  if (!bridge || typeof bridge.openSignInLink !== "function") return false;
+  if (typeof token !== "string" || !/^[A-Za-z0-9_-]{16,128}$/.test(token)) return false;
+  if (!isDesktopOpenableUrl(url)) return false;
+  const result = await bridge.openSignInLink(token, url).catch(() => undefined);
+  return result?.opened === true;
+}
+
 export function initializeDesktopSession(): Promise<void> {
   const bridge = window.borealisDesktop;
   if (!bridge || typeof bridge.consumeBootstrap !== "function") return Promise.resolve();

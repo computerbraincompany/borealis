@@ -1273,13 +1273,106 @@ export const containedApi = {
 };
 
 // ------------------------------------------------------------------ libraries
+/** One connected-tool selection in an agent configuration (Connected agents). */
+export interface AgentMcpBindingSelection {
+  connection_id: string;
+  tool_id: string;
+  discovery_revision: number;
+  /** Explicit operator allowance for a server-flagged write-oriented tool. */
+  allow_write?: boolean;
+}
+
+export interface AgentOutputTemplate {
+  kind: "instruction";
+  instruction: string;
+}
+
+/** Versioned job setup; only the bounded instruction template ships now. */
+export interface AgentJobSetup {
+  starter_prompts: string[];
+  output_template: AgentOutputTemplate | null;
+  library_ids: string[];
+}
+
+export const MAX_MCP_BINDINGS = 16;
+export const MAX_JOB_STARTER_PROMPTS = 5;
+export const MAX_JOB_STARTER_PROMPT_CHARS = 2_000;
+export const MAX_JOB_LIBRARIES = 10;
+export const MAX_JOB_TEMPLATE_CHARS = 8_000;
+
 export interface AgentConfiguration {
   description?: string;
   icon?: string;
   color?: string;
+  /** Built-in tools only; connected tools live in `mcp_tools`. */
   tools?: string[];
   skill_ids?: string[];
+  mcp_tools?: AgentMcpBindingSelection[];
+  job_setup?: AgentJobSetup;
 }
+
+export function emptyJobSetup(): AgentJobSetup {
+  return { starter_prompts: [], output_template: null, library_ids: [] };
+}
+
+function parseJobSetup(candidate: unknown): AgentJobSetup | undefined {
+  if (candidate === undefined || candidate === null) return undefined;
+  if (typeof candidate !== "object" || Array.isArray(candidate)) return undefined;
+  const value = candidate as Record<string, unknown>;
+  const prompts = Array.isArray(value.starter_prompts)
+    ? value.starter_prompts.filter((p): p is string => typeof p === "string").slice(0, MAX_JOB_STARTER_PROMPTS)
+    : [];
+  const templateValue = value.output_template;
+  let template: AgentOutputTemplate | null = null;
+  if (
+    templateValue &&
+    typeof templateValue === "object" &&
+    !Array.isArray(templateValue) &&
+    (templateValue as Record<string, unknown>).kind === "instruction" &&
+    typeof (templateValue as Record<string, unknown>).instruction === "string"
+  ) {
+    template = {
+      kind: "instruction",
+      instruction: ((templateValue as Record<string, unknown>).instruction as string).slice(0, MAX_JOB_TEMPLATE_CHARS),
+    };
+  }
+  const libraries = Array.isArray(value.library_ids)
+    ? value.library_ids.filter((id): id is string => typeof id === "string").slice(0, MAX_JOB_LIBRARIES)
+    : [];
+  return { starter_prompts: prompts, output_template: template, library_ids: libraries };
+}
+
+function parseMcpBindingSelections(candidate: unknown): AgentMcpBindingSelection[] {
+  if (!Array.isArray(candidate)) return [];
+  return candidate
+    .filter(
+      (entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === "object" && !Array.isArray(entry),
+    )
+    .filter(
+      (entry) =>
+        typeof entry.connection_id === "string" &&
+        typeof entry.tool_id === "string" &&
+        typeof entry.discovery_revision === "number" &&
+        Number.isSafeInteger(entry.discovery_revision),
+    )
+    .slice(0, MAX_MCP_BINDINGS)
+    .map((entry) => ({
+      connection_id: entry.connection_id as string,
+      tool_id: entry.tool_id as string,
+      discovery_revision: entry.discovery_revision as number,
+      ...(typeof entry.allow_write === "boolean" ? { allow_write: entry.allow_write } : {}),
+    }));
+}
+/** Defensive view of an agent's job setup (server rows are untrusted JSON). */
+export function agentJobSetupOf(agent: { job_setup?: unknown }): AgentJobSetup {
+  return parseJobSetup(agent.job_setup) ?? emptyJobSetup();
+}
+
+/** Defensive view of an agent's connected-tool selections. */
+export function agentMcpBindingsOf(agent: { mcp_tools?: unknown }): AgentMcpBindingSelection[] {
+  return parseMcpBindingSelections(agent.mcp_tools);
+}
+
 export interface AgentSkill {
   id: string;
   name: string;
@@ -1427,6 +1520,389 @@ export const connectorsApi = {
   listConnectorSyncs: async (id: string, limit = MAX_CONNECTOR_SYNC_HISTORY_LIMIT) => {
     const bounded = Math.max(1, Math.min(MAX_CONNECTOR_SYNC_HISTORY_LIMIT, Math.trunc(limit) || 1));
     return parseConnectorSyncListPayload(await api<unknown>(`/api/connectors/${id}/syncs?limit=${bounded}`));
+  },
+};
+
+// ------------------------------------------------------------------ connections
+export type ConnectionKind = "mcp_http" | "mcp_stdio";
+export type ConnectionStatus = "untested" | "ready" | "disconnected" | "error";
+export type ConnectionCredentialState = "none" | "stored" | "unavailable";
+
+export interface ConnectionConfigDto {
+  kind: ConnectionKind;
+  url?: string;
+  command?: string;
+  args?: string[];
+  cwd?: string | null;
+}
+
+export interface ConnectionToolDto {
+  tool_id: string;
+  name: string;
+  description: string;
+  input_schema: Record<string, unknown>;
+}
+
+/** Redacted connection DTO: never any credential material, only its state. */
+export interface ConnectionDto {
+  id: string;
+  name: string;
+  kind: ConnectionKind;
+  revision: number;
+  discovery_revision: number;
+  enabled: boolean;
+  status: ConnectionStatus;
+  status_code: string | null;
+  config: ConnectionConfigDto;
+  credential_state: ConnectionCredentialState;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ConnectionDetailDto extends ConnectionDto {
+  tools: ConnectionToolDto[];
+}
+
+export interface ConnectionAuthorizationDto {
+  authorize_url: string;
+  expires_at: string;
+  /** Packaged-desktop only: one-time system-browser open intent for this URL. */
+  desktop_open_token?: string;
+  desktop_open_expires_at?: string;
+}
+
+export interface ConnectionSecretsInput {
+  headers?: Record<string, string>;
+  env?: Record<string, string>;
+}
+
+export interface ConnectionCreateInput {
+  name: string;
+  kind: ConnectionKind;
+  config: Record<string, unknown>;
+  enabled?: boolean;
+  credentials?: ConnectionSecretsInput;
+}
+
+export interface ConnectionPatchInput {
+  expected_revision: number;
+  name?: string;
+  config?: Record<string, unknown>;
+  enabled?: boolean;
+  /** An object fully replaces stored credentials; `null` removes them. */
+  credentials?: ConnectionSecretsInput | null;
+}
+
+const CONNECTION_STATUSES: ReadonlySet<string> = new Set(["untested", "ready", "disconnected", "error"]);
+const CONNECTION_KINDS: ReadonlySet<string> = new Set(["mcp_http", "mcp_stdio"]);
+const CONNECTION_CREDENTIAL_STATES: ReadonlySet<string> = new Set(["none", "stored", "unavailable"]);
+
+function parseConnectionConfig(candidate: unknown): ConnectionConfigDto | null {
+  if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return null;
+  const value = candidate as Record<string, unknown>;
+  if (value.kind === "mcp_http" && typeof value.url === "string") return value as unknown as ConnectionConfigDto;
+  if (
+    value.kind === "mcp_stdio" &&
+    typeof value.command === "string" &&
+    Array.isArray(value.args) &&
+    value.args.every((arg) => typeof arg === "string") &&
+    (value.cwd === null || value.cwd === undefined || typeof value.cwd === "string")
+  ) {
+    return { kind: "mcp_stdio", command: value.command, args: value.args as string[], cwd: value.cwd ?? null };
+  }
+  return null;
+}
+
+function parseConnectionRow(candidate: unknown): ConnectionDto | null {
+  if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return null;
+  const value = candidate as Record<string, unknown>;
+  if (
+    typeof value.id !== "string" ||
+    typeof value.name !== "string" ||
+    !CONNECTION_KINDS.has(value.kind as string) ||
+    typeof value.revision !== "number" ||
+    !Number.isSafeInteger(value.revision) ||
+    typeof value.discovery_revision !== "number" ||
+    !Number.isSafeInteger(value.discovery_revision) ||
+    typeof value.enabled !== "boolean" ||
+    !CONNECTION_STATUSES.has(value.status as string) ||
+    (value.status_code !== null && typeof value.status_code !== "string") ||
+    !CONNECTION_CREDENTIAL_STATES.has(value.credential_state as string) ||
+    typeof value.created_at !== "string" ||
+    typeof value.updated_at !== "string"
+  ) {
+    return null;
+  }
+  const config = parseConnectionConfig(value.config);
+  if (!config) return null;
+  return {
+    id: value.id,
+    name: value.name,
+    kind: value.kind as ConnectionKind,
+    revision: value.revision,
+    discovery_revision: value.discovery_revision,
+    enabled: value.enabled,
+    status: value.status as ConnectionStatus,
+    status_code: (value.status_code as string | null) ?? null,
+    config,
+    credential_state: value.credential_state as ConnectionCredentialState,
+    created_at: value.created_at,
+    updated_at: value.updated_at,
+  };
+}
+
+function parseConnectionTool(candidate: unknown): ConnectionToolDto | null {
+  if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return null;
+  const value = candidate as Record<string, unknown>;
+  if (
+    typeof value.tool_id !== "string" ||
+    typeof value.name !== "string" ||
+    typeof value.description !== "string" ||
+    !value.input_schema ||
+    typeof value.input_schema !== "object" ||
+    Array.isArray(value.input_schema)
+  ) {
+    return null;
+  }
+  return {
+    tool_id: value.tool_id,
+    name: value.name,
+    description: value.description,
+    input_schema: value.input_schema as Record<string, unknown>,
+  };
+}
+
+/** Treat every connection response as untrusted JSON. */
+export function parseConnectionPayload(payload: unknown): ConnectionDto | null {
+  return parseConnectionRow(payload);
+}
+
+export function parseConnectionDetailPayload(payload: unknown): ConnectionDetailDto | null {
+  const base = parseConnectionRow(payload);
+  if (!base) return null;
+  const tools =
+    payload && typeof payload === "object" && Array.isArray((payload as { tools?: unknown }).tools)
+      ? ((payload as { tools: unknown[] }).tools ?? []).flatMap((tool) => {
+          const parsed = parseConnectionTool(tool);
+          return parsed ? [parsed] : [];
+        })
+      : [];
+  return { ...base, tools };
+}
+
+/**
+ * The list endpoint serves redacted DTOs WITHOUT the tool catalog; tool
+ * counts are only known once a connection's detail was loaded.
+ */
+export function parseConnectionListPayload(payload: unknown): ConnectionDto[] {
+  if (!Array.isArray(payload)) return [];
+  return payload.flatMap((candidate) => {
+    const parsed = parseConnectionRow(candidate);
+    return parsed ? [parsed] : [];
+  });
+}
+
+function parseConnectionAuthorization(payload: unknown): ConnectionAuthorizationDto | null {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
+  const value = payload as Record<string, unknown>;
+  if (typeof value.authorize_url !== "string" || !/^https?:\/\//i.test(value.authorize_url)) return null;
+  if (typeof value.expires_at !== "string") return null;
+  return {
+    authorize_url: value.authorize_url,
+    expires_at: value.expires_at,
+    ...(typeof value.desktop_open_token === "string" ? { desktop_open_token: value.desktop_open_token } : {}),
+    ...(typeof value.desktop_open_expires_at === "string"
+      ? { desktop_open_expires_at: value.desktop_open_expires_at }
+      : {}),
+  };
+}
+
+export const MAX_CONNECTIONS_PER_ACCOUNT = 20;
+export const MAX_CONNECTION_NAME_CHARS = 80;
+export const MAX_STDIO_ARGS = 32;
+
+/** Require a well-formed DTO from a mutation; a malformed body is a failure. */
+function requireDetail(payload: unknown): ConnectionDetailDto {
+  const detail = parseConnectionDetailPayload(payload);
+  if (!detail) throw new Error("invalid connection response");
+  return detail;
+}
+
+function requireConnection(payload: unknown): ConnectionDto {
+  const connection = parseConnectionPayload(payload);
+  if (!connection) throw new Error("invalid connection response");
+  return connection;
+}
+
+export const connectionsApi = {
+  list: async (options: CatalogPageOptions = {}) =>
+    parseCatalogEnvelope(
+      await api<unknown>(catalogPath("/api/connections", options), { signal: options.signal }),
+      parseConnectionListPayload,
+    ),
+  create: async (body: ConnectionCreateInput, signal?: AbortSignal) =>
+    requireDetail(await api<unknown>("/api/connections", { method: "POST", body: JSON.stringify(body), signal })),
+  get: async (id: string, signal?: AbortSignal) =>
+    requireDetail(await api<unknown>(`/api/connections/${encodeURIComponent(id)}`, { signal })),
+  update: async (id: string, patch: ConnectionPatchInput, signal?: AbortSignal) =>
+    requireDetail(
+      await api<unknown>(`/api/connections/${encodeURIComponent(id)}`, {
+        method: "PATCH",
+        body: JSON.stringify(patch),
+        signal,
+      }),
+    ),
+  remove: (id: string, signal?: AbortSignal) =>
+    api<{ ok: true }>(`/api/connections/${encodeURIComponent(id)}`, { method: "DELETE", signal }),
+  test: async (id: string, signal?: AbortSignal) =>
+    requireConnection(
+      await api<unknown>(`/api/connections/${encodeURIComponent(id)}/test`, { method: "POST", signal }),
+    ),
+  discover: async (id: string, signal?: AbortSignal) =>
+    requireDetail(
+      await api<unknown>(`/api/connections/${encodeURIComponent(id)}/discover`, { method: "POST", signal }),
+    ),
+  authorize: async (id: string, signal?: AbortSignal) => {
+    const authorization = parseConnectionAuthorization(
+      await api<unknown>(`/api/connections/${encodeURIComponent(id)}/authorize`, { method: "POST", signal }),
+    );
+    if (!authorization) throw new Error("invalid sign-in response");
+    return authorization;
+  },
+  revoke: async (id: string, signal?: AbortSignal) =>
+    requireConnection(
+      await api<unknown>(`/api/connections/${encodeURIComponent(id)}/authorization`, { method: "DELETE", signal }),
+    ),
+};
+
+// ------------------------------------------------------------------ starter jobs
+export interface StarterJobDefinition {
+  id: string;
+  name: string;
+  description: string;
+  icon: string;
+  color: string;
+  instructions: string;
+  tools: string[];
+  job_setup: AgentJobSetup;
+}
+
+function parseStarterJob(candidate: unknown): StarterJobDefinition | null {
+  if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return null;
+  const value = candidate as Record<string, unknown>;
+  if (
+    typeof value.id !== "string" ||
+    typeof value.name !== "string" ||
+    typeof value.description !== "string" ||
+    typeof value.icon !== "string" ||
+    typeof value.color !== "string" ||
+    typeof value.instructions !== "string" ||
+    !Array.isArray(value.tools) ||
+    !value.tools.every((tool) => typeof tool === "string")
+  ) {
+    return null;
+  }
+  const jobSetup = parseJobSetup(value.job_setup ?? { starter_prompts: [], output_template: null, library_ids: [] });
+  if (!jobSetup) return null;
+  return {
+    id: value.id,
+    name: value.name,
+    description: value.description,
+    icon: value.icon,
+    color: value.color,
+    instructions: value.instructions,
+    tools: value.tools as string[],
+    job_setup: jobSetup,
+  };
+}
+
+export const jobsApi = {
+  list: async (signal?: AbortSignal): Promise<StarterJobDefinition[]> => {
+    const payload = await api<unknown>("/api/jobs", { signal });
+    const jobs = payload && typeof payload === "object" ? (payload as { jobs?: unknown }).jobs : undefined;
+    if (!Array.isArray(jobs)) return [];
+    return jobs.flatMap((job) => {
+      const parsed = parseStarterJob(job);
+      return parsed ? [parsed] : [];
+    });
+  },
+};
+
+// ------------------------------------------------------------------ chat creation from a job
+export interface ChatJobProjection {
+  starter_prompts: string[];
+  output_template: AgentOutputTemplate | null;
+  suggested_library_ids: string[];
+  suggested_source_ids: string[];
+}
+
+export interface ChatWithJob extends Chat {
+  job?: ChatJobProjection;
+}
+
+function parseChatJobProjection(candidate: unknown): ChatJobProjection | undefined {
+  if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return undefined;
+  const value = candidate as Record<string, unknown>;
+  const setup = parseJobSetup({
+    starter_prompts: value.starter_prompts,
+    output_template: value.output_template,
+    library_ids: value.suggested_library_ids,
+  });
+  if (!setup) return undefined;
+  const sourceIds = Array.isArray(value.suggested_source_ids)
+    ? value.suggested_source_ids.filter((id): id is string => typeof id === "string").slice(0, 100)
+    : [];
+  return {
+    starter_prompts: setup.starter_prompts,
+    output_template: setup.output_template,
+    suggested_library_ids: setup.library_ids,
+    suggested_source_ids: sourceIds,
+  };
+}
+
+/**
+ * Normalize `POST /api/chats` job creation: the created chat is always
+ * selected-empty until the user confirms the expanded suggestion; a payload
+ * without a usable suggestion block yields an explicit empty projection so
+ * the confirmation surface can say "suggests no sources" rather than guess.
+ */
+export function parseChatFromJobPayload(payload: unknown): ChatWithJob | null {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
+  const value = payload as Record<string, unknown>;
+  if (typeof value.id !== "string" || typeof value.title !== "string" || typeof value.model !== "string") return null;
+  const job = parseChatJobProjection(value.job);
+  const chat: Record<string, unknown> = { ...value };
+  delete chat.job;
+  return { ...(chat as unknown as Chat), ...(job ? { job } : {}) };
+}
+
+export const chatsFromJobApi = {
+  /**
+   * Create a chat from the bound agent's job setup. The request always names
+   * an explicit selected-empty scope — never an omitted scope (legacy `all`)
+   * and never a widened list — and the server confirms it back as such.
+   */
+  create: async (input: {
+    agentId: string;
+    suggestedLibraryIds: string[];
+    model?: string;
+    signal?: AbortSignal;
+  }): Promise<ChatWithJob> => {
+    const payload = await api<unknown>("/api/chats", {
+      method: "POST",
+      body: JSON.stringify({
+        ...(input.model ? { model: input.model } : {}),
+        source_mode: "selected",
+        source_ids: [],
+        agent_id: input.agentId,
+        job: { suggested_library_ids: input.suggestedLibraryIds },
+      }),
+      signal: input.signal,
+    });
+    const created = parseChatFromJobPayload(payload);
+    if (!created) throw new Error("invalid chat response");
+    if (created.source_mode !== "selected") throw new Error("invalid chat scope");
+    return created;
   },
 };
 

@@ -13,11 +13,13 @@ import {
   Monitor,
   Moon,
   RefreshCw,
+  Server,
   Save,
   Sun,
   UserRound,
 } from "lucide-react";
 import { useTheme, type ThemeChoice } from "@/components/ThemeProvider";
+import { ConnectionsPanel } from "@/components/ConnectionsPanel";
 import { ContainedPanel } from "@/components/ContainedPanel";
 import { SystemHealthPanel } from "@/components/SystemHealthPanel";
 import { Button } from "@/components/ui/button";
@@ -34,7 +36,15 @@ import { hasDesktopBridge } from "@/lib/desktopBootstrap";
 import { EGRESS_PAYLOAD_CLASSES } from "@/lib/egressDisclosure";
 import { cn, formatDate } from "@/lib/utils";
 
-type SettingsSection = "system" | "provider" | "chat" | "embeddings" | "engine" | "appearance" | "account";
+type SettingsSection =
+  | "system"
+  | "provider"
+  | "chat"
+  | "embeddings"
+  | "engine"
+  | "connections"
+  | "appearance"
+  | "account";
 
 const SECTIONS: Array<{ value: SettingsSection; label: string; icon: typeof Activity }> = [
   { value: "system", label: "System", icon: Activity },
@@ -42,6 +52,7 @@ const SECTIONS: Array<{ value: SettingsSection; label: string; icon: typeof Acti
   { value: "chat", label: "Chat models", icon: MessageSquare },
   { value: "embeddings", label: "Embeddings", icon: HardDrive },
   { value: "engine", label: "Local engine", icon: Cpu },
+  { value: "connections", label: "Connections", icon: Server },
   { value: "appearance", label: "Appearance", icon: Monitor },
   { value: "account", label: "Account", icon: UserRound },
 ];
@@ -131,7 +142,10 @@ export function SettingsView({ onClose }: SettingsViewProps) {
     },
   };
   const activePanel = panelCopy[section === "chat" ? "chat" : section === "embeddings" ? "embeddings" : "provider"];
-  const panelBusy = provider.action !== null || migration.action !== null;
+  // A pending create/edit/delete commit inside the Connections panel must
+  // not be dismissed by a section switch or modal close (busy-dialog rule).
+  const [connectionsCommitBusy, setConnectionsCommitBusy] = useState(false);
+  const panelBusy = provider.action !== null || migration.action !== null || connectionsCommitBusy;
   const systemHealth = useSystemHealth();
   const egressAudit = useEgressAudit(50, section === "system");
   const { theme, resolvedTheme, setTheme } = useTheme();
@@ -1218,6 +1232,8 @@ export function SettingsView({ onClose }: SettingsViewProps) {
             )}
 
             {section === "engine" && <ContainedPanel standalone />}
+
+            {section === "connections" && <ConnectionsPanel standalone onBusyChange={setConnectionsCommitBusy} />}
 
             {section === "appearance" && (
               <section aria-labelledby="settings-appearance-heading">
