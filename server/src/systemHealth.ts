@@ -1,3 +1,4 @@
+import { datasetRegistryRehydrationPending } from "./data/registryHydration.js";
 import { dataService } from "./dataService.js";
 import { getRuntimeSettings } from "./runtimeSettings.js";
 import { storageRuntime } from "./storageRuntime.js";
@@ -142,7 +143,16 @@ export async function checkSystemHealth(): Promise<SystemHealth> {
   const runtime = await getRuntimeSettings();
   return createSystemHealthCheck({
     database: databaseHealthy,
-    dataService: () => dataService.health(),
+    // Dataset-registry rehydration is an operational prerequisite of the data
+    // service, folded into its existing named state rather than exposed as a
+    // new service id: while a startup restoration is still rebuilding the
+    // DuckDB registry from the ledger, dataset queries truthfully cannot run
+    // yet, so the readiness line must not claim "operational". The pending
+    // flag always closes with the restoration (including its failed-open
+    // unwind and lifecycle teardown), so bounded readiness pollers — the E2E
+    // harness quiesce gate included — observe degraded only during the window
+    // and self-heal; they can never deadlock on it.
+    dataService: async () => (await dataService.health()) && !datasetRegistryRehydrationPending(),
     modelGateway: () =>
       probeEndpointOk(`${runtime.settings.llmBaseUrl}/v1/models`, { apiKey: runtime.settings.apiKey }),
     ...(runtime.settings.lmStudioBaseUrl

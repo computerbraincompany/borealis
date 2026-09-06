@@ -4,6 +4,7 @@ import path from "node:path";
 import type { AgentMcpToolBinding } from "./agentConfiguration.js";
 import { connectionService } from "./connections/service.js";
 import { retrieve, type RetrievedPassage } from "./retrieve.js";
+import { DATASET_REGISTRY_HYDRATION_WAIT_MS, waitForDatasetRegistryHydration } from "./data/registryHydration.js";
 import { dataService } from "./dataService.js";
 import type { ResolvedSourceScope } from "./sourceScope.js";
 import { fetchPublicText } from "./networkPolicy.js";
@@ -570,6 +571,16 @@ export async function executeTool(accountId: string, name: string, args: any, co
     case "query_data": {
       const sql = typeof args.sql === "string" ? args.sql.trim() : "";
       if (!sql || sql.length > 20_000) return { error: "SQL must contain between 1 and 20000 characters" };
+      if (context.readyTableNames.length > 0) {
+        // Startup-window honesty: after a restart `restoreDatasets()` rebuilds
+        // the DuckDB registry behind the server's ready line. Await that
+        // rehydration — bounded, config-fixed — before querying, so a chat
+        // turn accepted in that window executes against the real tables
+        // instead of an empty registry; on deadline exceedance the query
+        // proceeds with current honest error semantics. Cancellation of the
+        // run interrupts the wait through the existing abort contract.
+        await waitForDatasetRegistryHydration(DATASET_REGISTRY_HYDRATION_WAIT_MS, context.abortSignal);
+      }
       const result = await dataService.query(accountId, sql, context.readyTableNames, context.abortSignal);
       // A successful query gets a full-executable-SQL capture draft when the
       // receipt array still has room; the receipt itself keeps only the

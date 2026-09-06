@@ -7,6 +7,7 @@ import {
   type ConnectorRefreshState,
 } from "./db/stores/connectorRefreshStore.js";
 import type { DatasetCleanupJob, IngestionJob } from "./db/stores/ingestionStore.js";
+import { beginDatasetRegistryRehydration, finishDatasetRegistryRehydration } from "./data/registryHydration.js";
 import { DataServiceError, dataService } from "./dataService.js";
 import { embeddingMigrationCoordinator, EmbeddingMigrationError } from "./embeddingMigration.js";
 import {
@@ -752,32 +753,45 @@ export async function startIngestionWorkers(): Promise<void> {
   // periodic queue stays gated until this runtime's post-registry snapshot
   // attempt settles inside `restoreDatasets()`.
   connectorRefreshStartupSettled = false;
-  await recoverExpiredIngestionLeases(true);
-  await recoverPreparingConnectorLeases(true);
-  await runSourceMaintenance(
-    () =>
-      storageRuntime().vectorLifecycle.repairAtStartup({
-        completePendingSourceDeletes: repairPendingSourceDeletesAtStartup,
-      }),
-    undefined
-  );
-  await processDatasetCacheCleanup();
-  if (!ingestionAbortController || ingestionAbortController.signal.aborted) {
-    ingestionAbortController = new AbortController();
-  }
-  // Publish a fresh active epoch (reopening wake admission) before the
-  // initial wakes and timers. Work reserved while stopped is not lost: these
-  // wakes drain both durable queues under the new epoch.
-  activeWorkerEpoch = ++workerEpochSequence;
-  workersStopping = false;
-  const epoch = activeWorkerEpoch;
-  wakeConnectorPrepareWorkers();
-  wakeIngestionWorkers();
+  // Open the dataset-registry rehydration window synchronously, before this
+  // composition publishes analysis/chat admission (the analysis runner resumes
+  // before the socket listens, while `restoreDatasets()` runs behind the ready
+  // line after `app.listen`). Work admitted in that gap awaits the window
+  // instead of finalizing false durable `stale-inputs` against an empty
+  // registry. `restoreDatasets()` closes the window; this failure path fails
+  // open honestly because this lifecycle never scheduled a restoration.
+  beginDatasetRegistryRehydration();
+  try {
+    await recoverExpiredIngestionLeases(true);
+    await recoverPreparingConnectorLeases(true);
+    await runSourceMaintenance(
+      () =>
+        storageRuntime().vectorLifecycle.repairAtStartup({
+          completePendingSourceDeletes: repairPendingSourceDeletesAtStartup,
+        }),
+      undefined
+    );
+    await processDatasetCacheCleanup();
+    if (!ingestionAbortController || ingestionAbortController.signal.aborted) {
+      ingestionAbortController = new AbortController();
+    }
+    // Publish a fresh active epoch (reopening wake admission) before the
+    // initial wakes and timers. Work reserved while stopped is not lost: these
+    // wakes drain both durable queues under the new epoch.
+    activeWorkerEpoch = ++workerEpochSequence;
+    workersStopping = false;
+    const epoch = activeWorkerEpoch;
+    wakeConnectorPrepareWorkers();
+    wakeIngestionWorkers();
 
-  leaseTimer = setInterval(() => scheduleLeaseRecoveryPump(epoch), 15_000);
-  leaseTimer.unref();
-  reconciliationTimer = setInterval(() => scheduleReconciliationPump(epoch), 60_000);
-  reconciliationTimer.unref();
+    leaseTimer = setInterval(() => scheduleLeaseRecoveryPump(epoch), 15_000);
+    leaseTimer.unref();
+    reconciliationTimer = setInterval(() => scheduleReconciliationPump(epoch), 60_000);
+    reconciliationTimer.unref();
+  } catch (error) {
+    finishDatasetRegistryRehydration();
+    throw error;
+  }
 }
 
 export async function stopIngestionWorkers(): Promise<void> {
@@ -789,6 +803,12 @@ export async function stopIngestionWorkers(): Promise<void> {
   activeWorkerEpoch = 0;
   workersStopping = true;
   connectorRefreshStartupSettled = false;
+  // This lifecycle's registry-rehydration window never outlives its owner:
+  // close it honestly so health/admission never gate on a restoration whose
+  // owning composition is being torn down. The server's own drain still
+  // awaits the in-flight `startupReconciliation` promise before granting the
+  // external-consumer proof; a later composition reopens a fresh window.
+  finishDatasetRegistryRehydration();
   if (leaseTimer) clearInterval(leaseTimer);
   leaseTimer = undefined;
   if (reconciliationTimer) clearInterval(reconciliationTimer);
@@ -827,8 +847,36 @@ export interface RestoreSummary {
   remove_failed: number;
 }
 
+/**
+ * Test-only delay seam inside `restoreDatasets()`: when installed, the
+ * restoration awaits this gate immediately after reading the ledger's ready
+ * identities and before touching the worker registry, so a startup-window
+ * regression can deterministically hold the rehydration provably in flight.
+ */
+let datasetRegistryRestoreGate: (() => Promise<void>) | undefined;
+
+export function __setDatasetRegistryRestoreGateForTests(gate: (() => Promise<void>) | undefined): void {
+  if (process.env.NODE_ENV !== "test") throw new Error("test-only seam");
+  datasetRegistryRestoreGate = gate;
+}
+
 /** Rebuild the in-memory DuckDB registry from exact ready SQLite identities. */
 export async function restoreDatasets(_attempts = 8): Promise<RestoreSummary> {
+  // Honest-window bookkeeping for admission and health: the registry is being
+  // rebuilt from here. Joining a window already opened by
+  // `startIngestionWorkers()` is a no-op; a direct call opens its own.
+  beginDatasetRegistryRehydration();
+  try {
+    return await restoreDatasetsUnlocked();
+  } finally {
+    // Honest failed-open: a completed, aborted, or failed restoration all land
+    // on ready, so a later admission evaluates genuinely absent inputs with
+    // the existing stale-inputs semantics rather than waiting forever.
+    finishDatasetRegistryRehydration();
+  }
+}
+
+async function restoreDatasetsUnlocked(): Promise<RestoreSummary> {
   const runtime = storageRuntime();
   const rows = await runtime.ledger.all<RegistryRow>(
     `SELECT u.id AS account_id, s.id AS source_id, s.name, s.file_path, s.display_name,
@@ -837,6 +885,7 @@ export async function restoreDatasets(_attempts = 8): Promise<RestoreSummary> {
        LEFT JOIN sources s ON s.account_id=u.id AND s.kind='tabular'
        ORDER BY u.id,s.name`
   );
+  if (datasetRegistryRestoreGate) await datasetRegistryRestoreGate();
   const readyCount = rows.filter((row) => row.status === "ready" && row.file_path).length;
   if (!(await dataService.health())) {
     return {

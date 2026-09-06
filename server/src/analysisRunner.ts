@@ -37,6 +37,7 @@ import {
 } from "./analysisTypes.js";
 import { dataService, DataServiceError } from "./dataService.js";
 import type { DatasetQueryResult } from "./data/datasets.js";
+import { DATASET_REGISTRY_HYDRATION_WAIT_MS, waitForDatasetRegistryHydration } from "./data/registryHydration.js";
 import {
   AnalysisNotFoundError,
   AnalysisQuotaError,
@@ -57,6 +58,12 @@ export interface AnalysisRunnerDependencies {
   readonly cancelPollIntervalMs?: number;
   readonly claimIntervalMs?: number;
   readonly claimBatchLimit?: number;
+  /**
+   * Bound on the startup registry-rehydration honesty wait. Production uses
+   * the config-fixed ceiling; composition tests may shorten it to drive the
+   * deadline-exceeded path. Never an environment value.
+   */
+  readonly registryHydrationDeadlineMs?: number;
 }
 
 export interface RunAnalysisServiceInput {
@@ -227,6 +234,7 @@ export function createAnalysisRunner(dependencies: AnalysisRunnerDependencies) {
   const cancelPollIntervalMs = dependencies.cancelPollIntervalMs ?? CANCEL_POLL_INTERVAL_MS;
   const claimIntervalMs = dependencies.claimIntervalMs ?? CLAIM_INTERVAL_MS;
   const claimBatchLimit = dependencies.claimBatchLimit ?? CLAIM_BATCH_LIMIT;
+  const registryHydrationDeadlineMs = dependencies.registryHydrationDeadlineMs ?? DATASET_REGISTRY_HYDRATION_WAIT_MS;
 
   const active = new Map<string, ActiveExecution>();
   let quiescing = false;
@@ -281,6 +289,19 @@ export function createAnalysisRunner(dependencies: AnalysisRunnerDependencies) {
   }
 
   async function runPipeline(execution: ActiveExecution, run: StoredAnalysisRun): Promise<void> {
+    if (run.sources.length > 0) {
+      // Startup-window honesty (journey-B defect): after a restart the ledger
+      // already reports ready tabular sources while the DuckDB dataset
+      // registry is still being rebuilt behind the server's ready line. Await
+      // that rehydration — bounded — BEFORE evaluating readiness and the
+      // frozen identity snapshot, so a run accepted inside the window executes
+      // against its real pinned inputs instead of finalizing a false durable
+      // `stale-inputs`. Deadline exceedance proceeds with the existing honest
+      // stale-inputs semantics; nothing widens. This await sits between store
+      // calls and holds no SQLite transaction; cancellation/shutdown aborts of
+      // the execution interrupt the wait through the normal abort path.
+      await waitForDatasetRegistryHydration(registryHydrationDeadlineMs, execution.controller.signal);
+    }
     const sql = await store.getAnalysisRevisionSql(run.accountId, run.analysisId, run.revision);
     if (sql === null) throw new RunOwnershipLost();
     const scope = await loadVerifiedSourceScope(run);

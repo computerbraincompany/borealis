@@ -67,9 +67,12 @@ clients can use `GET /api/health` for dependency readiness. It reports bounded
 status and latency for the Borealis API, embedded SQLite ledger, in-process
 DuckDB service, configured model endpoint, and an optional distinct LM Studio
 runtime without returning service URLs, credentials, model IDs, or raw upstream
-errors. A degraded dependency does not change the liveness endpoint, which avoids
-restarting a healthy API process because an upstream service is temporarily
-unavailable.
+errors. The `data_service` readiness folds in one operational prerequisite: after
+a restart, while the dataset-registry restoration is still rebuilding the DuckDB
+registry from the ledger, it honestly reports `unavailable` and self-heals when
+that restoration settles, including its failed-open unwind. A degraded dependency
+does not change the liveness endpoint, which avoids restarting a healthy API
+process because an upstream service is temporarily unavailable.
 
 Authenticated clients can also use `GET /api/status` for the ambient workspace
 snapshot the application chrome displays. It classifies the configured model
@@ -689,7 +692,10 @@ completed.
 Reported latency is bounded to 0–2,000 ms.
 The stable IDs are `api`, `database`, `data_service`, `model_gateway`, and the
 optional `model_runtime`. `model_gateway` is the direct configured provider,
-not a proxy process. Both healthy and degraded readiness responses use `200`.
+not a proxy process. `data_service` additionally covers startup dataset-registry
+rehydration: it reports `unavailable` — never falsely operational — while a
+restoration is in flight, and recovers as soon as it settles. Both healthy and
+degraded readiness responses use `200`.
 The model probe checks catalog reachability, not whether a chat or embedding
 request will succeed; readiness does not run inference or render a report.
 
@@ -1447,7 +1453,7 @@ expose stable `code` values on failures.
 | `DELETE /api/analyses/:id` | Requests durable cancellation of an active run and retries the owned deletion within a bounded drain window; `{"ok":true}` on success, `409 ANALYSIS_ACTIVE_RUN` when an executor has not yet drained. Copied report/document snapshots survive. |
 | `POST /api/analyses/from-query` | Promotes only a persisted, verified full-query capture: `{capture_id,title,description?,comparison_key?}`. Sources come from the capture's exact ready provenance. Missing captures (legacy display receipts) return `404 ANALYSIS_CAPTURE_NOT_PROMOTABLE`; a deleted captured source returns `409 ANALYSIS_INPUTS_UNAVAILABLE`. |
 | `GET /api/analyses/:id/runs` | Paginated run summaries, newest first. |
-| `POST /api/analyses/:id/runs` | Body `{values?,operation_id?,expected_revision?}`. Acceptance freezes the revision, typed bindings, and concrete ready source generations in one transaction and returns `202 {outcome,run}` (`queued`/`replayed`/`stale-inputs`). A retried operation UUID replays the original run. `409 ANALYSIS_ACTIVE_RUN` for one-active violations, `409 ANALYSIS_RESULT_QUOTA_EXCEEDED` before execution at 1,000 retained results, `400 ANALYSIS_VALIDATION` for undeclared/missing/mistyped values, `503` when no executor is registered. |
+| `POST /api/analyses/:id/runs` | Body `{values?,operation_id?,expected_revision?}`. Acceptance freezes the revision, typed bindings, and concrete ready source generations in one transaction and returns `202 {outcome,run}` (`queued`/`replayed`/`stale-inputs`). A retried operation UUID replays the original run. `409 ANALYSIS_ACTIVE_RUN` for one-active violations, `409 ANALYSIS_RESULT_QUOTA_EXCEEDED` before execution at 1,000 retained results, `400 ANALYSIS_VALIDATION` for undeclared/missing/mistyped values, `503` when no executor is registered. Execution of a `queued` run awaits startup dataset-registry rehydration for at most the fixed 15 s bound before evaluating pinned inputs; deadline exceedance still applies honest durable `stale-inputs`. |
 | `GET /api/analyses/:id/runs/:runId` | Exact run state including frozen parameter bindings and source provenance. |
 | `DELETE /api/analyses/:id/runs/:runId` | Idempotent cancellation request; terminal states are absorbing and repeated calls return the same `{ok:true,status}`. |
 | `GET /api/analyses/:id/results` | Paginated immutable result summaries (never raw rows). |
@@ -1555,7 +1561,7 @@ HTTP endpoints:
 | --------------- | -------------------------------------------------------------------------------------------------------------- |
 | `retrieve`      | Searches only the run's ready source UUIDs; query up to 4,000 characters and 1–12 passages (default 6).        |
 | `list_sources`  | Lists the accepted attachments and ready tables, with bounded descriptive metadata.                            |
-| `query_data`    | One read-only `SELECT`, `WITH`, or `VALUES` statement against the immutable table allowlist.                   |
+| `query_data`    | One read-only `SELECT`, `WITH`, or `VALUES` statement against the immutable table allowlist; bounded startup registry-rehydration wait (≤15 s) first. |
 | `describe_data` | Bounded statistics for a selected, ready table.                                                                |
 | `render_chart`  | Validates the canonical spec and stages a chart for this run.                                                  |
 | `create_report` | Stages at most one report per run, using only charts owned by the same run.                                    |
