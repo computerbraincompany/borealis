@@ -30,6 +30,7 @@ import {
   ANALYSIS_TITLE_MAX_CHARS,
 } from "../analysisTypes.js";
 
+import { DOCUMENT_REVISION_PAYLOAD_MAX_CHARS } from "../documentTypes.js";
 /**
  * Request-body ceilings used at the Fastify parser boundary.
  *
@@ -77,6 +78,21 @@ export const PREFERENCE_JSON_BODY_LIMIT_BYTES = PREFERENCE_MODEL_MAX_CHARS * MAX
  * bound; the durable semantic limits live in `connections/store.ts` and
  * `connections/secrets.ts`.
  */
+/**
+ * Document draft/revision save contract. The decoded tree is bounded by the
+ * evidence-inclusive 400,000-character revision snapshot in
+ * `documentTypes.ts`; this transport ceiling covers the worst-case astral
+ * escape expansion of that decoded budget (one UTF-16 code unit escaped to
+ * at most six JSON transport bytes) plus structural headroom. The
+ * normalizer, not the parser, remains the semantic bound — an oversize tree
+ * is rejected with `DOCUMENT_OVERSIZE`, not just a transport 413.
+ */
+export const DOCUMENT_REVISION_JSON_BODY_LIMIT_BYTES =
+  DOCUMENT_REVISION_PAYLOAD_MAX_CHARS * MAX_JSON_BYTES_PER_ASCII_CHARACTER + 128 * 1024;
+
+/** Template save/edit contract: bounded name/description and small bodies. */
+export const DOCUMENT_TEMPLATE_JSON_BODY_LIMIT_BYTES = COMPACT_JSON_BODY_LIMIT_BYTES;
+
 export const CONNECTION_JSON_BODY_LIMIT_BYTES =
   (MAX_CONNECTION_NAME_CHARS +
     MAX_CONNECTION_URL_CHARS +

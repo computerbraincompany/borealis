@@ -23,8 +23,11 @@ export type CatalogEndpoint =
   | "connections"
   | "analyses"
   | "analysis_runs"
-  | "analysis_results";
-
+  | "analysis_results"
+  | "documents"
+  | "document_revisions"
+  | "document_publications"
+  | "document_templates";
 export interface CatalogPosition {
   readonly timestamp: string;
   readonly id: string;

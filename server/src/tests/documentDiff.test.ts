@@ -64,9 +64,7 @@ describe("diffDocumentTrees", () => {
     // A dropped out of the target order entirely; C stayed in a stable
     // relative position; B moved before C AND changed text.
     expect(result.sections.removed).toEqual([{ id: SECTION_A, heading: "A", index: 0 }]);
-    expect(result.sections.added).toEqual([
-      { id: "44444444-4444-4444-8444-444444444444", heading: "D", index: 2 },
-    ]);
+    expect(result.sections.added).toEqual([{ id: "44444444-4444-4444-8444-444444444444", heading: "D", index: 2 }]);
     expect(result.sections.modified.map((entry) => entry.id)).toEqual([SECTION_B]);
     expect(result.text_diffs.map((entry) => entry.section_id)).toEqual([
       SECTION_B,
@@ -192,7 +190,10 @@ describe("diffDocumentTrees", () => {
         { id: "chart-1", spec },
         { id: "chart-gone", spec },
       ],
-      tables: [{ columns: ["month"], rows: [["jan"]] }, { columns: ["gone"], rows: [] }],
+      tables: [
+        { columns: ["month"], rows: [["jan"]] },
+        { columns: ["gone"], rows: [] },
+      ],
       evidence: [
         {
           id: "55555555-5555-5555-8555-555555555555",

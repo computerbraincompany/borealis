@@ -8,6 +8,7 @@ import { AgentStore } from "./db/stores/agentStore.js";
 import { ConnectionStore } from "./connections/store.js";
 import { AnalysisStore } from "./db/stores/analysisStore.js";
 import { DocumentStore } from "./db/stores/documentStore.js";
+import { DocumentTemplateStore } from "./db/stores/documentTemplateStore.js";
 import { AutomationStore } from "./automationStore.js";
 import { ConnectorRefreshStore } from "./db/stores/connectorRefreshStore.js";
 import { SqliteIngestionStore } from "./db/stores/ingestionStore.js";
@@ -42,6 +43,12 @@ export interface StorageRuntime {
    * `documentCleanup.ts` are exposed through this exact instance.
    */
   readonly documents: DocumentStore;
+  /**
+   * Owner-scoped custom template catalog (schema v21, M13 stage 2). Rows hold
+   * only codec-normalized structure snapshots; built-in templates are server
+   * constants in `documentTemplates.ts` and never appear here.
+   */
+  readonly documentTemplates: DocumentTemplateStore;
   readonly sources: SourceStore;
   readonly libraries: LibraryStore;
   readonly agents: AgentStore;
@@ -138,6 +145,7 @@ export async function initializeStorageRuntime(optionsValue: StorageRuntimeOptio
         runs: new RunStore(ledger),
         analyses: new AnalysisStore(ledger),
         documents: new DocumentStore(ledger),
+        documentTemplates: new DocumentTemplateStore(ledger),
         libraries: new LibraryStore(ledger),
         agents: new AgentStore(ledger),
         connections: new ConnectionStore(ledger),

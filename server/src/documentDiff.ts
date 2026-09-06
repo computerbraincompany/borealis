@@ -276,19 +276,20 @@ function sectionTextDiff(
 ): DocumentSectionTextDiff {
   const a = splitLines(baseText ?? "");
   const b = splitLines(targetText ?? "");
-  let script: EditOp[] | null = null;
+  let script: EditOp[];
   let coarse = false;
   if (baseText === null) {
+    // Whole-section insertion: every line is an insert op.
     script = b.map((_, index) => ({ kind: "insert" as const, oldIndex: -1, newIndex: index }));
-    coarse = true;
   } else if (targetText === null) {
     script = a.map((_, index) => ({ kind: "delete" as const, oldIndex: index, newIndex: -1 }));
-    coarse = true;
   } else {
-    script = myersScript(a, b);
-    if (script === null) {
+    const precise = myersScript(a, b);
+    if (precise === null) {
       script = coarseOps(a, b);
       coarse = true;
+    } else {
+      script = precise;
     }
   }
   const windowed = withContext(script);
@@ -440,9 +441,7 @@ export function diffDocumentTrees(
     }
   }
   for (const section of removed) {
-    textDiffs.push(
-      sectionTextDiff(section.id, section.heading, baseById.get(section.id)!.markdown, null, budget)
-    );
+    textDiffs.push(sectionTextDiff(section.id, section.heading, baseById.get(section.id)!.markdown, null, budget));
   }
 
   const chartIds = new Map(base.charts.map((chart) => [chart.id, chartSignature(chart.spec)]));
