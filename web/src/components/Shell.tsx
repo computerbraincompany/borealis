@@ -8,6 +8,7 @@ import {
   Plug,
   FileText,
   FlaskConical,
+  ScanSearch,
   Sparkles,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -21,6 +22,7 @@ const NAV_ITEMS = [
   { href: "/agents", label: "Agents", icon: Bot },
   { href: "/automations", label: "Automations", icon: CalendarClock },
   { href: "/connectors", label: "Connectors", icon: Plug },
+  { href: "/research", label: "Research", icon: ScanSearch },
   { href: "/reports", label: "Reports", icon: FileText },
   { href: "/analyses", label: "Analyses", icon: FlaskConical },
   { href: "/documents", label: "Documents", icon: FileEdit },

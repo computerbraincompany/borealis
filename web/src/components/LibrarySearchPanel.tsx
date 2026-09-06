@@ -28,7 +28,7 @@ import { Input } from "@/components/ui/input";
  * location-unavailable until an explicit reingest.
  */
 
-function locatorCopy(locator: SourceLocator): string {
+export function locatorCopy(locator: SourceLocator): string {
   switch (locator.kind) {
     case "pdf_page":
       return `PDF page ${locator.page}${locator.ocr ? " (OCR)" : ""}, chars ${locator.char_start}–${locator.char_start + locator.char_len}`;
@@ -86,7 +86,7 @@ export function HighlightedExcerpt({ text, query }: { text: string; query: strin
   );
 }
 
-function locatorBadges(locators: SourceLocator[] | undefined): React.ReactNode {
+export function locatorBadges(locators: SourceLocator[] | undefined): React.ReactNode {
   if (!locators || locators.length === 0) {
     return (
       <span className="text-xs text-muted-foreground italic">

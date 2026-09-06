@@ -18,6 +18,8 @@ interface ConfirmDialogProps {
   busy?: boolean;
   /** Render the confirm action as destructive (default) or primary. */
   destructive?: boolean;
+  /** Optional in-dialog failure slot; the dialog stays open while busy. */
+  error?: string | null;
   onConfirm: () => void;
   onCancel: () => void;
 }
@@ -34,6 +36,7 @@ export function ConfirmDialog({
   cancelLabel = "Cancel",
   busy = false,
   destructive = true,
+  error = null,
   onConfirm,
   onCancel,
 }: ConfirmDialogProps) {
@@ -44,6 +47,11 @@ export function ConfirmDialog({
           <DialogTitle>{title}</DialogTitle>
           <DialogDescription>{description}</DialogDescription>
         </DialogHeader>
+        {error && (
+          <p className="text-sm text-destructive" role="alert">
+            {error}
+          </p>
+        )}
         <DialogFooter>
           <Button type="button" variant="ghost" size="sm" onClick={onCancel} disabled={busy}>
             {cancelLabel}

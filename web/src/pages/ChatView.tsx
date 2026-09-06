@@ -32,6 +32,7 @@ import { ModelSelector } from "@/components/ModelSelector";
 import { AgentSelector } from "@/components/AgentSelector";
 import { ChatSourcePicker } from "@/components/ChatSourcePicker";
 import { JobConfirmationCard, type JobConfirmState } from "@/components/JobConfirmationCard";
+import { ResearchThisButton } from "@/components/ResearchThisButton";
 import { ChatHistory } from "@/components/ChatHistory";
 import { ToolActivity } from "@/components/ToolActivity";
 import { createStreamState, EMPTY_STREAM_STATE, streamsByChatReducer, type StreamState } from "@/lib/chatStream";
@@ -1371,9 +1372,16 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
       {/* chat area */}
       <div className="flex h-full min-w-0 flex-1 flex-col">
         {/* header */}
-        <header className="flex h-14 shrink-0 items-center justify-between border-b px-6">
+        <header className="flex h-14 shrink-0 items-center justify-between gap-3 border-b px-6">
           <h2 className="min-w-0 truncate text-[15px] font-semibold">{detail?.title || "Chat with Borealis"}</h2>
-          <div className="text-xs text-muted-foreground">
+          <div className="flex shrink-0 items-center gap-3 text-xs text-muted-foreground">
+            {/* Chat-to-research: only for concrete ready selected sources. */}
+            {detail && detail.source_mode === "selected" && (
+              <ResearchThisButton
+                sourceIds={detail.sources.filter((source) => source.status === "ready").map((source) => source.id)}
+                title={detail.title}
+              />
+            )}
             {/* Older pages may hold more answers; only claim a total when the loaded page is complete. */}
             {detail?.messages_page?.has_more ? null : `${answerCount} ${answerCount === 1 ? "answer" : "answers"}`}
           </div>

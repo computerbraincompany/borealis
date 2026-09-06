@@ -2831,6 +2831,516 @@ export function isTerminalAnalysisRunStatus(status: AnalysisRunStatus): boolean 
   return TERMINAL_ANALYSIS_RUN_STATUSES.includes(status);
 }
 
+// ------------------------------------------------------------------ research (M15)
+
+/** Client mirrors of `server/src/researchSchemas.ts` bounds for input gating. */
+export const RESEARCH_TITLE_MAX_CHARS = 120;
+export const RESEARCH_QUESTION_MAX_CHARS = 4_000;
+export const RESEARCH_SOURCES_MAX = 100;
+export const RESEARCH_LIBRARY_PROVENANCE_MAX = 20;
+export const RESEARCH_PLAN_STEPS_MAX = 8;
+export const RESEARCH_QUESTIONS_PER_STEP_MAX = 8;
+export const RESEARCH_STEP_OBJECTIVE_MAX_CHARS = 500;
+export const RESEARCH_STEP_QUESTION_MAX_CHARS = 1_000;
+export const RESEARCH_COLUMNS_MAX = 20;
+export const RESEARCH_COLUMN_LABEL_MAX_CHARS = 80;
+export const RESEARCH_COLUMN_QUESTION_MAX_CHARS = 500;
+export const RESEARCH_COLUMN_UNIT_MAX_CHARS = 40;
+export const RESEARCH_ENUM_CHOICES_MAX = 20;
+export const RESEARCH_ENUM_CHOICE_MAX_CHARS = 80;
+export const RESEARCH_NOTE_MAX_CHARS = 2_000;
+export const RESEARCH_CLAIM_TEXT_MAX_CHARS = 2_000;
+export const RESEARCH_CELL_EXPLANATION_MAX_CHARS = 1_000;
+export const RESEARCH_REVIEW_OPS_MAX = 100;
+/** Evidence keyset page: 25 default, 50 max. */
+export const RESEARCH_EVIDENCE_PAGE_DEFAULT = 25;
+export const RESEARCH_EVIDENCE_PAGE_MAX = 50;
+
+export const RESEARCH_ACTIVE_RUN_CODE = "RESEARCH_ACTIVE_RUN";
+export const RESEARCH_REVISION_CONFLICT_CODE = "RESEARCH_REVISION_CONFLICT";
+export const RESEARCH_MODEL_UNAVAILABLE_CODE = "RESEARCH_MODEL_UNAVAILABLE";
+export const RESEARCH_SCOPE_EMPTY_CODE = "RESEARCH_SCOPE_EMPTY";
+export const RESEARCH_INPUTS_NOT_READY_CODE = "RESEARCH_INPUTS_NOT_READY";
+export const RESEARCH_QUEUE_FULL_CODE = "RESEARCH_QUEUE_FULL";
+
+export type ResearchOutputKind = "memo" | "comparison";
+export type ResearchColumnType = "text" | "number" | "date" | "boolean" | "enum";
+export type ResearchClaimClassification = "supported" | "conflicting" | "unsupported";
+export type ResearchCellStatus = "supported" | "conflicting" | "not_found" | "invalid";
+export type ResearchRunStatus =
+  | "queued"
+  | "running"
+  | "cancelling"
+  | "needs_review"
+  | "completed"
+  | "failed"
+  | "cancelled";
+export type ResearchStepStatus = "pending" | "running" | "done" | "source_changed" | "failed" | "skipped";
+export type ResearchClaimKind = "claim" | "gap";
+export type ResearchClaimReviewState = "pending" | "accepted" | "rejected";
+export type ResearchTypedValue = string | number | boolean | null;
+
+/** Durable runs keep producing output until these absorbing states. */
+export const TERMINAL_RESEARCH_RUN_STATUSES: readonly ResearchRunStatus[] = Object.freeze([
+  "needs_review",
+  "completed",
+  "failed",
+  "cancelled",
+]);
+
+export function isTerminalResearchRunStatus(status: ResearchRunStatus): boolean {
+  return TERMINAL_RESEARCH_RUN_STATUSES.includes(status);
+}
+
+export interface ResearchColumnDeclaration {
+  id: string;
+  label: string;
+  question: string;
+  type: ResearchColumnType;
+  unit: string | null;
+  choices: string[] | null;
+}
+
+export interface ResearchPlanStep {
+  id: string;
+  objective: string;
+  questions: string[];
+}
+
+export interface ResearchPlan {
+  steps: ResearchPlanStep[];
+}
+
+export interface ResearchSourceAvailability {
+  source_id: string;
+  availability: "ready" | "unready" | "missing";
+  ready_generation: number | null;
+}
+
+export interface ResearchActiveRunRef {
+  id: string;
+  status: ResearchRunStatus;
+}
+
+export interface ResearchDefinitionSummaryItem {
+  id: string;
+  title: string;
+  output_kind: ResearchOutputKind;
+  current_revision: number;
+  source_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ResearchDefinition {
+  id: string;
+  title: string;
+  question: string;
+  output_kind: ResearchOutputKind;
+  current_revision: number;
+  source_ids: string[];
+  library_ids: string[];
+  chat_model: string;
+  columns: ResearchColumnDeclaration[];
+  plan: ResearchPlan;
+  sources: ResearchSourceAvailability[];
+  active_run: ResearchActiveRunRef | null;
+  revision_created_at: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ResearchDefinitionCreateBody {
+  title: string;
+  question: string;
+  output_kind: ResearchOutputKind;
+  source_ids: string[];
+  library_ids?: string[];
+  chat_model: string;
+  columns?: ResearchColumnDeclaration[];
+  plan?: ResearchPlan;
+}
+
+export interface ResearchDefinitionPatchBody extends Partial<ResearchDefinitionCreateBody> {
+  expected_revision: number;
+}
+
+export interface ResearchPlanProposal {
+  definition_id: string;
+  base_revision: number;
+  model: string;
+  model_used: boolean;
+  fallback: boolean;
+  error_code: string | null;
+  plan: ResearchPlan;
+}
+
+export interface ResearchRunSummary {
+  id: string;
+  definition_id: string;
+  definition_revision: number;
+  status: ResearchRunStatus;
+  cancel_requested: boolean;
+  chat_model: string;
+  provider_locality: ProviderLocality;
+  rerun_of: string | null;
+  review_revision: number;
+  error_code: string | null;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+}
+
+export interface ResearchRerunSelection {
+  row_source_ids: string[] | null;
+  column_ids: string[] | null;
+}
+
+export interface ResearchRun extends ResearchRunSummary {
+  error_reason: string | null;
+  sources: Array<{ source_id: string; generation: number }>;
+  budgets: {
+    steps: number;
+    searches: number;
+    model_requests: number;
+    evidence: number;
+    evidence_chars: number;
+    wall_ms: number;
+  };
+  usage: { searches: number; model_requests: number };
+  rerun_selection: ResearchRerunSelection | null;
+}
+
+export interface ResearchStep {
+  ordinal: number;
+  objective: string;
+  questions: string[];
+  status: ResearchStepStatus;
+  outcome: string | null;
+  attempts: number;
+  started_at: string | null;
+  finished_at: string | null;
+}
+
+export interface ResearchClaim {
+  id: string;
+  run_id: string;
+  kind: ResearchClaimKind;
+  text: string;
+  corrected_text: string | null;
+  classification: ResearchClaimClassification;
+  evidence_refs: string[];
+  user_note: string | null;
+  review_state: ResearchClaimReviewState;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ResearchRunCounts {
+  evidence_count: number;
+  evidence_char_count: number;
+  claim_count: number;
+  gap_count: number;
+  machine_cell_count: number;
+  correction_cell_count: number;
+  table_serialized_bytes: number;
+}
+
+export interface ResearchRunDetail extends ResearchRun {
+  steps: ResearchStep[];
+  claims: ResearchClaim[];
+  counts: ResearchRunCounts;
+  run_notes: string[];
+}
+
+export interface ResearchEvidence {
+  id: string;
+  run_id: string;
+  source_id: string;
+  generation: number;
+  chunk_id: string;
+  label: string;
+  locators: SourceLocator[];
+  excerpt: string;
+  content_hash: string;
+  retrieved_at: string;
+  step_ordinal: number;
+  query: string;
+  irrelevant: boolean;
+}
+
+export interface ResearchCell {
+  column_id: string;
+  row_source_id: string;
+  row_generation: number;
+  origin: "machine" | "correction";
+  value: ResearchTypedValue;
+  status: ResearchCellStatus;
+  evidence_refs: string[];
+  explanation: string | null;
+  corrected_at: string | null;
+  corrected_from_run_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ResearchTableRow {
+  row_source_id: string;
+  row_generation: number;
+  cells: ResearchCell[];
+}
+
+export interface ResearchTableLimitState {
+  serialized_bytes: number;
+  limit_bytes: number;
+  at_limit: boolean;
+}
+
+export interface ResearchTableViewState {
+  sort_applied: boolean;
+  filter_applied: boolean;
+  basis: "row_source_id_keyset";
+  sort_column_id: string | null;
+  sort_dir: "asc" | "desc";
+  sort_view: "effective" | "machine" | "correction";
+}
+
+export interface ResearchCellChangeSnapshot {
+  value: ResearchTypedValue;
+  status: ResearchCellStatus;
+}
+
+export interface ResearchCellChangeSlot {
+  machine: ResearchCellChangeSnapshot | null;
+  correction: ResearchCellChangeSnapshot | null;
+  effective: ResearchCellChangeSnapshot | null;
+}
+
+export interface ResearchCellChange {
+  row_source_id: string;
+  column_id: string;
+  before: ResearchCellChangeSlot;
+  after: ResearchCellChangeSlot;
+  machine_changed: boolean;
+  correction_changed: boolean;
+}
+
+export interface ResearchRunTableDiff {
+  from_run_id: string;
+  to_run_id: string;
+  rows_added: string[];
+  rows_removed: string[];
+  changed_cells: ResearchCellChange[];
+  changed_total: number;
+  truncated: boolean;
+  carried_overrides: Array<{ column_id: string; row_source_id: string; corrected_from_run_id: string }>;
+}
+
+export interface ResearchTableViewOptions {
+  cursor?: string | null;
+  limit?: number;
+  sortColumn?: string | null;
+  sortDir?: "asc" | "desc";
+  sortView?: "effective" | "machine" | "correction";
+  filterColumn?: string | null;
+  filterStatus?: ResearchCellStatus | null;
+  filterText?: string | null;
+  against?: string | null;
+  signal?: AbortSignal;
+}
+
+export interface ResearchTableView {
+  run_id: string;
+  columns: ResearchColumnDeclaration[];
+  items: ResearchTableRow[];
+  next_cursor: string | null;
+  limit_state: ResearchTableLimitState;
+  view_state: ResearchTableViewState;
+  comparison?: ResearchRunTableDiff;
+}
+
+export type ResearchReviewOp =
+  | { op: "accept_claim"; claim_id: string }
+  | { op: "reject_claim"; claim_id: string }
+  | { op: "add_note"; target_kind: "claim" | "evidence" | "run"; target_id?: string; note: string }
+  | { op: "correct_claim"; claim_id: string; text: string }
+  | {
+      op: "correct_cell";
+      column_id: string;
+      row_source_id: string;
+      value?: ResearchTypedValue;
+      status?: ResearchCellStatus;
+      explanation?: string;
+    }
+  | { op: "flag_evidence"; evidence_id: string; irrelevant: boolean };
+
+export interface ResearchReviewResult {
+  review_revision: number;
+  ops_applied: number;
+  run: ResearchRun;
+}
+
+export interface ResearchProjectionCounts {
+  evidence: number;
+  rows: number;
+  columns: number;
+  cells: number;
+  claims: number;
+  gaps: number;
+}
+
+export interface ResearchProjectionSummary {
+  output_kind: ResearchOutputKind;
+  run_status: ResearchRunStatus;
+  cell_chars_max: number;
+  excerpt_chars_max: number;
+  payload_chars: number;
+  projected: ResearchProjectionCounts;
+  omitted: {
+    rows: string[];
+    columns: Array<{ id: string; label: string }>;
+    claims: number;
+    gaps: number;
+    evidence: number;
+  };
+  labels: string[];
+  disclosures: {
+    needs_review: boolean;
+    conflicting_cells: number;
+    invalid_cells: number;
+    not_found_cells: number;
+    correction_cells: number;
+    excerpts_shortened: number;
+    cells_truncated: number;
+    table_at_limit: boolean;
+  };
+}
+
+export interface ResearchArtifactResult {
+  run_id: string;
+  document_id: string;
+  document_revision_id: string;
+  document_revision: number;
+  projection: ResearchProjectionSummary;
+}
+
+/** True when the failure carries this stable research error code. */
+export function isResearchErrorCode(error: unknown, code: string): boolean {
+  return error instanceof ApiError && (error.data as { code?: unknown } | undefined)?.code === code;
+}
+
+/** The already-active run identity carried on a 409 RESEARCH_ACTIVE_RUN. */
+export function researchActiveRunId(error: unknown): string | null {
+  if (!isResearchErrorCode(error, RESEARCH_ACTIVE_RUN_CODE)) return null;
+  const id = (error as ApiError).data as { existing_run_id?: unknown } | undefined;
+  return typeof id?.existing_run_id === "string" ? id.existing_run_id : null;
+}
+
+/** The precise conflicting source ids carried on a readiness rejection. */
+export function researchUnreadySourceIds(error: unknown): string[] {
+  if (!isResearchErrorCode(error, RESEARCH_INPUTS_NOT_READY_CODE)) return [];
+  const ids = (error as ApiError).data as { unready_source_ids?: unknown } | undefined;
+  return Array.isArray(ids?.unready_source_ids)
+    ? ids.unready_source_ids.filter((id): id is string => typeof id === "string")
+    : [];
+}
+
+function researchTablePath(runId: string, options: ResearchTableViewOptions = {}): string {
+  const params = new URLSearchParams();
+  if (options.cursor) params.set("cursor", options.cursor);
+  if (options.limit) params.set("limit", String(options.limit));
+  if (options.sortColumn) params.set("sort_column", options.sortColumn);
+  if (options.sortDir) params.set("sort_dir", options.sortDir);
+  if (options.sortView) params.set("sort_view", options.sortView);
+  if (options.filterColumn) params.set("filter_column", options.filterColumn);
+  if (options.filterStatus) params.set("filter_status", options.filterStatus);
+  if (options.filterText) params.set("filter_text", options.filterText);
+  if (options.against) params.set("against", options.against);
+  const query = params.size ? `?${params.toString()}` : "";
+  return `/api/research-runs/${encodeURIComponent(runId)}/table${query}`;
+}
+
+export const researchApi = {
+  list: async (options: CatalogPageOptions = {}) =>
+    parseTypedCatalogEnvelope<ResearchDefinitionSummaryItem>(
+      await api<unknown>(catalogPath("/api/research", options), { signal: options.signal }),
+    ),
+  create: (body: ResearchDefinitionCreateBody, signal?: AbortSignal) =>
+    api<ResearchDefinition>("/api/research", { method: "POST", body: JSON.stringify(body), signal }),
+  get: (id: string, signal?: AbortSignal) =>
+    api<ResearchDefinition>(`/api/research/${encodeURIComponent(id)}`, { signal }),
+  /** Revision-CAS definition edit; one stale `expected_revision` is a conflict, never a silent overwrite. */
+  update: (id: string, body: ResearchDefinitionPatchBody, signal?: AbortSignal) =>
+    api<ResearchDefinition>(`/api/research/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+      signal,
+    }),
+  /** Deletion first requests durable cancellation of the definition's own active run. */
+  remove: (id: string, signal?: AbortSignal) =>
+    api<{ ok: true }>(`/api/research/${encodeURIComponent(id)}`, { method: "DELETE", signal }),
+  /** Bounded editable proposal for review only; never starts execution. */
+  proposePlan: (id: string, expectedRevision: number, signal?: AbortSignal) =>
+    api<ResearchPlanProposal>(`/api/research/${encodeURIComponent(id)}/plan`, {
+      method: "POST",
+      body: JSON.stringify({ expected_revision: expectedRevision }),
+      signal,
+    }),
+  listRuns: async (id: string, options: CatalogPageOptions = {}) =>
+    parseTypedCatalogEnvelope<ResearchRunSummary>(
+      await api<unknown>(catalogPath(`/api/research/${encodeURIComponent(id)}/runs`, options), {
+        signal: options.signal,
+      }),
+    ),
+  start: (
+    id: string,
+    body: {
+      expected_revision?: number;
+      definition_revision?: number;
+      rerun_of?: string;
+      rerun_selection?: { row_source_ids?: string[]; column_ids?: string[] };
+    },
+    signal?: AbortSignal,
+  ) =>
+    api<ResearchRun>(`/api/research/${encodeURIComponent(id)}/runs`, {
+      method: "POST",
+      body: JSON.stringify(body),
+      signal,
+    }),
+  getRun: (runId: string, signal?: AbortSignal) =>
+    api<ResearchRunDetail>(`/api/research-runs/${encodeURIComponent(runId)}`, { signal }),
+  listEvidence: async (runId: string, options: CatalogPageOptions & { limit?: number } = {}) =>
+    parseTypedCatalogEnvelope<ResearchEvidence>(
+      await api<unknown>(catalogPath(`/api/research-runs/${encodeURIComponent(runId)}/evidence`, options), {
+        signal: options.signal,
+      }),
+    ),
+  getTable: async (runId: string, options: ResearchTableViewOptions = {}) =>
+    api<ResearchTableView>(researchTablePath(runId, options), { signal: options.signal }),
+  /** Idempotent durable cancellation request. */
+  cancelRun: (runId: string, signal?: AbortSignal) =>
+    api<{ ok: true; status: ResearchRunStatus }>(`/api/research-runs/${encodeURIComponent(runId)}`, {
+      method: "DELETE",
+      signal,
+    }),
+  /** Revision-CAS review batch (≤100 ops); stale revisions conflict. */
+  review: (runId: string, body: { expected_revision: number; ops: ResearchReviewOp[] }, signal?: AbortSignal) =>
+    api<ResearchReviewResult>(`/api/research-runs/${encodeURIComponent(runId)}/review`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+      signal,
+    }),
+  /** M13 reviewed draft from a finished run only; failed/cancelled runs are refused. */
+  createArtifact: (runId: string, signal?: AbortSignal) =>
+    api<ResearchArtifactResult>(`/api/research-runs/${encodeURIComponent(runId)}/artifacts`, {
+      method: "POST",
+      body: "{}",
+      signal,
+    }),
+  exportPath: (runId: string, format: "csv" | "manifest") =>
+    `/api/research-runs/${encodeURIComponent(runId)}/export?format=${format}`,
+};
+
 /** Fetch the SSE agent stream, invoking onEvent for each parsed event. Returns when the stream ends. */
 export async function streamAgentChat(
   chatId: string,
