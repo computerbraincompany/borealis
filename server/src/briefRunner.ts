@@ -1543,6 +1543,9 @@ export function createBriefRunner(dependencies: BriefRunnerDependencies) {
     }
     for (const run of candidates) {
       if (quiescing) return;
+      // `publishing` runs belong to the review service's publication path
+      // (M13 intent replay), not to this execution pipeline.
+      if (run.stage === "publishing") continue;
       if (active.has(run.id)) continue;
       if (active.size >= BRIEF_MAX_CONCURRENT_GLOBAL) break;
       if (accountActive(run.accountId) >= BRIEF_MAX_CONCURRENT_PER_ACCOUNT) continue;

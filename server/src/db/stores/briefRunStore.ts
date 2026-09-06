@@ -96,7 +96,10 @@ export class BriefReviewRevisionConflictError extends Error {
   readonly code = "BRIEF_REVIEW_REVISION_CONFLICT";
   readonly statusCode = 409;
 
-  constructor(message = "the brief draft changed since this review; decide again on the current revision", options: ErrorOptions = {}) {
+  constructor(
+    message = "the brief draft changed since this review; decide again on the current revision",
+    options: ErrorOptions = {}
+  ) {
     super(message, options);
     this.name = "BriefReviewRevisionConflictError";
   }
@@ -305,9 +308,7 @@ const RUN_COLUMNS = `id,account_id,recipe_id,trigger,operation_id,occurrence_key
   reviewed_revision_id,publication_error_code,failure_code,failure_reason,coalesced_count,missed_through_key,
   created_at,started_at,stage_updated_at,finished_at`;
 
-const RUN_COLUMNS_R = (RUN_COLUMNS.match(/[a-z_]+/g) ?? [])
-  .map((column) => `r.${column}`)
-  .join(",");
+const RUN_COLUMNS_R = (RUN_COLUMNS.match(/[a-z_]+/g) ?? []).map((column) => `r.${column}`).join(",");
 
 function placeholders(length: number): string {
   return Array.from({ length }, () => "?").join(",");
@@ -320,9 +321,7 @@ function placeholders(length: number): string {
  * on a different revision.
  */
 export function deriveBriefPublicationOperationId(runId: string, revisionId: string): string {
-  const hex = createHash("sha256")
-    .update(`borealis-brief-publication:${runId}:${revisionId}`, "utf8")
-    .digest("hex");
+  const hex = createHash("sha256").update(`borealis-brief-publication:${runId}:${revisionId}`, "utf8").digest("hex");
   const digits = (start: number, length: number) => hex.slice(start, start + length);
   return `${digits(0, 8)}-${digits(8, 4)}-4${digits(13, 3)}-a${digits(17, 3)}-${digits(20, 12)}`.toLowerCase();
 }
@@ -1020,6 +1019,18 @@ export class BriefRunStore {
     });
   }
 
+  async getNotification(
+    accountIdValue: string,
+    notificationIdValue: string
+  ): Promise<StoredBriefNotification | undefined> {
+    const row = await this.ledger.get<NotificationRow>(
+      `SELECT id,account_id,recipe_id,run_id,kind,state,detail,created_at,updated_at,read_at
+       FROM brief_notifications WHERE id=? AND account_id=?`,
+      [uuidIdentity(notificationIdValue, "notification id"), uuidIdentity(accountIdValue, "account id")]
+    );
+    return row ? decodeNotification(row) : undefined;
+  }
+
   async setNotificationState(
     accountIdValue: string,
     notificationIdValue: string,
@@ -1190,10 +1201,7 @@ export class BriefRunStore {
   }
 
   /** publishing → approved, only after the publication committed. */
-  async completeBriefApproval(
-    accountIdValue: string,
-    runIdValue: string
-  ): Promise<StoredBriefRun> {
+  async completeBriefApproval(accountIdValue: string, runIdValue: string): Promise<StoredBriefRun> {
     const accountId = uuidIdentity(accountIdValue, "account id");
     const runId = uuidIdentity(runIdValue, "run id");
     const timestamp = this.now().toISOString();
@@ -1294,10 +1302,14 @@ export class BriefRunStore {
        ORDER BY r.created_at DESC,r.id DESC LIMIT ?`,
       parameters
     );
-    return catalogStorePage(rows.map((row) => decodeReviewRow(row)), page, (review) => ({
-      timestamp: review.run.createdAt,
-      id: review.run.id,
-    }));
+    return catalogStorePage(
+      rows.map((row) => decodeReviewRow(row)),
+      page,
+      (review) => ({
+        timestamp: review.run.createdAt,
+        id: review.run.id,
+      })
+    );
   }
 
   /** Account-scoped local-notification keyset page (durable read/dismiss state). */
@@ -1318,10 +1330,14 @@ export class BriefRunStore {
        ORDER BY created_at DESC,id DESC LIMIT ?`,
       parameters
     );
-    return catalogStorePage(rows.map((row) => decodeNotification(row)), page, (item) => ({
-      timestamp: item.createdAt,
-      id: item.id,
-    }));
+    return catalogStorePage(
+      rows.map((row) => decodeNotification(row)),
+      page,
+      (item) => ({
+        timestamp: item.createdAt,
+        id: item.id,
+      })
+    );
   }
 
   // -- Baseline selection --------------------------------------------------------

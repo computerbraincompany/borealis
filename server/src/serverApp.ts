@@ -14,6 +14,7 @@ import { setAppLogger } from "./appLogger.js";
 import { shutdownActiveRuns, recoverInterruptedRuns } from "./chatRuns.js";
 import { config, initializeConfigStorage } from "./config.js";
 import { repairDocumentArtifactCleanup, repairDocumentPublications } from "./documentCleanup.js";
+import { reconcileBriefPublications } from "./briefReviewService.js";
 import { shutdownDatasetWorker } from "./data/datasets.js";
 import { createDesktopBootstrapSession, type DesktopBootstrapSession } from "./desktopBootstrap.js";
 import { corsOrigin } from "./corsPolicy.js";
@@ -387,6 +388,25 @@ export async function startBorealisServer(options: StartBorealisServerOptions = 
       }
     } catch {
       app.log.warn("document publication repair deferred to the next startup");
+    }
+    // M16 stage 3: brief runs interrupted mid-publication finalize from
+    // their own durable intents only after the M13 render repair above —
+    // completed → approved, failed/absent → awaiting_review with the bounded
+    // indicator. Aggregate counts only; never IDs/content, and never a boot
+    // failure (interrupted work stays durable for the next decision retry).
+    try {
+      const briefRepair = await reconcileBriefPublications();
+      if (briefRepair.attempted) {
+        app.log.warn(
+          {
+            brief_publications_approved: briefRepair.approved,
+            brief_publications_returned_to_review: briefRepair.returnedToReview,
+          },
+          "reconciled interrupted brief publications"
+        );
+      }
+    } catch {
+      app.log.warn("brief publication reconciliation deferred to the next startup");
     }
     await startIngestionWorkers();
     workersStarted = true;
