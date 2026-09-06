@@ -566,6 +566,15 @@ function decodeStringArray(value: unknown, field: string): readonly string[] {
   return parsed as string[];
 }
 
+/** String array already decoded inside a parsed JSON envelope. */
+function nestedStringArray(value: unknown, field: string): readonly string[] | null {
+  if (value === null || value === undefined) return null;
+  if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) {
+    throw new TypeError(`${field} is not stored as a string array`);
+  }
+  return Object.freeze([...(value as string[])]);
+}
+
 function decodeColumns(value: unknown, field: string): readonly ResearchColumnDeclaration[] {
   const parsed: unknown = decodeJson(value, field);
   if (!Array.isArray(parsed)) throw new TypeError(`${field} is not stored as an array`);
@@ -584,10 +593,7 @@ function decodeColumns(value: unknown, field: string): readonly ResearchColumnDe
         question: storedText(record.question, `${field} column question`),
         type,
         unit: optionalText(record.unit, `${field} column unit`),
-        choices:
-          record.choices === null || record.choices === undefined
-            ? null
-            : decodeStringArray(record.choices, `${field} column choices`),
+        choices: nestedStringArray(record.choices, `${field} column choices`),
       });
     })
   );
@@ -645,12 +651,8 @@ function decodeRerunSelection(value: unknown, field: string): StoredResearchRun[
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new TypeError(`${field} is malformed`);
   const record = parsed as Record<string, unknown>;
   return Object.freeze({
-    row_source_ids:
-      record.row_source_ids === undefined
-        ? Object.freeze([])
-        : decodeStringArray(record.row_source_ids, `${field} rows`),
-    column_ids:
-      record.column_ids === undefined ? Object.freeze([]) : decodeStringArray(record.column_ids, `${field} columns`),
+    row_source_ids: nestedStringArray(record.row_source_ids, `${field} rows`) ?? Object.freeze([]),
+    column_ids: nestedStringArray(record.column_ids, `${field} columns`) ?? Object.freeze([]),
   });
 }
 
@@ -806,6 +808,8 @@ export class ResearchStore {
       `SELECT d.id,d.account_id,d.current_revision,d.created_at,d.updated_at,
               r.revision,r.title,r.question,r.output_kind,r.source_ids,r.library_ids,r.chat_model,
               r.columns,r.plan,r.created_at AS rev_created_at
+       -- The immutable revision row is the full-content snapshot; its title
+       -- is the public title of the pinned revision.
        FROM research_definitions d
        JOIN research_definition_revisions r
          ON r.definition_id=d.id AND r.revision=d.current_revision AND r.account_id=d.account_id
@@ -1172,7 +1176,7 @@ export class ResearchStore {
           `INSERT INTO research_table_cells
              (run_id,column_id,row_source_id,row_generation,origin,account_id,value,status,evidence_refs,
               explanation,corrected_at,corrected_from_run_id,created_at,updated_at)
-           VALUES (?,?,?,?, 'correction',?,?,?,?,?,?,?,?)
+           VALUES (?,?,?,?, 'correction',?,?,?,?,?,?,?,?,?)
            ON CONFLICT(run_id,column_id,row_source_id,row_generation,origin) DO NOTHING`,
           [
             runId,
@@ -2417,12 +2421,14 @@ export class ResearchStore {
   ): void {
     transaction.run(
       `INSERT INTO research_definition_revisions
-         (definition_id,revision,account_id,question,source_ids,library_ids,chat_model,output_kind,columns,plan,created_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+         (definition_id,revision,account_id,title,question,source_ids,library_ids,chat_model,output_kind,columns,plan,
+          created_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
       [
         definitionId,
         revision,
         accountId,
+        content.title,
         content.question,
         encodeJson(content.sourceIds, "definition source ids"),
         encodeJson(content.libraryIds, "definition library ids"),

@@ -15,6 +15,9 @@ CREATE TABLE research_definition_revisions (
   definition_id TEXT NOT NULL,
   revision INTEGER NOT NULL CHECK (revision >= 1),
   account_id TEXT NOT NULL,
+  -- Full-content snapshot: the head carries the live title and every revision
+  -- row stores its own copy, mirroring the v18 analysis revision pattern.
+  title TEXT NOT NULL CHECK (length(title) BETWEEN 1 AND 120),
   question TEXT NOT NULL CHECK (length(question) BETWEEN 1 AND 4000),
   -- The explicit selected source set. An empty array is a legal stored draft
   -- (selected-empty); only Start admission rejects it. Library ids are bounded
@@ -206,7 +209,7 @@ CREATE TABLE research_reviews (
   seq INTEGER NOT NULL CHECK (seq >= 1),
   account_id TEXT NOT NULL,
   review_revision INTEGER NOT NULL CHECK (review_revision >= 1),
-  op TEXT NOT NULL CHECK (op IN ('accept_claim','reject_claim','add_note','correct_claim_text','correct_cell','flag_evidence')),
+  op TEXT NOT NULL CHECK (op IN ('accept_claim','reject_claim','add_note','correct_claim','correct_cell','flag_evidence')),
   target_kind TEXT NOT NULL CHECK (target_kind IN ('claim','evidence','cell','run')),
   target TEXT NOT NULL CHECK (length(target) BETWEEN 1 AND 512),
   detail TEXT NOT NULL DEFAULT '{}'
