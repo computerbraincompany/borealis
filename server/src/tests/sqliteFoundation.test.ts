@@ -447,6 +447,19 @@ describe("SQLite ledger foundation", () => {
               "document_publication_cleanup_jobs",
             ])
           );
+          // v19 living-knowledge tables survive upgrades from every
+          // historical installation: connections, stable-identity items,
+          // bounded previews, and durable refreshes.
+          expect([...tables]).toEqual(
+            expect.arrayContaining([
+              "knowledge_connections",
+              "knowledge_items",
+              "knowledge_previews",
+              "knowledge_preview_entries",
+              "knowledge_refreshes",
+              "knowledge_refresh_items",
+            ])
+          );
           expect(await columnNames(ledger, "users")).toEqual(
             expect.arrayContaining(["default_chat_model", "remote_egress_ack_origin"])
           );
@@ -488,6 +501,12 @@ describe("SQLite ledger foundation", () => {
               "reports_account_catalog_idx",
               "connections_account_catalog_idx",
               "documents_account_catalog_idx",
+              "knowledge_connections_account_catalog_idx",
+              "knowledge_items_connection_catalog_idx",
+              "knowledge_previews_connection_catalog_idx",
+              "knowledge_refreshes_one_active_uidx",
+              "knowledge_refreshes_connection_history_idx",
+              "knowledge_refresh_items_recovery_idx",
             ])
           );
           const recipientIndex = await ledger.get<{ sql: string }>(
@@ -1265,8 +1284,8 @@ describe("SQLite ledger foundation", () => {
             user_version: BigInt(LATEST_SQLITE_SCHEMA_VERSION),
           });
           // v16 protocol state is proven to survive upgrade into the exact
-          // current latest schema (v17 connections, v18 analyses, and the
-          // v20 document tables ride on top; v19 is the parallel-branch slot).
+          // current latest schema (v17 connections, v18 analyses, v19 knowledge, and the
+          // v20 document tables ride on top).
           expect(LATEST_SQLITE_SCHEMA_VERSION).toBe(20);
 
           const rows = await ledger.all<Record<string, unknown>>(

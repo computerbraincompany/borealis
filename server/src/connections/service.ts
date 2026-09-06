@@ -441,7 +441,7 @@ export function connectionService(): ConnectionService {
   active ??= new ConnectionService(configured);
   return active;
 }
-
+/**
  * The shared connection credential custody surface. M14 WebDAV knowledge
  * connections reuse this exact store (keyed by account/connection); no
  * second secret mechanism may be introduced. Desktop custody overrides
