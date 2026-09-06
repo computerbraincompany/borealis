@@ -148,6 +148,31 @@ interface StagingRow {
   meta: string;
 }
 
+interface KeywordSearchRow {
+  chunk_id: string;
+  source_id: string;
+  generation: string;
+  rank: number;
+  content: string;
+}
+
+interface SearchJoinRow {
+  chunk_id: string;
+  source_id: string;
+  generation: bigint;
+  seq: bigint;
+  label: string;
+  content: string;
+  meta: string;
+}
+
+interface NeighborRow {
+  chunk_id: string;
+  seq: bigint;
+  content: string;
+  meta: string;
+}
+
 function nowIso(): string {
   return new Date().toISOString();
 }
@@ -1064,6 +1089,253 @@ export class SqliteIngestionStore {
       }
     }
     return result;
+  }
+
+  /**
+   * Scoped FTS5 keyword search over the `chunks_fts` shadow (schema v24).
+   * The account and exact `(source_id, generation)` pairs are applied as the
+   * FTS5 filter itself — never a broad scan filtered in JavaScript — so
+   * staged or superseded generations are physically absent from the match
+   * set. The caller-supplied FTS query is already an escaped literal
+   * construction; malformed grammar degrades to an empty page, never raw
+   * user syntax reaching the engine.
+   */
+  async keywordSearchChunks(input: {
+    accountId: string;
+    scopes: readonly Readonly<{ sourceId: string; generation: number }>[];
+    ftsQuery: string;
+    limit: number;
+  }): Promise<
+    readonly Readonly<{ chunkId: string; sourceId: string; generation: number; rank: number; content: string }>[]
+  > {
+    const normalized = [...new Map(input.scopes.map((scope) => [scope.sourceId, scope])).values()];
+    if (!normalized.length) return Object.freeze([]);
+    if (normalized.length > 100) {
+      throw new IngestionStoreError("INVALID_INPUT", "keyword search scope exceeds 100 sources");
+    }
+    if (!Number.isSafeInteger(input.limit) || input.limit < 1 || input.limit > 100) {
+      throw new IngestionStoreError("INVALID_INPUT", "keyword search limit is invalid");
+    }
+    const pairClauses = normalized.map(() => "(source_id=? AND generation=?)").join(" OR ");
+    const parameters: Array<string | number> = [input.ftsQuery, input.accountId];
+    for (const scope of normalized) {
+      parameters.push(requiredId(scope.sourceId, "source id"), String(positiveGeneration(scope.generation)));
+    }
+    parameters.push(input.limit);
+    let rows: KeywordSearchRow[];
+    try {
+      rows = await this.ledger.all<KeywordSearchRow>(
+        `SELECT chunk_id, source_id, generation, rank, content
+         FROM chunks_fts
+         WHERE chunks_fts MATCH ?
+           AND account_id=?
+           AND (${pairClauses})
+         ORDER BY rank
+         LIMIT ?`,
+        parameters
+      );
+    } catch {
+      // A defensive escape hatch: the caller's grammar is literal-only, but
+      // an unparsable engine query still must not become a server error.
+      return Object.freeze([]);
+    }
+    const allowed = new Map(normalized.map((scope) => [scope.sourceId, scope.generation]));
+    return Object.freeze(
+      rows
+        .filter((row) => allowed.get(row.source_id) === Number(row.generation))
+        .map((row) =>
+          Object.freeze({
+            chunkId: row.chunk_id,
+            sourceId: row.source_id,
+            generation: Number(row.generation),
+            rank: Number(row.rank),
+            content: row.content,
+          })
+        )
+    );
+  }
+
+  /**
+   * Fail-closed chunk join for search hits: loads text/meta/label only for
+   * chunk ids whose `(source_id, generation)` exactly matches a captured
+   * scope pair under the owning account. A hit from a superseded generation
+   * never resolves text here.
+   */
+  async loadSearchChunks(input: {
+    accountId: string;
+    scopes: readonly Readonly<{ sourceId: string; generation: number }>[];
+    chunkIds: readonly string[];
+  }): Promise<
+    ReadonlyMap<
+      string,
+      Readonly<{
+        sourceId: string;
+        generation: number;
+        seq: number;
+        label: string;
+        content: string;
+        meta: Record<string, unknown>;
+      }>
+    >
+  > {
+    const result = new Map<
+      string,
+      Readonly<{
+        sourceId: string;
+        generation: number;
+        seq: number;
+        label: string;
+        content: string;
+        meta: Record<string, unknown>;
+      }>
+    >();
+    if (!input.scopes.length || !input.chunkIds.length) return result;
+    if (input.scopes.length > 100 || input.chunkIds.length > MAX_LOOKUP_IDS) {
+      throw new IngestionStoreError("INVALID_INPUT", "search chunk lookup exceeds its bounded scope");
+    }
+    const pairClauses = input.scopes.map(() => "(c.source_id=? AND c.generation=?)").join(" OR ");
+    const chunkIds = [...new Set(input.chunkIds)];
+    const rows = await this.ledger.all<SearchJoinRow>(
+      `SELECT c.id AS chunk_id, c.source_id, c.generation, c.seq, c.meta, c.content,
+              COALESCE(NULLIF(s.display_name,''),c.source_name,'Source') AS label
+       FROM chunks c
+       JOIN sources s ON s.id=c.source_id AND s.account_id=c.account_id
+       WHERE c.account_id=? AND (${pairClauses}) AND c.id IN (${placeholders(chunkIds.length)})`,
+      [
+        requiredId(input.accountId, "account id"),
+        ...input.scopes.flatMap((scope) => [
+          requiredId(scope.sourceId, "source id"),
+          positiveGeneration(scope.generation),
+        ]),
+        ...chunkIds,
+      ]
+    );
+    const allowed = new Map(input.scopes.map((scope) => [scope.sourceId, scope.generation]));
+    for (const row of rows) {
+      if (allowed.get(row.source_id) !== decodeSafeInteger(row.generation, "generation") || !row.content) continue;
+      result.set(
+        row.chunk_id,
+        Object.freeze({
+          sourceId: row.source_id,
+          generation: decodeSafeInteger(row.generation, "generation"),
+          seq: decodeSafeInteger(row.seq, "seq"),
+          label: row.label || "Source",
+          content: row.content,
+          meta: Object.freeze(decodeJson<Record<string, unknown>>(row.meta, "chunk meta")),
+        })
+      );
+    }
+    return result;
+  }
+
+  /**
+   * Owned current-chunk read for the passage panel. Returns the source's
+   * ready-generation truth alongside the exact chunk row so the caller can
+   * answer honestly with 404 (no source) versus 410 (chunk pruned or from a
+   * superseded generation) without guessing.
+   */
+  async getChunkPassage(input: { accountId: string; sourceId: string; chunkId: string }): Promise<
+    | Readonly<{ found: false; source: false }>
+    | Readonly<{
+        found: false;
+        source: Readonly<{
+          status: "ready" | "index" | "error";
+          readyGeneration: number | null;
+          label: string;
+        }>;
+      }>
+    | Readonly<{
+        found: true;
+        source: Readonly<{
+          status: "ready" | "index" | "error";
+          readyGeneration: number | null;
+          label: string;
+        }>;
+        chunk: Readonly<{
+          chunkId: string;
+          sourceId: string;
+          generation: number;
+          seq: number;
+          content: string;
+          meta: Record<string, unknown>;
+        }>;
+      }>
+  > {
+    const source = await this.getSource(input.accountId, input.sourceId);
+    if (!source) return Object.freeze({ found: false as const, source: false as const });
+    const sourceView = Object.freeze({
+      status: source.status,
+      readyGeneration: source.readyGeneration,
+      label: source.displayName || source.name || "Source",
+    });
+    const row = await this.ledger.get<SearchJoinRow>(
+      `SELECT id AS chunk_id, source_id, generation, seq, meta, content,
+              COALESCE(NULLIF(display_name,''),source_name,'Source') AS label
+       FROM chunks JOIN sources ON sources.id=chunks.source_id AND sources.account_id=chunks.account_id
+       WHERE chunks.account_id=? AND chunks.source_id=? AND chunks.id=?`,
+      [
+        requiredId(input.accountId, "account id"),
+        requiredId(input.sourceId, "source id"),
+        requiredId(input.chunkId, "chunk id"),
+      ]
+    );
+    if (!row) return Object.freeze({ found: false as const, source: sourceView });
+    return Object.freeze({
+      found: true as const,
+      source: sourceView,
+      chunk: Object.freeze({
+        chunkId: row.chunk_id,
+        sourceId: row.source_id,
+        generation: decodeSafeInteger(row.generation, "generation"),
+        seq: decodeSafeInteger(row.seq, "seq"),
+        content: row.content,
+        meta: Object.freeze(decodeJson<Record<string, unknown>>(row.meta, "chunk meta")),
+      }),
+    });
+  }
+
+  /**
+   * The immediately neighboring chunks (seq-1/seq+1) of one generation —
+   * never across generations. Bounded to two rows by construction.
+   */
+  async getChunkNeighbors(input: { accountId: string; sourceId: string; generation: number; seq: number }): Promise<
+    Readonly<{
+      before: Readonly<{ chunkId: string; seq: number; content: string; meta: Record<string, unknown> }> | null;
+      after: Readonly<{ chunkId: string; seq: number; content: string; meta: Record<string, unknown> }> | null;
+    }>
+  > {
+    const generation = positiveGeneration(input.generation);
+    const seq = nonNegativeInteger(input.seq, "seq");
+    const rows = await this.ledger.all<NeighborRow>(
+      `SELECT id AS chunk_id, seq, content, meta
+       FROM chunks
+       WHERE account_id=? AND source_id=? AND generation=? AND seq IN (?,?)
+       ORDER BY seq`,
+      [
+        requiredId(input.accountId, "account id"),
+        requiredId(input.sourceId, "source id"),
+        generation,
+        seq > 0 ? seq - 1 : -1,
+        seq + 1,
+      ]
+    );
+    let before: NeighborRow | undefined;
+    let after: NeighborRow | undefined;
+    for (const row of rows) {
+      const rowSeq = decodeSafeInteger(row.seq, "seq");
+      if (rowSeq === seq - 1) before = row;
+      if (rowSeq === seq + 1) after = row;
+    }
+    const shape = (row: NeighborRow | undefined) =>
+      row
+        ? Object.freeze({
+            chunkId: row.chunk_id,
+            seq: decodeSafeInteger(row.seq, "seq"),
+            content: row.content,
+            meta: Object.freeze(decodeJson<Record<string, unknown>>(row.meta, "chunk meta")),
+          })
+        : null;
+    return Object.freeze({ before: shape(before), after: shape(after) });
   }
 
   async readyGenerationScopes(

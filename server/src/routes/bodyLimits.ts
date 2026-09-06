@@ -50,6 +50,9 @@ export const COMPACT_JSON_BODY_LIMIT_BYTES = 8 * 1024;
 // below this ceiling even when every character is carried as a JSON Unicode
 // escape. This covers both source-scope replacement and chat creation.
 export const IDENTIFIER_LIST_JSON_BODY_LIMIT_BYTES = 32 * 1024;
+// Library search: a 1,000-codepoint query (worst case JSON-escaped) plus up
+// to 100 filter UUIDs and two short enum fields, with syntax headroom.
+export const SOURCE_SEARCH_JSON_BODY_LIMIT_BYTES = 48 * 1024;
 export const LONG_TEXT_JSON_BODY_LIMIT_BYTES = 128 * 1024;
 export const CONTAINED_DOWNLOAD_BODY_LIMIT_BYTES = 32 * 1024;
 export const CONTAINED_CONFIG_BODY_LIMIT_BYTES = 256 * 1024;

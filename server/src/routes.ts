@@ -23,6 +23,7 @@ import { preferencesRoutes } from "./routes/preferences.js";
 import { reportRoutes } from "./routes/reports.js";
 import { settingsRoutes } from "./routes/settings.js";
 import { sourceRoutes } from "./routes/sources.js";
+import { sourceSearchRoutes } from "./routes/sourceSearch.js";
 import { systemRoutes } from "./routes/system.js";
 
 export { publicAgentFailureMessage } from "./routes/chats.js";
@@ -85,6 +86,7 @@ export async function routes(app: FastifyInstance, options: RoutesOptions = {}):
   await app.register(chatRoutes);
   await app.register(analysisRoutes);
   await app.register(sourceRoutes);
+  await app.register(sourceSearchRoutes);
   await app.register(libraryRoutes);
   await app.register(agentRoutes);
   await app.register(agentSkillRoutes);
