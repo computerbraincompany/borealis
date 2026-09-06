@@ -11,10 +11,16 @@ const apiMocks = vi.hoisted(() => ({
   revision: vi.fn(),
   diff: vi.fn(),
   publications: vi.fn(),
+  rewrites: vi.fn(),
+  createRewrite: vi.fn(),
+  acceptRewrite: vi.fn(),
+  deleteRewrite: vi.fn(),
   templatesList: vi.fn(),
   templatesCreate: vi.fn(),
   formatApiError: (_error: unknown, fallback: string) => fallback,
   parseConflict: vi.fn((_error: unknown): DocumentConflictHead | null => null),
+  parseStale: vi.fn((_error: unknown): DocumentConflictHead | null => null),
+  isRewriteError: vi.fn((_error: unknown, _code: string) => false),
 }));
 
 vi.mock("@/lib/api", () => ({
@@ -28,10 +34,18 @@ vi.mock("@/lib/api", () => ({
     revision: apiMocks.revision,
     diff: apiMocks.diff,
     publications: apiMocks.publications,
+    rewrites: apiMocks.rewrites,
+    createRewrite: apiMocks.createRewrite,
+    acceptRewrite: apiMocks.acceptRewrite,
+    deleteRewrite: apiMocks.deleteRewrite,
   },
   documentTemplatesApi: { list: apiMocks.templatesList, create: apiMocks.templatesCreate },
   formatApiError: apiMocks.formatApiError,
   parseDocumentRevisionConflict: apiMocks.parseConflict,
+  parseDocumentRewriteStale: apiMocks.parseStale,
+  isDocumentRewriteErrorCode: apiMocks.isRewriteError,
+  DOCUMENT_REWRITE_ACTIVE_CODE: "DOCUMENT_REWRITE_ACTIVE",
+  DOCUMENT_REWRITE_QUOTA_CODE: "DOCUMENT_REWRITE_QUOTA_REACHED",
 }));
 
 vi.mock("@/components/ui/dialog", () => ({
@@ -156,7 +170,15 @@ beforeEach(() => {
     apiMocks.templatesList,
     apiMocks.templatesCreate,
     apiMocks.parseConflict,
+    apiMocks.rewrites,
+    apiMocks.createRewrite,
+    apiMocks.acceptRewrite,
+    apiMocks.deleteRewrite,
+    apiMocks.parseStale,
+    apiMocks.isRewriteError,
   ].forEach((mock) => mock.mockReset());
+  apiMocks.rewrites.mockResolvedValue({ items: [], next_cursor: null });
+  apiMocks.isRewriteError.mockReturnValue(false);
   apiMocks.get.mockResolvedValue(SUMMARY);
   apiMocks.revision.mockResolvedValue(HEAD_REVISION);
   apiMocks.revisions.mockResolvedValue(HISTORY);
@@ -380,4 +402,186 @@ describe("DocumentWorkbench catalog", () => {
     await waitFor(() => expect(screen.queryByText("Beta")).not.toBeInTheDocument());
     expect(screen.getByText("Alpha")).toBeInTheDocument();
   });
+});
+
+// ---------------------------------------------------------------------------
+// Stage 3: rewrite panel
+// ---------------------------------------------------------------------------
+
+import { sha256Hex } from "@/lib/sha256";
+
+const SECTION_ONE_TEXT = "Stable spend [1] and note [9].";
+
+function rewriteFixture(overrides: Record<string, unknown>): Record<string, unknown> {
+  return {
+    id: "rw-1",
+    document_id: "doc-1",
+    base_revision_id: "rev-1",
+    section_id: "sec-1",
+    range_start: null,
+    range_end: null,
+    selection_sha256: sha256Hex(SECTION_ONE_TEXT),
+    selection_chars: SECTION_ONE_TEXT.length,
+    instruction: "Make it formal.",
+    status: "completed",
+    replacement: "Spend remained stable [1].",
+    evidence_refs: ["ev-1", "ev-2"],
+    model: "test-model",
+    error_code: null,
+    error_reason: null,
+    cancel_requested: false,
+    applied_revision_id: null,
+    created_at: "2026-01-01T00:00:00.000Z",
+    started_at: "2026-01-01T00:00:01.000Z",
+    finished_at: "2026-01-01T00:00:05.000Z",
+    updated_at: "2026-01-01T00:00:05.000Z",
+    ...overrides,
+  };
+}
+
+describe("DocumentWorkbench rewrites", () => {
+  it("requests a whole-section rewrite with the exact selection hash and applies the proposal", async () => {
+    const warn = vi.spyOn(console, "error").mockImplementation((...args) => failOnReactActWarning(args));
+    let serverRewrite: Record<string, unknown> | null = null;
+    apiMocks.rewrites.mockImplementation(() =>
+      Promise.resolve({
+        items: serverRewrite ? [serverRewrite] : [],
+        next_cursor: null,
+      }),
+    );
+    apiMocks.createRewrite.mockImplementation((_id: string, body: Record<string, unknown>) => {
+      serverRewrite = { ...rewriteFixture({}), ...body, status: "queued", replacement: null };
+      return Promise.resolve(serverRewrite);
+    });
+    apiMocks.acceptRewrite.mockImplementation(() => {
+      serverRewrite = { ...serverRewrite, status: "completed", applied_revision_id: "rev-2" };
+      return Promise.resolve({
+        document: { ...SUMMARY, current_revision: 2, current_revision_id: "rev-2", revision_count: 2 },
+        revision: {
+          ...HEAD_REVISION,
+          id: "rev-2",
+          revision: 2,
+          author_kind: "model" as const,
+          payload: {
+            ...HEAD_REVISION.payload,
+            sections: [
+              { id: "sec-1", heading: "Summary", markdown: "Spend remained stable [1]." },
+              HEAD_REVISION.payload.sections[1],
+            ],
+          },
+        },
+        rewrite: serverRewrite,
+      });
+    });
+    render(<DocumentWorkbench documentId="doc-1" />);
+    await screen.findByDisplayValue(SECTION_ONE_TEXT);
+
+    await userEvent.type(screen.getByLabelText("Rewrite instruction"), "Make it formal.");
+    fireEvent.click(screen.getByRole("button", { name: /Request rewrite/ }));
+    await waitFor(() =>
+      expect(apiMocks.createRewrite).toHaveBeenCalledWith(
+        "doc-1",
+        {
+          base_revision_id: "rev-1",
+          section_id: "sec-1",
+          selection_sha256: sha256Hex(SECTION_ONE_TEXT),
+          instruction: "Make it formal.",
+        },
+        expect.any(AbortSignal),
+      ),
+    );
+    expect(await screen.findByText("queued", { selector: "*" })).toBeInTheDocument();
+
+    // The scripted runner completes it; the visibility-aware poll picks the
+    // completed proposal up and renders the reviewable diff.
+    serverRewrite = rewriteFixture({});
+    expect(await screen.findByText("Current selection", {}, { timeout: 6000 })).toBeInTheDocument();
+    expect(apiMocks.acceptRewrite).not.toHaveBeenCalled();
+    expect(screen.getByText("+ Spend remained stable [1].", { exact: false })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /Accept/ }));
+    await waitFor(() => expect(apiMocks.acceptRewrite).toHaveBeenCalledWith("doc-1", "rw-1", expect.any(AbortSignal)));
+    expect(await screen.findByDisplayValue("Spend remained stable [1].")).toBeInTheDocument();
+    expect(screen.getByText(/Applied — the document now has a new model-authored revision/)).toBeInTheDocument();
+    warn.mockRestore();
+  }, 20000);
+
+  it("shows refresh guidance when the head moved and renders the durable stale state", async () => {
+    const warn = vi.spyOn(console, "error").mockImplementation((...args) => failOnReactActWarning(args));
+    let stale = false;
+    apiMocks.rewrites.mockImplementation(() =>
+      Promise.resolve({ items: [rewriteFixture({ status: stale ? "stale" : "completed" })], next_cursor: null }),
+    );
+    const staleError = new Error("stale");
+    apiMocks.parseStale.mockImplementation((error: unknown) =>
+      (error as Error).message === "stale"
+        ? { revision_id: "rev-5", revision: 5, title: "Newer", author_kind: "user", updated_at: "" }
+        : null,
+    );
+    apiMocks.acceptRewrite.mockRejectedValue(staleError);
+    render(<DocumentWorkbench documentId="doc-1" />);
+    expect(await screen.findByText("Current selection", {}, { timeout: 6000 })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /Accept/ }));
+    stale = true;
+    // The failed acceptance refreshes the list; the proposal durably shows
+    // its stale state with refresh guidance instead of a raw error.
+    expect(await screen.findByText("stale", { selector: "*" }, { timeout: 6000 })).toBeInTheDocument();
+    expect(screen.getByText(/The document changed after this proposal was made/)).toBeInTheDocument();
+    warn.mockRestore();
+  }, 20000);
+
+  it("rejects a retained proposal by explicit deletion", async () => {
+    apiMocks.rewrites.mockResolvedValue({ items: [rewriteFixture({})], next_cursor: null });
+    apiMocks.deleteRewrite.mockImplementation(() => Promise.resolve({ ok: true, action: "deleted" }));
+    render(<DocumentWorkbench documentId="doc-1" />);
+    expect(await screen.findByText("Current selection", {}, { timeout: 6000 })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Reject" }));
+    await waitFor(() => expect(apiMocks.deleteRewrite).toHaveBeenCalledWith("doc-1", "rw-1", expect.any(AbortSignal)));
+    await waitFor(() => expect(screen.queryByText("Current selection")).not.toBeInTheDocument());
+  }, 20000);
+
+  it("blocks requesting a rewrite while the target section is dirty", async () => {
+    render(<DocumentWorkbench documentId="doc-1" />);
+    const markdown = await screen.findByDisplayValue(SECTION_ONE_TEXT);
+    await userEvent.type(markdown, " edited");
+
+    expect(screen.getByText("Save this section first")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Request rewrite/ })).toBeDisabled();
+  });
+
+  it("uses the live textarea selection for a passage rewrite", async () => {
+    let serverRewrite: Record<string, unknown> | null = null;
+    apiMocks.rewrites.mockImplementation(() =>
+      Promise.resolve({ items: serverRewrite ? [serverRewrite] : [], next_cursor: null }),
+    );
+    apiMocks.createRewrite.mockImplementation((_id: string, body: Record<string, unknown>) => {
+      serverRewrite = { ...rewriteFixture({}), ...body, status: "running" };
+      return Promise.resolve(serverRewrite);
+    });
+    render(<DocumentWorkbench documentId="doc-1" />);
+    const markdown = (await screen.findByDisplayValue(SECTION_ONE_TEXT)) as HTMLTextAreaElement;
+
+    await userEvent.type(screen.getByLabelText("Rewrite instruction"), "Rewrite the opening.");
+    markdown.setSelectionRange(0, 12);
+    fireEvent.select(markdown);
+    expect(await screen.findByText("12 selected characters")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /Request rewrite/ }));
+    await waitFor(() =>
+      expect(apiMocks.createRewrite).toHaveBeenCalledWith(
+        "doc-1",
+        {
+          base_revision_id: "rev-1",
+          section_id: "sec-1",
+          range_start: 0,
+          range_end: 12,
+          selection_sha256: sha256Hex(SECTION_ONE_TEXT.slice(0, 12)),
+          instruction: "Rewrite the opening.",
+        },
+        expect.any(AbortSignal),
+      ),
+    );
+  }, 20000);
 });

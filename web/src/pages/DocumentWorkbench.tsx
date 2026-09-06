@@ -11,21 +11,31 @@ import {
   Loader2,
   Plus,
   Save,
+  Sparkles,
   Trash2,
 } from "lucide-react";
 import {
   documentTemplatesApi,
   documentsApi,
   formatApiError,
+  isDocumentRewriteErrorCode,
   parseDocumentRevisionConflict,
+  parseDocumentRewriteStale,
+  DOCUMENT_REWRITE_ACTIVE_CODE,
+  DOCUMENT_REWRITE_QUOTA_CODE,
   type DocumentConflictHead,
   type DocumentRevisionDiff,
   type DocumentRevisionPayload,
   type DocumentRevisionSummary,
+  type DocumentRewrite,
+  type DocumentRewriteStatus,
+  type DocumentDiffOp,
   type DocumentSummary,
   type DocumentTemplateSummary,
   type DocumentTreeInput,
 } from "@/lib/api";
+import { sha256Hex, splitsSurrogatePair } from "@/lib/sha256";
+import { diffRewriteText } from "@/lib/rewriteDiff";
 import { cn, formatDate } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -483,6 +493,26 @@ function EvidenceInspector({ revision }: { revision: DocumentRevisionPayload | n
   );
 }
 
+function DiffOps({ ops }: { ops: DocumentDiffOp[] }) {
+  return (
+    <div className="overflow-x-auto p-2 font-mono text-xs leading-5">
+      {ops.map((op, index) => (
+        <div
+          key={index}
+          className={cn(
+            "whitespace-pre px-2",
+            op.kind === "insert" && "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400",
+            op.kind === "delete" && "bg-destructive/10 text-destructive",
+            op.kind === "equal" && "text-muted-foreground",
+          )}
+        >
+          {op.kind === "insert" ? "+" : op.kind === "delete" ? "-" : " "} {op.text}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function DiffPanel({ diff }: { diff: DocumentRevisionDiff }) {
   return (
     <div className="mt-4 space-y-4">
@@ -526,24 +556,487 @@ function DiffPanel({ diff }: { diff: DocumentRevisionDiff }) {
             <span>{sectionDiff.heading || "Untitled section"}</span>
             {sectionDiff.truncated && <Badge variant="outline">truncated</Badge>}
           </div>
-          <div className="overflow-x-auto p-2 font-mono text-xs leading-5">
-            {sectionDiff.ops.map((op, index) => (
-              <div
-                key={index}
-                className={cn(
-                  "whitespace-pre px-2",
-                  op.kind === "insert" && "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400",
-                  op.kind === "delete" && "bg-destructive/10 text-destructive",
-                  op.kind === "equal" && "text-muted-foreground",
-                )}
-              >
-                {op.kind === "insert" ? "+" : op.kind === "delete" ? "-" : " "} {op.text}
-              </div>
-            ))}
-          </div>
+          <DiffOps ops={sectionDiff.ops} />
         </Card>
       ))}
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Model-assisted rewrites (M13 stage 3)
+// ---------------------------------------------------------------------------
+
+const REWRITE_POLL_BASE_MS = 1500;
+const REWRITE_POLL_MAX_MS = 12_000;
+
+interface RewriteProposal {
+  rewrite: DocumentRewrite;
+  /** Selection text re-derived from the immutable base revision. */
+  baseText: string;
+  heading: string;
+}
+
+function selectionTextFor(revision: DocumentRevisionPayload, rewrite: DocumentRewrite): string {
+  const section = revision.payload.sections.find((entry) => entry.id === rewrite.section_id);
+  if (!section) return "";
+  if (rewrite.range_start === null || rewrite.range_end === null) return section.markdown;
+  return section.markdown.slice(rewrite.range_start, rewrite.range_end);
+}
+
+function activeRewriteStatus(status: DocumentRewriteStatus): boolean {
+  return status === "queued" || status === "running";
+}
+
+function RewriteProposalCard({
+  proposal,
+  busy,
+  onAccept,
+  onReject,
+  onStale,
+}: {
+  proposal: RewriteProposal;
+  busy: boolean;
+  onAccept: (rewrite: DocumentRewrite) => Promise<void>;
+  onReject: (rewrite: DocumentRewrite) => Promise<void>;
+  onStale: (rewrite: DocumentRewrite) => void;
+}) {
+  const [accepted, setAccepted] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState(false);
+  const rewrite = proposal.rewrite;
+  const diff = useMemo(
+    () => (rewrite.replacement !== null ? diffRewriteText(proposal.baseText, rewrite.replacement) : null),
+    [rewrite.replacement, proposal.baseText],
+  );
+
+  if (rewrite.status === "stale") {
+    // Stale proposals stay inspectable forever and are never applied.
+    return (
+      <Card className="space-y-2 p-4" data-rewrite-id={rewrite.id}>
+        <div className="flex items-center justify-between gap-2">
+          <div className="min-w-0">
+            <p className="truncate text-sm font-medium">{proposal.heading || "Untitled section"}</p>
+            <p className="truncate text-xs text-muted-foreground">{rewrite.instruction}</p>
+          </div>
+          <Badge variant="outline">stale</Badge>
+        </div>
+        <p className="text-xs text-muted-foreground">
+          The document changed after this proposal was made. It remains inspectable but can never be applied; make a new
+          request against the current revision.
+        </p>
+        <Button variant="ghost" size="sm" onClick={() => setExpanded((current) => !current)}>
+          {expanded ? "Hide proposal" : "Inspect proposal"}
+        </Button>
+        {expanded && diff && (
+          <div className="space-y-1">
+            <DiffOps ops={diff.ops} />
+            {diff.truncated && <p className="text-xs text-muted-foreground">Diff truncated to its bound.</p>}
+          </div>
+        )}
+        <Button variant="ghost" size="sm" onClick={() => onStale(rewrite)}>
+          Dismiss
+        </Button>
+      </Card>
+    );
+  }
+
+  if (rewrite.status === "failed" || rewrite.status === "cancelled") {
+    return (
+      <Card className="flex items-center justify-between gap-2 p-4" data-rewrite-id={rewrite.id}>
+        <div className="min-w-0">
+          <p className="truncate text-sm font-medium">{proposal.heading || "Untitled section"}</p>
+          <p className="truncate text-xs text-muted-foreground">
+            {rewrite.status === "failed"
+              ? `The rewrite did not complete (${rewrite.error_code ?? "unspecified"}).`
+              : "The rewrite was cancelled."}
+          </p>
+        </div>
+        <Button
+          variant="ghost"
+          size="sm"
+          disabled={busy}
+          onClick={() => void onReject(rewrite)}
+          aria-label="Dismiss rewrite"
+        >
+          Dismiss
+        </Button>
+      </Card>
+    );
+  }
+
+  if (activeRewriteStatus(rewrite.status)) {
+    return (
+      <Card className="flex items-center justify-between gap-2 p-4" data-rewrite-id={rewrite.id}>
+        <div className="min-w-0">
+          <p className="truncate text-sm font-medium">{proposal.heading || "Untitled section"}</p>
+          <p className="truncate text-xs text-muted-foreground">{rewrite.instruction}</p>
+        </div>
+        <Badge variant="secondary" role="status">
+          <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+          {rewrite.status === "queued" ? "queued" : "rewriting…"}
+        </Badge>
+      </Card>
+    );
+  }
+
+  // Completed proposal: review the bounded diff, then accept or reject.
+  return (
+    <Card className="space-y-2 p-4" data-rewrite-id={rewrite.id}>
+      <div className="flex items-center justify-between gap-2">
+        <div className="min-w-0">
+          <p className="truncate text-sm font-medium">{proposal.heading || "Untitled section"}</p>
+          <p className="truncate text-xs text-muted-foreground">{rewrite.instruction}</p>
+        </div>
+        <Badge variant="secondary">proposal</Badge>
+      </div>
+      {error && (
+        <p role="alert" className="rounded-md bg-destructive/10 px-2 py-1 text-xs text-destructive">
+          {error}
+        </p>
+      )}
+      {accepted ? (
+        <p className="rounded-md border border-emerald-500/40 bg-emerald-500/10 px-2 py-1 text-xs text-emerald-700 dark:text-emerald-400">
+          Applied — the document now has a new model-authored revision.
+        </p>
+      ) : (
+        <>
+          <div className="rounded-md border">
+            <div className="flex items-center justify-between border-b px-3 py-2 text-xs text-muted-foreground">
+              <span>Current selection</span>
+              <span>Proposed replacement</span>
+            </div>
+            {diff && <DiffOps ops={diff.ops} />}
+            {diff?.truncated && <p className="px-3 pb-2 text-xs text-muted-foreground">Diff truncated to its bound.</p>}
+          </div>
+          <div className="flex justify-end gap-2">
+            <Button variant="ghost" size="sm" disabled={busy} onClick={() => void onReject(rewrite)}>
+              Reject
+            </Button>
+            <Button
+              size="sm"
+              disabled={busy}
+              onClick={() => {
+                setError(null);
+                void onAccept(rewrite)
+                  .then(() => setAccepted(true))
+                  .catch((acceptError: unknown) =>
+                    setError(formatApiError(acceptError, "Could not apply the proposal")),
+                  );
+              }}
+            >
+              {busy ? <Loader2 className="animate-spin" /> : null} Accept
+            </Button>
+          </div>
+        </>
+      )}
+    </Card>
+  );
+}
+
+function RewritePanel({
+  documentId,
+  head,
+  dirtySectionIds,
+  sectionTextareas,
+  onApplied,
+}: {
+  documentId: string;
+  head: DocumentRevisionPayload;
+  dirtySectionIds: Set<string>;
+  sectionTextareas: React.MutableRefObject<Record<string, HTMLTextAreaElement | null>>;
+  onApplied: (result: { document: DocumentSummary; revision: DocumentRevisionPayload }) => void;
+}) {
+  const [proposals, setProposals] = useState<DocumentRewrite[]>([]);
+  const [listError, setListError] = useState<string | null>(null);
+  const [requestError, setRequestError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [busyRewriteId, setBusyRewriteId] = useState<string | null>(null);
+  const [sectionId, setSectionId] = useState<string>(head.payload.sections[0]?.id ?? "");
+  const [instruction, setInstruction] = useState("");
+
+  const listRequestRef = useRef(0);
+  const listAbortRef = useRef<AbortController | null>(null);
+  const submitRequestRef = useRef(0);
+  const submitAbortRef = useRef<AbortController | null>(null);
+  const busyRequestRef = useRef(0);
+  const busyAbortRef = useRef<AbortController | null>(null);
+  const mountedRef = useRef(false);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      listRequestRef.current += 1;
+      listAbortRef.current?.abort();
+      submitRequestRef.current += 1;
+      submitAbortRef.current?.abort();
+      busyRequestRef.current += 1;
+      busyAbortRef.current?.abort();
+    };
+  }, []);
+
+  const loadProposals = useCallback(async (): Promise<boolean> => {
+    const requestId = ++listRequestRef.current;
+    listAbortRef.current?.abort();
+    const abort = new AbortController();
+    listAbortRef.current = abort;
+    try {
+      const page = await documentsApi.rewrites(documentId, { signal: abort.signal });
+      if (requestId === listRequestRef.current && !abort.signal.aborted && mountedRef.current) {
+        setProposals(page.items);
+        setListError(null);
+      }
+      return true;
+    } catch (error) {
+      if (requestId === listRequestRef.current && !abort.signal.aborted && mountedRef.current) {
+        setListError(formatApiError(error, "Could not load rewrite proposals"));
+      }
+      return false;
+    }
+  }, [documentId]);
+
+  // Initial + manual refresh; a head change can turn proposals stale.
+  useEffect(() => {
+    void loadProposals();
+  }, [loadProposals, head.id]);
+
+  const hasActive = proposals.some((rewrite) => activeRewriteStatus(rewrite.status));
+
+  // Visibility-aware poll with failure backoff while any operation is active.
+  const failuresRef = useRef(0);
+  useEffect(() => {
+    if (!hasActive) {
+      failuresRef.current = 0;
+      return;
+    }
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let resumed = false;
+    const onVisible = () => {
+      if (cancelled || resumed || document.hidden) return;
+      resumed = true;
+      document.removeEventListener("visibilitychange", onVisible);
+      void poll();
+    };
+    const schedule = () => {
+      const backoff = Math.min(REWRITE_POLL_MAX_MS, REWRITE_POLL_BASE_MS * 2 ** failuresRef.current);
+      timer = setTimeout(() => {
+        if (cancelled) return;
+        if (document.hidden) {
+          // Do not poll hidden tabs; resume on the next visibility change.
+          document.addEventListener("visibilitychange", onVisible);
+          return;
+        }
+        void poll();
+      }, backoff);
+    };
+    const poll = async () => {
+      const requestId = listRequestRef.current;
+      const ok = await loadProposals();
+      if (cancelled) return;
+      if (listRequestRef.current !== requestId) return;
+      failuresRef.current = ok ? 0 : Math.min(failuresRef.current + 1, 3);
+      schedule();
+    };
+    schedule();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [hasActive, loadProposals]);
+
+  const selectedSection = head.payload.sections.find((section) => section.id === sectionId);
+  const textarea = selectedSection ? sectionTextareas.current[selectedSection.id] : null;
+  const selectionStart = textarea?.selectionStart ?? 0;
+  const selectionEnd = textarea?.selectionEnd ?? 0;
+  const useSelection = Boolean(textarea) && selectionEnd > selectionStart;
+  const sectionText = selectedSection?.markdown ?? "";
+  const passage = useSelection ? sectionText.slice(selectionStart, selectionEnd) : sectionText;
+  const dirty = selectedSection ? dirtySectionIds.has(selectedSection.id) : false;
+  const tooLong = passage.length > 8000;
+  const splits =
+    useSelection &&
+    (splitsSurrogatePair(sectionText, selectionStart) || splitsSurrogatePair(sectionText, selectionEnd));
+  const canSubmit =
+    Boolean(selectedSection) &&
+    instruction.trim().length > 0 &&
+    passage.length > 0 &&
+    !dirty &&
+    !tooLong &&
+    !splits &&
+    !submitting &&
+    !hasActive;
+
+  const submit = async () => {
+    if (!selectedSection || !canSubmit) return;
+    const requestId = ++submitRequestRef.current;
+    submitAbortRef.current?.abort();
+    const abort = new AbortController();
+    submitAbortRef.current = abort;
+    setSubmitting(true);
+    setRequestError(null);
+    try {
+      const created = await documentsApi.createRewrite(
+        documentId,
+        {
+          base_revision_id: head.id,
+          section_id: selectedSection.id,
+          ...(useSelection ? { range_start: selectionStart, range_end: selectionEnd } : {}),
+          selection_sha256: sha256Hex(passage),
+          instruction: instruction.trim(),
+        },
+        abort.signal,
+      );
+      if (requestId !== submitRequestRef.current || abort.signal.aborted || !mountedRef.current) return;
+      setInstruction("");
+      setProposals((current) => [created, ...current]);
+    } catch (error) {
+      if (requestId === submitRequestRef.current && !abort.signal.aborted && mountedRef.current) {
+        if (isDocumentRewriteErrorCode(error, DOCUMENT_REWRITE_ACTIVE_CODE)) {
+          setRequestError("This document already has an active rewrite. Cancel it or wait for it to finish.");
+        } else if (isDocumentRewriteErrorCode(error, DOCUMENT_REWRITE_QUOTA_CODE)) {
+          setRequestError("This document reached its 100-proposal limit. Dismiss a retained proposal first.");
+        } else {
+          setRequestError(formatApiError(error, "Could not request the rewrite"));
+        }
+        void loadProposals();
+      }
+    } finally {
+      if (requestId === submitRequestRef.current && !abort.signal.aborted && mountedRef.current) setSubmitting(false);
+    }
+  };
+
+  const acceptRewrite = async (rewrite: DocumentRewrite) => {
+    const requestId = ++busyRequestRef.current;
+    busyAbortRef.current?.abort();
+    const abort = new AbortController();
+    busyAbortRef.current = abort;
+    setBusyRewriteId(rewrite.id);
+    try {
+      const result = await documentsApi.acceptRewrite(documentId, rewrite.id, abort.signal);
+      if (requestId !== busyRequestRef.current || abort.signal.aborted || !mountedRef.current) return;
+      onApplied(result);
+    } catch (error) {
+      if (requestId !== busyRequestRef.current || abort.signal.aborted || !mountedRef.current) return;
+      if (parseDocumentRewriteStale(error)) {
+        // The head moved or the selection changed: refresh so the proposal
+        // shows its durable stale state with fresh guidance.
+        await loadProposals();
+      }
+      throw error;
+    } finally {
+      if (requestId === busyRequestRef.current && !abort.signal.aborted && mountedRef.current) {
+        setBusyRewriteId(null);
+      }
+    }
+  };
+
+  const rejectRewrite = async (rewrite: DocumentRewrite) => {
+    const requestId = ++busyRequestRef.current;
+    busyAbortRef.current?.abort();
+    const abort = new AbortController();
+    busyAbortRef.current = abort;
+    setBusyRewriteId(rewrite.id);
+    try {
+      await documentsApi.deleteRewrite(documentId, rewrite.id, abort.signal);
+      if (requestId !== busyRequestRef.current || abort.signal.aborted || !mountedRef.current) return;
+      setProposals((current) => current.filter((entry) => entry.id !== rewrite.id));
+    } catch (error) {
+      if (requestId === busyRequestRef.current && !abort.signal.aborted && mountedRef.current) {
+        setListError(formatApiError(error, "Could not dismiss the proposal"));
+      }
+    } finally {
+      if (requestId === busyRequestRef.current && !abort.signal.aborted && mountedRef.current) {
+        setBusyRewriteId(null);
+      }
+    }
+  };
+
+  if (head.payload.sections.length === 0) return null;
+
+  const cards: RewriteProposal[] = proposals.map((rewrite) => {
+    const section = head.payload.sections.find((entry) => entry.id === rewrite.section_id);
+    return { rewrite, baseText: selectionTextFor(head, rewrite), heading: section?.heading ?? "Removed section" };
+  });
+
+  return (
+    <section className="mt-10" aria-labelledby="rewrite-panel-heading">
+      <h2 id="rewrite-panel-heading" className="flex items-center gap-2 text-lg font-semibold tracking-tight">
+        <Sparkles className="h-4 w-4" /> Rewrite with the model
+      </h2>
+      <p className="mt-1 text-sm text-muted-foreground">
+        Select a passage in a section (or leave it unselected to rewrite the whole section) and describe the change. The
+        model only sees the selected text and this revision's copied evidence; nothing is applied until you accept the
+        proposal.
+      </p>
+      {(requestError || listError) && (
+        <p role="alert" className="mt-2 rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          {requestError ?? listError}
+        </p>
+      )}
+      <div className="mt-3 space-y-2 rounded-md border p-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <Label htmlFor="rewrite-section">Section</Label>
+          <select
+            id="rewrite-section"
+            className="h-9 rounded-md border border-input bg-transparent px-2 text-sm"
+            value={sectionId}
+            onChange={(event) => setSectionId(event.target.value)}
+          >
+            {head.payload.sections.map((section) => (
+              <option key={section.id} value={section.id}>
+                {section.heading || "Untitled section"}
+              </option>
+            ))}
+          </select>
+          <Badge variant="outline" role="status">
+            {dirty
+              ? "Save this section first"
+              : useSelection
+                ? `${passage.length} selected characters`
+                : `whole section (${passage.length} characters)`}
+          </Badge>
+          {hasActive && <Badge variant="secondary">one rewrite at a time</Badge>}
+        </div>
+        {tooLong && (
+          <p className="text-xs text-destructive">
+            The passage exceeds the 8,000-character bound. Select a smaller range.
+          </p>
+        )}
+        {splits && (
+          <p className="text-xs text-destructive">The selection would split a character pair; adjust its ends.</p>
+        )}
+        <Textarea
+          value={instruction}
+          maxLength={2000}
+          aria-label="Rewrite instruction"
+          placeholder="e.g. Make the finding sentence more concise and keep the citation."
+          className="min-h-16 text-sm"
+          onChange={(event) => setInstruction(event.target.value)}
+        />
+        <div className="flex justify-end">
+          <Button size="sm" disabled={!canSubmit} onClick={() => void submit()}>
+            {submitting ? <Loader2 className="animate-spin" /> : <Sparkles className="h-4 w-4" />} Request rewrite
+          </Button>
+        </div>
+      </div>
+      {cards.length > 0 && (
+        <div className="mt-4 space-y-3">
+          {cards.map((proposal) => (
+            <RewriteProposalCard
+              key={proposal.rewrite.id}
+              proposal={proposal}
+              busy={busyRewriteId === proposal.rewrite.id}
+              onAccept={acceptRewrite}
+              onReject={rejectRewrite}
+              onStale={rejectRewrite}
+            />
+          ))}
+        </div>
+      )}
+    </section>
   );
 }
 
@@ -579,6 +1072,10 @@ function DocumentEditor({ documentId }: { documentId: string }) {
   const templateRequestRef = useRef(0);
   const templateAbortRef = useRef<AbortController | null>(null);
   const mountedRef = useRef(false);
+  const sectionTextareaRefs = useRef<Record<string, HTMLTextAreaElement | null>>({});
+  // Bumping this re-renders so the rewrite panel can mirror the textarea's
+  // live selection start/end without owning the selection itself.
+  const [, setSelectionVersion] = useState(0);
 
   const loadHistory = useCallback(async (documentIdValue: string, signal?: AbortSignal) => {
     const requestId = ++historyRequestRef.current;
@@ -651,6 +1148,17 @@ function DocumentEditor({ documentId }: { documentId: string }) {
       templateAbortRef.current?.abort();
     };
   }, [load]);
+
+  const dirtySectionIds = useMemo(() => {
+    const changed = new Set<string>();
+    if (!draft || !head) return changed;
+    const headById = new Map(head.payload.sections.map((section) => [section.id, section]));
+    for (const section of draft.sections) {
+      const base = headById.get(section.id);
+      if (!base || base.markdown !== section.markdown || base.heading !== section.heading) changed.add(section.id);
+    }
+    return changed;
+  }, [draft, head]);
 
   const updateDraft = (updater: (current: DraftState) => DraftState) => {
     setDraft((current) => (current ? updater(current) : current));
@@ -931,6 +1439,10 @@ function DocumentEditor({ documentId }: { documentId: string }) {
               </div>
               <Textarea
                 value={section.markdown}
+                ref={(element) => {
+                  sectionTextareaRefs.current[section.id] = element;
+                }}
+                onSelect={() => setSelectionVersion((current) => current + 1)}
                 aria-label={`Markdown of section ${index + 1}`}
                 className="min-h-36 font-mono text-xs"
                 placeholder="Markdown content"
@@ -960,6 +1472,20 @@ function DocumentEditor({ documentId }: { documentId: string }) {
         </div>
 
         <EvidenceInspector revision={head} />
+
+        <RewritePanel
+          documentId={document.id}
+          head={head}
+          dirtySectionIds={dirtySectionIds}
+          sectionTextareas={sectionTextareaRefs}
+          onApplied={(result) => {
+            setDocument(result.document);
+            setHead(result.revision);
+            setDraft(draftFromRevision(result.revision));
+            setDirty(false);
+            void loadHistory(document.id);
+          }}
+        />
 
         {/* version history + diff */}
         <section className="mt-10" aria-labelledby="version-history-heading">

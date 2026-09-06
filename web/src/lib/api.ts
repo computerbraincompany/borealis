@@ -1622,7 +1622,57 @@ function conflictData(error: unknown, code: string): Record<string, unknown> | n
 
 /** Extracts the authoritative head metadata from a save-conflict failure. */
 export function parseDocumentRevisionConflict(error: unknown): DocumentConflictHead | null {
-  const data = conflictData(error, DOCUMENT_REVISION_CONFLICT_CODE);
+  return parseConflictHead(conflictData(error, DOCUMENT_REVISION_CONFLICT_CODE));
+}
+
+/** True when a copy request hit the typed payload-less legacy-report state. */
+export function isDocumentUnavailableCopyError(error: unknown): boolean {
+  return conflictData(error, DOCUMENT_UNAVAILABLE_CODE) !== null;
+}
+
+// ------------------------------------------------------------- rewrites
+
+export type DocumentRewriteStatus = "queued" | "running" | "completed" | "failed" | "cancelled" | "stale";
+export const DOCUMENT_REWRITE_ACTIVE_STATUSES: readonly DocumentRewriteStatus[] = ["queued", "running"];
+export const DOCUMENT_REWRITE_STALE_CODE = "DOCUMENT_REWRITE_STALE";
+export const DOCUMENT_REWRITE_ACTIVE_CODE = "DOCUMENT_REWRITE_ACTIVE";
+export const DOCUMENT_REWRITE_QUOTA_CODE = "DOCUMENT_REWRITE_QUOTA_REACHED";
+
+/** One durable rewrite operation/proposal; `replacement` exists once completed. */
+export interface DocumentRewrite {
+  id: string;
+  document_id: string;
+  base_revision_id: string;
+  section_id: string;
+  range_start: number | null;
+  range_end: number | null;
+  selection_sha256: string;
+  selection_chars: number;
+  instruction: string;
+  status: DocumentRewriteStatus;
+  replacement: string | null;
+  evidence_refs: string[];
+  model: string | null;
+  error_code: string | null;
+  error_reason: string | null;
+  cancel_requested: boolean;
+  applied_revision_id: string | null;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  updated_at: string;
+}
+
+export interface DocumentRewriteRequest {
+  base_revision_id: string;
+  section_id: string;
+  range_start?: number;
+  range_end?: number;
+  selection_sha256: string;
+  instruction: string;
+}
+
+function parseConflictHead(data: Record<string, unknown> | null): DocumentConflictHead | null {
   const value = data?.current_head as Record<string, unknown> | undefined;
   if (
     !value ||
@@ -1643,9 +1693,14 @@ export function parseDocumentRevisionConflict(error: unknown): DocumentConflictH
   };
 }
 
-/** True when a copy request hit the typed payload-less legacy-report state. */
-export function isDocumentUnavailableCopyError(error: unknown): boolean {
-  return conflictData(error, DOCUMENT_UNAVAILABLE_CODE) !== null;
+/** Head metadata carried on a stale-acceptance rejection (409). */
+export function parseDocumentRewriteStale(error: unknown): DocumentConflictHead | null {
+  return parseConflictHead(conflictData(error, DOCUMENT_REWRITE_STALE_CODE));
+}
+
+/** True for a stable rewrite 409 code (active/quota/stale/state). */
+export function isDocumentRewriteErrorCode(error: unknown, code: string): boolean {
+  return conflictData(error, code) !== null;
 }
 
 export const documentsApi = {
@@ -1681,6 +1736,24 @@ export const documentsApi = {
   publications: async (id: string, options: CatalogPageOptions = {}) =>
     parseTypedCatalogEnvelope<DocumentPublicationSummary>(
       await api<unknown>(catalogPath(`/api/documents/${id}/publications`, options), { signal: options.signal }),
+    ),
+  rewrites: async (id: string, options: CatalogPageOptions = {}) =>
+    parseTypedCatalogEnvelope<DocumentRewrite>(
+      await api<unknown>(catalogPath(`/api/documents/${id}/rewrites`, options), { signal: options.signal }),
+    ),
+  rewrite: (id: string, rewriteId: string, signal?: AbortSignal) =>
+    api<DocumentRewrite>(`/api/documents/${id}/rewrites/${rewriteId}`, { signal }),
+  createRewrite: (id: string, body: DocumentRewriteRequest, signal?: AbortSignal) =>
+    api<DocumentRewrite>(`/api/documents/${id}/rewrites`, { method: "POST", body: JSON.stringify(body), signal }),
+  deleteRewrite: (id: string, rewriteId: string, signal?: AbortSignal) =>
+    api<{ ok: true; action: "deleted" | "cancelled" | "cancelling"; rewrite?: DocumentRewrite }>(
+      `/api/documents/${id}/rewrites/${rewriteId}`,
+      { method: "DELETE", signal },
+    ),
+  acceptRewrite: (id: string, rewriteId: string, signal?: AbortSignal) =>
+    api<{ document: DocumentSummary; revision: DocumentRevisionPayload; rewrite: DocumentRewrite }>(
+      `/api/documents/${id}/rewrites/${rewriteId}/accept`,
+      { method: "POST", body: "{}", signal },
     ),
 };
 
