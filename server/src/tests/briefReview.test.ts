@@ -118,26 +118,25 @@ async function seedAwaitingReview(name: string, marker = "v1"): Promise<SeededRu
   const runs = storageRuntime().briefRuns;
   const { recipeId } = await makeRecipe(name);
   const { run } = await runs.createManualRun(OWNER, recipeId, randomUUID());
-  let current = run;
-  current = await runs.beginStage(OWNER, run.id, {
+  await runs.beginStage(OWNER, run.id, {
     fromStage: "queued",
     toStage: "refreshing",
     expectedStageOperationId: null,
     stageOperationId: "op-refresh",
   });
-  current = await runs.beginStage(OWNER, run.id, {
+  await runs.beginStage(OWNER, run.id, {
     fromStage: "refreshing",
     toStage: "waiting_ready",
     expectedStageOperationId: "op-refresh",
     stageOperationId: "op-wait",
   });
-  current = await runs.beginStage(OWNER, run.id, {
+  await runs.beginStage(OWNER, run.id, {
     fromStage: "waiting_ready",
     toStage: "analyzing",
     expectedStageOperationId: "op-wait",
     stageOperationId: "op-analyze",
   });
-  current = await runs.beginStage(OWNER, run.id, {
+  await runs.beginStage(OWNER, run.id, {
     fromStage: "analyzing",
     toStage: "drafting",
     expectedStageOperationId: "op-analyze",
@@ -310,7 +309,11 @@ describe("review inbox", () => {
     // for another endpoint directly via an oversized page then bound-check.
     const boundProbe = await app.inject({
       method: "GET",
-      url: "/api/brief-reviews?cursor=" + Buffer.from(JSON.stringify({ v: 1, e: "brief_runs", t: "2026-06-01T00:00:00.000Z", i: randomUUID() })).toString("base64url"),
+      url:
+        "/api/brief-reviews?cursor=" +
+        Buffer.from(JSON.stringify({ v: 1, e: "brief_runs", t: "2026-06-01T00:00:00.000Z", i: randomUUID() })).toString(
+          "base64url"
+        ),
       headers: ownerAuth,
     });
     expect(boundProbe.statusCode).toBe(400);
@@ -374,11 +377,10 @@ describe("review inbox", () => {
       schedule: { kind: "daily", hour: 9, minute: 0, time_zone: "UTC" },
     });
     const { run } = await runs.createManualRun(OWNER, recipe.id, randomUUID());
-    let current = run;
-    current = await runs.beginStage(OWNER, run.id, { fromStage: "queued", toStage: "refreshing", stageOperationId: "s1" });
-    current = await runs.beginStage(OWNER, run.id, { fromStage: "refreshing", toStage: "waiting_ready", stageOperationId: "s2" });
-    current = await runs.beginStage(OWNER, run.id, { fromStage: "waiting_ready", toStage: "analyzing", stageOperationId: "s3" });
-    current = await runs.beginStage(OWNER, run.id, { fromStage: "analyzing", toStage: "drafting", stageOperationId: "s4" });
+    await runs.beginStage(OWNER, run.id, { fromStage: "queued", toStage: "refreshing", stageOperationId: "s1" });
+    await runs.beginStage(OWNER, run.id, { fromStage: "refreshing", toStage: "waiting_ready", stageOperationId: "s2" });
+    await runs.beginStage(OWNER, run.id, { fromStage: "waiting_ready", toStage: "analyzing", stageOperationId: "s3" });
+    await runs.beginStage(OWNER, run.id, { fromStage: "analyzing", toStage: "drafting", stageOperationId: "s4" });
     const created = await createDocumentDraft({ accountId: OWNER, title: "Draft", tree: draftTree() });
     await runs.markAwaitingReview(OWNER, run.id, {
       expectedStageOperationId: "s4",
@@ -436,10 +438,9 @@ describe("review decisions — approval", () => {
     expect(await publicationCount(seeded.documentId)).toBe(1);
     expect(await intentCount(seeded.documentId)).toBe(1);
     const publication = (
-      await storageRuntime().ledger.all<{ id: string }>(
-        "SELECT id FROM document_publications WHERE document_id=?",
-        [seeded.documentId]
-      )
+      await storageRuntime().ledger.all<{ id: string }>("SELECT id FROM document_publications WHERE document_id=?", [
+        seeded.documentId,
+      ])
     )[0]!;
     const stored = await storageRuntime().documents.getDocumentPublication(OWNER, seeded.documentId, publication.id);
     expect(stored?.revisionId).toBe(seeded.revisionId);
@@ -585,8 +586,8 @@ describe("review decisions — approval", () => {
     expect(edited.revision.id).not.toBe(seeded.revisionId);
     // A stale-base write is rejected by the document store's CAS guard: the
     // reviewed revision can never be overwritten by a later author.
-    const staleWrite = await storageRuntime().documents
-      .saveDocumentRevision(OWNER, seeded.documentId, {
+    const staleWrite = await storageRuntime()
+      .documents.saveDocumentRevision(OWNER, seeded.documentId, {
         baseRevisionId: seeded.revisionId,
         tree: draftTree("stale-base"),
         authorKind: "user",
@@ -607,8 +608,8 @@ describe("review decisions — approval", () => {
     );
     expect(publication!.revision_id).toBe(edited.revision.id);
     // Publication rows are ledger-frozen (documentStore trigger guard).
-    const tamper = await storageRuntime().ledger
-      .run("UPDATE document_publications SET version=99 WHERE document_id=?", [seeded.documentId])
+    const tamper = await storageRuntime()
+      .ledger.run("UPDATE document_publications SET version=99 WHERE document_id=?", [seeded.documentId])
       .then(
         () => null,
         (error: unknown) => error
@@ -827,9 +828,9 @@ describe("notifications", () => {
       method: "GET",
       url:
         "/api/notifications?cursor=" +
-        Buffer.from(JSON.stringify({ v: 1, e: "brief_reviews", t: "2026-06-01T00:00:00.000Z", i: randomUUID() })).toString(
-          "base64url"
-        ),
+        Buffer.from(
+          JSON.stringify({ v: 1, e: "brief_reviews", t: "2026-06-01T00:00:00.000Z", i: randomUUID() })
+        ).toString("base64url"),
       headers: ownerAuth,
     });
     expect(bound.statusCode).toBe(400);

@@ -162,7 +162,13 @@ async function seedFixture(value: number, tag: string): Promise<Seeded> {
      VALUES (?,?,?,'tabular',?,?,?,?,?,?)`,
     [sourceId, OWNER, tableName, `${tag}.csv`, file, "ready", "{}", 3, stat.size]
   );
-  await registerDataset({ accountId: OWNER, name: tableName, location: file, kind: "path", originalName: `${tag}.csv` });
+  await registerDataset({
+    accountId: OWNER,
+    name: tableName,
+    location: file,
+    kind: "path",
+    originalName: `${tag}.csv`,
+  });
   const analysis = await storageRuntime().analyses.createAnalysis(OWNER, {
     title: `review integration ${tag}`,
     sql: `SELECT metric_label, value FROM ${tableName}`,
@@ -212,12 +218,7 @@ async function inbox(app: FastifyInstance): Promise<Array<Record<string, unknown
   return (res.json() as { items: Array<Record<string, unknown>> }).items;
 }
 
-async function decision(
-  app: FastifyInstance,
-  runId: string,
-  payload: Record<string, unknown>,
-  auth = ownerAuth
-) {
+async function decision(app: FastifyInstance, runId: string, payload: Record<string, unknown>, auth = ownerAuth) {
   return app.inject({
     method: "POST",
     url: `/api/brief-reviews/${runId}/decision`,
@@ -297,11 +298,7 @@ describe("reviewed-brief review lifecycle (real pipeline + real publication prot
     // Approved-only-after-commit: the publication references the reviewed revision.
     const [publication] = await publicationRows(first.documentId!);
     expect(publication!.revision_id).toBe(first.documentRevisionId);
-    const stored = await storageRuntime().documents.getDocumentPublication(
-      OWNER,
-      first.documentId!,
-      publication!.id
-    );
+    const stored = await storageRuntime().documents.getDocumentPublication(OWNER, first.documentId!, publication!.id);
     expect((await fs.readFile(stored!.pdfPath)).subarray(0, 4).toString()).toBe("%PDF");
     // A completed decision replays with the recorded outcome (200).
     const again = await decision(app, first.id, {
@@ -395,9 +392,7 @@ describe("reviewed-brief review lifecycle (real pipeline + real publication prot
     const seed = await seedFixture(100, "failure");
     const run = await runToReview(seed.recipeId);
     expect(
-      (
-        await decision(app, run.id, { decision: "approve", document_revision_id: run.documentRevisionId })
-      ).statusCode
+      (await decision(app, run.id, { decision: "approve", document_revision_id: run.documentRevisionId })).statusCode
     ).toBe(202);
     await waitFor(async () => {
       const detail = await runDetail(app, seed.recipeId, run.id);
@@ -451,14 +446,8 @@ describe("reviewed-brief review lifecycle (real pipeline + real publication prot
     const foreignInbox = await app.inject({ method: "GET", url: "/api/brief-reviews", headers: foreignAuth });
     expect((foreignInbox.json() as { items: unknown[] }).items).toHaveLength(0);
     expect(
-      (
-        await decision(
-          app,
-          runA.id,
-          { decision: "reject", document_revision_id: runA.documentRevisionId },
-          foreignAuth
-        )
-      ).statusCode
+      (await decision(app, runA.id, { decision: "reject", document_revision_id: runA.documentRevisionId }, foreignAuth))
+        .statusCode
     ).toBe(404);
 
     // Reject run B; approve run A and reject DURING publishing → 409.
@@ -493,9 +482,9 @@ describe("reviewed-brief review lifecycle (real pipeline + real publication prot
       method: "GET",
       url:
         "/api/brief-reviews?cursor=" +
-        Buffer.from(
-          JSON.stringify({ v: 1, e: "brief_runs", t: "2026-06-01T00:00:00.000Z", i: randomUUID() })
-        ).toString("base64url"),
+        Buffer.from(JSON.stringify({ v: 1, e: "brief_runs", t: "2026-06-01T00:00:00.000Z", i: randomUUID() })).toString(
+          "base64url"
+        ),
       headers: ownerAuth,
     });
     expect(boundProbe.statusCode).toBe(400);
