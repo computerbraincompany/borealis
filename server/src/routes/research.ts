@@ -38,6 +38,7 @@ import {
   ResearchActiveRunError,
   ResearchInputsNotReadyError,
   ResearchStoreError,
+  type ResearchRunCounts,
   type ResearchRunSummary,
   type StoredResearchCell,
   type StoredResearchClaim,
@@ -318,9 +319,28 @@ function publicRun(run: StoredResearchRun) {
     }),
     error_reason: run.errorReason,
     sources: run.sources.map((source) => ({ source_id: source.sourceId, generation: source.generation })),
-    budgets: run.budgets,
+    budgets: {
+      steps: run.budgets.steps,
+      searches: run.budgets.searches,
+      model_requests: run.budgets.modelRequests,
+      evidence: run.budgets.evidence,
+      evidence_chars: run.budgets.evidenceChars,
+      wall_ms: run.budgets.wallMs,
+    },
     usage: { searches: run.searchesUsed, model_requests: run.modelRequestsUsed },
     rerun_selection: run.rerunSelection,
+  };
+}
+
+function publicCounts(counts: ResearchRunCounts) {
+  return {
+    evidence_count: counts.evidenceCount,
+    evidence_char_count: counts.evidenceCharCount,
+    claim_count: counts.claimCount,
+    gap_count: counts.gapCount,
+    machine_cell_count: counts.machineCellCount,
+    correction_cell_count: counts.correctionCellCount,
+    table_serialized_bytes: counts.tableSerializedBytes,
   };
 }
 
@@ -634,7 +654,7 @@ export async function researchRoutes(app: FastifyInstance): Promise<void> {
           ...publicRun(inspection.run),
           steps: inspection.steps.map(publicStep),
           claims: inspection.claims.map(publicClaim),
-          counts: inspection.counts,
+          counts: publicCounts(inspection.counts),
           run_notes: inspection.runNotes,
         });
       } catch (error) {

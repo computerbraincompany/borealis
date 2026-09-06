@@ -164,7 +164,12 @@ async function captureEvidence(
   });
 }
 
-async function comparisonRun(store: ResearchStore, ledger: SqliteLedger, account: string, columns: readonly Record<string, unknown>[]) {
+async function comparisonRun(
+  store: ResearchStore,
+  ledger: SqliteLedger,
+  account: string,
+  columns: readonly Record<string, unknown>[]
+) {
   const source = await insertSource(ledger, account, { readyGeneration: 7 });
   const definition = await store.createResearchDefinition(
     account,
@@ -183,10 +188,7 @@ describe("research schema", () => {
         (version) => !PENDING_MERGE_SCHEMA_VERSIONS.includes(version)
       )
     );
-    const fixtureSql = await fs.readFile(
-      fileURLToPath(new URL("./fixtures/sqlite/v025.sql", import.meta.url)),
-      "utf8"
-    );
+    const fixtureSql = await fs.readFile(fileURLToPath(new URL("./fixtures/sqlite/v025.sql", import.meta.url)), "utf8");
     expect(fixtureSql).toBe(SCHEMA_V25);
 
     const historical = await createHistoricalSqliteFixture(16);
@@ -219,17 +221,16 @@ describe("research schema", () => {
       rawValue: 42,
     });
     await expect(
-      ledger.run(
-        "UPDATE research_table_cells SET value='99' WHERE run_id=? AND column_id=? AND origin='machine'",
-        [run.id, columns[0]!.id]
-      )
+      ledger.run("UPDATE research_table_cells SET value='99' WHERE run_id=? AND column_id=? AND origin='machine'", [
+        run.id,
+        columns[0]!.id,
+      ])
     ).rejects.toThrow(/constraint violated/i);
 
     await expect(
-      ledger.run(
-        "UPDATE research_definition_revisions SET question='x' WHERE definition_id=? AND revision=1",
-        [run.definitionId]
-      )
+      ledger.run("UPDATE research_definition_revisions SET question='x' WHERE definition_id=? AND revision=1", [
+        run.definitionId,
+      ])
     ).rejects.toThrow(/constraint violated/i);
 
     await store.finishResearchRun(account, run.id, "needs_review");
@@ -325,9 +326,7 @@ describe("ResearchStore definitions", () => {
     const { definition } = await createReadyDefinition(store, ledger, account);
     const queued = await store.startResearchRun(account, definition.id, { authorization: AUTHORIZATION });
 
-    const active = await store
-      .deleteResearchDefinition(account, definition.id)
-      .catch((cause) => cause);
+    const active = await store.deleteResearchDefinition(account, definition.id).catch((cause) => cause);
     expect(active).toBeInstanceOf(ResearchActiveRunError);
     expect((active as ResearchActiveRunError).existingRunId).toBe(queued.id);
 
@@ -346,9 +345,7 @@ describe("ResearchStore definitions", () => {
     // Cancellation records the durable request as `cancelling`; the durable
     // active state keeps refusing deletion until the executor settles it.
     expect(await store.requestResearchRunCancel(account, run.id)).toBe("cancelling");
-    await expect(store.deleteResearchDefinition(account, definition.id)).rejects.toBeInstanceOf(
-      ResearchActiveRunError
-    );
+    await expect(store.deleteResearchDefinition(account, definition.id)).rejects.toBeInstanceOf(ResearchActiveRunError);
     expect(await store.finishResearchRun(account, run.id, "failed")).toBe("cancelled");
     expect(await store.deleteResearchDefinition(account, definition.id)).toBe(true);
   });
@@ -460,8 +457,22 @@ describe("ResearchStore dossier", () => {
     await store.markResearchRunRunning(account, run.id);
 
     const stableChunk = randomUUID();
-    const first = await captureEvidence(store, account, run.id, source, "Net-30 renewal with a 4% uplift.", stableChunk);
-    const again = await captureEvidence(store, account, run.id, source, "Net-30 renewal with a 4% uplift.", stableChunk);
+    const first = await captureEvidence(
+      store,
+      account,
+      run.id,
+      source,
+      "Net-30 renewal with a 4% uplift.",
+      stableChunk
+    );
+    const again = await captureEvidence(
+      store,
+      account,
+      run.id,
+      source,
+      "Net-30 renewal with a 4% uplift.",
+      stableChunk
+    );
     expect(again.deduped).toBe(true);
     expect(again.id).toBe(first.id);
 
@@ -470,7 +481,9 @@ describe("ResearchStore dossier", () => {
 
     const inspection = await store.inspectResearchRun(account, run.id);
     expect(inspection?.counts.evidenceCount).toBe(2);
-    expect(inspection?.counts.evidenceCharCount).toBe("Net-30 renewal with a 4% uplift.".length + "Payment on receipt of invoice.".length);
+    expect(inspection?.counts.evidenceCharCount).toBe(
+      "Net-30 renewal with a 4% uplift.".length + "Payment on receipt of invoice.".length
+    );
 
     // Source deletion cannot erase the captured quote (frozen provenance).
     await ledger.run("DELETE FROM sources WHERE id=?", [source]);
@@ -502,7 +515,14 @@ describe("ResearchStore dossier", () => {
 
     const chunkOfFirst = randomUUID();
     for (let index = 0; index < RESEARCH_EVIDENCE_MAX; index += 1) {
-      await captureEvidence(store, account, run.id, source, `excerpt ${index}`, index === 0 ? chunkOfFirst : randomUUID());
+      await captureEvidence(
+        store,
+        account,
+        run.id,
+        source,
+        `excerpt ${index}`,
+        index === 0 ? chunkOfFirst : randomUUID()
+      );
     }
     const overflow = await captureEvidence(store, account, run.id, source, "overflow").catch((cause) => cause);
     expect(overflow).toBeInstanceOf(ResearchEvidenceCapError);
@@ -740,7 +760,8 @@ describe("ResearchStore review and rerun", () => {
     const { definition, source } = await createReadyDefinition(store, ledger, account);
     const run = await store.startResearchRun(account, definition.id, { authorization: AUTHORIZATION });
     await store.markResearchRunRunning(account, run.id);
-    const evidenceId = (await captureEvidence(store, account, run.id, source, "The proposal promises 24/7 support.")).id;
+    const evidenceId = (await captureEvidence(store, account, run.id, source, "The proposal promises 24/7 support."))
+      .id;
     const claim = await store.addResearchClaim(account, run.id, {
       kind: "claim",
       text: "Support is 24/7.",
