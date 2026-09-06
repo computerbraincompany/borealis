@@ -166,6 +166,139 @@ describe("SQLite ledger foundation", () => {
     });
   });
 
+  it("ships schema v17 with account-scoped connections and bounded tool snapshots", async () => {
+    const { ledger } = await temporaryLedger();
+    const account = randomUUID();
+    const foreign = randomUUID();
+    await insertUser(ledger, account, "connections@example.test");
+    await insertUser(ledger, foreign, "connections-foreign@example.test");
+
+    expect(await columnNames(ledger, "connections")).toEqual(
+      expect.arrayContaining([
+        "id",
+        "account_id",
+        "name",
+        "kind",
+        "revision",
+        "discovery_revision",
+        "config",
+        "enabled",
+        "status",
+        "status_code",
+        "created_at",
+        "updated_at",
+      ])
+    );
+
+    await ledger.run("INSERT INTO connections (id,account_id,name,kind,config) VALUES (?,?,?,?,?)", [
+      randomUUID(),
+      account,
+      "Local MCP",
+      "mcp_http",
+      '{"url":"https://mcp.example.test/mcp"}',
+    ]);
+    await expect(
+      ledger.run("INSERT INTO connections (id,account_id,name,kind,config) VALUES (?,?,?,?,?)", [
+        randomUUID(),
+        account,
+        "Future kind",
+        "webdav",
+        "{}",
+      ])
+    ).rejects.toMatchObject({ kind: "check" });
+    await expect(
+      ledger.run("INSERT INTO connections (id,account_id,name,kind,config) VALUES (?,?,?,?,?)", [
+        randomUUID(),
+        account,
+        "x".repeat(81),
+        "mcp_stdio",
+        '{"command":"/usr/bin/true"}',
+      ])
+    ).rejects.toMatchObject({ kind: "check" });
+    await expect(
+      ledger.run("INSERT INTO connections (id,account_id,name,kind,config,status) VALUES (?,?,?,?,?,'bogus')", [
+        randomUUID(),
+        account,
+        "Bad status",
+        "mcp_http",
+        "{}",
+      ])
+    ).rejects.toMatchObject({ kind: "check" });
+    await expect(
+      ledger.run("INSERT INTO connections (id,account_id,name,kind,config,status_code) VALUES (?,?,?,?,?,?)", [
+        randomUUID(),
+        account,
+        "Long code",
+        "mcp_http",
+        "{}",
+        "c".repeat(65),
+      ])
+    ).rejects.toMatchObject({ kind: "check" });
+    await expect(
+      ledger.run("INSERT INTO connections (id,account_id,name,kind,config) VALUES (?,?,?,?,?)", [
+        randomUUID(),
+        account,
+        "Bad json",
+        "mcp_http",
+        "{not json",
+      ])
+    ).rejects.toMatchObject({ kind: "check" });
+    // One name per account; another account may reuse it.
+    await expect(
+      ledger.run("INSERT INTO connections (id,account_id,name,kind,config) VALUES (?,?,?,?,?)", [
+        randomUUID(),
+        account,
+        "Local MCP",
+        "mcp_http",
+        "{}",
+      ])
+    ).rejects.toMatchObject({ kind: "unique" });
+    await expect(
+      ledger.run("INSERT INTO connections (id,account_id,name,kind,config) VALUES (?,?,?,?,?)", [
+        randomUUID(),
+        foreign,
+        "Local MCP",
+        "mcp_http",
+        "{}",
+      ])
+    ).resolves.toMatchObject({ changes: 1 });
+
+    const connectionId = randomUUID();
+    await ledger.run("INSERT INTO connections (id,account_id,name,kind,config) VALUES (?,?,?,?,?)", [
+      connectionId,
+      account,
+      "Snapshot host",
+      "mcp_stdio",
+      '{"command":"/usr/bin/true"}',
+    ]);
+    await ledger.run(
+      "INSERT INTO connection_tool_snapshots (connection_id,account_id,discovery_revision,position,tool_id,name,input_schema) VALUES (?,?,?,0,?,?,?)",
+      [connectionId, account, 1, "a".repeat(36), "read_file", '{"type":"object"}']
+    );
+    // The composite tenancy FK refuses a foreign account pairing (distinct
+    // position so the primary-key uniqueness cannot mask the FK failure).
+    await expect(
+      ledger.run(
+        "INSERT INTO connection_tool_snapshots (connection_id,account_id,discovery_revision,position,tool_id,name,input_schema) VALUES (?,?,?,1,?,?,?)",
+        [connectionId, foreign, 1, "b".repeat(36), "sneak", "{}"]
+      )
+    ).rejects.toMatchObject({ kind: "foreign_key" });
+    await expect(
+      ledger.run(
+        "INSERT INTO connection_tool_snapshots (connection_id,account_id,discovery_revision,position,tool_id,name,input_schema) VALUES (?,?,?,200,?,?,?)",
+        [connectionId, account, 1, "c".repeat(36), "over-position", "{}"]
+      )
+    ).rejects.toMatchObject({ kind: "check" });
+
+    await ledger.run("DELETE FROM connections WHERE id=? AND account_id=?", [connectionId, account]);
+    await expect(
+      ledger.get("SELECT 1 FROM connection_tool_snapshots WHERE connection_id=?", [connectionId])
+    ).resolves.toBeUndefined();
+
+    await ledger.run("DELETE FROM users WHERE id=?", [account]);
+    await expect(ledger.get("SELECT 1 FROM connections WHERE account_id=?", [account])).resolves.toBeUndefined();
+  });
+
   it("keeps migrations idempotent and rejects a newer on-disk schema", async () => {
     const resource = await temporaryLedger();
     const accountId = randomUUID();
@@ -282,6 +415,8 @@ describe("SQLite ledger foundation", () => {
               "connector_syncs",
               "agent_skills",
               "agent_skill_revisions",
+              "connections",
+              "connection_tool_snapshots",
             ])
           );
           expect(await columnNames(ledger, "users")).toEqual(
@@ -323,6 +458,7 @@ describe("SQLite ledger foundation", () => {
               "agents_account_catalog_idx",
               "automations_account_catalog_idx",
               "reports_account_catalog_idx",
+              "connections_account_catalog_idx",
             ])
           );
           const recipientIndex = await ledger.get<{ sql: string }>(
@@ -1099,7 +1235,9 @@ describe("SQLite ledger foundation", () => {
           await expect(ledger.get<{ user_version: bigint }>("PRAGMA user_version")).resolves.toEqual({
             user_version: BigInt(LATEST_SQLITE_SCHEMA_VERSION),
           });
-          expect(LATEST_SQLITE_SCHEMA_VERSION).toBe(16);
+          // v16 protocol state is proven to survive upgrade into the exact
+          // current latest schema (v17 connections ride on top of it).
+          expect(LATEST_SQLITE_SCHEMA_VERSION).toBe(17);
 
           const rows = await ledger.all<Record<string, unknown>>(
             `SELECT source_id,phase,generation,refresh_version,candidate_location,

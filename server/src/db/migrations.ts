@@ -1,6 +1,6 @@
 import { SqliteMigrationError } from "./types.js";
 
-export const LATEST_SQLITE_SCHEMA_VERSION = 16;
+export const LATEST_SQLITE_SCHEMA_VERSION = 17;
 
 interface MigrationDatabase {
   exec(sql: string): unknown;
@@ -753,6 +753,57 @@ CREATE INDEX pending_vector_ops_periodic_idx ON pending_vector_ops (attempts, up
 CREATE INDEX dataset_cache_cleanup_jobs_periodic_idx ON dataset_cache_cleanup_jobs (attempts, updated_at, account_id, name, location);
 `;
 
+// Schema v17 introduces Connected agents: account-scoped MCP connection
+// records and their published tool-discovery snapshots. `config` holds only
+// validated non-secret JSON (the strict kind-specific shape is owned by the
+// connection store); credential material lives outside the ledger in the
+// connection secret store and is never serialized into these rows. `kind` is
+// constrained to the two transports this wave implements; the webdav adapter
+// reserved for M14 arrives with its own migration widening this CHECK, so the
+// existing rows stay strict in the meantime. `revision` is the optimistic
+// edit counter (stale expected revisions conflict in the store);
+// `discovery_revision` advances only when a validated tool snapshot is
+// published, and `connection_tool_snapshots` always holds exactly the current
+// published discovery. Per-descriptor and aggregate discovery budgets are
+// enforced by the store before any write; the CHECK bounds below are the
+// last-line durable guard. Deleting a connection cascades its snapshots;
+// account deletion cascades both tables.
+const SCHEMA_V17 = `
+CREATE TABLE connections (
+  id TEXT PRIMARY KEY,
+  account_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name TEXT NOT NULL CHECK (length(name) BETWEEN 1 AND 80),
+  kind TEXT NOT NULL CHECK (kind IN ('mcp_http','mcp_stdio')),
+  revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+  discovery_revision INTEGER NOT NULL DEFAULT 0 CHECK (discovery_revision >= 0),
+  config TEXT NOT NULL CHECK (json_valid(config)),
+  enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0,1)),
+  status TEXT NOT NULL DEFAULT 'untested' CHECK (status IN ('untested','ready','disconnected','error')),
+  status_code TEXT CHECK (status_code IS NULL OR length(status_code) BETWEEN 1 AND 64),
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  UNIQUE (id, account_id),
+  UNIQUE (account_id, name)
+) STRICT;
+
+CREATE INDEX connections_account_catalog_idx ON connections (account_id, created_at DESC, id DESC);
+
+CREATE TABLE connection_tool_snapshots (
+  connection_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  discovery_revision INTEGER NOT NULL CHECK (discovery_revision >= 1),
+  position INTEGER NOT NULL CHECK (position BETWEEN 0 AND 199),
+  tool_id TEXT NOT NULL CHECK (length(tool_id) BETWEEN 1 AND 64),
+  name TEXT NOT NULL CHECK (length(name) BETWEEN 1 AND 128),
+  description TEXT NOT NULL DEFAULT '' CHECK (length(description) <= 8192),
+  input_schema TEXT NOT NULL CHECK (json_valid(input_schema) AND length(input_schema) <= 16384),
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  PRIMARY KEY (connection_id, discovery_revision, position),
+  UNIQUE (connection_id, discovery_revision, name),
+  FOREIGN KEY (connection_id, account_id) REFERENCES connections(id, account_id) ON DELETE CASCADE
+) STRICT;
+`;
+
 const migrations = [
   { version: 1, sql: SCHEMA_V1 },
   { version: 2, sql: SCHEMA_V2 },
@@ -770,6 +821,7 @@ const migrations = [
   { version: 14, sql: SCHEMA_V14 },
   { version: 15, sql: SCHEMA_V15 },
   { version: 16, sql: SCHEMA_V16 },
+  { version: 17, sql: SCHEMA_V17 },
 ] as const;
 
 function schemaVersion(database: MigrationDatabase): number {
