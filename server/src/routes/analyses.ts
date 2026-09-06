@@ -89,7 +89,10 @@ const PARAMETER_DECLARATION_SCHEMA = {
     type: { type: "string", enum: ["string", "number", "integer", "boolean", "date"] },
     required: { type: "boolean" },
     nullable: { type: "boolean" },
-    default: { type: ["string", "number", "boolean", "null"] },
+    // Scalar shape is enforced durably by `analysisTypes.ts`; the transport
+    // schema deliberately stays open so a mistyped default fails with a
+    // stable ANALYSIS_VALIDATION reason instead of a generic schema error.
+    default: true,
     label: { type: "string", minLength: 1, maxLength: ANALYSIS_LABEL_MAX_CHARS },
     description: { type: "string", maxLength: ANALYSIS_DESCRIPTION_MAX_CHARS },
   },
@@ -263,25 +266,30 @@ export async function analysisRoutes(app: FastifyInstance): Promise<void> {
     "/api/analyses",
     { onRequest: requireAuth, schema: { querystring: catalogPageQuerySchema } },
     async (req, reply) => {
-      const page = await storageRuntime().analyses.listAnalyses(
-        getAccountId(req),
-        parseCatalogPageQuery("analyses", req.query)
-      );
-      return reply.send(
-        catalogResponse("analyses", {
-          items: page.items.map((item) => ({
-            id: item.id,
-            title: item.title,
-            description: item.description,
-            current_revision: item.currentRevision,
-            source_count: item.sourceCount,
-            unavailable_source_count: item.unavailableSourceCount,
-            created_at: item.createdAt,
-            updated_at: item.updatedAt,
-          })),
-          next: page.next,
-        })
-      );
+      try {
+        const page = await storageRuntime().analyses.listAnalyses(
+          getAccountId(req),
+          parseCatalogPageQuery("analyses", req.query)
+        );
+        return reply.send(
+          catalogResponse("analyses", {
+            items: page.items.map((item) => ({
+              id: item.id,
+              title: item.title,
+              description: item.description,
+              current_revision: item.currentRevision,
+              source_count: item.sourceCount,
+              unavailable_source_count: item.unavailableSourceCount,
+              created_at: item.createdAt,
+              updated_at: item.updatedAt,
+            })),
+            next: page.next,
+          })
+        );
+      } catch (error) {
+        if (sendAnalysisError(reply, error)) return;
+        throw error;
+      }
     }
   );
 
@@ -507,8 +515,12 @@ export async function analysisRoutes(app: FastifyInstance): Promise<void> {
     },
     async (req, reply) => {
       try {
+        const accountId = getAccountId(req);
+        // Subresource lists must 404 (not empty-list) for an unowned analysis.
+        const owned = await storageRuntime().analyses.getAnalysis(accountId, (req.params as any).id);
+        if (!owned) return reply.code(404).send({ error: "not found", code: "ANALYSIS_NOT_FOUND" });
         const page = await storageRuntime().analyses.listAnalysisRuns(
-          getAccountId(req),
+          accountId,
           (req.params as any).id,
           parseCatalogPageQuery("analysis_runs", req.query)
         );
@@ -547,8 +559,13 @@ export async function analysisRoutes(app: FastifyInstance): Promise<void> {
           operation_id?: string;
           expected_revision?: number;
         };
+        const accountId = getAccountId(req);
+        // Ownership is resolved before the execution service so a foreign id
+        // is 404 rather than a service/execution failure.
+        const owned = await storageRuntime().analyses.getAnalysis(accountId, (req.params as any).id);
+        if (!owned) return reply.code(404).send({ error: "not found", code: "ANALYSIS_NOT_FOUND" });
         const accepted = await runAnalysisService({
-          accountId: getAccountId(req),
+          accountId,
           analysisId: (req.params as any).id,
           values: body.values,
           operationId: body.operation_id ?? null,
@@ -600,8 +617,11 @@ export async function analysisRoutes(app: FastifyInstance): Promise<void> {
     },
     async (req, reply) => {
       try {
+        const accountId = getAccountId(req);
+        const owned = await storageRuntime().analyses.getAnalysis(accountId, (req.params as any).id);
+        if (!owned) return reply.code(404).send({ error: "not found", code: "ANALYSIS_NOT_FOUND" });
         const page = await storageRuntime().analyses.listAnalysisResults(
-          getAccountId(req),
+          accountId,
           (req.params as any).id,
           parseCatalogPageQuery("analysis_results", req.query)
         );
