@@ -326,6 +326,38 @@ describe("source upload boundaries", () => {
     expect(wakeMock).toHaveBeenCalledOnce();
   });
 
+  it("never exposes local file paths in upload, reingest, or list DTOs", async () => {
+    const app = await buildApp();
+    const upload = await app.inject({
+      method: "POST",
+      url: "/api/sources/upload",
+      ...multipart("ledger.csv", Buffer.from("1234567890")),
+    });
+    expect(upload.statusCode).toBe(200);
+    const sourceId = String(upload.json().id);
+    const reingest = await app.inject({ method: "POST", url: `/api/sources/${sourceId}/reingest`, headers: auth });
+    expect(reingest.statusCode).toBe(200);
+    const list = await app.inject({ method: "GET", url: "/api/sources", headers: auth });
+    expect(list.statusCode).toBe(200);
+
+    const assertPathFree = (payload: unknown): void => {
+      if (Array.isArray(payload)) {
+        for (const item of payload) assertPathFree(item);
+        return;
+      }
+      if (payload && typeof payload === "object") {
+        for (const [key, value] of Object.entries(payload)) {
+          expect(key).not.toBe("file_path");
+          assertPathFree(value);
+        }
+      }
+    };
+    for (const response of [upload, reingest, list]) {
+      assertPathFree(response.json());
+      expect(response.body).not.toContain(testState.uploadDir);
+    }
+  });
+
   it("detects multipart truncation and removes the partial upload", async () => {
     const app = await buildApp();
     const response = await app.inject({

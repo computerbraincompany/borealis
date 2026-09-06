@@ -110,6 +110,11 @@ describe("library routes", () => {
       name: "Finance data room",
       members: [expect.objectContaining({ id: sourceId, name: "ledger.csv" })],
     });
+    // Negative DTO proof: member rows never carry a local path key.
+    for (const member of detail.json().members as Array<Record<string, unknown>>) {
+      expect(Object.keys(member)).not.toContain("file_path");
+    }
+    expect(detail.body).not.toContain("file_path");
 
     const renamed = await app.inject({
       method: "PATCH",

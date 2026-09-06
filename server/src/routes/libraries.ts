@@ -45,6 +45,8 @@ const libraryMembersSchema = {
 
 /** The sources DTO is shared verbatim with the Sources surface. */
 function sourceToApi(source: SourceRecord): Record<string, unknown> {
+  // Deliberately no `file_path`: durable local paths never join an API DTO.
+  // The internal SourceRecord.filePath remains required by ingestion/cleanup.
   return {
     id: source.id,
     account_id: source.accountId,
@@ -52,7 +54,6 @@ function sourceToApi(source: SourceRecord): Record<string, unknown> {
     kind: source.kind,
     connector: source.connectorId,
     display_name: source.displayName,
-    file_path: source.filePath,
     url: source.url,
     mime: source.mime,
     size_bytes: source.sizeBytes,

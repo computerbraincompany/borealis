@@ -365,9 +365,10 @@ Libraries reference sources; they never copy or move them. There is no server
 side chat–library binding: attaching a library expands its ready members into
 a chat's explicit `selected` scope through the normal chat-creation contract,
 so the three-meaning source-scope semantics are unchanged. Member rows include
-the source's `account_id`, connector, stored `file_path`, URL, metadata, and
-ready generation, as upload/reingest responses do; local paths are not API
-URLs. Replacing membership returns `{"ok":true}` and rejects an unknown or
+the source's `account_id`, connector, URL, metadata, and ready generation, as
+upload/reingest responses do; no source or library DTO ever exposes a local
+`file_path` (the durable path remains internal to ingestion and cleanup).
+Replacing membership returns `{"ok":true}` and rejects an unknown or
 foreign source with `404` without changing the existing membership.
 
 The macOS app creates its single local account and passes a fresh session from
@@ -913,8 +914,9 @@ List entries contain `id`, `name`, `kind` (`document` or `tabular`),
 upload's sanitized filename or the connector's display name. Optional `tabular` contains
 `{table,original_name,rows}`. Source listing remains available if the data worker
 cannot supply summaries. Upload/reingest responses also contain fields
-such as `account_id`, `connector`, `file_path`, `url`, and `ready_generation`;
-clients should use the UUID rather than treating local paths as API URLs.
+such as `account_id`, `connector`, `url`, and `ready_generation`; no API
+response exposes a local `file_path` — clients use the UUID, and durable
+storage paths never leave the server.
 
 Supported upload extensions are `.txt`, `.md`, `.markdown`, `.text`, `.log`,
 `.pdf`, `.docx`, `.csv`, `.tsv`, `.xlsx`, `.parquet`, `.jsonl`, and `.json`.
