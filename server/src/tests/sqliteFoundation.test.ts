@@ -388,13 +388,14 @@ describe("SQLite ledger foundation", () => {
 
   it("ships exactly one immutable historical fixture for every schema version", async () => {
     // PENDING_MERGE_SCHEMA_VERSIONS is the single documented pre-merge gap
-    // (v19 belongs to the parallel M14 branch). When that fixture merges and
-    // the list empties, this assertion is contiguous again.
+    // (v23 belongs to the parallel in-flight M13 document_rewrites branch).
+    // When that fixture merges and the list empties, this assertion is
+    // contiguous again.
     await expect(listHistoricalFixtureVersions()).resolves.toEqual(expectedFixtureVersions());
   });
 
   // A pending-merge slot also blocks fixture-built starts above it: replaying
-  // deltas 1..start would need the missing v019.sql. Those installations are
+  // deltas 1..start would need the missing v023.sql. Those installations are
   // still covered by upgrading to the latest schema from every start version
   // below the gap, which steps over it through the real migration array.
   const firstPendingMergeSlot = PENDING_MERGE_SCHEMA_VERSIONS.length
@@ -1360,8 +1361,8 @@ describe("SQLite ledger foundation", () => {
           // v16 protocol state is proven to survive upgrade into the exact
           // current latest schema (v17 connections, v18 analyses, v19 knowledge, the
           // v20 document tables, the v21 frozen MCP run-snapshot column, the v22
-          // template catalog, and the v23 document-rewrite ledger ride on top).
-          expect(LATEST_SQLITE_SCHEMA_VERSION).toBe(23);
+          // template catalog, and the v23 document-rewrite ledger and the v24 chunk keyword-search index ride on top).
+          expect(LATEST_SQLITE_SCHEMA_VERSION).toBe(24);
 
           const rows = await ledger.all<Record<string, unknown>>(
             `SELECT source_id,phase,generation,refresh_version,candidate_location,

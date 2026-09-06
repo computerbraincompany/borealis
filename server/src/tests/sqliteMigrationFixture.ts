@@ -25,13 +25,13 @@ export const HISTORICAL_FIXTURE_SEED = {
 } as const;
 
 /**
-/**
- * Pre-merge fixture-inventory exception. Schema v19 belongs to the parallel
- * M14 branch; until its `v019.sql` fixture merges, exactly that one slot is
- * legitimately absent. This list is the single documented gap: the
- * coordinator empties it when v19 lands, and the inventory assertion becomes
- * contiguous with no other test edits. Nothing here fakes a v19 schema:
- * unknown files and every other missing version still fail closed.
+ * Pre-merge fixture-inventory exception. Schema v23 belongs to the parallel
+ * in-flight M13 document_rewrites branch; until its `v023.sql` fixture merges,
+ * exactly that one slot is legitimately absent (this branch's own allocation
+ * is v24). This list is the single documented gap: the coordinator empties it
+ * when v23 lands, and the inventory assertion becomes contiguous with no other
+ * test edits. Nothing here fakes a v23 schema: unknown files and every other
+ * missing version still fail closed.
  */
 export const PENDING_MERGE_SCHEMA_VERSIONS: readonly number[] = Object.freeze([]);
 

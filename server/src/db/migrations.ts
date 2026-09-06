@@ -1,6 +1,6 @@
 import { SqliteMigrationError } from "./types.js";
 
-export const LATEST_SQLITE_SCHEMA_VERSION = 23;
+export const LATEST_SQLITE_SCHEMA_VERSION = 24;
 
 interface MigrationDatabase {
   exec(sql: string): unknown;
@@ -1448,6 +1448,69 @@ CREATE INDEX document_rewrites_claim_idx
   ON document_rewrites (created_at, id) WHERE status = 'queued';
 `;
 
+// Schema v24 — chunk keyword-search shadow index for inspectable source
+// search (M14 stage 3). The schema v23 slot is the parallel in-flight M13
+// document_rewrites branch (pending merge, never applied after this entry);
+// the coordinator allocated v24 to this slice, and at merge the array reads
+// 22, 23, 24. This migration is append-only and never depends on v23.
+//
+// `chunks_fts` is the SQLite-side keyword index over ready-generation chunk
+// text. It contains text and opaque identity columns only — never vectors,
+// paths, or credentials. The v1 `chunks` primary key is TEXT, so SQLite's
+// external-content FTS5 cannot key rows through `content='chunks'` (its
+// content_rowid must be an integer alias that this table does not have and
+// that a STRICT TEXT-keyed table cannot gain without a full v1 rebuild). The
+// shadow structure is therefore a regular-content FTS5 table whose UNINDEXED
+// scope columns let the account and exact `(source_id, generation)` predicates
+// ride inside the FTS5 search itself, mirrored row-for-row from `chunks` by
+// the three triggers below.
+//
+// Two-store protocol: the triggers are part of `chunks` statement processing,
+// so every FTS addition/deletion commits or rolls back inside the exact same
+// SQLite transaction as the chunk mutation it mirrors. Promotion replaces the
+// source's chunks with one transaction, so its FTS rows flip atomically with
+// the authoritative `ready_generation` update; source deletion (explicit or
+// FK-cascade) removes chunk rows and the delete trigger removes the FTS rows
+// in the same transaction; a failed promotion rolls both back together.
+// Staged chunks live only in `ingestion_chunk_staging`, which has no triggers:
+// staged vectors are never keyword-visible before SQLite promotion commits.
+// Search callers additionally pin the exact captured `(source_id, generation)`
+// pairs, so a refresh promoting mid-search can only make captured text vanish
+// (honest `source_changed`), never leak newer text.
+//
+// The backfill copies every already-promoted chunk into the index at upgrade
+// time, so a workspace that upgrades from v22 or earlier does not silently
+// lose keyword hits for content it indexed before the index existed. Legacy
+// chunks simply carry no locator in their existing meta JSON — an honest
+// location-unavailable state — and are never reingested by this migration.
+export const SCHEMA_V24 = `
+CREATE VIRTUAL TABLE chunks_fts USING fts5(
+  content,
+  chunk_id UNINDEXED,
+  account_id UNINDEXED,
+  source_id UNINDEXED,
+  generation UNINDEXED
+);
+
+CREATE TRIGGER chunks_fts_ai AFTER INSERT ON chunks BEGIN
+  INSERT INTO chunks_fts (rowid, content, chunk_id, account_id, source_id, generation)
+  VALUES (new.rowid, new.content, new.id, new.account_id, new.source_id, CAST(new.generation AS TEXT));
+END;
+
+CREATE TRIGGER chunks_fts_ad AFTER DELETE ON chunks BEGIN
+  DELETE FROM chunks_fts WHERE rowid = old.rowid;
+END;
+
+CREATE TRIGGER chunks_fts_au AFTER UPDATE ON chunks BEGIN
+  DELETE FROM chunks_fts WHERE rowid = old.rowid;
+  INSERT INTO chunks_fts (rowid, content, chunk_id, account_id, source_id, generation)
+  VALUES (new.rowid, new.content, new.id, new.account_id, new.source_id, CAST(new.generation AS TEXT));
+END;
+
+INSERT INTO chunks_fts (rowid, content, chunk_id, account_id, source_id, generation)
+  SELECT rowid, content, id, account_id, source_id, CAST(generation AS TEXT) FROM chunks ORDER BY rowid;
+`;
+
 const migrations = [
   { version: 1, sql: SCHEMA_V1 },
   { version: 2, sql: SCHEMA_V2 },
@@ -1472,6 +1535,7 @@ const migrations = [
   { version: 21, sql: SCHEMA_V21 },
   { version: 22, sql: SCHEMA_V22 },
   { version: 23, sql: SCHEMA_V23 },
+  { version: 24, sql: SCHEMA_V24 },
 ] as const;
 
 function schemaVersion(database: MigrationDatabase): number {
