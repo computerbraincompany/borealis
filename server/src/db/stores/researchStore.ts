@@ -855,6 +855,45 @@ export class ResearchStore {
     });
   }
 
+  /**
+   * Read-only pinned-revision content for the stage-2 executor. The runner
+   * must execute exactly the revision the run captured — a later head move
+   * can never change a running or historical run's plan or columns.
+   */
+  async getResearchRevisionContent(
+    accountIdValue: string,
+    definitionIdValue: string,
+    revisionValue: number
+  ): Promise<StoredResearchRevision | undefined> {
+    const accountId = storeUuid(accountIdValue, "account id");
+    const definitionId = storeUuid(definitionIdValue, "definition id");
+    const revision = decodeSafeInteger(revisionValue, "definition revision");
+    if (revision < 1) throw new RangeError("definition revision must be >= 1");
+    const row = await this.ledger.get<RunRow>(
+      `SELECT revision,title,question,output_kind,source_ids,library_ids,chat_model,columns,plan,created_at
+       FROM research_definition_revisions WHERE definition_id=? AND revision=? AND account_id=?`,
+      [definitionId, revision, accountId]
+    );
+    if (!row) return undefined;
+    return Object.freeze({
+      revision: decodeSafeInteger(row.revision, "definition revision number"),
+      title: storedText(row.title, "definition title"),
+      question: storedText(row.question, "definition question"),
+      outputKind:
+        row.output_kind === "memo" || row.output_kind === "comparison"
+          ? row.output_kind
+          : (() => {
+              throw new TypeError("bad output kind");
+            })(),
+      sourceIds: decodeStringArray(row.source_ids, "definition source ids"),
+      libraryIds: decodeStringArray(row.library_ids, "definition library ids"),
+      chatModel: storedText(row.chat_model, "definition chat model"),
+      columns: decodeColumns(row.columns, "definition columns"),
+      plan: decodePlan(row.plan, "definition plan"),
+      createdAt: decodeIsoTimestamp(row.created_at, "definition revision created_at"),
+    });
+  }
+
   async listResearchDefinitions(
     accountIdValue: string,
     pageValue: CatalogPageRequest = defaultCatalogPageRequest()
@@ -1445,6 +1484,22 @@ export class ResearchStore {
     if (!Number.isSafeInteger(limit) || limit < 1) throw new RangeError("claim limit must be a positive integer");
     const rows = await this.ledger.all<RunRow>(
       `SELECT ${RUN_COLUMNS} FROM research_runs WHERE status='queued' ORDER BY created_at,id LIMIT ?`,
+      [limit]
+    );
+    return rows.map((row) => decodeRun(row));
+  }
+
+  /**
+   * Executor claim set in acceptance order: undispatched `queued` runs plus
+   * dispatched `running` runs left behind by an interrupted process (after
+   * `recoverInterruptedResearchRuns` reverted their steps to `pending`).
+   * Cancel-requested rows are excluded — recovery settles those.
+   */
+  async listResumableResearchRuns(limit = 100): Promise<readonly StoredResearchRun[]> {
+    if (!Number.isSafeInteger(limit) || limit < 1) throw new RangeError("claim limit must be a positive integer");
+    const rows = await this.ledger.all<RunRow>(
+      `SELECT ${RUN_COLUMNS} FROM research_runs
+       WHERE status IN ('queued','running') AND cancel_requested=0 ORDER BY created_at,id LIMIT ?`,
       [limit]
     );
     return rows.map((row) => decodeRun(row));
