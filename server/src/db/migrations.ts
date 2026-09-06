@@ -1,6 +1,6 @@
 import { SqliteMigrationError } from "./types.js";
 
-export const LATEST_SQLITE_SCHEMA_VERSION = 20;
+export const LATEST_SQLITE_SCHEMA_VERSION = 21;
 
 interface MigrationDatabase {
   exec(sql: string): unknown;
@@ -1334,6 +1334,25 @@ CREATE INDEX knowledge_refresh_items_connection_idx
   ON knowledge_refresh_items (account_id, connection_id, refresh_id, item_id);
 `;
 
+// Schema v21 — Connected agents stage 4. `chat_runs.agent_mcp_tools` stores the
+// frozen per-run MCP tool mapping captured atomically with turn acceptance
+// (JSON array of {alias, connection_id, tool_id, discovery_revision, name,
+// description, input_schema, authorization_reference}). Credential material
+// never enters this column: the authorization entry is the non-secret
+// custody reference (`absent` / `oauth:<digest>` / `secret:<digest>`), checked
+// against live custody before every dispatch. The aggregate CHECK is the
+// durable last-line budget; the store enforces the stricter
+// MAX_RUN_MCP_SNAPSHOT_CHARS before any write. The column is append-only and
+// rides the existing chat_runs cascades — deleting a chat or account removes
+// the snapshot with the run, and no MCP state survives anywhere else in the
+// ledger. The schema v19 slot is the parallel M14 branch (pending merge,
+// never applied after this entry); this migration is append-only and never
+// depends on it.
+export const SCHEMA_V21 = `
+ALTER TABLE chat_runs ADD COLUMN agent_mcp_tools TEXT
+  CHECK (agent_mcp_tools IS NULL OR (json_valid(agent_mcp_tools) AND length(agent_mcp_tools) <= 524288));
+`;
+
 const migrations = [
   { version: 1, sql: SCHEMA_V1 },
   { version: 2, sql: SCHEMA_V2 },
@@ -1355,6 +1374,7 @@ const migrations = [
   { version: 18, sql: SCHEMA_V18 },
   { version: 19, sql: SCHEMA_V19 },
   { version: 20, sql: SCHEMA_V20 },
+  { version: 21, sql: SCHEMA_V21 },
 ] as const;
 
 function schemaVersion(database: MigrationDatabase): number {

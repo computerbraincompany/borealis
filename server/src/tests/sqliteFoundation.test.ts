@@ -304,6 +304,64 @@ describe("SQLite ledger foundation", () => {
     await expect(ledger.get("SELECT 1 FROM connections WHERE account_id=?", [account])).resolves.toBeUndefined();
   });
 
+  it("ships schema v21 with the append-only frozen MCP run snapshot column", async () => {
+    const { ledger } = await temporaryLedger();
+    const account = randomUUID();
+    await insertUser(ledger, account, "mcp-run@example.test");
+
+    expect(await columnNames(ledger, "chat_runs")).toContain("agent_mcp_tools");
+
+    const chatId = randomUUID();
+    const runId = randomUUID();
+    await ledger.run("INSERT INTO chats (id,account_id,title,model,source_mode) VALUES (?,?,?,?,'selected')", [
+      chatId,
+      account,
+      "MCP run",
+      "m",
+    ]);
+    const message = await ledger.run("INSERT INTO messages (chat_id,role,content) VALUES (?,'user','q')", [chatId]);
+    await ledger.run("INSERT INTO chat_runs (id,account_id,chat_id,user_message_id) VALUES (?,?,?,?)", [
+      runId,
+      account,
+      chatId,
+      message.lastInsertRowid,
+    ]);
+    // The column is nullable: turns without MCP tools store SQL NULL, never
+    // empty JSON that a reader might mistake for a frozen mapping.
+    await expect(ledger.get("SELECT agent_mcp_tools FROM chat_runs WHERE id=?", [runId])).resolves.toEqual({
+      agent_mcp_tools: null,
+    });
+
+    const snapshot = JSON.stringify([
+      {
+        alias: "mcp_abcdef0123456789abcdef0123456789",
+        connection_id: randomUUID(),
+        tool_id: randomUUID(),
+        discovery_revision: 3,
+        name: "echo_query",
+        description: "echo_query (connected tool via \"Local\") Echo the provided text back.",
+        input_schema: { type: "object", properties: { text: { type: "string" } }, required: ["text"] },
+        authorization_reference: "secret:0123456789abcdef0123456789abcdef",
+      },
+    ]);
+    await ledger.run("UPDATE chat_runs SET agent_mcp_tools=? WHERE id=?", [snapshot, runId]);
+    await expect(ledger.get<{ agent_mcp_tools: string }>("SELECT agent_mcp_tools FROM chat_runs WHERE id=?", [runId]))
+      .resolves.toEqual({ agent_mcp_tools: snapshot });
+
+    // The last-line durable guards: invalid JSON and the aggregate ceiling
+    // fail closed on any write path, including direct SQL.
+    await expect(ledger.run("UPDATE chat_runs SET agent_mcp_tools=? WHERE id=?", ["{not json", runId])).rejects
+      .toMatchObject({ kind: "check" });
+    await expect(
+      ledger.run("UPDATE chat_runs SET agent_mcp_tools=? WHERE id=?", [`"${"x".repeat(524_289)}"`, runId])
+    ).rejects.toMatchObject({ kind: "check" });
+
+    // Account deletion cascades the run (and with it the snapshot) — no MCP
+    // state survives in the ledger afterward.
+    await ledger.run("DELETE FROM users WHERE id=?", [account]);
+    await expect(ledger.get("SELECT 1 FROM chat_runs WHERE id=?", [runId])).resolves.toBeUndefined();
+  });
+
   it("keeps migrations idempotent and rejects a newer on-disk schema", async () => {
     const resource = await temporaryLedger();
     const accountId = randomUUID();
@@ -1284,9 +1342,9 @@ describe("SQLite ledger foundation", () => {
             user_version: BigInt(LATEST_SQLITE_SCHEMA_VERSION),
           });
           // v16 protocol state is proven to survive upgrade into the exact
-          // current latest schema (v17 connections, v18 analyses, v19 knowledge, and the
-          // v20 document tables ride on top).
-          expect(LATEST_SQLITE_SCHEMA_VERSION).toBe(20);
+          // current latest schema (v17 connections, v18 analyses, v19 knowledge, the
+          // v20 document tables, and the v21 frozen MCP run-snapshot column ride on top).
+          expect(LATEST_SQLITE_SCHEMA_VERSION).toBe(21);
 
           const rows = await ledger.all<Record<string, unknown>>(
             `SELECT source_id,phase,generation,refresh_version,candidate_location,

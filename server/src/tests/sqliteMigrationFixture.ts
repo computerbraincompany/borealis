@@ -25,6 +25,7 @@ export const HISTORICAL_FIXTURE_SEED = {
 } as const;
 
 /**
+/**
  * Pre-merge fixture-inventory exception. Schema v19 belongs to the parallel
  * M14 branch; until its `v019.sql` fixture merges, exactly that one slot is
  * legitimately absent. This list is the single documented gap: the
