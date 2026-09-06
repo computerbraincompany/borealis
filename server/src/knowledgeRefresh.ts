@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import {
   KnowledgeConnectionConfigError,
+  KnowledgePreviewExpiredError,
   KnowledgePreviewNotFoundError,
   KnowledgePreviewSelectionError,
   KnowledgePreviewStaleError,
@@ -490,6 +491,12 @@ export class KnowledgeRefreshService {
     const signal = options.signal ?? neverSignal;
     const preview = await this.store.getPreview(accountId, previewId);
     if (!preview) throw new KnowledgePreviewNotFoundError();
+    // Report an expired scan before any transport staging so a caller never
+    // pays for downloads on a manifest that can no longer commit.
+    if (preview.status === "expired") throw new KnowledgePreviewExpiredError();
+    if (preview.status !== "complete") {
+      throw new KnowledgePreviewStaleError("only a complete preview can be applied");
+    }
     const connection = await this.store.requireConnection(accountId, preview.connection_id);
     const adapter = this.adapterFor(connection.kind);
     const context = await this.transportContext(accountId, connection);

@@ -432,12 +432,10 @@ export async function knowledgeRoutes(app: FastifyInstance, options: KnowledgeRo
           // The ONLY path that may install a local root: a consumed grant.
           // No HTTP body may name an absolute path.
           if (typeof body.grant_id !== "string" || body.config !== undefined) {
-            return reply
-              .code(400)
-              .send({
-                error: KNOWLEDGE_PUBLIC_MESSAGES.DESKTOP_FOLDER_GRANT_INVALID,
-                code: "DESKTOP_FOLDER_GRANT_INVALID",
-              });
+            return reply.code(400).send({
+              error: KNOWLEDGE_PUBLIC_MESSAGES.DESKTOP_FOLDER_GRANT_INVALID,
+              code: "DESKTOP_FOLDER_GRANT_INVALID",
+            });
           }
           const created = await createDesktopFolderConnection(store(), {
             accountId,
@@ -567,24 +565,20 @@ export async function knowledgeRoutes(app: FastifyInstance, options: KnowledgeRo
         const ledger = store();
         const connection = await ledger.getConnection(accountId, connectionId);
         if (!connection)
-          return reply
-            .code(404)
-            .send({
-              error: KNOWLEDGE_PUBLIC_MESSAGES.KNOWLEDGE_CONNECTION_NOT_FOUND,
-              code: "KNOWLEDGE_CONNECTION_NOT_FOUND",
-            });
+          return reply.code(404).send({
+            error: KNOWLEDGE_PUBLIC_MESSAGES.KNOWLEDGE_CONNECTION_NOT_FOUND,
+            code: "KNOWLEDGE_CONNECTION_NOT_FOUND",
+          });
         // Cancel in-flight durable work first (best effort — the cascade
         // below also strands any driver that races this delete).
         const active = await ledger.getActiveRefresh(accountId, connectionId);
         if (active) await ledger.requestRefreshCancellation(accountId, active.id).catch(() => false);
         const deleted = await ledger.deleteConnection(accountId, connectionId);
         if (!deleted) {
-          return reply
-            .code(404)
-            .send({
-              error: KNOWLEDGE_PUBLIC_MESSAGES.KNOWLEDGE_CONNECTION_NOT_FOUND,
-              code: "KNOWLEDGE_CONNECTION_NOT_FOUND",
-            });
+          return reply.code(404).send({
+            error: KNOWLEDGE_PUBLIC_MESSAGES.KNOWLEDGE_CONNECTION_NOT_FOUND,
+            code: "KNOWLEDGE_CONNECTION_NOT_FOUND",
+          });
         }
         // Custody removal is post-commit best effort (same rule as the MCP
         // connection surface). Sources, library membership, and artifacts
@@ -634,12 +628,10 @@ export async function knowledgeRoutes(app: FastifyInstance, options: KnowledgeRo
         const ledger = store();
         const preview = await ledger.getPreview(accountId, (req.params as { id: string }).id);
         if (!preview) {
-          return reply
-            .code(404)
-            .send({
-              error: KNOWLEDGE_PUBLIC_MESSAGES.KNOWLEDGE_PREVIEW_NOT_FOUND,
-              code: "KNOWLEDGE_PREVIEW_NOT_FOUND",
-            });
+          return reply.code(404).send({
+            error: KNOWLEDGE_PUBLIC_MESSAGES.KNOWLEDGE_PREVIEW_NOT_FOUND,
+            code: "KNOWLEDGE_PREVIEW_NOT_FOUND",
+          });
         }
         const entries = preview.status === "pending" ? [] : await ledger.listPreviewEntries(accountId, preview.id);
         return reply.send({ preview: previewToApi(preview), entries: entries.map(previewEntryToApi) });
@@ -774,12 +766,10 @@ export async function knowledgeRoutes(app: FastifyInstance, options: KnowledgeRo
         const ledger = store();
         const refresh = await ledger.getRefresh(accountId, (req.params as { id: string }).id);
         if (!refresh) {
-          return reply
-            .code(404)
-            .send({
-              error: KNOWLEDGE_PUBLIC_MESSAGES.KNOWLEDGE_REFRESH_NOT_FOUND,
-              code: "KNOWLEDGE_REFRESH_NOT_FOUND",
-            });
+          return reply.code(404).send({
+            error: KNOWLEDGE_PUBLIC_MESSAGES.KNOWLEDGE_REFRESH_NOT_FOUND,
+            code: "KNOWLEDGE_REFRESH_NOT_FOUND",
+          });
         }
         const items = await ledger.listRefreshItems(accountId, refresh.id);
         return reply.send({
@@ -803,12 +793,10 @@ export async function knowledgeRoutes(app: FastifyInstance, options: KnowledgeRo
         const ledger = store();
         const refresh = await ledger.getRefresh(accountId, (req.params as { id: string }).id);
         if (!refresh) {
-          return reply
-            .code(404)
-            .send({
-              error: KNOWLEDGE_PUBLIC_MESSAGES.KNOWLEDGE_REFRESH_NOT_FOUND,
-              code: "KNOWLEDGE_REFRESH_NOT_FOUND",
-            });
+          return reply.code(404).send({
+            error: KNOWLEDGE_PUBLIC_MESSAGES.KNOWLEDGE_REFRESH_NOT_FOUND,
+            code: "KNOWLEDGE_REFRESH_NOT_FOUND",
+          });
         }
         // Durable cancellation request; idempotent — a repeat on a refresh
         // that already finished reports the settled state, never an error.

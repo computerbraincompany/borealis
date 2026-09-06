@@ -74,6 +74,7 @@ export class KnowledgeWatchPump {
   private readonly pendingAfterScan = new Set<string>();
   private readonly lastScanAt = new Map<string, number>();
   private reconcileTimer: ReturnType<typeof setTimeout> | undefined;
+  private pulseTimer: ReturnType<typeof setTimeout> | undefined;
   private reconcilePassRunning = false;
 
   constructor(private readonly options: KnowledgeWatchPumpOptions) {
@@ -113,6 +114,8 @@ export class KnowledgeWatchPump {
     this.pendingAfterScan.clear();
     if (this.reconcileTimer) this.clearTimeoutFn(this.reconcileTimer);
     this.reconcileTimer = undefined;
+    if (this.pulseTimer) this.clearTimeoutFn(this.pulseTimer);
+    this.pulseTimer = undefined;
     this.controller?.abort(new Error("knowledge watch pump stopped"));
     this.controller = undefined;
     this.scanning.clear();
@@ -143,13 +146,12 @@ export class KnowledgeWatchPump {
 
   private schedulePulse(): void {
     if (!this.started) return;
-    const timer = this.setTimeoutFn(() => {
+    if (this.pulseTimer) this.clearTimeoutFn(this.pulseTimer);
+    this.pulseTimer = this.setTimeoutFn(() => {
+      this.pulseTimer = undefined;
       if (!this.started) return;
       void this.pulse().finally(() => this.schedulePulse());
     }, this.minScanIntervalMs);
-    // The pulse timer is intentionally not retained: `stop()` cannot reach a
-    // timer that has already fired, and the `started` guard closes that gap.
-    void timer;
   }
 
   private scheduleReconcile(): void {
