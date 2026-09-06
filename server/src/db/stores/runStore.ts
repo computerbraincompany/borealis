@@ -15,6 +15,14 @@ import {
   type CatalogPageRequest,
   type CatalogStorePage,
 } from "../../catalogPagination.js";
+import {
+  QUERY_CAPTURE_MAX_PER_TURN,
+  QUERY_CAPTURE_SOURCES_MAX,
+  QUERY_CAPTURE_SQL_MAX_CHARS,
+  type QueryCaptureDraft,
+  type QueryCaptureSourceProvenance,
+  type StoredQueryCapture,
+} from "../../analysisTypes.js";
 
 export type ChatRunStatus = "running" | "cancelling" | "completed" | "failed" | "cancelled";
 export type TerminalChatRunStatus = "completed" | "failed" | "cancelled";
@@ -237,6 +245,13 @@ export type RunCompletionMeta = Readonly<{
 export interface RunCompletion<Meta extends RunCompletionMeta = RunCompletionMeta> {
   readonly content: string;
   readonly meta: Meta;
+  /**
+   * Full-query captures drafted during this turn. They become durable,
+   * promotable rows only inside the successful-completion transaction below —
+   * failed or cancelled runs never persist them. The SQL never appears in
+   * public message metadata; only the opaque capture id is exposed.
+   */
+  readonly captures?: readonly QueryCaptureDraft[];
 }
 
 export type CompleteRunResult<Meta extends RunCompletionMeta = RunCompletionMeta> =
@@ -455,6 +470,85 @@ function boundedPositiveInteger(value: number, field: string, maximum: number): 
   return value;
 }
 
+function normalizeRunCaptures(captures: readonly QueryCaptureDraft[] | undefined): readonly QueryCaptureDraft[] {
+  if (captures === undefined) return [];
+  if (!Array.isArray(captures as unknown)) {
+    throw new TypeError("query captures must be an array");
+  }
+  const drafts: readonly QueryCaptureDraft[] = captures;
+  if (drafts.length > QUERY_CAPTURE_MAX_PER_TURN) {
+    throw new TypeError(`a turn may persist at most ${QUERY_CAPTURE_MAX_PER_TURN} query captures`);
+  }
+  const ids = new Set<string>();
+  return drafts.map((capture) => {
+    if (!capture || typeof capture !== "object" || Array.isArray(capture))
+      throw new TypeError("query capture is malformed");
+    const id = typeof capture.id === "string" && UUID_PATTERN.test(capture.id) ? capture.id.toLowerCase() : null;
+    if (!id || ids.has(id)) throw new TypeError("query capture id must be a unique UUID");
+    ids.add(id);
+    if (
+      typeof capture.sql !== "string" ||
+      capture.sql.length < 1 ||
+      capture.sql.length > QUERY_CAPTURE_SQL_MAX_CHARS ||
+      capture.sql.includes("\0")
+    ) {
+      throw new TypeError("query capture SQL must contain between 1 and 20000 characters");
+    }
+    if (
+      !Array.isArray(capture.sources) ||
+      capture.sources.length > QUERY_CAPTURE_SOURCES_MAX ||
+      capture.sources.some((source) => !source || typeof source !== "object" || Array.isArray(source))
+    ) {
+      throw new TypeError(`query capture sources must number at most ${QUERY_CAPTURE_SOURCES_MAX}`);
+    }
+    const sourceIds = new Set<string>();
+    const sources: QueryCaptureSourceProvenance[] = capture.sources.map((source) => {
+      const sourceId =
+        typeof source.source_id === "string" && UUID_PATTERN.test(source.source_id)
+          ? source.source_id.toLowerCase()
+          : null;
+      if (!sourceId || sourceIds.has(sourceId)) throw new TypeError("query capture source id must be a unique UUID");
+      sourceIds.add(sourceId);
+      const readyGeneration = decodeSafeInteger(source.ready_generation, "query capture ready generation");
+      if (readyGeneration < 0) throw new RangeError("query capture ready generation must be >= 0");
+      return Object.freeze({ source_id: sourceId, ready_generation: readyGeneration });
+    });
+    return Object.freeze({ id, sql: capture.sql, sources: Object.freeze(sources) });
+  });
+}
+
+function decodeQueryCapture(row: CaptureRow): StoredQueryCapture {
+  const parsed: unknown = decodeJson(row.sources, "query capture sources");
+  if (!Array.isArray(parsed)) throw new TypeError("query capture sources are not stored as an array");
+  return Object.freeze({
+    id: requiredString(row.id, "query capture id"),
+    accountId: requiredString(row.account_id, "query capture account id"),
+    runId: requiredString(row.run_id, "query capture run id"),
+    sql: requiredString(row.sql, "query capture sql"),
+    sources: Object.freeze(
+      parsed.map((candidate) => {
+        if (!candidate || typeof candidate !== "object" || Array.isArray(candidate))
+          throw new TypeError("query capture sources hold a malformed entry");
+        const record = candidate as Record<string, unknown>;
+        return Object.freeze({
+          source_id: requiredString(record.source_id, "query capture source id"),
+          ready_generation: decodeSafeInteger(record.ready_generation, "query capture ready generation"),
+        });
+      })
+    ),
+    createdAt: decodeIsoTimestamp(row.created_at, "query capture created_at"),
+  });
+}
+
+interface CaptureRow {
+  id?: unknown;
+  account_id?: unknown;
+  run_id?: unknown;
+  sql?: unknown;
+  sources?: unknown;
+  created_at?: unknown;
+}
+
 function runGroupPredicate(runId: string | null): { sql: string; values: readonly string[] } {
   return runId === null ? { sql: "run_id IS NULL", values: [] } : { sql: "run_id=?", values: [runId] };
 }
@@ -621,6 +715,7 @@ export class RunStore {
     const chartIds = uniqueCompletionChartIds(completion.meta.charts);
     const reportId = completion.meta.report === null ? null : identity(completion.meta.report, "completion report id");
     const encodedMeta = encodeJson(completion.meta, "assistant message metadata");
+    const captures = normalizeRunCaptures(completion.captures);
 
     return this.ledger.withImmediateTransaction(async (transaction) => {
       const row = transaction.get<RunRow>(
@@ -720,6 +815,17 @@ export class RunStore {
         );
       } else {
         transaction.run("DELETE FROM reports WHERE account_id=? AND run_id=? AND status='pending'", [accountId, runId]);
+      }
+
+      // Full-query captures become durable and promotable exactly with the
+      // successful completion; the completion transaction is their only
+      // writer, so a failed or cancelled run can never leave a capture.
+      for (const capture of captures) {
+        transaction.run(
+          `INSERT INTO query_captures (id,account_id,run_id,sql,sources,created_at)
+           VALUES (?,?,?,?,?,?)`,
+          [capture.id, accountId, runId, capture.sql, encodeJson(capture.sources, "query capture sources"), timestamp]
+        );
       }
 
       const message = transaction.run(
@@ -850,6 +956,19 @@ export class RunStore {
       );
       return Object.freeze({ id });
     });
+  }
+
+  /**
+   * Owner-scoped read of one promotable full-query capture. Only captures
+   * committed with a successful run completion exist; legacy receipts never
+   * have one, so a missing row is the authoritative "not promotable" answer.
+   */
+  async readQueryCapture(accountIdValue: string, captureIdValue: string): Promise<StoredQueryCapture | undefined> {
+    const row = await this.ledger.get<CaptureRow>(
+      "SELECT id,account_id,run_id,sql,sources,created_at FROM query_captures WHERE id=? AND account_id=?",
+      [identity(captureIdValue, "query capture id"), identity(accountIdValue, "account id")]
+    );
+    return row ? decodeQueryCapture(row) : undefined;
   }
 
   async getPublishedChart(accountIdValue: string, chartIdValue: string): Promise<PublishedChart | undefined> {

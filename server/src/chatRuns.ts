@@ -87,7 +87,13 @@ export async function completeRunWithAssistant(
   status: "completed" | "cancelled";
   message?: { id: unknown; content: string; meta: AgentCompletion["meta"] };
 }> {
-  const result = await storageRuntime().runs.completeRunWithAssistant(accountId, chatId, runId, completion);
+  // Captures travel outside the public meta: the ledger persists them inside
+  // the completion transaction only; message metadata keeps opaque ids.
+  const result = await storageRuntime().runs.completeRunWithAssistant(accountId, chatId, runId, {
+    content: completion.content,
+    meta: completion.meta,
+    ...(completion.captures ? { captures: completion.captures } : {}),
+  });
   activeControllers.delete(runId);
   if (result.status === "completed") {
     await completeReportArtifactCleanup(result.reportCleanupIntents);

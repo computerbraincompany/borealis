@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -28,6 +29,7 @@ import { retrieve } from "../retrieve.js";
 import {
   TOOL_DEFS,
   captureQueryResult,
+  draftQueryCapture,
   executeTool,
   makeReportPayload,
   numberRetrievedPassages,
@@ -77,6 +79,8 @@ function context(chartIds: string[] = []): ToolRunContext {
     chartIds,
     evidence: [],
     queryResults: [],
+    queryCaptures: [],
+    readySourceGenerations: { [SOURCE_A]: 3 },
     chatId: "chat-1",
     runId: "33333333-3333-4333-8333-333333333333",
     model: "chat-model",
@@ -190,16 +194,25 @@ describe("source-scoped tools", () => {
     const result = await executeTool("account", "query_data", { sql: "SELECT 1 AS answer" }, runContext);
     expect(result).toBe(queryResult);
     expect(queryMock).toHaveBeenCalledWith("account", "SELECT 1 AS answer", ["allowed_table"], undefined);
-    expect(runContext.queryResults).toEqual([
-      {
-        id: "query-1",
-        sql: "SELECT 1 AS answer",
-        columns: ["answer"],
-        rows: [[1]],
-        row_count: 1,
-        truncated: false,
-      },
-    ]);
+    // A successful query now carries the opaque capture affordance; the
+    // receipt text itself stays display-bounded and never gains the capture.
+    expect(runContext.queryResults).toHaveLength(1);
+    expect(runContext.queryResults[0]).toEqual({
+      id: "query-1",
+      sql: "SELECT 1 AS answer",
+      columns: ["answer"],
+      rows: [[1]],
+      row_count: 1,
+      truncated: false,
+      capture_id: expect.stringMatching(/^[0-9a-f-]{36}$/),
+      can_save_analysis: true,
+    });
+    expect(runContext.queryCaptures).toHaveLength(1);
+    expect(runContext.queryCaptures[0]).toEqual({
+      id: runContext.queryResults[0].capture_id,
+      sql: "SELECT 1 AS answer",
+      sources: [{ source_id: SOURCE_A, ready_generation: 3 }],
+    });
   });
 
   it("short-circuits describe for an unselected table", async () => {
@@ -402,6 +415,74 @@ describe("query result artifact capture", () => {
       "query failed"
     );
     expect(runContext.queryResults).toEqual([]);
+    expect(runContext.queryCaptures).toEqual([]);
+  });
+
+  it("keeps legacy receipts free of any promotion affordance", () => {
+    // Receipts produced without a verified complete capture (every legacy
+    // receipt) must not carry a capture id or can_save_analysis marker.
+    const artifact = captureQueryResult([], "SELECT 1", { columns: ["n"], rows: [[1]], row_count: 1 })[0];
+    expect("capture_id" in artifact).toBe(false);
+    expect("can_save_analysis" in artifact).toBe(false);
+  });
+
+  it("stops drafting captures once the per-turn budget is full", () => {
+    const full = context();
+    full.queryCaptures = Array.from({ length: 3 }, () => ({
+      id: randomUUID(),
+      sql: "SELECT 1",
+      sources: [{ source_id: SOURCE_A, ready_generation: 3 }],
+    }));
+    expect(draftQueryCapture("SELECT 4", full)).toBeNull();
+    expect(draftQueryCapture("SELECT 4", context())).toMatchObject({ sql: "SELECT 4" });
+    expect(draftQueryCapture("", context())).toBeNull();
+    expect(draftQueryCapture("x".repeat(20_001), context())).toBeNull();
+  });
+
+  it("keeps at most three captures per turn and never attaches a capture to a fourth receipt", async () => {
+    const runContext = context();
+    for (let index = 0; index < 4; index += 1) {
+      queryMock.mockResolvedValueOnce({ columns: ["n"], rows: [[index]], row_count: 1 });
+      await executeTool("account", "query_data", { sql: `SELECT ${index} AS n` }, runContext);
+    }
+    expect(runContext.queryResults).toHaveLength(3);
+    expect(runContext.queryCaptures).toHaveLength(3);
+    expect(runContext.queryResults.map((artifact) => "capture_id" in artifact)).toEqual([true, true, true]);
+    expect(runContext.queryCaptures.map((draft) => draft.sql)).toEqual([
+      "SELECT 0 AS n",
+      "SELECT 1 AS n",
+      "SELECT 2 AS n",
+    ]);
+  });
+
+  it("saves the complete SQL in the capture while the receipt stays display-sliced", async () => {
+    const runContext = context();
+    const sql = `SELECT ${"b".repeat(1_600)}`;
+    queryMock.mockResolvedValueOnce({ columns: ["n"], rows: [[1]], row_count: 1 });
+    await executeTool("account", "query_data", { sql }, runContext);
+    expect(runContext.queryResults[0].sql).toHaveLength(1_500);
+    expect(runContext.queryResults[0].truncated).toBe(true);
+    expect(runContext.queryCaptures[0].sql).toBe(sql);
+    expect(runContext.queryCaptures[0].sources).toEqual([{ source_id: SOURCE_A, ready_generation: 3 }]);
+  });
+
+  it("withholds the promotion affordance when provenance or the result is incomplete", async () => {
+    // A successful query whose frozen snapshot lacks a ready generation for a
+    // selected source is not promotable.
+    const runContext = { ...context(), readySourceGenerations: {} };
+    queryMock.mockResolvedValueOnce({ columns: ["n"], rows: [[1]], row_count: 1 });
+    await executeTool("account", "query_data", { sql: "SELECT 1" }, runContext);
+    expect(runContext.queryResults).toHaveLength(1);
+    expect("capture_id" in runContext.queryResults[0]).toBe(false);
+    expect(runContext.queryCaptures).toEqual([]);
+
+    // A returned error result never drafts a capture even though the tool
+    // completes normally.
+    const errorContext = context();
+    queryMock.mockResolvedValueOnce({ error: "duckdb rejected the statement" } as never);
+    await executeTool("account", "query_data", { sql: "SELECT bad" }, errorContext);
+    expect(errorContext.queryCaptures).toEqual([]);
+    expect(errorContext.queryResults).toEqual([]);
   });
 });
 

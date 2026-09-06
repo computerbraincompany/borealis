@@ -7,6 +7,13 @@ import type { ResolvedSourceScope } from "./sourceScope.js";
 import { fetchPublicText } from "./networkPolicy.js";
 import { createReportResourceDirectory, removeReportArtifacts } from "./storageArtifacts.js";
 import { storageRuntime } from "./storageRuntime.js";
+import {
+  QUERY_CAPTURE_MAX_PER_TURN,
+  QUERY_CAPTURE_SOURCES_MAX,
+  QUERY_CAPTURE_SQL_MAX_CHARS,
+  type QueryCaptureDraft,
+  type QueryCaptureSourceProvenance,
+} from "./analysisTypes.js";
 
 export interface ToolDef {
   type: "function";
@@ -215,6 +222,16 @@ export interface ToolRunContext {
   chartIds: string[];
   evidence: RetrievedEvidence[];
   queryResults: QueryResultArtifact[];
+  /**
+   * Full-query captures drafted this turn (in memory only until the run
+   * completes successfully). Never serialized into SSE or message metadata.
+   */
+  queryCaptures: QueryCaptureDraft[];
+  /**
+   * Ready generations frozen for this turn's immutable source snapshot;
+   * capture provenance may only reference these, never a live re-read.
+   */
+  readySourceGenerations: Readonly<Record<string, number>>;
   reportId?: string;
   runId: string;
   chatId: string;
@@ -243,6 +260,13 @@ export interface QueryResultArtifact {
   rows: QueryResultCell[][];
   row_count: number;
   truncated: boolean;
+  /**
+   * Opaque id of the separately persisted full-query capture backing this
+   * receipt. Present only for receipts whose complete SQL was verifiably
+   * captured; legacy receipts omit it and are therefore never promotable.
+   */
+  capture_id?: string;
+  can_save_analysis?: true;
 }
 
 const MAX_EVIDENCE_PASSAGES = 8;
@@ -342,11 +366,40 @@ export function numberRetrievedPassages(
   });
 }
 
+/** True when the worker result is a successful (non-error) tabular result. */
+function isSuccessfulQueryResult(result: unknown): boolean {
+  if (!result || typeof result !== "object" || Array.isArray(result)) return false;
+  const record = result as { columns?: unknown; rows?: unknown; error?: unknown };
+  if (Object.prototype.hasOwnProperty.call(record, "error")) return false;
+  return Array.isArray(record.columns) && Array.isArray(record.rows);
+}
+
+/**
+ * Draft one full-query capture from the turn's immutable source snapshot.
+ * Returns null when the per-turn limit is full or any ready source lacks a
+ * frozen generation — captures always carry exact ready source/generation
+ * provenance, never a partial one. The draft stays in memory until the run
+ * completes; only `runStore.ts` persists it.
+ */
+export function draftQueryCapture(sql: string, context: ToolRunContext): QueryCaptureDraft | null {
+  if (context.queryCaptures.length >= QUERY_CAPTURE_MAX_PER_TURN) return null;
+  if (typeof sql !== "string" || sql.length < 1 || sql.length > QUERY_CAPTURE_SQL_MAX_CHARS) return null;
+  if (context.readySourceIds.length > QUERY_CAPTURE_SOURCES_MAX) return null;
+  const sources: QueryCaptureSourceProvenance[] = [];
+  for (const sourceId of context.readySourceIds) {
+    const readyGeneration = context.readySourceGenerations[sourceId];
+    if (!Number.isSafeInteger(readyGeneration) || (readyGeneration as number) < 0) return null;
+    sources.push(Object.freeze({ source_id: sourceId, ready_generation: readyGeneration }));
+  }
+  return Object.freeze({ id: randomUUID(), sql, sources: Object.freeze(sources) });
+}
+
 /** Add one bounded display snapshot without changing the full result returned to the model. */
 export function captureQueryResult(
   current: readonly QueryResultArtifact[],
   sqlValue: unknown,
-  result: unknown
+  result: unknown,
+  captureId?: string | null
 ): QueryResultArtifact[] {
   const accepted = current.slice(0, MAX_QUERY_ARTIFACTS);
   if (accepted.length >= MAX_QUERY_ARTIFACTS) return accepted;
@@ -425,6 +478,7 @@ export function captureQueryResult(
       rows,
       row_count: rowCount,
       truncated,
+      ...(captureId ? { capture_id: captureId, can_save_analysis: true as const } : {}),
     },
   ];
 }
@@ -502,7 +556,21 @@ export async function executeTool(accountId: string, name: string, args: any, co
       const sql = typeof args.sql === "string" ? args.sql.trim() : "";
       if (!sql || sql.length > 20_000) return { error: "SQL must contain between 1 and 20000 characters" };
       const result = await dataService.query(accountId, sql, context.readyTableNames, context.abortSignal);
-      context.queryResults = captureQueryResult(context.queryResults, sql, result);
+      // A successful query gets a full-executable-SQL capture draft when the
+      // receipt array still has room; the receipt itself keeps only the
+      // opaque capture id, never more SQL than the display ceiling.
+      let captureId: string | undefined;
+      if (
+        isSuccessfulQueryResult(result) &&
+        context.queryResults.slice(0, MAX_QUERY_ARTIFACTS).length < MAX_QUERY_ARTIFACTS
+      ) {
+        const draft = draftQueryCapture(sql, context);
+        if (draft) {
+          context.queryCaptures = [...context.queryCaptures, draft];
+          captureId = draft.id;
+        }
+      }
+      context.queryResults = captureQueryResult(context.queryResults, sql, result, captureId ?? null);
       return result;
     }
     case "describe_data": {

@@ -40,6 +40,13 @@ export interface AgentCompletion {
     evidence: ToolRunContext["evidence"];
     query_results: ToolRunContext["queryResults"];
   };
+  /**
+   * Full-query capture drafts carried outside the public message metadata.
+   * `runStore.completeRunWithAssistant` persists them only with a successful
+   * completion; the SQL never enters SSE or chat history. `runAgent` always
+   * supplies the array; synthesizing completions may omit it.
+   */
+  captures?: ToolRunContext["queryCaptures"];
 }
 
 /** Qwen-style models sometimes prefix answers with a "Thinking:" block. */
@@ -237,6 +244,8 @@ export async function runAgent(opts: {
     chartIds: [],
     evidence: [],
     queryResults: [],
+    queryCaptures: [],
+    readySourceGenerations: await snapshotReadySourceGenerations(accountId, sourceScope.readySourceIds),
     chatId,
     runId,
     model,
@@ -349,6 +358,30 @@ export async function runAgent(opts: {
   );
 }
 
+/**
+ * Freeze the ready generations of this turn's concrete source snapshot once,
+ * at turn start, so full-query captures record the exact ready source/
+ * generation provenance the turn's queries were scoped to.
+ */
+async function snapshotReadySourceGenerations(
+  accountId: string,
+  sourceIds: readonly string[]
+): Promise<Readonly<Record<string, number>>> {
+  if (sourceIds.length === 0) return Object.freeze({});
+  const placeholders = new Array<string>(sourceIds.length).fill("?").join(",");
+  const rows = await storageRuntime().ledger.all<{ id: string; ready_generation: number | bigint }>(
+    `SELECT id,ready_generation FROM sources
+     WHERE account_id=? AND status='ready' AND ready_generation IS NOT NULL AND id IN (${placeholders})`,
+    [accountId, ...sourceIds]
+  );
+  const generations: Record<string, number> = {};
+  for (const row of rows) {
+    const generation = Number(row.ready_generation);
+    if (Number.isSafeInteger(generation) && generation >= 0) generations[String(row.id)] = generation;
+  }
+  return Object.freeze(generations);
+}
+
 function compactResultMessage(content: string, context: ToolRunContext): ChatMessage {
   return {
     role: "user",
@@ -391,6 +424,7 @@ function agentCompletion(
       evidence: [...context.evidence],
       query_results: [...context.queryResults],
     },
+    captures: [...context.queryCaptures],
   };
 }
 
@@ -444,6 +478,7 @@ export async function runToolRound(
     chartIds: [...context.chartIds],
     evidence: [...context.evidence],
     queryResults: [...context.queryResults],
+    queryCaptures: [...context.queryCaptures],
     abortSignal: combinedSignal,
   };
   let timeout: NodeJS.Timeout | undefined;
@@ -469,6 +504,7 @@ export async function runToolRound(
       context.chartIds = [...toolContext.chartIds];
       context.evidence = [...toolContext.evidence];
       context.queryResults = [...toolContext.queryResults];
+      context.queryCaptures = [...toolContext.queryCaptures];
       context.reportId = toolContext.reportId;
     }
   } catch (e: any) {

@@ -83,6 +83,8 @@ describe("runAgent model snapshot", () => {
         evidence: [],
         query_results: [],
       },
+      // Full-query capture drafts ride outside the public message metadata.
+      captures: [],
     });
     expect(emitted).toEqual([]);
   });
@@ -430,6 +432,8 @@ describe("runAgent model snapshot", () => {
       chartIds: [],
       evidence: [priorEvidence],
       queryResults: [],
+      queryCaptures: [],
+      readySourceGenerations: {},
       chatId: "chat-1",
       runId: "run-1",
       model: "selected-chat-model",
@@ -494,6 +498,8 @@ describe("runAgent model snapshot", () => {
       chartIds: [],
       evidence: [],
       queryResults: [priorQuery],
+      queryCaptures: [],
+      readySourceGenerations: {},
       chatId: "chat-1",
       runId: "run-1",
       model: "selected-chat-model",
@@ -548,6 +554,8 @@ describe("runAgent model snapshot", () => {
         chartIds: [],
         evidence: [],
         queryResults: [],
+        queryCaptures: [],
+        readySourceGenerations: {},
         chatId: "chat-1",
         runId: "run-1",
         model: "model",

@@ -986,3 +986,185 @@ describe("RunStore", () => {
     await expect(ledger.get("SELECT 1 FROM charts WHERE id=?", [runningChart])).resolves.toBeUndefined();
   });
 });
+
+describe("full-query captures", () => {
+  const SOURCE_A = "11111111-1111-4111-8111-111111111111";
+
+  function capture(id: string, sql: string, generation = 4) {
+    return { id, sql, sources: [{ source_id: SOURCE_A, ready_generation: generation }] };
+  }
+
+  function completionWith(captures: readonly ReturnType<typeof capture>[]) {
+    return {
+      content: "captured answer",
+      meta: {
+        charts: [],
+        report: null,
+        model: "chat-model",
+        source_mode: "selected",
+        source_ids: [SOURCE_A],
+        citations: [],
+        evidence: [],
+        query_results: [],
+      },
+      captures,
+    } as const;
+  }
+
+  it("persists captures only with successful completion and reads them owner-scoped", async () => {
+    const { ledger, store } = await setup();
+    const account = await insertUser(ledger, "capture-owner");
+    const foreign = await insertUser(ledger, "capture-foreign");
+    const chat = await insertChat(ledger, account, "Capture chat");
+    const run = await insertRun(ledger, account, chat);
+    const longSql = `SELECT ${"a".repeat(2_000)}`;
+    const first = randomUUID();
+    const second = randomUUID();
+
+    await expect(store.readQueryCapture(account, first)).resolves.toBeUndefined();
+    const completed = await store.completeRunWithAssistant(
+      account,
+      chat,
+      run,
+      completionWith([capture(first, longSql), capture(second, "SELECT 2", 0)])
+    );
+    expect(completed.status).toBe("completed");
+
+    const stored = await store.readQueryCapture(account, first);
+    expect(stored).toMatchObject({
+      id: first,
+      accountId: account,
+      runId: run,
+      sql: longSql,
+      sources: [{ source_id: SOURCE_A, ready_generation: 4 }],
+    });
+    // The saved capture is the full executable SQL, never the 1,500-char
+    // display slice used by message receipts.
+    expect(stored?.sql).toHaveLength(2_007);
+    await expect(store.readQueryCapture(account, second)).resolves.toMatchObject({
+      sql: "SELECT 2",
+      sources: [{ source_id: SOURCE_A, ready_generation: 0 }],
+    });
+    await expect(store.readQueryCapture(foreign, first)).resolves.toBeUndefined();
+    await expect(store.readQueryCapture(account, randomUUID())).resolves.toBeUndefined();
+
+    // Chat deletion cascades the captures with their run.
+    await ledger.run("DELETE FROM chats WHERE id=? AND account_id=?", [chat, account]);
+    await expect(store.readQueryCapture(account, first)).resolves.toBeUndefined();
+  });
+
+  it("keeps captures out of cancelled and failed runs", async () => {
+    const { ledger, store } = await setup();
+    const account = await insertUser(ledger, "capture-cancel");
+    const chat = await insertChat(ledger, account, "Cancelled capture chat");
+    const cancelledRun = await insertRun(ledger, account, chat);
+    await store.requestCancel(account, chat, cancelledRun);
+    await expect(
+      store.completeRunWithAssistant(account, chat, cancelledRun, completionWith([capture(randomUUID(), "SELECT 1")]))
+    ).resolves.toMatchObject({ status: "cancelled" });
+    await expect(ledger.get("SELECT 1 FROM query_captures WHERE run_id=?", [cancelledRun])).resolves.toBeUndefined();
+
+    const failedChat = await insertChat(ledger, account, "Failed capture chat");
+    const failedRun = await insertRun(ledger, account, failedChat);
+    await store.finishRun(account, failedChat, failedRun, "failed", "AGENT_FAILED");
+    await expect(
+      store.completeRunWithAssistant(
+        account,
+        failedChat,
+        failedRun,
+        completionWith([capture(randomUUID(), "SELECT 1")])
+      )
+    ).rejects.toBeInstanceOf(RunNotCompletableError);
+    await expect(ledger.get("SELECT 1 FROM query_captures WHERE run_id=?", [failedRun])).resolves.toBeUndefined();
+    // Completion rolls back wholly on a late cancellation: no captures.
+    const racingChat = await insertChat(ledger, account, "Racing capture chat");
+    const racingRun = await insertRun(ledger, account, racingChat);
+    await store.requestCancel(account, racingChat, racingRun);
+    await expect(
+      store.completeRunWithAssistant(
+        account,
+        racingChat,
+        racingRun,
+        completionWith([capture(randomUUID(), "SELECT 3")])
+      )
+    ).resolves.toMatchObject({ status: "cancelled" });
+    await expect(ledger.get("SELECT 1 FROM query_captures WHERE run_id=?", [racingRun])).resolves.toBeUndefined();
+  });
+
+  it("rejects malformed or over-limit capture inputs without touching the run", async () => {
+    const { ledger, store } = await setup();
+    const account = await insertUser(ledger, "capture-bad");
+    const chat = await insertChat(ledger, account, "Bad capture chat");
+    const run = await insertRun(ledger, account, chat);
+
+    const completionWithCaptures = (captures: readonly unknown[]) =>
+      ({
+        content: "captured answer",
+        meta: { charts: [], report: null },
+        captures,
+      }) as never;
+
+    await expect(
+      store.completeRunWithAssistant(
+        account,
+        chat,
+        run,
+        completionWithCaptures(Array.from({ length: 4 }, (_, index) => capture(randomUUID(), `SELECT ${index}`)))
+      )
+    ).rejects.toBeInstanceOf(TypeError);
+    await expect(
+      store.completeRunWithAssistant(account, chat, run, completionWithCaptures([capture(randomUUID(), "")]))
+    ).rejects.toBeInstanceOf(TypeError);
+    await expect(
+      store.completeRunWithAssistant(
+        account,
+        chat,
+        run,
+        completionWithCaptures([capture(randomUUID(), "x".repeat(20_001))])
+      )
+    ).rejects.toBeInstanceOf(TypeError);
+    const duplicateId = randomUUID();
+    await expect(
+      store.completeRunWithAssistant(
+        account,
+        chat,
+        run,
+        completionWithCaptures([capture(duplicateId, "SELECT 1"), capture(duplicateId, "SELECT 2")])
+      )
+    ).rejects.toBeInstanceOf(TypeError);
+    await expect(
+      store.completeRunWithAssistant(
+        account,
+        chat,
+        run,
+        completionWithCaptures([
+          { id: randomUUID(), sql: "SELECT 1", sources: [{ source_id: "nope", ready_generation: 1 }] },
+        ])
+      )
+    ).rejects.toBeInstanceOf(TypeError);
+    await expect(
+      store.completeRunWithAssistant(
+        account,
+        chat,
+        run,
+        completionWithCaptures([
+          { id: randomUUID(), sql: "SELECT 1", sources: [{ source_id: SOURCE_A, ready_generation: -2 }] },
+        ])
+      )
+    ).rejects.toThrow(/ready generation/);
+    await expect(store.readRun(account, chat, run)).resolves.toMatchObject({ status: "running" });
+    await expect(ledger.get("SELECT 1 FROM query_captures WHERE run_id=?", [run])).resolves.toBeUndefined();
+  });
+
+  it("cascades captures with account deletion", async () => {
+    const { ledger, store } = await setup();
+    const account = await insertUser(ledger, "capture-cascade");
+    const chat = await insertChat(ledger, account, "Cascade capture chat");
+    const run = await insertRun(ledger, account, chat);
+    const captureId = randomUUID();
+    await store.completeRunWithAssistant(account, chat, run, completionWith([capture(captureId, "SELECT 9")]));
+    await expect(store.readQueryCapture(account, captureId)).resolves.toMatchObject({ id: captureId });
+    await ledger.run("DELETE FROM users WHERE id=?", [account]);
+    await expect(store.readQueryCapture(account, captureId)).resolves.toBeUndefined();
+  });
+});
