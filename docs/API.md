@@ -1362,8 +1362,11 @@ through the same injectable custody interface. Missing or unreadable custody nev
 crashes a request and never yields plaintext: reads report
 `credential_state: "unavailable"`, and a test/discover attempt records a `disconnected`
 status with `CONNECTION_CUSTODY_UNAVAILABLE` until credentials are replaced or removed.
-These durable paths join the workspace archive manifests with the stage that completes
-the rollout.
+These durable paths are machine-bound and never archived: workspace archives
+intentionally exclude the `secrets/` namespace and `connections.key`, and a
+restore re-enters every previously attested connection state through an
+explicit actionable transition (see
+[Storage and workspace archives](#storage-and-workspace-archives)).
 
 #### Connected tools in durable chat turns (stage 4, schema v21)
 
@@ -1701,10 +1704,15 @@ entry at the former backup pathname is left untouched.
 
 Archive version 1 uses a deterministic manifest containing relative path, kind,
 size, mode class, and SHA-256 for every member. It captures the entire stopped
-workspace — including SQLite WAL state, LanceDB, uploads, reports, settings,
-signing secret, contained configuration, default model directory, migration
-state, and other future files in that root — rather than enumerating a stale
-allowlist.
+workspace — including SQLite WAL state, LanceDB, uploads, reports, the
+`reports/documents/` publication artifact namespace, knowledge refresh staging
+under `uploads/`, settings, signing secret, contained configuration, default
+model directory, migration state, and other future files in that root — rather
+than enumerating a stale allowlist. The only workspace-root exclusions are the
+machine-bound connection custody paths `secrets/` and `connections.key`, which
+are never captured regardless of content: keys, OAuth sessions, and WebDAV
+credentials do not port between machines, and the encrypted records are
+useless without their machine-bound key.
 
 Named additions use two restore modes. These exact reserved names restore at
 the target root and must have the listed kind:
@@ -1719,13 +1727,26 @@ the target root and must have the listed kind:
 Every other addition name restores below `relocated/<name>/`. The archive
 rejects a reserved addition of the wrong kind, overlapping addition roots,
 mixed canonical/relocated SQLite files, canonical migration-staging collisions,
-and an active external LanceDB migration whose staging directory cannot be
-captured. The manifest records the source workspace/addition roots, lexical
-aliases, and portable archive path so restore can rebase source paths, pending
-cleanup locations, report paths, contained binary/model paths, and migration
-state to the new target. Directories restore as `0700`; ordinary and secret
-files restore as `0600`, and owner-executable files as `0700`. The archive
-output may not be inside any source.
+an active external LanceDB migration whose staging directory cannot be
+captured, and the reserved custody names `secrets` and `connections.key` —
+machine-bound credential custody can never be archived under any name. The
+manifest records the source workspace/addition roots, lexical aliases, and
+portable archive path so restore can rebase source paths, pending cleanup
+locations, report paths, document-publication artifact paths and pending
+publication-intent/cleanup directories, knowledge refresh staging candidates,
+contained binary/model paths, and migration state to the new target. Because
+custody never ports, the same restore transaction also transitions every
+previously `ready` MCP connection to `disconnected` with status code
+`CONNECTION_RESTORE_RECONNECT_REQUIRED` and every previously `ready` knowledge
+connection to `disconnected` with `KNOWLEDGE_RESTORE_RECONNECT_REQUIRED` (Web
+DAV; re-enter credentials) or `KNOWLEDGE_FOLDER_RESELECT_REQUIRED` (desktop
+folders; memory-only grants require re-selection), and clears
+`credential_configured` for every WebDAV connection; untested and already
+disconnected rows keep their state, and configurations, tool snapshots, items,
+previews, refresh history, and saved outputs restore unchanged. Directories
+restore as `0700`; ordinary and secret files restore as `0600`, and
+owner-executable files as `0700`. The archive output may not be inside any
+source.
 
 Encryption and authentication are on by default: the streaming payload uses
 gzip followed by AES-256-GCM with a per-archive key derived by scrypt. Supply the

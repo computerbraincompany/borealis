@@ -125,7 +125,13 @@ below `~/Library/Application Support/Borealis/`:
 - `settings.json` — provider settings, atomically written with mode `0600`;
 - `contained.json` — contained-engine configuration, atomically replaced in the
   same directory with mode `0600` (a pre-existing widened mode is repaired);
-- `jwt.secret` — generated once with mode `0600`.
+- `jwt.secret` — generated once with mode `0600`;
+- `secrets/` — mode-`0700` account-scoped directories of AES-256-GCM sealed
+  connection credential records (mode `0600`, AAD-bound to the exact
+  account/connection) for MCP and WebDAV custody; machine-bound and never
+  archived;
+- `connections.key` — browser-development operator connection custody key,
+  mode `0600`; machine-bound and never archived.
 
 Environment overrides are documented in `server/.env.example`. A configured
 `JWT_SECRET` wins and must be strong. Without one, `config.ts` opens or creates
@@ -143,10 +149,21 @@ the exact server instance lock and refuse a live workspace. That lock uses a
 persistent private mode-`0700` namespace with atomically published,
 never-reused mode-`0600` owner records; preserve its fail-closed identity and
 process-liveness checks. Encrypted archives hash and verify the complete pair
-plus ready tabular artifacts. The manual fallback is a complete
+plus ready tabular artifacts and every artifact tree in the stopped root —
+including the `reports/documents/` publication namespace and knowledge refresh
+staging under `uploads/` — while intentionally excluding the machine-bound
+`secrets/` credential namespace and `connections.key` (those two names are
+never archived and may never be named as relocated additions). Because custody
+never ports, restore transitions every previously `ready` MCP or knowledge
+connection to `disconnected` with an actionable code
+(`CONNECTION_RESTORE_RECONNECT_REQUIRED`, `KNOWLEDGE_RESTORE_RECONNECT_REQUIRED`,
+or `KNOWLEDGE_FOLDER_RESELECT_REQUIRED`), clears WebDAV
+`credential_configured`, and rebases the new document-publication and
+knowledge-staging path columns; nothing else is discarded. The manual fallback is a complete
 stopped-directory copy, including SQLite WAL state, uploads, reports,
 contained-model state, settings, migration state, and the signing secret;
-include any intentionally relocated paths explicitly. Never present either
+include any intentionally relocated paths explicitly (custody material is a
+deliberate exception: never copy it between machines). Never present either
 method as a live backup.
 Offline archive verification must open the existing Lance table without
 creating one. It may accept a valid dimension-matching first-binding receipt

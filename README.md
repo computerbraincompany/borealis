@@ -597,9 +597,14 @@ There is no passphrase recovery. Plaintext creation and reading require the
 explicit `--unsafe-plaintext` flag.
 
 The manifest hashes every file and preserves the complete stopped workspace,
-including SQLite WAL state, LanceDB, uploads, reports, default model files,
-settings, contained configuration, and the signing secret. Add an explicitly
-relocated file or directory as `--include name=/absolute/path`. The reserved
+including SQLite WAL state, LanceDB, uploads, reports with their
+`documents/` publication artifacts and knowledge refresh staging, default model
+files, settings, contained configuration, and the signing secret. The two
+machine-bound custody paths `secrets/` and `connections.key` are deliberately
+excluded: external connection keys, OAuth sessions, and WebDAV credentials do
+not port between machines, and those names can never be added via `--include`
+either. Add an explicitly relocated file or directory as
+`--include name=/absolute/path`. The reserved
 names `borealis.sqlite`, `lancedb`, `uploads`, `reports`, `models`,
 `settings.json`, `contained.json`, and `jwt.secret` restore to those portable
 paths at the target root; `borealis.sqlite` also captures its adjacent WAL,
@@ -607,9 +612,15 @@ SHM, and rollback-journal sidecars, while `lancedb` captures an adjacent active
 `.<external-name>-migrations/` directory and restores it as canonical
 `.lancedb-migrations/`. Other names restore below `relocated/<name>/`. Wrong
 kinds, overlaps, mixed SQLite roots, and collisions with an existing canonical
-`.lancedb-migrations/` are rejected. Restore rebases supported durable paths, creates
-private `0700` directories, and restores non-executable files as `0600` and
-owner-executable files as `0700`.
+`.lancedb-migrations/` are rejected. Restore rebases supported durable paths,
+creates private `0700` directories, and restores non-executable files as `0600`
+and owner-executable files as `0700`. Because custody is never archived, every
+saved connection comes back actionable rather than silently ready: previously
+`ready` MCP and knowledge connections return `disconnected` with a
+reconnect-required status code, WebDAV `credential_configured` clears until
+credentials are re-entered, and desktop-folder connections need the folder
+re-selected. Saved documents, publications, analyses, knowledge items, and
+other outputs are never discarded.
 
 After restoring, point `BOREALIS_DATA_DIR` at the new target and remove or
 update old `SQLITE_PATH`, `LANCEDB_DIR`, `UPLOAD_DIR`, `REPORT_DIR`,
