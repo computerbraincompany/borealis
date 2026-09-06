@@ -136,6 +136,36 @@ describe("SQLite ledger foundation", () => {
     });
   });
 
+  it("ships schema v14 with the bounded nullable provider consent origin", async () => {
+    const { ledger } = await temporaryLedger();
+    const account = randomUUID();
+    await insertUser(ledger, account, "consent-origin@example.test");
+
+    expect(await columnNames(ledger, "users")).toContain("remote_egress_ack_origin");
+    await expect(
+      ledger.get("SELECT remote_egress_ack_at,remote_egress_ack_origin FROM users WHERE id=?", [account])
+    ).resolves.toEqual({ remote_egress_ack_at: null, remote_egress_ack_origin: null });
+
+    await ledger.run("UPDATE users SET remote_egress_ack_at=?,remote_egress_ack_origin=? WHERE id=?", [
+      "2026-09-06T00:00:00.000Z",
+      "https://api.provider.example",
+      account,
+    ]);
+    await expect(
+      ledger.get("SELECT remote_egress_ack_origin FROM users WHERE id=?", [account])
+    ).resolves.toEqual({ remote_egress_ack_origin: "https://api.provider.example" });
+
+    await ledger.run("UPDATE users SET remote_egress_ack_origin=? WHERE id=?", ["o".repeat(2048), account]);
+    await expect(
+      ledger.run("UPDATE users SET remote_egress_ack_origin=? WHERE id=?", ["o".repeat(2049), account])
+    ).rejects.toMatchObject({ kind: "check" });
+
+    await ledger.run("UPDATE users SET remote_egress_ack_origin=NULL WHERE id=?", [account]);
+    await expect(
+      ledger.get("SELECT remote_egress_ack_origin FROM users WHERE id=?", [account])
+    ).resolves.toEqual({ remote_egress_ack_origin: null });
+  });
+
   it("keeps migrations idempotent and rejects a newer on-disk schema", async () => {
     const resource = await temporaryLedger();
     const accountId = randomUUID();
@@ -168,9 +198,18 @@ describe("SQLite ledger foundation", () => {
     it(`upgrades a historical v${startVersion} installation to schema v${LATEST_SQLITE_SCHEMA_VERSION}`, async () => {
       const fixture = await createHistoricalSqliteFixture(startVersion);
       try {
+        const legacyAcknowledgedAt = "2026-09-05T00:00:00.000Z";
         const onDisk = new Database(fixture.filename);
         try {
           expect(onDisk.pragma("user_version", { simple: true })).toBe(startVersion);
+          if (startVersion >= 4) {
+            // A pre-v14 installation may hold a timestamp-only acknowledgment.
+            // The v14 upgrade must keep the timestamp and leave the new origin
+            // NULL, which keeps the account unacknowledged for every origin.
+            onDisk
+              .prepare("UPDATE users SET remote_egress_ack_at=? WHERE id=?")
+              .run(legacyAcknowledgedAt, fixture.seed.accountId);
+          }
         } finally {
           onDisk.close();
         }
@@ -245,7 +284,20 @@ describe("SQLite ledger foundation", () => {
               "agent_skill_revisions",
             ])
           );
-          expect(await columnNames(ledger, "users")).toContain("default_chat_model");
+          expect(await columnNames(ledger, "users")).toEqual(
+            expect.arrayContaining(["default_chat_model", "remote_egress_ack_origin"])
+          );
+          if (startVersion >= 4) {
+            await expect(
+              ledger.get<{ remote_egress_ack_at: string; remote_egress_ack_origin: null }>(
+                "SELECT remote_egress_ack_at,remote_egress_ack_origin FROM users WHERE id=?",
+                [fixture.seed.accountId]
+              )
+            ).resolves.toEqual({
+              remote_egress_ack_at: legacyAcknowledgedAt,
+              remote_egress_ack_origin: null,
+            });
+          }
           expect(await columnNames(ledger, "agents")).toContain("configuration");
           expect(await columnNames(ledger, "agent_revisions")).toContain("configuration");
           expect(await columnNames(ledger, "chat_runs")).toEqual(

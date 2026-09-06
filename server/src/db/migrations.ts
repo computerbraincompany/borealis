@@ -1,6 +1,6 @@
 import { SqliteMigrationError } from "./types.js";
 
-export const LATEST_SQLITE_SCHEMA_VERSION = 13;
+export const LATEST_SQLITE_SCHEMA_VERSION = 14;
 
 interface MigrationDatabase {
   exec(sql: string): unknown;
@@ -509,6 +509,16 @@ CREATE TABLE agent_skill_revisions (
 ) STRICT;
 `;
 
+// Provider-bound remote-egress consent. The nullable column stores only the
+// canonical bare remote origin an account acknowledged, bounded to the Settings
+// endpoint ceiling. The pre-v14 timestamp never identified a trustworthy
+// destination, so no backfill runs: timestamp-only rows stay unacknowledged
+// for every remote provider until the account consents again.
+const SCHEMA_V14 = `
+ALTER TABLE users ADD COLUMN remote_egress_ack_origin TEXT
+  CHECK (remote_egress_ack_origin IS NULL OR length(remote_egress_ack_origin) <= 2048);
+`;
+
 const migrations = [
   { version: 1, sql: SCHEMA_V1 },
   { version: 2, sql: SCHEMA_V2 },
@@ -523,6 +533,7 @@ const migrations = [
   { version: 11, sql: SCHEMA_V11 },
   { version: 12, sql: SCHEMA_V12 },
   { version: 13, sql: SCHEMA_V13 },
+  { version: 14, sql: SCHEMA_V14 },
 ] as const;
 
 function schemaVersion(database: MigrationDatabase): number {
