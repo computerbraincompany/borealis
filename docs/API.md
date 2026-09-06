@@ -81,34 +81,52 @@ catalog probe as `/api/health`. The response never contains the endpoint URL,
 credentials, provider errors, or model lists; reachability loss is a status
 field, not an HTTP error.
 
-The direct/manual remote-provider payload routes are fail-closed. While a
-remote (public) provider is configured and the account has not acknowledged
-remote egress, chat messages, source upload, source reingest, connector
-create/manual sync, and connector schedule changes refuse with `403
+The direct/manual remote-provider payload routes are fail-closed and
+provider-origin-bound. While a remote (public) provider is configured and the
+account's stored acknowledgment pair does not name that exact canonical origin,
+chat messages, source upload, source reingest, connector create/manual sync, and
+connector schedule changes refuse with `403
 {"error":"...","code":"REMOTE_EGRESS_CONSENT_REQUIRED"}` before any payload is
 processed. `GET /api/consent/remote-egress` returns
-`{required,acknowledged_at,endpoint_host}`; `POST /api/consent/remote-egress`
-records the per-account acknowledgment and unblocks the gated routes
-immediately. The acknowledgment is not bound to a host and remains stored when
-the provider changes. `endpoint_host` names the currently configured remote
-host only, is a response field only, and never appears in logs. Loopback and
-private-network providers never gate.
+`{required,acknowledged_at,endpoint_host}`; for a remote provider
+`acknowledged_at` is non-null only when the stored schema-v4 timestamp and
+schema-v14 canonical origin match the current exact origin. `POST
+/api/consent/remote-egress` atomically records the account's timestamp/origin
+pair for the current provider and unblocks the gated routes immediately;
+acknowledging one remote origin never authorizes another, so switching remote
+origins re-gates the routes until they are acknowledged again. A pre-v14
+timestamp-only row is intentionally unacknowledged until re-consent. The stored
+origin is never a public field: `endpoint_host` names the currently configured
+remote host only, is a response field only, and never appears in logs. Loopback
+and private-network providers never gate, and a loopback/private `POST` neither
+rewrites the remembered pair nor emits a consent audit event.
 
-Durable ingestion repeats the check in the worker immediately before the first
-embedding transport. One immutable provider/model snapshot is then used for all
-batches in that job. If a job queued under a local provider resumes after an
-unacknowledged remote switch, no provider request is made and the source records
-the stable asynchronous failure `REMOTE_EGRESS_CONSENT_REQUIRED`; a concurrent
-Settings edit cannot redirect an already authorized job between batches.
+Ordinary account-owned chat and retrieval calls authorize the exact captured
+provider revision they are about to use and transport through the client built
+from that same snapshot, so a Settings switch cannot silently retarget an
+authorized request mid-flight; the next call captures and gates the new origin.
+Plan 034's request-local draft acknowledgment authorizes only its fixed synthetic
+qualification probes and is never durable workspace consent. Model discovery
+stays body-free and ungated.
+
+Durable ingestion repeats the check against the exact acknowledged origin in the
+worker immediately before the first embedding transport. One immutable
+provider/model snapshot is then used for all batches in that job, and parsed and
+OCR-recognized text both stay bound to that authorized session. If a job queued
+under a local provider resumes after an unacknowledged remote switch, no provider
+request is made and the source records the stable asynchronous failure
+`REMOTE_EGRESS_CONSENT_REQUIRED`; a concurrent Settings edit cannot redirect an
+already authorized job between batches.
 
 `connector_sync` automations are consent-gated end to end, matching the
 human connector surfaces: `POST /api/automations` with
 `kind: "connector_sync"` and any `PATCH /api/automations/:id` on a
 `connector_sync` row refuse with the same `403
 REMOTE_EGRESS_CONSENT_REQUIRED` envelope while a remote provider is
-configured and unacknowledged, and a scheduled connector execution rechecks
-consent before every run — without consent it records a `skipped` run
-(`remote egress consent is required`) and makes no provider request.
+configured and its origin is not exactly acknowledged, and a scheduled connector
+execution rechecks consent before every run — with a stale or missing
+acknowledgment it records a `skipped` run (`remote egress consent is required`)
+before any connector lookup, refresh reservation, download, or provider call.
 `agent_turn` creation and mutation stay ungated because those automations
 recheck consent at execution time like a human turn;
 `PUT /api/connectors/:id/schedule` gates the schedule mutation itself.
@@ -780,8 +798,12 @@ model/dimension still match. It never combines the embedding target with
 unsaved endpoint, credential, or chat-model draft fields; the Settings UI
 requires those compatible non-target changes to be saved or discarded first.
 One process-wide migration can exist. It requires no active ingestion, consent
-for every affected account when the provider is remote, non-environment-managed
-embedding fields, a changed target identity, and sufficient disk space. With
+for every affected account bound to the exact migration provider origin when the
+provider is remote — a bounded fail-fast manifest check at start/retry admission
+and a check of the accounts represented by each batch immediately before its
+embedding transport, recording only the stable aggregate failure code —
+non-environment-managed embedding fields, a changed target identity, and
+sufficient disk space. With
 zero ready sources it constructs a verified empty target index rather than
 bypassing the migration. Source and connector mutations remain blocked from
 snapshot through completion; ordinary chat keeps using the unchanged live

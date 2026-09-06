@@ -275,10 +275,14 @@ runtime startup alone republishes that matching marker.
   Library deletion cascades membership only — never sources or their data.
 - Schema v12 owns the current keyset-catalog indexes. Schema v13 adds agent identity,
   versioned capability configuration, skills, and accepted-turn tool snapshots,
-  ahead of the remaining remediation work by the September 5 sequencing decision. The active remediation
-  ledger reserves contiguous v14, v15, and v16 for provider-bound consent,
-  automation target ownership, and typed connector-refresh/repair state; do not
-  reuse or reorder those versions. Account catalogs use opaque endpoint-bound
+  ahead of the remaining remediation work by the September 5 sequencing decision. Schema
+  v14 ships provider-bound remote-egress consent: one nullable
+  `users.remote_egress_ack_origin` column holding only the canonical bare remote
+  origin, bounded by a column CHECK to the Settings endpoint ceiling, with no
+  backfill (timestamp-only rows are intentionally unacknowledged). The active
+  remediation ledger now reserves contiguous v15 and v16 for automation target
+  ownership and typed connector-refresh/repair state; do not reuse or reorder
+  those versions. Account catalogs use opaque endpoint-bound
   keyset cursors, while source/connector transition polling uses only bounded
   exact-ID status batches with non-starving round-robin reconciliation.
 - Web asynchronous surfaces must give each load/mutation an exact target plus
@@ -432,24 +436,45 @@ errors, or model lists. The strip is informational chrome, not an
 authorization surface, and its egress wording must stay consistent with the
 Settings privacy text.
 
-Remote model-provider egress is fail-closed
-(`server/src/egressPolicy.ts`): while a remote provider is configured and the
-account has not acknowledged remote egress (`users.remote_egress_ack_at` from
-schema v4), chat messages, source upload/reingest, and connector
-create/sync return `403 REMOTE_EGRESS_CONSENT_REQUIRED` before any payload
-processing. Never weaken or bypass the gate in a handler; loopback and
-private providers never gate; acknowledgment unblocks without a restart. The
-consent response may name the configured `endpoint_host` to the authenticated
-account, but `endpoint_host` must never be logged. Consent-card, sidebar, and
-Settings payload-class wording must stay identical.
-Durable ingestion must also recheck the exact account immediately before its
-first embedding transport and bind every batch to that one authorized immutable
-runtime-settings snapshot. A queued local job resumed under an unacknowledged
-remote provider makes no transport call and records
-`REMOTE_EGRESS_CONSENT_REQUIRED`; a mid-job Settings edit must not redirect it.
+Remote model-provider egress is fail-closed and provider-origin-bound
+(`server/src/egressPolicy.ts`): consent is the account's durable
+timestamp/canonical-origin pair (`users.remote_egress_ack_at` plus schema v14's
+`users.remote_egress_ack_origin`), and while the configured provider's canonical
+origin is not exactly that pair, chat messages, source upload/reingest, and
+connector create/sync return `403 REMOTE_EGRESS_CONSENT_REQUIRED` before any
+payload processing. Acknowledgment writes the pair atomically; consent for one
+remote origin never authorizes another, changing remote origins requires consent
+again, and timestamp-only pre-v14 rows are intentionally unacknowledged until
+re-consent. The stored origin is never returned publicly: `GET
+/api/consent/remote-egress` keeps its `{required,acknowledged_at,endpoint_host}`
+shape, where `acknowledged_at` is non-null for a remote provider only when the
+pair names that exact origin. Never weaken or bypass the gate in a handler;
+loopback and private providers never gate; acknowledgment unblocks without a
+restart. The consent response may name the configured `endpoint_host` to the
+authenticated account, but no endpoint URL or host may be logged, and no audit
+helper may re-read live Settings — audit uses the host of the exact authorized
+target. Consent-card, sidebar, and Settings payload-class wording must stay
+identical.
+Ordinary account-owned workspace-content model traffic (chat, title, retrieval
+query embeddings through `server/src/llm.ts`) captures `getRuntimeSettings()`
+exactly once, authorizes that revision's credential-free target against the
+account's pair, and transports through the client built from that same snapshot;
+a later Settings edit cannot retarget an authorized in-flight call, and the next
+capture sees the new origin. Plan 034's request-local draft acknowledgment
+authorizes only its fixed synthetic qualification probes and is never durable
+workspace consent. Model discovery stays body-free and ungated.
+Durable ingestion must also recheck the exact account against that exact origin
+immediately before its first embedding transport and bind every batch (parsed
+and OCR text alike) to that one authorized immutable runtime-settings snapshot.
+A queued local job resumed under an unacknowledged remote provider makes no
+transport call and records `REMOTE_EGRESS_CONSENT_REQUIRED`; a mid-job Settings
+edit must not redirect it. Managed embedding migration checks every affected
+account's pair against the exact target origin at start/retry admission and
+immediately before each provider batch, persisting only the stable aggregate
+code, and scheduled `connector_sync` runs gate before connector lookup,
+reservation, or download.
 The three surfaces use the shared `web/src/lib/egressDisclosure.ts` payload-class
-constant. Preserve that shared wording; provider-bound acknowledgment remains
-separate planned remediation and is not implied by disclosure consistency.
+constant. Preserve that shared wording.
 
 Canonical operator overrides are `LLM_BASE_URL`, `LLM_API_KEY`,
 `LLM_CHAT_MODEL`, and `LLM_EMBED_MODEL`. The corresponding `LITELLM_*` names

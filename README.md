@@ -208,7 +208,9 @@ tool name, and valid JSON arguments. The embedding check requires the configured
 dimension and a finite positive norm after float32 coordinate, square, and
 accumulation rounding—the numeric contract LanceDB cosine search actually uses.
 Qualification does not save the draft or authorize later work. A remote draft
-requires a separate acknowledgment bound to that draft's canonical origin.
+requires a separate acknowledgment bound to that draft's canonical origin, and
+that request-local acknowledgment authorizes only the fixed synthetic probes —
+it is never a durable workspace consent.
 Editing any endpoint, key, model, or dimension field invalidates the displayed
 result. Use **Save changes** to apply compatible changes to subsequent model
 operations without a restart.
@@ -226,19 +228,31 @@ key, provider errors, or model lists.
 Remote egress is intended to be fail-closed: before the first chat turn, source
 upload or reingest, or connector creation, manual sync, or schedule change
 against a remote provider, Borealis stops with a consent card naming the
-current destination host and payload classes. The acknowledgment is per
-account, not per host, and remains stored across provider changes; switching to
-a local provider makes the gate inapplicable immediately. `connector_sync`
-automations are part of the same fail-closed boundary: creating or changing one
-requires the same acknowledgment, and a scheduled run without it is recorded as
-skipped rather than executed against the provider.
+current destination host and payload classes. The acknowledgment is per account
+and per canonical remote provider origin, stored as one durable timestamp/origin
+pair: acknowledging one remote provider never authorizes another, changing the
+remote origin requires acknowledging again, and rows acknowledged before this
+binding existed are intentionally unacknowledged until re-consent. Switching to
+a local provider makes the gate inapplicable immediately, and acknowledging the
+current origin unblocks without a restart. Ordinary chat and retrieval calls
+authorize the exact captured provider revision they are about to use, so a
+Settings switch cannot silently retarget an authorized request mid-flight.
+`connector_sync` automations are part of the same fail-closed boundary: creating
+or changing one requires the same acknowledgment, and a scheduled run whose
+consent does not name the current origin is recorded as skipped before any
+connector reservation, download, or provider call.
 
-Ingestion is durable, so the worker also checks consent immediately before its
-first embedding call. It captures one provider/model snapshot for the whole
-job: a job queued while local but resumed after an unacknowledged remote switch
-makes no provider request and ends with
-`REMOTE_EGRESS_CONSENT_REQUIRED`, while a permitted job cannot be redirected to
-a different provider between embedding batches by a concurrent Settings edit.
+Ingestion is durable, so the worker also checks consent against the exact
+acknowledged origin immediately before its first embedding call. It captures one
+provider/model snapshot for the whole job — every batch, parsed or OCR-recognized
+text included, stays bound to that authorized session: a job queued while local
+but resumed after an unacknowledged remote switch makes no provider request and
+ends with `REMOTE_EGRESS_CONSENT_REQUIRED`, while a permitted job cannot be
+redirected to a different provider between embedding batches by a concurrent
+Settings edit. A managed embedding migration additionally checks that every
+affected account acknowledged the exact migration provider origin — at start and
+retry admission and before each embedding batch — without weakening its
+qualification, provider-snapshot, or index-identity guarantees.
 
 Provider settings are shared by all accounts using the same server. A saved API
 key is stored in `settings.json` with mode `0600`, not encrypted or held in the
