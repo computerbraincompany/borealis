@@ -80,18 +80,20 @@ reports `not_implemented`), `--workspace=DIR`, and `--keep-on-failure`.
   against the owned pid), then fixtures; afterwards it verifies the
   workspace instance-lock namespace holds no owner records and that every
   owned pid is gone, and records `lock_released`/`pids_gone` in the summary.
-- **Known product defect (harness does not hide it):** a SIGTERM within a
-  few seconds of ledger/data-plane traffic can abort the server in
-  `duckdb.node` `AsyncWorker::OnWorkComplete` during Node environment
-  cleanup, which skips the lock release and leaks the workspace lock owner
-  record. The harness therefore gates shutdown on the product's own
-  authenticated readiness surface: `server.quiesceWorkers({ token })` polls
-  `GET /api/health` until every service (including the data service worker)
-  reports `operational`, then sends SIGTERM. This is a bounded poll on a real
-  signal, not a sleep. The server should eventually drain worker handles
-  before exit itself (see the shutdown-drain invariant in `AGENTS.md`);
-  journeys must keep calling `quiesceWorkers` until that server-side fix
-  lands, and any run that still aborts must be reported, not retried.
+- **Historical product defect (mitigation kept deliberately):** a SIGTERM
+  within a few seconds of ledger/data-plane traffic used to abort the server
+  in `duckdb.node` `AsyncWorker::OnWorkComplete` during Node environment
+  cleanup, skipping the lock release and leaking the workspace lock owner
+  record. The product now drains the DuckDB dataset worker before exit (the
+  raw-SIGTERM regression test `server/src/tests/shutdownDrain.test.ts` proves
+  the clean exit without any harness gate). The harness still gates shutdown
+  on the product's own authenticated readiness surface:
+  `server.quiesceWorkers({ token })` polls `GET /api/health` until every
+  service (including the data service worker) reports `operational`, then
+  sends SIGTERM. This is a bounded poll on a real signal, not a sleep, and it
+  additionally proves the data plane finished queued work before an orderly
+  shutdown; journeys must keep calling `quiesceWorkers`, and any run that
+  still aborts must be reported, not retried.
 
 ## Output and artifact policy (content-free)
 
