@@ -1,0 +1,262 @@
+{
+  "version": 1,
+  "generator": "data/e2e/generate_supplier_corpus.mjs",
+  "command": "node data/e2e/generate_supplier_corpus.mjs",
+  "suppliers": [
+    {
+      "id": "acme-logistics",
+      "name": "Acme Logistics"
+    },
+    {
+      "id": "blueriver-analytics",
+      "name": "BlueRiver Analytics"
+    },
+    {
+      "id": "cedarcloud-hosting",
+      "name": "CedarCloud Hosting"
+    },
+    {
+      "id": "delta-paper-co",
+      "name": "Delta Paper Co"
+    },
+    {
+      "id": "everline-legal",
+      "name": "Everline Legal"
+    }
+  ],
+  "typed_fields": [
+    "price",
+    "effective_date",
+    "renewal",
+    "tier",
+    "exceptions"
+  ],
+  "documents": [
+    {
+      "file": "01_acme_logistics_agreement.md",
+      "format": "markdown",
+      "supplier": "acme-logistics",
+      "bytes": 349,
+      "sha256": "68af493af5fad97d66cd47309e4c0cf3e52509fd5456b3ae1e2167b69ab72207",
+      "fields": {
+        "price": {
+          "value": 12000,
+          "currency": "USD"
+        },
+        "effective_date": "2026-01-15",
+        "renewal": true,
+        "tier": "premium",
+        "exceptions": "Volume discounts above 500 shipments per quarter are excluded."
+      },
+      "notes": []
+    },
+    {
+      "file": "02_acme_renewal_quote.md",
+      "format": "markdown",
+      "supplier": "acme-logistics",
+      "bytes": 287,
+      "sha256": "e2505225a73969241a517f60af394862c18dd5a8127f5a8fa245d735d874a3e3",
+      "fields": {
+        "price": {
+          "value": 13500,
+          "currency": "USD"
+        },
+        "effective_date": "2026-07-01",
+        "renewal": true,
+        "tier": "premium",
+        "exceptions": "One-time onboarding fee waived."
+      },
+      "notes": [
+        "conflict_price_vs_01"
+      ]
+    },
+    {
+      "file": "03_blueriver_msa.pdf",
+      "format": "pdf-text",
+      "supplier": "blueriver-analytics",
+      "bytes": 970,
+      "sha256": "09dfbc76bd1bb7c3f7894a491fb894cf70280fc5aa5ea45e739a52e014ade7ef",
+      "fields": {
+        "price": {
+          "value": 8750,
+          "currency": "USD"
+        },
+        "effective_date": "2025-11-01",
+        "renewal": false,
+        "tier": "standard",
+        "exceptions": "None."
+      },
+      "notes": []
+    },
+    {
+      "file": "04_blueriver_change_order.md",
+      "format": "markdown",
+      "supplier": "blueriver-analytics",
+      "bytes": 257,
+      "sha256": "1a8a7244e224ceac7e1f593ac913d93eec57fe9a7a1523a523e8677aefadf5fb",
+      "fields": {
+        "price": {
+          "value": 8750,
+          "currency": "USD"
+        },
+        "effective_date": "2025-11-01",
+        "renewal": false,
+        "tier": "standard",
+        "exceptions": null
+      },
+      "notes": [
+        "missing_exceptions_field"
+      ]
+    },
+    {
+      "file": "05_cedarcloud_hosting.pdf",
+      "format": "pdf-text",
+      "supplier": "cedarcloud-hosting",
+      "bytes": 1016,
+      "sha256": "48ff312c1239d88bbf3edf5e272b2b9aae1a78fc0b57f7bff34622656333040e",
+      "fields": {
+        "price": {
+          "value": 21000,
+          "currency": "EUR"
+        },
+        "effective_date": "2026-03-01",
+        "renewal": true,
+        "tier": "enterprise",
+        "exceptions": "EU data-residency add-on is not included."
+      },
+      "notes": []
+    },
+    {
+      "file": "06_cedarcloud_summary.md",
+      "format": "markdown",
+      "supplier": "cedarcloud-hosting",
+      "bytes": 296,
+      "sha256": "96ef9ea6fd5782764245ad04c6e8188a7905af019d4deef8490d1dad46376158",
+      "fields": {
+        "price": {
+          "value": 21000,
+          "currency": "EUR"
+        },
+        "effective_date": "2026-03-01",
+        "renewal": true,
+        "tier": "enterprise",
+        "exceptions": "EU data-residency add-on is not included."
+      },
+      "notes": []
+    },
+    {
+      "file": "07_delta_paper_terms.pdf",
+      "format": "pdf-text",
+      "supplier": "delta-paper-co",
+      "bytes": 977,
+      "sha256": "c8fa71769a57e5d363f238065bd64586bfd1479c35a0cc1786cc0e09151e3793",
+      "fields": {
+        "price": {
+          "value": 4100,
+          "currency": "USD"
+        },
+        "effective_date": "2025-09-01",
+        "renewal": true,
+        "tier": "standard",
+        "exceptions": "Late payments incur a 2 percent surcharge."
+      },
+      "notes": []
+    },
+    {
+      "file": "08_delta_renewal_memo.rtf",
+      "format": "rtf-unsupported",
+      "supplier": "delta-paper-co",
+      "bytes": 236,
+      "sha256": "98b1b69c8b983f130eb68c3e2481539377a05ea66d815992de6a60c6b610e1ab",
+      "fields": {
+        "price": null,
+        "effective_date": null,
+        "renewal": null,
+        "tier": null,
+        "exceptions": null
+      },
+      "notes": [
+        "unsupported_format",
+        "hidden_price_4600"
+      ]
+    },
+    {
+      "file": "09_everline_term_sheet.md",
+      "format": "markdown",
+      "supplier": "everline-legal",
+      "bytes": 283,
+      "sha256": "6d9d5d92f1092702ef0e6a502bd192166fba3eef78e93e28c17cd088ad8a6a95",
+      "fields": {
+        "price": {
+          "value": 15000,
+          "currency": "USD"
+        },
+        "effective_date": "2026-02-01",
+        "renewal": false,
+        "tier": "premium",
+        "exceptions": "Hourly overages are billed separately."
+      },
+      "notes": []
+    },
+    {
+      "file": "10_acme_scanned_invoice.pdf",
+      "format": "pdf-image-only",
+      "supplier": "acme-logistics",
+      "bytes": 34271,
+      "sha256": "db788abcfc1f29b58f2dcbf57f009266ee0d3159804ae5f56078b1383137a816",
+      "fields": {
+        "price": null,
+        "effective_date": null,
+        "renewal": null,
+        "tier": null,
+        "exceptions": null
+      },
+      "notes": [
+        "image_only",
+        "no_text_layer"
+      ]
+    }
+  ],
+  "facts": {
+    "conflicts": [
+      {
+        "supplier": "acme-logistics",
+        "field": "price",
+        "values": [
+          12000,
+          13500
+        ],
+        "currency": "USD",
+        "documents": [
+          "01_acme_logistics_agreement.md",
+          "02_acme_renewal_quote.md"
+        ],
+        "resolution": "open: the renewal quote supersedes only after countersignature"
+      }
+    ],
+    "missing_fields": [
+      {
+        "document": "04_blueriver_change_order.md",
+        "field": "exceptions"
+      }
+    ],
+    "image_only": [
+      "10_acme_scanned_invoice.pdf"
+    ],
+    "unsupported": [
+      {
+        "document": "08_delta_renewal_memo.rtf",
+        "note": "unsupported ingestion format: extraction must yield no typed values",
+        "hidden_values": {
+          "price": {
+            "value": 4600,
+            "currency": "USD"
+          },
+          "effective_date": "2027-01-01",
+          "renewal": true,
+          "tier": "standard"
+        }
+      }
+    ]
+  }
+}

@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "purpose": "M16 tiny repeatable-brief fixture: a committed SQL aggregate plus a changed-input variant so a saved analysis rerun must show a known numeric diff.",
+  "table_name": "brief_inputs",
+  "load_recipe": "CREATE TABLE brief_inputs AS SELECT * FROM read_csv_auto('data/e2e/finance-brief-fixture/brief_inputs.csv'); -- then run sum_office.sql",
+  "sql_file": "sum_office.sql",
+  "expected": {
+    "brief_inputs_csv_total": 100,
+    "brief_inputs_changed_csv_total": 125,
+    "note": "integer-cent amounts keep SUM exact; the changed variant raises the 2026-01-12 amount from 10.00 to 35.00"
+  },
+  "files": {
+    "brief_inputs.csv": {
+      "sha256": "4fb2b6950bcacf21e1eb0b737e8ad102576e287729bf8667d2289adb812801d3",
+      "bytes": 140
+    },
+    "brief_inputs_changed.csv": {
+      "sha256": "7846f506a36a10be2a262b14fe48de3ae357652abb9efb8d0f361784d43cdc31",
+      "bytes": 140
+    },
+    "sum_office.sql": {
+      "sha256": "8256bb6b42b4178db28b39b2a955f83994d23b6113cd31bcfb2206c18f0b6bf3",
+      "bytes": 258
+    }
+  },
+  "journeys": [
+    "B",
+    "C",
+    "F"
+  ]
+}
