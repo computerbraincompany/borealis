@@ -1470,7 +1470,67 @@ export const librariesApi = {
       signal,
     }),
   remove: (id: string, signal?: AbortSignal) => api<{ ok: true }>(`/api/libraries/${id}`, { method: "DELETE", signal }),
+  /** Library-scoped inspectable search (M14): keyword (default, no model
+   * request) or semantic (explicit; subject to the remote-egress consent
+   * gate). Filters never widen beyond library membership. */
+  search: (
+    id: string,
+    body: { query: string; mode?: "keyword" | "semantic"; source_ids?: string[]; kind?: "document" | "tabular" },
+    signal?: AbortSignal
+  ) => api<LibrarySearchResult>(`/api/libraries/${id}/search`, { method: "POST", body: JSON.stringify(body), signal }),
 };
+
+// ------------------------------------------------- library search & passages
+export type SourceLocator =
+  | { kind: "pdf_page"; page: number; ocr: boolean; char_start: number; char_len: number }
+  | { kind: "text_span"; char_start: number; char_len: number; heading?: string | null }
+  | { kind: "tabular_rows"; table: string; row_start: number; row_end: number };
+
+export interface LibrarySearchHit {
+  source_id: string;
+  generation: number;
+  chunk_id: string;
+  label: string;
+  excerpt: string;
+  score: number;
+  rank: number;
+  locators?: SourceLocator[];
+}
+
+export interface LibrarySearchCapturedScopeEntry {
+  source_id: string;
+  generation: number;
+  status: "ready" | "source_changed" | "unavailable";
+}
+
+export interface LibrarySearchResult {
+  mode: "keyword" | "semantic";
+  query_truncated: boolean;
+  captured_scope: LibrarySearchCapturedScopeEntry[];
+  ignored_source_ids: string[];
+  hits: LibrarySearchHit[];
+  returned_char_count: number;
+  truncated: boolean;
+}
+
+export interface PassageNeighbour {
+  chunk_id: string;
+  seq: number;
+  content: string;
+}
+
+export interface SourcePassage {
+  source: { id: string; label: string; status: string; ready_generation: number | null };
+  chunk: {
+    chunk_id: string;
+    source_id: string;
+    generation: number;
+    seq: number;
+    content: string;
+    locators?: SourceLocator[];
+  };
+  neighbors: { before: PassageNeighbour | null; after: PassageNeighbour | null };
+}
 
 // ------------------------------------------------------------------ sources
 export const sourcesApi = {
@@ -1493,6 +1553,178 @@ export const sourcesApi = {
   },
   reingest: (id: string) => api<Source & { processing: boolean }>(`/api/sources/${id}/reingest`, { method: "POST" }),
   remove: (id: string) => api<{ ok: true }>(`/api/sources/${id}`, { method: "DELETE" }),
+  /** Owned current-chunk passage with typed locators and bounded neighboring
+   * text. 410 PASSAGE_UNAVAILABLE means the chunk was pruned or superseded. */
+  passage: (id: string, chunkId: string, signal?: AbortSignal) =>
+    api<SourcePassage>(`/api/sources/${id}/passages/${chunkId}`, { signal }),
+};
+
+// ------------------------------------------------- living knowledge (M14)
+export type KnowledgeConnectionKind = "desktop_folder" | "webdav";
+export type KnowledgeConnectionStatus = "untested" | "ready" | "disconnected" | "error";
+export type KnowledgePreviewStatus = "pending" | "complete" | "failed" | "applied" | "expired";
+export type KnowledgePreviewClassification = "new" | "changed" | "unchanged" | "duplicate" | "missing" | "unsupported";
+export type KnowledgeRefreshStatus = "active" | "completed" | "partial" | "failed" | "cancelled";
+
+export interface KnowledgeConnection {
+  id: string;
+  name: string;
+  kind: KnowledgeConnectionKind;
+  library_id: string | null;
+  revision: number;
+  watch_enabled: boolean;
+  credential_configured: boolean;
+  status: KnowledgeConnectionStatus;
+  status_code: string | null;
+  /** Display-only label: the folder picker's label or the WebDAV host. */
+  label: string;
+  /** Non-secret WebDAV endpoint shape; never present for folder connections. */
+  webdav?: { url: string; username: string } | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface KnowledgePreview {
+  id: string;
+  connection_id: string;
+  revision: number;
+  status: KnowledgePreviewStatus;
+  error_code: string | null;
+  visited_entries: number;
+  directories: number;
+  aggregate_bytes: number;
+  new_count: number;
+  changed_count: number;
+  unchanged_count: number;
+  duplicate_count: number;
+  missing_count: number;
+  unsupported_count: number;
+  skipped_count: number;
+  created_at: string;
+  updated_at: string;
+  expires_at: string;
+  applied_at: string | null;
+}
+
+export interface KnowledgePreviewEntry {
+  entry_id: string;
+  ordinal: number;
+  relative_path: string;
+  classification: KnowledgePreviewClassification;
+  content_hash: string | null;
+  size_bytes: number | null;
+  existing_source_id: string | null;
+  mtime_hint: string | null;
+  etag_hint: string | null;
+  /** Exact-revision binding echoed back on apply; never a path or secret. */
+  selection_token: string;
+}
+
+export interface KnowledgeRefresh {
+  id: string;
+  connection_id: string;
+  requested_by: "manual" | "apply" | "scheduled";
+  expected_connection_revision: number;
+  status: KnowledgeRefreshStatus;
+  cancel_requested: boolean;
+  error_code: string | null;
+  created_at: string;
+  started_at: string;
+  finished_at: string | null;
+}
+
+export interface KnowledgeRefreshItem {
+  item_id: string;
+  source_id: string;
+  relative_path: string;
+  status:
+    | "pending"
+    | "staged"
+    | "committed"
+    | "ready"
+    | "unchanged"
+    | "missing"
+    | "failed"
+    | "blocked"
+    | "cancelled";
+  error_code: string | null;
+  current_ready_generation: number | null;
+  expected_generation: number | null;
+  promoted_generation: number | null;
+}
+
+export interface KnowledgeRefreshDetail {
+  refresh: KnowledgeRefresh;
+  counts: Record<string, number>;
+  items: KnowledgeRefreshItem[];
+}
+
+export interface KnowledgeCreateInput {
+  name: string;
+  kind: KnowledgeConnectionKind;
+  library_id: string;
+  watch_enabled?: boolean;
+  /** Desktop folder: the opaque one-time id from the native picker. */
+  grant_id?: string;
+  /** WebDAV only; the password is write-only and lands in shared custody. */
+  config?: { url: string; username: string; password: string };
+}
+
+export const knowledgeApi = {
+  list: async (options: CatalogPageOptions = {}) =>
+    parseTypedCatalogEnvelope<KnowledgeConnection>(
+      await api<unknown>(catalogPath("/api/knowledge-connections", options), { signal: options.signal })
+    ),
+  create: (body: KnowledgeCreateInput, signal?: AbortSignal) =>
+    api<KnowledgeConnection>("/api/knowledge-connections", { method: "POST", body: JSON.stringify(body), signal }),
+  update: (
+    id: string,
+    body: {
+      expected_revision: number;
+      name?: string;
+      watch_enabled?: boolean;
+      credentials?: { password: string } | null;
+    },
+    signal?: AbortSignal
+  ) => api<KnowledgeConnection>(`/api/knowledge-connections/${id}`, { method: "PATCH", body: JSON.stringify(body), signal }),
+  remove: (id: string, signal?: AbortSignal) =>
+    api<{ ok: true }>(`/api/knowledge-connections/${id}`, { method: "DELETE", signal }),
+  /** Starts the durable bounded scan; the pending preview + run id return now. */
+  createPreview: (id: string, signal?: AbortSignal) =>
+    api<{ preview: KnowledgePreview; run_id: string }>(`/api/knowledge-connections/${id}/previews`, {
+      method: "POST",
+      signal,
+    }),
+  getPreview: (previewId: string, signal?: AbortSignal) =>
+    api<{ preview: KnowledgePreview; entries: KnowledgePreviewEntry[] }>(`/api/knowledge-previews/${previewId}`, {
+      signal,
+    }),
+  applyPreview: (
+    previewId: string,
+    body: { expected_revision: number; selections: { entry_id: string; selection_token: string }[] },
+    signal?: AbortSignal
+  ) =>
+    api<{
+      preview: KnowledgePreview;
+      items: { entry_id: string; item_id: string; source_id: string; relative_path: string; action: string }[];
+      refresh_id: string | null;
+    }>(`/api/knowledge-previews/${previewId}/apply`, { method: "POST", body: JSON.stringify(body), signal }),
+  startRefresh: (
+    id: string,
+    body: { expected_connection_revision?: number; item_ids?: string[] } = {},
+    signal?: AbortSignal
+  ) => api<{ refresh: KnowledgeRefresh }>(`/api/knowledge-connections/${id}/refreshes`, { method: "POST", body: JSON.stringify(body), signal }),
+  listRefreshes: async (id: string, options: CatalogPageOptions = {}) =>
+    parseTypedCatalogEnvelope<KnowledgeRefresh>(
+      await api<unknown>(catalogPath(`/api/knowledge-connections/${id}/refreshes`, options), { signal: options.signal })
+    ),
+  getRefresh: (refreshId: string, signal?: AbortSignal) =>
+    api<KnowledgeRefreshDetail>(`/api/knowledge-refreshes/${refreshId}`, { signal }),
+  cancelRefresh: (refreshId: string, signal?: AbortSignal) =>
+    api<{ ok: true; cancel_requested: boolean; status: KnowledgeRefreshStatus }>(
+      `/api/knowledge-refreshes/${refreshId}`,
+      { method: "DELETE", signal }
+    ),
 };
 
 // ------------------------------------------------------------------ connectors

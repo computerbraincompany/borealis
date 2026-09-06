@@ -9,6 +9,7 @@ import {
   chatsApi,
   connectorsApi,
   formatApiError,
+  knowledgeApi,
   librariesApi,
   modelsApi,
   openProtected,
@@ -608,5 +609,106 @@ describe("typed API contracts", () => {
       },
     ]);
     expect(parseConnectorSyncListPayload({ syncs: [] })).toEqual([]);
+  });
+});
+
+describe("M14 living-library typed clients", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  function json(payload: unknown, status = 200) {
+    return new Response(JSON.stringify(payload), {
+      status,
+      headers: { "content-type": "application/json" },
+    });
+  }
+
+  it("creates a folder connection from the opaque grant only", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      json({ id: "kc-1", name: "Notes", kind: "desktop_folder", revision: 1, label: "Research notes" }, 201)
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    await knowledgeApi.create({
+      name: "Notes",
+      kind: "desktop_folder",
+      library_id: "library-1",
+      grant_id: "a".repeat(64),
+    });
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/knowledge-connections");
+    expect(JSON.parse(String(init.body))).toEqual({
+      name: "Notes",
+      kind: "desktop_folder",
+      library_id: "library-1",
+      grant_id: "a".repeat(64),
+    });
+  });
+
+  it("sends the WebDAV password only on the create/patch body", async () => {
+    const fetchMock = vi.fn().mockImplementation(async () => json({ id: "kc-2", kind: "webdav", revision: 1 }));
+    vi.stubGlobal("fetch", fetchMock);
+    await knowledgeApi.create({
+      name: "DAV",
+      kind: "webdav",
+      library_id: "library-1",
+      config: { url: "https://dav.example.test/c", username: "ada", password: "secret-pw" },
+    });
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1].body)).config.password).toBe("secret-pw");
+    await knowledgeApi.update("kc-2", { expected_revision: 1, credentials: { password: "rotated" } });
+    expect(JSON.parse(String(fetchMock.mock.calls[1][1].body)).credentials.password).toBe("rotated");
+    await knowledgeApi.update("kc-2", { expected_revision: 2, credentials: null });
+    expect(JSON.parse(String(fetchMock.mock.calls[2][1].body)).credentials).toBeNull();
+  });
+
+  it("echoes selection tokens and the exact revision on apply", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(json({ preview: { id: "p1", revision: 2 }, items: [], refresh_id: "r1" }));
+    vi.stubGlobal("fetch", fetchMock);
+    await knowledgeApi.applyPreview("p1", {
+      expected_revision: 2,
+      selections: [{ entry_id: "e1", selection_token: "b".repeat(64) }],
+    });
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/knowledge-previews/p1/apply");
+    expect(JSON.parse(String(init.body))).toEqual({
+      expected_revision: 2,
+      selections: [{ entry_id: "e1", selection_token: "b".repeat(64) }],
+    });
+  });
+
+  it("reads previews, refresh detail, and the durable cancellation", async () => {
+    const fetchMock = vi.fn().mockImplementation(async () => json({ preview: { id: "p1" }, entries: [] }));
+    vi.stubGlobal("fetch", fetchMock);
+    await knowledgeApi.getPreview("p1");
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/knowledge-previews/p1");
+    fetchMock.mockImplementation(async () => json({ refresh: { id: "r1", status: "cancelled" }, counts: {}, items: [] }));
+    const detail = await knowledgeApi.getRefresh("r1");
+    expect(detail.refresh.status).toBe("cancelled");
+    fetchMock.mockImplementation(async () => json({ ok: true, cancel_requested: true, status: "active" }));
+    await knowledgeApi.cancelRefresh("r1");
+    expect(fetchMock.mock.calls.at(-1)?.[1]?.method).toBe("DELETE");
+  });
+
+  it("posts library search modes/filters and reads the passage route", async () => {
+    const fetchMock = vi.fn().mockImplementation(async () =>
+      json({ mode: "semantic", query_truncated: false, captured_scope: [], ignored_source_ids: [], hits: [], returned_char_count: 0, truncated: false })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    await librariesApi.search("lib-1", { query: "cashflow", mode: "semantic", source_ids: ["s1"], kind: "document" });
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/libraries/lib-1/search");
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1].body))).toEqual({
+      query: "cashflow",
+      mode: "semantic",
+      source_ids: ["s1"],
+      kind: "document",
+    });
+    fetchMock.mockImplementation(async () =>
+      json({
+        source: { id: "s1", label: "memo.pdf", status: "ready", ready_generation: 2 },
+        chunk: { chunk_id: "c1", source_id: "s1", generation: 2, seq: 0, content: "text", locators: [{ kind: "pdf_page", page: 3, ocr: false, char_start: 10, char_len: 4 }], },
+        neighbors: { before: null, after: null },
+      })
+    );
+    const passage = await sourcesApi.passage("s1", "c1");
+    expect(fetchMock.mock.calls[1][0]).toBe("/api/sources/s1/passages/c1");
+    expect(passage.chunk.locators?.[0]?.kind).toBe("pdf_page");
   });
 });

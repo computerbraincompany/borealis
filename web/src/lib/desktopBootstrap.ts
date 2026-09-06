@@ -5,6 +5,19 @@ export interface DesktopBootstrapSession {
   user: AuthUser;
 }
 
+/**
+ * Bounded, path-free result of the native folder picker (M14). The preload
+ * exposes only an opaque one-time grant id, a label, and bounded preview
+ * metadata; the chosen directory's path never crosses this boundary.
+ */
+export interface DesktopFolderPick {
+  readonly cancelled: boolean;
+  readonly grantId?: string;
+  readonly label?: string;
+  readonly entryCount?: number;
+  readonly truncated?: boolean;
+}
+
 export interface BorealisDesktopBridge {
   consumeBootstrap(): Promise<DesktopBootstrapSession | null>;
   /**
@@ -15,6 +28,8 @@ export interface BorealisDesktopBridge {
    * URL-opening surface.
    */
   openSignInLink?(token: unknown, url: unknown): Promise<{ opened: boolean }>;
+  /** Native directory picker returning an opaque selection grant (M14). */
+  chooseFolder?(): Promise<unknown>;
 }
 
 declare global {
@@ -87,6 +102,54 @@ export async function openDesktopSignInLink(token: string, url: string): Promise
   if (!isDesktopOpenableUrl(url)) return false;
   const result = await bridge.openSignInLink(token, url).catch(() => undefined);
   return result?.opened === true;
+}
+
+/** True when the M14 native folder-picker bridge operation is present. */
+export function hasFolderPickerBridge(): boolean {
+  return typeof window.borealisDesktop?.chooseFolder === "function";
+}
+
+const GRANT_ID_PATTERN = /^[0-9a-f]{64}$/;
+const MAX_FOLDER_PREVIEW_ENTRIES = 10_000;
+
+/**
+ * Run the native folder picker exactly through the narrow preload surface.
+ * The bridge payload is treated as untrusted input: only an exactly
+ * well-formed, bounded result is accepted, anything else (including a
+ * hostile shape) resolves as cancelled. The returned grant id is the only
+ * handle to the selection; the path never reaches renderer code.
+ */
+export async function chooseDesktopFolder(): Promise<DesktopFolderPick> {
+  const bridge = window.borealisDesktop;
+  if (!bridge || typeof bridge.chooseFolder !== "function") return { cancelled: true };
+  const result = await Promise.resolve()
+    .then(() => bridge.chooseFolder!())
+    .catch((): undefined => undefined);
+  if (!result || typeof result !== "object" || Array.isArray(result)) return { cancelled: true };
+  const candidate = result as Record<string, unknown>;
+  if (candidate.cancelled === true) return { cancelled: true };
+  if (
+    candidate.cancelled !== false ||
+    typeof candidate.grant_id !== "string" ||
+    !GRANT_ID_PATTERN.test(candidate.grant_id) ||
+    !isBoundedText(candidate.label, 120) ||
+    !candidate.preview ||
+    typeof candidate.preview !== "object" ||
+    Array.isArray(candidate.preview)
+  ) {
+    return { cancelled: true };
+  }
+  const preview = candidate.preview as Record<string, unknown>;
+  if (!Number.isSafeInteger(preview.entry_count) || Number(preview.entry_count) < 0) return { cancelled: true };
+  if (Number(preview.entry_count) > MAX_FOLDER_PREVIEW_ENTRIES) return { cancelled: true };
+  if (typeof preview.truncated !== "boolean") return { cancelled: true };
+  return Object.freeze({
+    cancelled: false,
+    grantId: candidate.grant_id,
+    label: candidate.label,
+    entryCount: Number(preview.entry_count),
+    truncated: preview.truncated,
+  });
 }
 
 export function initializeDesktopSession(): Promise<void> {

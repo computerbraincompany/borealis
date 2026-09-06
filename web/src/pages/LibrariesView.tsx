@@ -19,6 +19,8 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { KnowledgeConnectionsPanel } from "@/components/KnowledgeConnectionsPanel";
+import { LibrarySearchPanel } from "@/components/LibrarySearchPanel";
 
 interface LibraryDetailState {
   summary: LibrarySummary;
@@ -50,6 +52,7 @@ export function LibrariesView() {
   const [dialogError, setDialogError] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<LibrarySummary | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [searching, setSearching] = useState(false);
   const createRequestRef = useRef(0);
   const createAbortRef = useRef<AbortController | null>(null);
   const attachRequestRef = useRef(0);
@@ -578,7 +581,22 @@ export function LibrariesView() {
             )}
           </div>
         )}
+        <KnowledgeConnectionsPanel libraries={libraries} />
       </div>
+
+      {/* library search panel (M14) */}
+      <Dialog open={searching} onOpenChange={(open) => !open && setSearching(false)}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Search {open?.summary.name ?? "library"}</DialogTitle>
+            <DialogDescription>
+              Keyword search runs on-device over the indexed passages. Semantic search is explicit and subject to the
+              remote model-provider consent rules.
+            </DialogDescription>
+          </DialogHeader>
+          {open && <LibrarySearchPanel libraryId={open.summary.id} members={open.members} onClose={() => setSearching(false)} />}
+        </DialogContent>
+      </Dialog>
 
       {/* member manager */}
       <Dialog open={!!open} onOpenChange={(value) => !value && closeLibrary()}>
@@ -652,9 +670,14 @@ export function LibrariesView() {
                 </Button>
               )}
               <div className="flex flex-wrap items-center justify-between gap-2 border-t pt-3">
-                <Button variant="ghost" size="sm" onClick={() => openRenameDialog(open.summary)}>
-                  Rename
-                </Button>
+                <div className="flex items-center gap-1">
+                  <Button variant="ghost" size="sm" onClick={() => openRenameDialog(open.summary)}>
+                    Rename
+                  </Button>
+                  <Button variant="ghost" size="sm" onClick={() => setSearching(true)}>
+                    Search sources
+                  </Button>
+                </div>
                 <Button
                   size="sm"
                   onClick={() => void attachToNewChat(open)}
