@@ -1755,18 +1755,20 @@ the row-label column), 1,000 cells, and ≤100 evidence references with
 every omission, shortening, and preview truncation labeled and stable
 evidence ids/hashes preserved.
 
-### Reviewed briefs (M16 — stage 1: store, calendar, and recipe API; stage 2: durable execution pipeline)
+### Reviewed briefs (M16 — stages 1–3: store, calendar, recipe API, durable execution pipeline, and review/notification surfaces)
 
 Reviewed briefs schedule a saved analysis over an explicit source set and
 deliver a report draft into a review inbox. Stage 1 shipped the durable recipe
 ledger, the civil calendar, the run stage machine, and the recipe routes.
-Stage 2 ships the owned execution pipeline (input refresh → generation-ready
+Stage 2 shipped the owned execution pipeline (input refresh → generation-ready
 wait → analysis → draft creation → `awaiting_review`) plus bounded run detail
 and idempotent cancellation; manual `POST /api/briefs/:id/runs` and scheduled
 claims now execute through it (without a live executor the durable `queued`
-row simply waits for the next startup resume). The review inbox, decision,
-and notification routes arrive with stage 3; the durable
-`brief_review_events` and `brief_notifications` tables already exist.
+row simply waits for the next startup resume). Stage 3 ships the account-scoped
+review inbox, the exact-revision decision with durable publication-intent
+approval over M13's `publishDocumentRevision` service, and the local
+notification read/dismiss surfaces. Every read and mutation is scoped to the
+authenticated account; a foreign `id` answers `404` exactly like a missing one.
 
 A recipe binds exactly one saved analysis at its current definition revision.
 Recipe source membership must equal the bound revision's selected source set
@@ -1813,6 +1815,17 @@ survives recipe deletion through each run's immutable recipe snapshot.
 | `GET /api/briefs/:id/runs/:runId` | Bounded stage detail for one run: durable summary plus the server-owned refresh receipts (kind, label, intended generation), the committed source-generation snapshot, the persisted comparison summary (≤32 KiB by write-time bound), and the linked analysis/baseline/document artifact ids. |
 | `DELETE /api/briefs/:id/runs/:runId` | Requests durable cancellation (`cancel_requested=1`). Repeated calls — including after terminalization — are idempotent and return the current run. The runner observes it at stage boundaries and finalizes `cancelled`; artifacts committed up to that point are preserved. |
 | `PATCH /api/briefs/:id/notifications` | Body `{enabled}` toggles the recipe's local-notification preference (schema v27). Head-only: no revision bump, no reschedule. While disabled, every future notification kind for the recipe's runs is suppressed; the five-failure pause transition itself still happens. |
+
+Review inbox and decision routes (stage 3). All pages are endpoint-bound
+keyset (`cursor`/`limit`, default 20, maximum 50; a cursor minted for another
+endpoint answers `400 INVALID_CATALOG_CURSOR`).
+
+| Endpoint                                | Contract                                                                                                                                          |
+| --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /api/brief-reviews`                | Account-scoped inbox of pending (`awaiting_review`), publishing, and decided (`approved`/`rejected`) runs. Each item carries the comparison summary, freshness receipts, recipe revision, retained-recipe state (deleted recipes read `recipe_state: null` through the run's immutable snapshot), evidence references (`analysis_run_id`, `baseline_run_id`), the rendered-draft pointer (`document_id` + `document_revision_id` + live `document_head_revision_id` and `head_moved`), the decision ledger tail (`review`), and the failed-publication indicator (`publication_error_code` + a content-free `publication_failure.message`). |
+| `POST /api/brief-reviews/:id/decision`  | Body `{decision: "approve"|"reject", document_revision_id, note?}` with the exact draft revision being reviewed (note ≤1,000 characters). Approval first durably records the immutable decision event, the exact reviewed revision, and the stable publication operation UUID (derived from run + revision) under an in-transaction head-revision CAS, then enters `publishing` and calls M13's `publishDocumentRevision` with that same UUID; the route answers `202 {"status":"publishing"}` while rendering and the run reaches `approved` only after the publication commits (status polls on `GET /api/briefs/:id/runs/:runId` or this inbox). Approval retries reconcile the SAME intent and operation UUID — never a second publication; a completed approval replays `200 {"status":"approved","replayed":true}`. A render failure returns the run to `awaiting_review` with the bounded indicator; the retry re-checks the head, and an edited draft answers `409 BRIEF_REVIEW_REVISION_CONFLICT` until a fresh decision names the current revision. An edit landing mid-render likewise fails the attempt honestly (`DOCUMENT_HEAD_MOVED`) without ever altering the immutable revision being published. A concurrent edit before the decision answers the same `409` — unseen content is never approved. Rejection is terminal (run + draft preserved for inspection, publish blocked `409`); rejecting or re-deciding a different revision against an accepted/committed approval answers `409 BRIEF_RUN_STATE` — an accepted approval is never silently revoked. Cross-account or unknown run `404 BRIEF_RUN_NOT_FOUND`. |
+| `GET /api/notifications`                | Account-scoped local-event inbox (kinds `first_draft`, `meaningful_change`, `attention`, `paused`) with durable `state` (`unread`/`read`/`dismissed`). Visibility semantics: every row stays durable and readable newest-first — `dismissed` means removed from the tray, not deleted; rows were deduplicated per (run, kind) at write, so repeats never double-notify; per-recipe disable suppresses new rows only. Nothing is ever delivered outbound. |
+| `PATCH /api/notifications/:id`          | Body `{state: "read"|"dismissed"}` only — the durable visibility transition. Event content (kind/detail) cannot be modified through this route; the request schema rejects any other field. Unknown or foreign id `404`. |
 
 Run stages are `queued → refreshing → waiting_ready → analyzing → drafting →
 awaiting_review → publishing`, with terminal `failed`, `cancelled`, `skipped`,
@@ -1870,6 +1883,20 @@ comparison changed-row signal only), `attention`, and `paused`, deduplicated
 per run and kind, silent for a complete supported no-change draft, and
 suppressible per recipe via `PATCH /api/briefs/:id/notifications`. Approval
 never enables any outbound delivery.
+
+Publication execution (stage 3) is owned by `server/src/briefReviewService.ts`.
+The decision transaction commits the intent before any render, so the durable
+`publishing` row plus its stable operation UUID is the contract; the detached
+publication call finalizes `approved` (after reading the committed publication
+back through the store) or returns the run to `awaiting_review` with the
+schema-v28 `publication_error_code` indicator. A restart where the render died
+reconciles from the same durable intent — completed → `approved`, failed or
+absent → review with the indicator, ready → idempotent replay — and an
+approval retry on an unchanged head re-arms the same intent rather than
+minting another. `publishing` runs are never claimed by the execution
+pipeline's executor (the review service owns them), and an `awaiting_review`
+run never occupies the recipe's single active slot, so pending reviews never
+block later scheduling.
 
 ## Agent tools
 
