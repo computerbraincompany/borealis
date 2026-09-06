@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { openSqliteLedger } from "../db/sqlite.js";
 import type { SqliteLedger } from "../db/types.js";
-import { LATEST_SQLITE_SCHEMA_VERSION, SCHEMA_V26, SCHEMA_V27 } from "../db/migrations.js";
+import { LATEST_SQLITE_SCHEMA_VERSION, SCHEMA_V26, SCHEMA_V27, SCHEMA_V28 } from "../db/migrations.js";
 import { AnalysisStore } from "../db/stores/analysisStore.js";
 import {
   BriefRecipeNotFoundError,
@@ -129,11 +129,13 @@ async function makeRecipe(
 
 describe("brief recipe schema foundation", () => {
   it("ships a byte-identical v026 fixture and keeps the documented v25 gap", async () => {
-    expect(LATEST_SQLITE_SCHEMA_VERSION).toBe(27);
+    expect(LATEST_SQLITE_SCHEMA_VERSION).toBe(28);
     const fixtureSql = await fs.readFile(fileURLToPath(new URL("./fixtures/sqlite/v026.sql", import.meta.url)), "utf8");
     expect(fixtureSql).toBe(SCHEMA_V26);
     const v27Fixture = await fs.readFile(fileURLToPath(new URL("./fixtures/sqlite/v027.sql", import.meta.url)), "utf8");
     expect(v27Fixture).toBe(SCHEMA_V27);
+    const v28Fixture = await fs.readFile(fileURLToPath(new URL("./fixtures/sqlite/v028.sql", import.meta.url)), "utf8");
+    expect(v28Fixture).toBe(SCHEMA_V28);
     await expect(listHistoricalFixtureVersions()).resolves.toEqual(expectedFixtureVersions());
   });
 

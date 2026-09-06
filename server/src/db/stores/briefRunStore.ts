@@ -1,5 +1,6 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
+  CatalogCursorError,
   catalogStorePage,
   defaultCatalogPageRequest,
   validateCatalogPageRequest,
@@ -69,6 +70,38 @@ export const BRIEF_NOTIFICATION_KINDS = ["first_draft", "meaningful_change", "at
 export type BriefNotificationKind = (typeof BRIEF_NOTIFICATION_KINDS)[number];
 export type BriefNotificationState = "unread" | "read" | "dismissed";
 
+/** Review-inbox and notification pages (M16 bounds: default 20, maximum 50). */
+export const BRIEF_PAGE_DEFAULT_LIMIT = 20;
+export const BRIEF_PAGE_MAX_LIMIT = 50;
+
+export const BRIEF_REVIEW_DECISIONS = ["approve", "reject"] as const;
+export type BriefReviewDecision = (typeof BRIEF_REVIEW_DECISIONS)[number];
+export const BRIEF_REVIEW_NOTE_MAX = 1_000;
+export const BRIEF_PUBLICATION_ERROR_CODE_MAX = 64;
+
+/** Stages that appear in the review inbox: pending, publishing, and decided. */
+export const BRIEF_REVIEW_INBOX_STAGES: readonly BriefRunStage[] = Object.freeze([
+  "awaiting_review",
+  "publishing",
+  "approved",
+  "rejected",
+] as const);
+
+/**
+ * The decision was accepted against a draft revision that is no longer the
+ * head (or the draft vanished): the client must refresh and review the
+ * current revision. Never approves unseen content.
+ */
+export class BriefReviewRevisionConflictError extends Error {
+  readonly code = "BRIEF_REVIEW_REVISION_CONFLICT";
+  readonly statusCode = 409;
+
+  constructor(message = "the brief draft changed since this review; decide again on the current revision", options: ErrorOptions = {}) {
+    super(message, options);
+    this.name = "BriefReviewRevisionConflictError";
+  }
+}
+
 /**
  * Consent/migration/busy prerequisites surface as `skipped` or `blocked`
  * visibility states — never execution failures. Only `failed` feeds the
@@ -106,6 +139,8 @@ export interface StoredBriefRun {
   readonly documentRevisionId: string | null;
   readonly publicationOperationId: string | null;
   readonly reviewedRevisionId: string | null;
+  /** Bounded code of the last failed publication render (schema v28). */
+  readonly publicationErrorCode: string | null;
   readonly failureCode: string | null;
   readonly failureReason: string | null;
   readonly coalescedCount: number;
@@ -251,6 +286,7 @@ export function decodeBriefRun(row: RunRow): StoredBriefRun {
     documentRevisionId: optionalText(row.document_revision_id),
     publicationOperationId: optionalText(row.publication_operation_id),
     reviewedRevisionId: optionalText(row.reviewed_revision_id),
+    publicationErrorCode: optionalText(row.publication_error_code),
     failureCode: optionalText(row.failure_code),
     failureReason: optionalText(row.failure_reason),
     coalescedCount: decodeSafeInteger(row.coalesced_count ?? 1, "coalesced count"),
@@ -266,11 +302,110 @@ const RUN_COLUMNS = `id,account_id,recipe_id,trigger,operation_id,occurrence_key
   stage,stage_operation_id,stage_attempts,cancel_requested,deadline_at,refresh_deadline_at,refresh_receipts,
   source_snapshot,analysis_id,analysis_revision,parameter_hash,source_set_hash,analysis_run_id,baseline_run_id,
   analysis_succeeded,comparison_summary,document_id,document_revision_id,publication_operation_id,
-  reviewed_revision_id,failure_code,failure_reason,coalesced_count,missed_through_key,created_at,started_at,
-  stage_updated_at,finished_at`;
+  reviewed_revision_id,publication_error_code,failure_code,failure_reason,coalesced_count,missed_through_key,
+  created_at,started_at,stage_updated_at,finished_at`;
+
+const RUN_COLUMNS_R = (RUN_COLUMNS.match(/[a-z_]+/g) ?? [])
+  .map((column) => `r.${column}`)
+  .join(",");
 
 function placeholders(length: number): string {
   return Array.from({ length }, () => "?").join(",");
+}
+
+/**
+ * UUIDv4-shaped deterministic publication operation id per
+ * (run, reviewed revision). An approval retry reconciles the same durable
+ * publication intent; the only way to a new operation UUID is a new decision
+ * on a different revision.
+ */
+export function deriveBriefPublicationOperationId(runId: string, revisionId: string): string {
+  const hex = createHash("sha256")
+    .update(`borealis-brief-publication:${runId}:${revisionId}`, "utf8")
+    .digest("hex");
+  const digits = (start: number, length: number) => hex.slice(start, start + length);
+  return `${digits(0, 8)}-${digits(8, 4)}-4${digits(13, 3)}-a${digits(17, 3)}-${digits(20, 12)}`.toLowerCase();
+}
+
+/** Review/notification pages are bounded tighter than generic catalogs. */
+export function validateBriefPageRequest(value: CatalogPageRequest): CatalogPageRequest {
+  const validated = validateCatalogPageRequest(value);
+  if (validated.limit > BRIEF_PAGE_MAX_LIMIT) throw new CatalogCursorError();
+  return validated;
+}
+
+interface ReviewRow {
+  [column: string]: unknown;
+}
+
+interface NotificationRow {
+  [column: string]: unknown;
+}
+
+export interface StoredBriefReviewEvent {
+  readonly decision: BriefReviewDecision;
+  readonly note: string | null;
+  readonly documentRevisionId: string;
+  readonly createdAt: string;
+}
+
+export interface StoredBriefReviewRow {
+  readonly run: StoredBriefRun;
+  /** Live draft head at read time; null when the draft row is gone. */
+  readonly headRevisionId: string | null;
+  readonly headRevision: number | null;
+  /** Retained-recipe visibility: 'active' | 'paused' | null (deleted). */
+  readonly recipeState: string | null;
+  readonly recipePausedReason: string | null;
+  /** Latest decision from the immutable ledger; null while pending. */
+  readonly lastEvent: StoredBriefReviewEvent | null;
+}
+
+export interface StoredBriefNotification {
+  readonly id: string;
+  readonly accountId: string;
+  readonly recipeId: string;
+  readonly runId: string;
+  readonly kind: BriefNotificationKind;
+  readonly state: BriefNotificationState;
+  readonly detail: string | null;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+  readonly readAt: string | null;
+}
+
+function decodeReviewRow(row: ReviewRow): StoredBriefReviewRow {
+  return Object.freeze({
+    run: decodeBriefRun(row),
+    headRevisionId: optionalText(row.head_revision_id),
+    headRevision: row.head_revision == null ? null : decodeSafeInteger(row.head_revision, "head revision"),
+    recipeState: optionalText(row.recipe_state),
+    recipePausedReason: optionalText(row.recipe_paused_reason),
+    lastEvent:
+      row.last_decision == null
+        ? null
+        : Object.freeze({
+            decision: String(row.last_decision) as BriefReviewDecision,
+            note: optionalText(row.last_note),
+            documentRevisionId: String(row.last_decision_revision_id),
+            createdAt: String(row.last_decision_at),
+          }),
+  });
+}
+
+function decodeNotification(row: NotificationRow): StoredBriefNotification {
+  return Object.freeze({
+    id: String(row.id),
+    accountId: String(row.account_id),
+    recipeId: String(row.recipe_id),
+    runId: String(row.run_id),
+    kind: String(row.kind) as BriefNotificationKind,
+    state: String(row.state) as BriefNotificationState,
+    detail: optionalText(row.detail),
+    createdAt: String(row.created_at),
+    updatedAt: String(row.updated_at),
+    readAt: optionalText(row.read_at),
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -899,6 +1034,294 @@ export class BriefRunStore {
       [state, state, new Date().toISOString(), new Date().toISOString(), id, accountId]
     );
     return updated.changes === 1;
+  }
+
+  // -- Review decisions (M16 stage 3) ---------------------------------------------
+
+  /**
+   * Records one review decision for an `awaiting_review` run in a single
+   * immediate transaction: the decision is accepted only against the exact
+   * draft revision that is also the document head at that instant (head CAS —
+   * a concurrent edit makes this fail with a revision conflict, so unseen
+   * content is never approved). Approval persists the decision intent: the
+   * immutable `brief_review_events` row, the exact reviewed revision, and the
+   * stable publication operation UUID, then moves the run to `publishing`
+   * (the durable CHECK requires the operation UUID in the same write). The
+   * derived-from-run operation UUID is deterministic per (run, reviewed
+   * revision), so an approval retry reconciles the SAME publication intent
+   * and can never create a second publication. Rejection is terminal: it
+   * preserves the run and draft for inspection and can never publish. A
+   * repeat decision against the recorded terminal state replays the recorded
+   * outcome; it never rewrites the ledger.
+   */
+  async recordReviewDecision(
+    accountIdValue: string,
+    runIdValue: string,
+    input: {
+      readonly decision: BriefReviewDecision;
+      readonly documentRevisionId: string;
+      readonly note?: string | null;
+    }
+  ): Promise<{ readonly run: StoredBriefRun; readonly replayed: boolean }> {
+    if (!(BRIEF_REVIEW_DECISIONS as readonly string[]).includes(input.decision)) {
+      throw new RangeError("unknown brief review decision");
+    }
+    const accountId = uuidIdentity(accountIdValue, "account id");
+    const runId = uuidIdentity(runIdValue, "run id");
+    const revisionId = uuidIdentity(input.documentRevisionId, "reviewed document revision id");
+    const note =
+      input.note == null || input.note.trim() === "" ? null : input.note.trim().slice(0, BRIEF_REVIEW_NOTE_MAX);
+    return this.ledger.withImmediateTransaction((transaction) => {
+      const row = transaction.get<RunRow>(`SELECT ${RUN_COLUMNS} FROM brief_runs WHERE id=? AND account_id=?`, [
+        runId,
+        accountId,
+      ]);
+      if (!row) throw new BriefRunNotFoundError();
+      const run = decodeBriefRun(row);
+      const timestamp = this.now().toISOString();
+      if (input.decision === "reject") {
+        if (run.stage === "rejected") return Object.freeze({ run, replayed: true });
+        if (run.stage === "publishing" || run.stage === "approved") {
+          throw new BriefRunStateError(
+            "an approval decision for this brief has already been accepted and cannot be revoked",
+            { cause: new Error(`stage ${run.stage}`) }
+          );
+        }
+        if (run.stage !== "awaiting_review") throw new BriefRunStateError();
+        this.assertHeadInTransaction(transaction, accountId, run, revisionId);
+        const updated = transaction.run(
+          `UPDATE brief_runs
+           SET stage='rejected',stage_operation_id=NULL,reviewed_revision_id=?,document_revision_id=?,
+               publication_error_code=NULL,finished_at=?,stage_updated_at=?
+           WHERE id=? AND account_id=? AND stage='awaiting_review'`,
+          [revisionId, revisionId, timestamp, timestamp, runId, accountId]
+        );
+        if (updated.changes !== 1) throw new BriefRunStateError();
+        this.appendReviewEventInTransaction(transaction, run, revisionId, "reject", note, timestamp);
+        const decided = transaction.get<RunRow>(`SELECT ${RUN_COLUMNS} FROM brief_runs WHERE id=? AND account_id=?`, [
+          runId,
+          accountId,
+        ]);
+        if (!decided) throw new BriefRunNotFoundError();
+        return Object.freeze({ run: decodeBriefRun(decided), replayed: false });
+      }
+      // Approval.
+      if (run.stage === "approved") {
+        if (run.reviewedRevisionId !== revisionId) {
+          throw new BriefRunStateError("this brief was approved against a different draft revision", {
+            cause: new Error("reviewed revision drift"),
+          });
+        }
+        return Object.freeze({ run, replayed: true });
+      }
+      if (run.stage === "publishing") {
+        throw new BriefRunStateError("an approval decision for this brief is already publishing", {
+          cause: new Error("stage publishing"),
+        });
+      }
+      if (run.stage !== "awaiting_review") throw new BriefRunStateError();
+      if (run.documentId === null) {
+        throw new BriefRunStateError("a review approval requires the run's report draft", {
+          cause: new Error("missing draft"),
+        });
+      }
+      this.assertHeadInTransaction(transaction, accountId, run, revisionId);
+      // Deterministic per (run, reviewed revision): an approval retry of the
+      // same decision reconciles the SAME publication intent — a re-review
+      // after an edit gets a fresh intent on purpose.
+      const operationId = deriveBriefPublicationOperationId(runId, revisionId);
+      const updated = transaction.run(
+        `UPDATE brief_runs
+         SET stage='publishing',stage_operation_id=NULL,reviewed_revision_id=?,document_revision_id=?,
+             publication_operation_id=?,publication_error_code=NULL,stage_updated_at=?
+         WHERE id=? AND account_id=? AND stage='awaiting_review'`,
+        [revisionId, revisionId, operationId, timestamp, runId, accountId]
+      );
+      if (updated.changes !== 1) throw new BriefRunStateError();
+      this.appendReviewEventInTransaction(transaction, run, revisionId, "approve", note, timestamp);
+      const decided = transaction.get<RunRow>(`SELECT ${RUN_COLUMNS} FROM brief_runs WHERE id=? AND account_id=?`, [
+        runId,
+        accountId,
+      ]);
+      if (!decided) throw new BriefRunNotFoundError();
+      return Object.freeze({ run: decodeBriefRun(decided), replayed: false });
+    });
+  }
+
+  /** Current head revision of the run's draft; a moved/vanished head conflicts. */
+  private assertHeadInTransaction(
+    transaction: SqliteTransaction,
+    accountId: string,
+    run: StoredBriefRun,
+    revisionId: string
+  ): void {
+    if (run.documentId === null) {
+      throw new BriefReviewRevisionConflictError("the brief draft is no longer available", {
+        cause: new Error("missing draft reference"),
+      });
+    }
+    const head = transaction.get<{ head_revision_id?: unknown }>(
+      `SELECT h.id AS head_revision_id
+       FROM documents d
+       JOIN document_revisions h
+         ON h.document_id=d.id AND h.revision=d.current_revision AND h.account_id=d.account_id
+       WHERE d.id=? AND d.account_id=?`,
+      [run.documentId, accountId]
+    );
+    if (!head || String(head.head_revision_id) !== revisionId) {
+      throw new BriefReviewRevisionConflictError();
+    }
+  }
+
+  private appendReviewEventInTransaction(
+    transaction: SqliteTransaction,
+    run: StoredBriefRun,
+    revisionId: string,
+    decision: BriefReviewDecision,
+    note: string | null,
+    timestamp: string
+  ): void {
+    if (run.documentId === null) throw new BriefRunStateError("review events require the run's draft reference");
+    transaction.run(
+      `INSERT INTO brief_review_events (id,account_id,run_id,recipe_id,document_id,document_revision_id,decision,note,created_at)
+       VALUES (?,?,?,?,?,?,?,?,?)`,
+      [randomUUID(), run.accountId, run.id, run.recipeId, run.documentId, revisionId, decision, note, timestamp]
+    );
+  }
+
+  /** publishing → approved, only after the publication committed. */
+  async completeBriefApproval(
+    accountIdValue: string,
+    runIdValue: string
+  ): Promise<StoredBriefRun> {
+    const accountId = uuidIdentity(accountIdValue, "account id");
+    const runId = uuidIdentity(runIdValue, "run id");
+    const timestamp = this.now().toISOString();
+    const cas = await this.ledger.run(
+      `UPDATE brief_runs
+       SET stage='approved',finished_at=?,publication_error_code=NULL,stage_updated_at=?
+       WHERE id=? AND account_id=? AND stage='publishing'`,
+      [timestamp, timestamp, runId, accountId]
+    );
+    if (cas.changes !== 1) {
+      const exists = await this.ledger.get("SELECT 1 FROM brief_runs WHERE id=? AND account_id=?", [runId, accountId]);
+      if (!exists) throw new BriefRunNotFoundError();
+      throw new BriefRunStateError();
+    }
+    return this.getRun(accountId, runId);
+  }
+
+  /**
+   * publishing → awaiting_review after a failed (or unrecoverable) render:
+   * the run returns to review with the bounded failed-publication indicator
+   * and keeps its stable publication operation UUID, so the retry decision
+   * reconciles the same intent. The retry's own head CAS requires a fresh
+   * review when the draft was edited in the meantime.
+   */
+  async failBriefPublication(
+    accountIdValue: string,
+    runIdValue: string,
+    input: { readonly errorCode: string }
+  ): Promise<StoredBriefRun> {
+    const accountId = uuidIdentity(accountIdValue, "account id");
+    const runId = uuidIdentity(runIdValue, "run id");
+    const code = input.errorCode.slice(0, BRIEF_PUBLICATION_ERROR_CODE_MAX) || "BRIEF_PUBLICATION_FAILED";
+    const timestamp = this.now().toISOString();
+    const cas = await this.ledger.run(
+      `UPDATE brief_runs
+       SET stage='awaiting_review',stage_operation_id=NULL,publication_error_code=?,stage_updated_at=?
+       WHERE id=? AND account_id=? AND stage='publishing'`,
+      [code, timestamp, runId, accountId]
+    );
+    if (cas.changes !== 1) {
+      const exists = await this.ledger.get("SELECT 1 FROM brief_runs WHERE id=? AND account_id=?", [runId, accountId]);
+      if (!exists) throw new BriefRunNotFoundError();
+      throw new BriefRunStateError();
+    }
+    return this.getRun(accountId, runId);
+  }
+
+  /** Publishing-stage rows for restart reconciliation (bounded, cross-account). */
+  async listPublishingRuns(limit = BRIEF_CLAIM_BATCH_LIMIT): Promise<readonly StoredBriefRun[]> {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > BRIEF_CLAIM_BATCH_LIMIT) {
+      throw new RangeError(`reconciliation limit must be between 1 and ${BRIEF_CLAIM_BATCH_LIMIT}`);
+    }
+    const rows = await this.ledger.all<RunRow>(
+      `SELECT ${RUN_COLUMNS} FROM brief_runs WHERE stage='publishing' ORDER BY stage_updated_at,id LIMIT ?`,
+      [limit]
+    );
+    return rows.map((row) => decodeBriefRun(row));
+  }
+
+  /**
+   * Account-scoped review inbox: pending, publishing, and decided runs with
+   * the live document head, the retained recipe state, and the latest
+   * decision from the immutable ledger. Keyset-ordered by creation (stable
+   * across in-flight stage transitions); deleted recipes stay readable
+   * through the retained run snapshot.
+   */
+  async listReviewInbox(
+    accountIdValue: string,
+    pageValue: CatalogPageRequest = { limit: BRIEF_PAGE_DEFAULT_LIMIT, after: null }
+  ): Promise<CatalogStorePage<StoredBriefReviewRow>> {
+    const page = validateBriefPageRequest(pageValue);
+    const accountId = uuidIdentity(accountIdValue, "account id");
+    const parameters: Array<string | number> = [accountId, ...BRIEF_REVIEW_INBOX_STAGES];
+    const after = page.after ? " AND (r.created_at,r.id) < (?,?)" : "";
+    if (page.after) parameters.push(page.after.timestamp, page.after.id);
+    parameters.push(page.limit + 1);
+    const rows = await this.ledger.all<ReviewRow>(
+      `SELECT ${RUN_COLUMNS_R},
+              hrev.id AS head_revision_id,
+              hrev.revision AS head_revision,
+              rec.state AS recipe_state,
+              rec.paused_reason AS recipe_paused_reason,
+              ev.decision AS last_decision,
+              ev.note AS last_note,
+              ev.document_revision_id AS last_decision_revision_id,
+              ev.created_at AS last_decision_at
+       FROM brief_runs r
+       LEFT JOIN documents d
+         ON d.id=r.document_id AND d.account_id=r.account_id
+       LEFT JOIN document_revisions hrev
+         ON hrev.document_id=d.id AND hrev.revision=d.current_revision AND hrev.account_id=r.account_id
+       LEFT JOIN brief_recipes rec
+         ON rec.id=r.recipe_id AND rec.account_id=r.account_id
+       LEFT JOIN brief_review_events ev
+         ON ev.id=(SELECT e.id FROM brief_review_events e
+                   WHERE e.run_id=r.id ORDER BY e.created_at DESC,e.id DESC LIMIT 1)
+       WHERE r.account_id=? AND r.stage IN (${placeholders(BRIEF_REVIEW_INBOX_STAGES.length)})${after}
+       ORDER BY r.created_at DESC,r.id DESC LIMIT ?`,
+      parameters
+    );
+    return catalogStorePage(rows.map((row) => decodeReviewRow(row)), page, (review) => ({
+      timestamp: review.run.createdAt,
+      id: review.run.id,
+    }));
+  }
+
+  /** Account-scoped local-notification keyset page (durable read/dismiss state). */
+  async listNotifications(
+    accountIdValue: string,
+    pageValue: CatalogPageRequest = { limit: BRIEF_PAGE_DEFAULT_LIMIT, after: null }
+  ): Promise<CatalogStorePage<StoredBriefNotification>> {
+    const page = validateBriefPageRequest(pageValue);
+    const accountId = uuidIdentity(accountIdValue, "account id");
+    const parameters: Array<string | number> = [accountId];
+    const after = page.after ? " AND (created_at,id) < (?,?)" : "";
+    if (page.after) parameters.push(page.after.timestamp, page.after.id);
+    parameters.push(page.limit + 1);
+    const rows = await this.ledger.all<NotificationRow>(
+      `SELECT id,account_id,recipe_id,run_id,kind,state,detail,created_at,updated_at,read_at
+       FROM brief_notifications
+       WHERE account_id=?${after}
+       ORDER BY created_at DESC,id DESC LIMIT ?`,
+      parameters
+    );
+    return catalogStorePage(rows.map((row) => decodeNotification(row)), page, (item) => ({
+      timestamp: item.createdAt,
+      id: item.id,
+    }));
   }
 
   // -- Baseline selection --------------------------------------------------------

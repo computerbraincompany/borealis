@@ -36,7 +36,9 @@ export type CatalogEndpoint =
   | "research_evidence"
   | "research_table"
   | "brief_recipes"
-  | "brief_runs";
+  | "brief_runs"
+  | "brief_reviews"
+  | "brief_notifications";
 export interface CatalogPosition {
   readonly timestamp: string;
   readonly id: string;
