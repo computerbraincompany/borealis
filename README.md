@@ -658,6 +658,15 @@ restore, and forward-version behavior.
   report PDF renderers.
 - Durable artifact lineage, chart and query receipts, and read-only report
   sharing inside one Borealis instance.
+- Saved analyses (added in the selected functional wave): an owner-scoped
+  executable query with typed parameters and an explicit source set, rerun
+  outside chat with durable one-active runs and operation-idempotent
+  acceptance. Immutable bounded result snapshots support deterministic
+  comparison (keyed add/remove/change with numeric deltas, or explicitly
+  labeled side-by-side previews), CSV/JSON/provenance-manifest export of the
+  stored table only, and a canonical chart-spec copy bound to a result. Chat
+  receipts promote only from a verified full-query capture; legacy receipts
+  get an editor path that requires the complete SQL.
 - Account-scoped libraries, versioned agent identity, Markdown skills and tool
   selections, and personal model
   defaults that never widen a chat's source scope or authorization.

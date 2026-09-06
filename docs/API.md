@@ -1260,6 +1260,44 @@ the Borealis palette. Numeric values are finite and bounded.
 [charts.ts](../server/src/data/charts.ts) is the shared contract for stored
 charts, the UI, report HTML, and both static renderers.
 
+### Saved analyses (shipped in the M12 wave)
+
+Owner-scoped saved queries with typed parameters, durable runs, immutable
+result snapshots, bounded comparison, and stored-snapshot export. All routes
+authenticate in `onRequest` before parsing, use keyset pagination with
+endpoint-bound cursors (`analyses`, `analysis_runs`, `analysis_results`), and
+expose stable `code` values on failures.
+
+| Endpoint | Contract |
+| --- | --- |
+| `GET /api/analyses` | Paginated `{items,next_cursor}` of `{id,title,description,current_revision,source_count,unavailable_source_count,created_at,updated_at}`, newest first. |
+| `POST /api/analyses` | Body `{title,description?,sql,parameters?,source_ids?,comparison_key?}`; `201` with the full definition DTO. `source_ids` presence is the explicit selected set — an empty array stays selected-empty and never widens. |
+| `GET /api/analyses/:id` | Definition at the current revision, parameter declarations, origin provenance ids, and source bindings (`ready_generation`, `content_identity`, `unavailable_at`). |
+| `PATCH /api/analyses/:id` | Body requires `expected_revision`; the optimistic head CAS commits a new immutable revision in one transaction. `comparison_key: null` clears the key; omitting `source_ids` preserves the set. Lost races return `409 ANALYSIS_REVISION_CONFLICT`. |
+| `DELETE /api/analyses/:id` | Requests durable cancellation of an active run and retries the owned deletion within a bounded drain window; `{"ok":true}` on success, `409 ANALYSIS_ACTIVE_RUN` when an executor has not yet drained. Copied report/document snapshots survive. |
+| `POST /api/analyses/from-query` | Promotes only a persisted, verified full-query capture: `{capture_id,title,description?,comparison_key?}`. Sources come from the capture's exact ready provenance. Missing captures (legacy display receipts) return `404 ANALYSIS_CAPTURE_NOT_PROMOTABLE`; a deleted captured source returns `409 ANALYSIS_INPUTS_UNAVAILABLE`. |
+| `GET /api/analyses/:id/runs` | Paginated run summaries, newest first. |
+| `POST /api/analyses/:id/runs` | Body `{values?,operation_id?,expected_revision?}`. Acceptance freezes the revision, typed bindings, and concrete ready source generations in one transaction and returns `202 {outcome,run}` (`queued`/`replayed`/`stale-inputs`). A retried operation UUID replays the original run. `409 ANALYSIS_ACTIVE_RUN` for one-active violations, `409 ANALYSIS_RESULT_QUOTA_EXCEEDED` before execution at 1,000 retained results, `400 ANALYSIS_VALIDATION` for undeclared/missing/mistyped values, `503` when no executor is registered. |
+| `GET /api/analyses/:id/runs/:runId` | Exact run state including frozen parameter bindings and source provenance. |
+| `DELETE /api/analyses/:id/runs/:runId` | Idempotent cancellation request; terminal states are absorbing and repeated calls return the same `{ok:true,status}`. |
+| `GET /api/analyses/:id/results` | Paginated immutable result summaries (never raw rows). |
+| `GET /api/analyses/:id/results/:resultId` | Full stored snapshot: columns with scalar types, rows, completeness flags/reasons, parameter values, source provenance, and timestamps. |
+| `DELETE /api/analyses/:id/results/:resultId` | Explicit retained-result deletion; copied document snapshots survive. |
+| `GET /api/analyses/:id/compare?left=…&right=…` | Deterministic bounded comparison: parameter, source-version, and schema diffs always; with the configured 1–3-column comparison key, added/removed/changed rows and numeric deltas from stored finite values. Duplicate/missing key cells or a changed stored column type return `mode:"side-by-side"` with an explicit `reason_code`; without a key the payload is side-by-side only. Truncated inputs are labeled previews and never claim exhaustive totals. |
+| `GET /api/analyses/:id/results/:resultId/export?format=csv\|json\|manifest` | Stored-snapshot-only download with an explicit `Content-Disposition` filename (partial CSV exports get a `-partial` suffix and a leading `#` comment line). CSV escapes fields and prefixes formula-leading strings with `'`; JSON preserves scalar types; the manifest is provenance-only. No query executes on this path. |
+| `GET /api/analyses/:id/results/:resultId/chart` | Canonical chart-spec copy bound to the result id, computed from the stored snapshot through the canonical chart contract (`bar` chart: first textual column as categories, numeric columns as bounded series). Not a stored chat-run artifact; `400 ANALYSIS_RESULT_NOT_CHARTABLE` when the snapshot has no plottable columns. |
+
+Definitions bound: title 200, description 2,000, SQL 20,000 characters; at most
+20 scalar parameters (`string`, finite `number`, safe `integer`, `boolean`, real
+ISO `date`; string values ≤ 2,000 characters) with positional `?` binding
+executed by the DuckDB prepared-statement path; at most 100 explicitly selected
+source ids; optional 1–3-column comparison key. Persisted results are capped at
+500 rows, 64 columns, 20,000 cells, 2,000 characters per string cell, and 1 MiB
+UTF-8 payload — whichever binds first — with truthful truncation flags; a
+zero-row result is a success, and an exact row count is claimed only when the
+worker established the total.
+
+
 ## Agent tools
 
 These operations run inside an accepted chat turn, not as independently callable
@@ -1440,6 +1478,9 @@ limits are:
 | Connector creation                                                                    |   29,962 bytes |
 | Chat creation/source scope, catalog-status UUID lists, and contained download request |         32 KiB |
 | Agent and automation long-text mutations                                              |        128 KiB |
+| Saved-analysis query-capture promotion                                                |     38,128 bytes |
+| Saved-analysis run acceptance (20 typed values plus the operation UUID)               |    484,864 bytes |
+| Saved-analysis definition create/edit                                                 |  1,344,256 bytes |
 | Settings patch/test and model-qualification draft                                     |  157,696 bytes |
 | Contained-engine configuration                                                        |        256 KiB |
 
@@ -1467,6 +1508,7 @@ complete result.
 | Agent execution            | Sixteen tool rounds plus one reserved final synthesis call, eight tool calls per round, 48 calls per run, 120 seconds per model request, and 120 seconds per tool. Each model request asks for at most 8,192 output tokens; streamed content and reasoning are each capped at 32,000 characters. Tool arguments are capped at 20,000 characters per call and 80,000 per model round; serialized tool responses added to the model conversation are capped at 12,000 characters each. |
 | Evidence display           | Eight passages, 800 characters per excerpt, and 6,000 aggregate characters.                                                                                                                                                                                                                                                                                                                                                                      |
 | Query display snapshots    | Three queries per assistant message; 32 columns and 100 rows per query, 500 cells and 30,000 serialized characters across snapshots.                                                                                                                                                                                                                                                                                                             |
+| Saved analyses             | Definition: title 200, description 2,000, SQL 20,000 characters, 20 parameters, 100 selected sources, 1–3-column comparison key. Persisted results: 500 rows, 64 columns, 20,000 cells, 2,000 characters per string cell, and 1 MiB UTF-8 payload, whichever binds first; at most 1,000 retained results per analysis. Full-query captures: at most 3 per turn, 20,000 SQL characters, 100 provenance sources. Comparison: 200 rows per diff category and per side-by-side preview block. |
 | Chart spec                 | 500 categories, 20 series, 100 pie items, 500 characters per label; finite numbers with magnitude at most `1e15`.                                                                                                                                                                                                                                                                                                                                |
 | Report                     | One per run; 20 sections (50,000 characters each), 20 charts, eight tables (32 columns and 60 rows each). The agent additionally caps section text at 200,000 characters and tables at 1,000 cells/100,000 characters in aggregate; stored normalized payload JSON is capped at 400,000 characters.                                                                                                                                              |
 | Static rendering           | PNG data URLs up to 8 MiB; Electron additionally validates a 16 MiB HTML IPC payload ceiling and a 90-second render-request deadline.                                                                                                                                                                                                                                                                                                            |
@@ -1488,7 +1530,7 @@ still has the stricter 500-column limit.
 | `401`       | Missing/invalid JWT or incorrect login credentials.                                                                    |
 | `403`       | Remote-provider payload route blocked until `REMOTE_EGRESS_CONSENT_REQUIRED` is acknowledged.                          |
 | `404`       | Unknown/unowned resource, pending artifact, or unavailable export.                                                     |
-| `409`       | Active chat run/sync, source mutation conflict, scope overflow, duplicate email/table, or environment-managed setting. |
+| `409`       | Active chat run/sync, source mutation conflict, scope overflow, duplicate email/table, environment-managed setting, or saved-analysis active run/revision conflict/result quota. |
 | `413`       | Request body or upload exceeds its size boundary.                                                                      |
 | `415`       | Unsupported HTTP content type.                                                                                         |
 | `422`       | Unsupported upload type or connector preparation/sync failure.                                                         |
