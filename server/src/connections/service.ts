@@ -330,9 +330,15 @@ export class ConnectionService {
           .recordStatus(accountId, connectionId, "disconnected", "CONNECTION_AUTH_REQUIRED")
           .catch(() => undefined);
       } else {
-        await this.store
-          .recordStatus(accountId, connectionId, "error", "CONNECTION_HANDSHAKE_FAILED")
-          .catch(() => undefined);
+        // Preserve the probe's own stable CONNECTION_* evidence (for example
+        // an explicit over-limit discovery); anything anonymous remains a
+        // generic handshake failure.
+        const rawCode = error instanceof Error ? (error as { code?: unknown }).code : undefined;
+        const statusCode =
+          typeof rawCode === "string" && rawCode.startsWith("CONNECTION_")
+            ? rawCode.slice(0, 64)
+            : "CONNECTION_HANDSHAKE_FAILED";
+        await this.store.recordStatus(accountId, connectionId, "error", statusCode).catch(() => undefined);
       }
       throw error;
     }

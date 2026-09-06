@@ -177,8 +177,13 @@ function containsControlCharacter(value: string): boolean {
   return /[\0\r\n]/.test(value);
 }
 
-/** True when the URL may legitimately be reached over plain HTTP. */
-function isHttpAllowedHost(hostname: string): boolean {
+/**
+ * True when the URL may legitimately be reached over plain HTTP: exact
+ * loopback literals, `localhost`, `.localhost`, and `.local` — the same
+ * explicit development-target boundary the Settings locality rules use.
+ * Exported for the transport's independent fail-closed re-check.
+ */
+export function isPlainHttpConnectionHost(hostname: string): boolean {
   const normalized = hostname.toLowerCase().replace(/^\[|\]$/g, "");
   if (isIP(normalized) === 4) return normalized.startsWith("127.");
   if (isIP(normalized) === 6) return normalized === "::1";
@@ -205,7 +210,7 @@ function httpConfig(value: unknown): McpHttpConfig {
     throw new ConnectionConfigError("connection url is invalid");
   }
   if (
-    (url.protocol !== "https:" && !(url.protocol === "http:" && isHttpAllowedHost(url.hostname))) ||
+    (url.protocol !== "https:" && !(url.protocol === "http:" && isPlainHttpConnectionHost(url.hostname))) ||
     url.username.length > 0 ||
     url.password.length > 0 ||
     url.hostname.length < 1 ||
