@@ -1403,10 +1403,9 @@ const migrations = [
   { version: 17, sql: SCHEMA_V17 },
   { version: 18, sql: SCHEMA_V18 },
   { version: 19, sql: SCHEMA_V19 },
-  // v19 is intentionally absent: it is the parallel M14 slot, coordinated at
-  // merge (see the SCHEMA_V20 header). Do not insert v19 after these entries.
   { version: 20, sql: SCHEMA_V20 },
   { version: 21, sql: SCHEMA_V21 },
+  { version: 22, sql: SCHEMA_V22 },
 ] as const;
 
 function schemaVersion(database: MigrationDatabase): number {
