@@ -1,6 +1,6 @@
 import { SqliteMigrationError } from "./types.js";
 
-export const LATEST_SQLITE_SCHEMA_VERSION = 22;
+export const LATEST_SQLITE_SCHEMA_VERSION = 23;
 
 interface MigrationDatabase {
   exec(sql: string): unknown;
@@ -1383,6 +1383,71 @@ CREATE TABLE document_templates (
 CREATE INDEX document_templates_account_catalog_idx ON document_templates (account_id, created_at DESC, id DESC);
 `;
 
+// Schema v23 — model-assisted document rewrites (M13 stage 3). `document_rewrites`
+// is the durable operation ledger for "rewrite selection": one row per request
+// with the exact owner/document/base-revision/section target, the optional
+// UTF-16 selection range, the SHA-256 of the selected text as it existed in the
+// base revision, and the bounded instruction (≤2,000 characters — the durable
+// last line; the route schema and store enforce the same bound). Selection is
+// bounded at 8,000 characters (whole-section requests over that bound are
+// rejected before any write), and the proposed replacement at 20,000.
+// Lifecycle: `queued → running → completed|failed|cancelled`, plus `stale` —
+// a completed proposal whose acceptance was rejected because the head moved or
+// the selection no longer matches; stale rows stay inspectable forever and are
+// never auto-applied. One active (queued/running) rewrite per document is
+// enforced by the partial unique index; retained proposals per document are
+// bounded at 100 by the store, with explicit row deletion at quota (no trigger
+// deletes proposals implicitly — a retained proposal only vanishes when the
+// owner deletes it or the document cascades). Acceptance records
+// `applied_revision_id` inside the same transaction that appends the
+// model-authored revision, making apply one-shot without widening the status
+// enum; re-acceptance fails closed. Cancellation and restart never leave a
+// half-applied rewrite: `running` rows recover as `failed` with a generic
+// error and the provider call is never replayed. Evidence references copied
+// from the base revision ride `evidence_refs` as a bounded JSON array of the
+// revision's own document-local evidence UUIDs. Instructions, selections, and
+// replacements are content that must never reach logs.
+export const SCHEMA_V23 = `
+CREATE TABLE document_rewrites (
+  id TEXT PRIMARY KEY,
+  account_id TEXT NOT NULL,
+  document_id TEXT NOT NULL,
+  base_revision_id TEXT NOT NULL,
+  section_id TEXT NOT NULL CHECK (length(section_id) BETWEEN 36 AND 64),
+  range_start INTEGER CHECK (range_start IS NULL OR range_start >= 0),
+  range_end INTEGER CHECK (range_end IS NULL OR range_end BETWEEN 1 AND 50000),
+  selection_sha256 TEXT NOT NULL CHECK (length(selection_sha256) = 64 AND selection_sha256 = lower(selection_sha256)),
+  selection_chars INTEGER NOT NULL CHECK (selection_chars BETWEEN 1 AND 8000),
+  instruction TEXT NOT NULL CHECK (length(instruction) BETWEEN 1 AND 2000),
+  status TEXT NOT NULL DEFAULT 'queued'
+    CHECK (status IN ('queued','running','completed','failed','cancelled','stale')),
+  replacement TEXT CHECK (replacement IS NULL OR length(replacement) BETWEEN 1 AND 20000),
+  evidence_refs TEXT NOT NULL
+    CHECK (json_valid(evidence_refs) AND json_type(evidence_refs)='array' AND length(evidence_refs) <= 3802),
+  model TEXT CHECK (model IS NULL OR length(model) BETWEEN 1 AND 256),
+  error_code TEXT CHECK (error_code IS NULL OR length(error_code) BETWEEN 1 AND 128),
+  error_reason TEXT CHECK (error_reason IS NULL OR length(error_reason) <= 500),
+  cancel_requested INTEGER NOT NULL DEFAULT 0 CHECK (cancel_requested IN (0,1)),
+  applied_revision_id TEXT REFERENCES document_revisions(id),
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  started_at TEXT,
+  finished_at TEXT,
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  CHECK (range_start IS NULL OR (range_end IS NOT NULL AND range_end > range_start AND range_end - range_start <= 8000)),
+  CHECK (replacement IS NULL OR status IN ('completed','stale')),
+  CHECK (status NOT IN ('completed','failed','cancelled','stale') OR finished_at IS NOT NULL),
+  UNIQUE (id, account_id),
+  FOREIGN KEY (document_id, account_id) REFERENCES documents(id, account_id) ON DELETE CASCADE,
+  FOREIGN KEY (base_revision_id, account_id) REFERENCES document_revisions(id, account_id) ON DELETE CASCADE
+) STRICT;
+CREATE UNIQUE INDEX document_rewrites_one_active_uidx
+  ON document_rewrites (document_id) WHERE status IN ('queued','running');
+CREATE INDEX document_rewrites_document_catalog_idx
+  ON document_rewrites (account_id, document_id, created_at DESC, id DESC);
+CREATE INDEX document_rewrites_claim_idx
+  ON document_rewrites (created_at, id) WHERE status = 'queued';
+`;
+
 const migrations = [
   { version: 1, sql: SCHEMA_V1 },
   { version: 2, sql: SCHEMA_V2 },
@@ -1406,6 +1471,7 @@ const migrations = [
   { version: 20, sql: SCHEMA_V20 },
   { version: 21, sql: SCHEMA_V21 },
   { version: 22, sql: SCHEMA_V22 },
+  { version: 23, sql: SCHEMA_V23 },
 ] as const;
 
 function schemaVersion(database: MigrationDatabase): number {

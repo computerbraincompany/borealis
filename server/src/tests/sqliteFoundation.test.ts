@@ -514,6 +514,7 @@ describe("SQLite ledger foundation", () => {
               "document_artifact_cleanup_jobs",
               "document_publication_cleanup_jobs",
               "document_templates",
+              "document_rewrites",
             ])
           );
           // v19 living-knowledge tables survive upgrades from every
@@ -577,6 +578,9 @@ describe("SQLite ledger foundation", () => {
               "knowledge_refreshes_connection_history_idx",
               "knowledge_refresh_items_recovery_idx",
               "document_templates_account_catalog_idx",
+              "document_rewrites_one_active_uidx",
+              "document_rewrites_document_catalog_idx",
+              "document_rewrites_claim_idx",
             ])
           );
           const recipientIndex = await ledger.get<{ sql: string }>(
@@ -1355,9 +1359,9 @@ describe("SQLite ledger foundation", () => {
           });
           // v16 protocol state is proven to survive upgrade into the exact
           // current latest schema (v17 connections, v18 analyses, v19 knowledge, the
-          // v20 document tables, the v21 frozen MCP run-snapshot column, and the v22
-          // template catalog ride on top).
-          expect(LATEST_SQLITE_SCHEMA_VERSION).toBe(22);
+          // v20 document tables, the v21 frozen MCP run-snapshot column, the v22
+          // template catalog, and the v23 document-rewrite ledger ride on top).
+          expect(LATEST_SQLITE_SCHEMA_VERSION).toBe(23);
 
           const rows = await ledger.all<Record<string, unknown>>(
             `SELECT source_id,phase,generation,refresh_version,candidate_location,

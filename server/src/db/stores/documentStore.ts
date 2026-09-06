@@ -18,9 +18,20 @@ import {
   normalizeDocumentTree,
   parseDocumentTreePayload,
   type DocumentAuthorKind,
+  type DocumentEvidenceRef,
   type DocumentTree,
   type DocumentTreeInput,
 } from "../../documentTypes.js";
+import {
+  DOCUMENT_REWRITE_INSTRUCTION_MAX_CHARS,
+  DOCUMENT_REWRITE_RETAINED_PER_DOCUMENT_MAX,
+  DOCUMENT_REWRITE_STATUSES,
+  DocumentRewriteSelectionInvalidError,
+  isTerminalDocumentRewriteStatus,
+  resolveRewriteSelectionText,
+  sha256Hex,
+  type DocumentRewriteStatus,
+} from "../../documentRewriteTypes.js";
 import { documentPublicationDirectory } from "../../storageArtifacts.js";
 
 // ---------------------------------------------------------------------------
@@ -35,7 +46,14 @@ export type DocumentStoreErrorCode =
   | "DOCUMENT_PUBLICATION_ACTIVE"
   | "DOCUMENT_PUBLICATION_STATE"
   | "DOCUMENT_HEAD_MOVED"
-  | "DOCUMENT_REVISION_SELECTION";
+  | "DOCUMENT_REVISION_SELECTION"
+  | "DOCUMENT_REWRITE_NOT_FOUND"
+  | "DOCUMENT_REWRITE_ACTIVE"
+  | "DOCUMENT_REWRITE_QUOTA_REACHED"
+  | "DOCUMENT_REWRITE_SELECTION_MISMATCH"
+  | "DOCUMENT_REWRITE_STATE"
+  | "DOCUMENT_REWRITE_STALE"
+  | "DOCUMENT_REWRITE_ALREADY_APPLIED";
 
 export class DocumentStoreError extends Error {
   constructor(
@@ -127,6 +145,68 @@ export class DocumentRevisionSelectionError extends DocumentStoreError {
 }
 
 export { DocumentValidationError };
+
+// ---------------------------------------------------------------------------
+// Rewrite errors (schema v23)
+// ---------------------------------------------------------------------------
+
+export class DocumentRewriteNotFoundError extends DocumentStoreError {
+  constructor(options: ErrorOptions = {}) {
+    super("DOCUMENT_REWRITE_NOT_FOUND", "document rewrite not found", options);
+    this.name = "DocumentRewriteNotFoundError";
+  }
+}
+
+/** One active (queued/running) rewrite already exists for this document. */
+export class DocumentRewriteActiveError extends DocumentStoreError {
+  constructor(options: ErrorOptions = {}) {
+    super("DOCUMENT_REWRITE_ACTIVE", "this document already has an active rewrite", options);
+    this.name = "DocumentRewriteActiveError";
+  }
+}
+
+/** 100 retained proposals per document; explicit deletion frees a slot. */
+export class DocumentRewriteQuotaError extends DocumentStoreError {
+  constructor(options: ErrorOptions = {}) {
+    super("DOCUMENT_REWRITE_QUOTA_REACHED", "document rewrite proposal quota reached", options);
+    this.name = "DocumentRewriteQuotaError";
+  }
+}
+
+/** Server-side re-derivation of the selection disagrees with the submitted hash. */
+export class DocumentRewriteSelectionMismatchError extends DocumentStoreError {
+  constructor(options: ErrorOptions = {}) {
+    super("DOCUMENT_REWRITE_SELECTION_MISMATCH", "the selected text no longer matches this revision", options);
+    this.name = "DocumentRewriteSelectionMismatchError";
+  }
+}
+
+/** Transition attempted from a status that does not admit it. */
+export class DocumentRewriteStateError extends DocumentStoreError {
+  constructor(options: ErrorOptions = {}) {
+    super("DOCUMENT_REWRITE_STATE", "document rewrite state does not allow this transition", options);
+    this.name = "DocumentRewriteStateError";
+  }
+}
+
+/** Head moved or selection changed since the proposal completed; it stays inspectable. */
+export class DocumentRewriteStaleError extends DocumentStoreError {
+  constructor(
+    readonly currentHead: DocumentHeadMetadata,
+    options: ErrorOptions = {}
+  ) {
+    super("DOCUMENT_REWRITE_STALE", "this proposal is stale against the current document head", options);
+    this.name = "DocumentRewriteStaleError";
+  }
+}
+
+/** A proposal applies exactly once; later acceptance attempts fail closed. */
+export class DocumentRewriteAlreadyAppliedError extends DocumentStoreError {
+  constructor(options: ErrorOptions = {}) {
+    super("DOCUMENT_REWRITE_ALREADY_APPLIED", "this proposal was already applied", options);
+    this.name = "DocumentRewriteAlreadyAppliedError";
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Output shapes
@@ -272,6 +352,56 @@ export interface CreateDocumentResult {
   readonly revision: StoredDocumentRevision;
 }
 
+export interface StoredDocumentRewrite {
+  readonly id: string;
+  readonly accountId: string;
+  readonly documentId: string;
+  readonly baseRevisionId: string;
+  readonly sectionId: string;
+  /** UTF-16 half-open selection bounds; null pair means the whole section. */
+  readonly rangeStart: number | null;
+  readonly rangeEnd: number | null;
+  readonly selectionSha256: string;
+  readonly selectionChars: number;
+  readonly instruction: string;
+  readonly status: DocumentRewriteStatus;
+  /** Proposed replacement; present only once the model call completed. */
+  readonly replacement: string | null;
+  /** Document-local evidence UUIDs copied from the base revision. */
+  readonly evidenceRefs: readonly string[];
+  readonly model: string | null;
+  readonly errorCode: string | null;
+  readonly errorReason: string | null;
+  readonly cancelRequested: boolean;
+  readonly appliedRevisionId: string | null;
+  readonly createdAt: string;
+  readonly startedAt: string | null;
+  readonly finishedAt: string | null;
+  readonly updatedAt: string;
+}
+
+export interface AcceptDocumentRewriteRequestInput {
+  /** Exact base revision the selection was taken from. */
+  readonly baseRevisionId: string;
+  /** Stable document-local section UUID in the base revision. */
+  readonly sectionId: string;
+  /** Optional UTF-16 half-open range; both absent selects the whole section. */
+  readonly rangeStart?: number | null;
+  readonly rangeEnd?: number | null;
+  /** Lowercase hex SHA-256 of the selected text as the client saw it. */
+  readonly selectionSha256: string;
+  readonly instruction: string;
+}
+
+export interface DocumentRewritePromptContext {
+  readonly instruction: string;
+  /** Selection re-derived from the immutable base revision, hash re-verified. */
+  readonly selectionText: string;
+  /** Copied evidence subset in base-revision order (context material). */
+  readonly evidence: readonly DocumentEvidenceRef[];
+  readonly model: string | null;
+}
+
 // ---------------------------------------------------------------------------
 // Row decoding
 // ---------------------------------------------------------------------------
@@ -407,6 +537,31 @@ interface ReportPayloadRow {
   payload?: unknown;
 }
 
+interface RewriteRow {
+  id?: unknown;
+  account_id?: unknown;
+  document_id?: unknown;
+  base_revision_id?: unknown;
+  section_id?: unknown;
+  range_start?: unknown;
+  range_end?: unknown;
+  selection_sha256?: unknown;
+  selection_chars?: unknown;
+  instruction?: unknown;
+  status?: unknown;
+  replacement?: unknown;
+  evidence_refs?: unknown;
+  model?: unknown;
+  error_code?: unknown;
+  error_reason?: unknown;
+  cancel_requested?: unknown;
+  applied_revision_id?: unknown;
+  created_at?: unknown;
+  started_at?: unknown;
+  finished_at?: unknown;
+  updated_at?: unknown;
+}
+
 const DOCUMENT_COLUMNS = `d.id,d.account_id,d.title,d.current_revision,d.origin_report_id,d.origin_chat_id,
   d.origin_run_id,d.origin_analysis_result_id,d.created_at,d.updated_at,
   h.id AS head_revision_id,h.author_kind AS head_author_kind`;
@@ -420,6 +575,10 @@ const INTENT_COLUMNS = `id,account_id,document_id,revision_id,revision,operation
   status,artifact_directory,html_path,pdf_path,error_code,error_reason,publication_id,attempts,created_at,updated_at`;
 
 const PUBLICATION_COLUMNS = `id,document_id,revision_id,revision,version,title,supersedes,html_path,pdf_path,created_at`;
+
+const REWRITE_COLUMNS = `id,account_id,document_id,base_revision_id,section_id,range_start,range_end,
+  selection_sha256,selection_chars,instruction,status,replacement,evidence_refs,model,error_code,
+  error_reason,cancel_requested,applied_revision_id,created_at,started_at,finished_at,updated_at`;
 
 function decodeDocument(row: DocumentRow): StoredDocument {
   return Object.freeze({
@@ -523,6 +682,57 @@ function decodeIntent(row: IntentRow): StoredDocumentPublicationIntent {
     attempts: decodeSafeInteger(row.attempts, "publication attempts"),
     createdAt: decodeIsoTimestamp(row.created_at, "publication intent created_at"),
     updatedAt: decodeIsoTimestamp(row.updated_at, "publication intent updated_at"),
+  });
+}
+
+function rewriteStatus(value: unknown): DocumentRewriteStatus {
+  if ((DOCUMENT_REWRITE_STATUSES as readonly string[]).includes(String(value))) return value as DocumentRewriteStatus;
+  throw new TypeError("document rewrite status violates the document store contract");
+}
+
+function optionalIntegerValue(value: unknown, field: string): number | null {
+  if (value === null || value === undefined) return null;
+  return decodeSafeInteger(value, field);
+}
+
+function optionalIsoValue(value: unknown, field: string): string | null {
+  if (value === null || value === undefined) return null;
+  return decodeIsoTimestamp(value, field);
+}
+
+function decodeRewriteEvidenceRefs(value: unknown): readonly string[] {
+  const parsed = decodeJson<unknown>(value, "rewrite evidence refs");
+  if (!Array.isArray(parsed)) throw new TypeError("document rewrite evidence refs must be a JSON array");
+  return Object.freeze(parsed.map((entry) => uuidIdentity(entry, "rewrite evidence ref")));
+}
+
+function decodeRewrite(row: RewriteRow): StoredDocumentRewrite {
+  return Object.freeze({
+    id: uuidIdentity(row.id, "rewrite id"),
+    accountId: uuidIdentity(row.account_id, "rewrite account id"),
+    documentId: uuidIdentity(row.document_id, "rewrite document id"),
+    baseRevisionId: uuidIdentity(row.base_revision_id, "rewrite base revision id"),
+    sectionId: uuidIdentity(row.section_id, "rewrite section id"),
+    rangeStart: optionalIntegerValue(row.range_start, "rewrite range start"),
+    rangeEnd: optionalIntegerValue(row.range_end, "rewrite range end"),
+    selectionSha256: requiredString(row.selection_sha256, "rewrite selection hash"),
+    selectionChars: decodeSafeInteger(row.selection_chars, "rewrite selection chars"),
+    instruction: requiredString(row.instruction, "rewrite instruction"),
+    status: rewriteStatus(row.status),
+    replacement: optionalStoredString(row.replacement, "rewrite replacement"),
+    evidenceRefs: decodeRewriteEvidenceRefs(row.evidence_refs),
+    model: optionalStoredString(row.model, "rewrite model"),
+    errorCode: optionalStoredString(row.error_code, "rewrite error_code"),
+    errorReason: optionalStoredString(row.error_reason, "rewrite error_reason"),
+    cancelRequested: decodeBoolean(row.cancel_requested, "rewrite cancel_requested"),
+    appliedRevisionId:
+      row.applied_revision_id === null || row.applied_revision_id === undefined
+        ? null
+        : uuidIdentity(row.applied_revision_id, "rewrite applied revision id"),
+    createdAt: decodeIsoTimestamp(row.created_at, "rewrite created_at"),
+    startedAt: optionalIsoValue(row.started_at, "rewrite started_at"),
+    finishedAt: optionalIsoValue(row.finished_at, "rewrite finished_at"),
+    updatedAt: decodeIsoTimestamp(row.updated_at, "rewrite updated_at"),
   });
 }
 
@@ -1450,11 +1660,11 @@ export class DocumentStore {
     return row;
   }
 
-  private conflictInTransaction(
+  private headMetadataInTransaction(
     transaction: SqliteTransaction,
     accountId: string,
     documentId: string
-  ): DocumentRevisionConflictError | DocumentNotFoundError {
+  ): DocumentHeadMetadata | null {
     const head = transaction.get<DocumentRow>(
       `SELECT ${DOCUMENT_COLUMNS},
               ${DOCUMENT_AGGREGATES}
@@ -1464,17 +1674,580 @@ export class DocumentStore {
        WHERE d.id=? AND d.account_id=?`,
       [documentId, accountId]
     );
-    if (!head) return new DocumentNotFoundError();
+    if (!head) return null;
     const document = decodeDocument(head);
-    return new DocumentRevisionConflictError(
-      Object.freeze({
-        revisionId: document.currentRevisionId,
-        revision: document.currentRevision,
-        title: document.title,
-        authorKind: document.headAuthorKind,
-        updatedAt: document.updatedAt,
-      })
+    return Object.freeze({
+      revisionId: document.currentRevisionId,
+      revision: document.currentRevision,
+      title: document.title,
+      authorKind: document.headAuthorKind,
+      updatedAt: document.updatedAt,
+    });
+  }
+
+  private conflictInTransaction(
+    transaction: SqliteTransaction,
+    accountId: string,
+    documentId: string
+  ): DocumentRevisionConflictError | DocumentNotFoundError {
+    const head = this.headMetadataInTransaction(transaction, accountId, documentId);
+    if (!head) return new DocumentNotFoundError();
+    return new DocumentRevisionConflictError(head);
+  }
+
+  private requireRewriteRowInTransaction(
+    transaction: SqliteTransaction,
+    accountId: string,
+    documentId: string,
+    rewriteId: string
+  ): StoredDocumentRewrite {
+    const row = transaction.get<RewriteRow>(
+      `SELECT ${REWRITE_COLUMNS} FROM document_rewrites
+       WHERE id=? AND document_id=? AND account_id=?`,
+      [rewriteId, documentId, accountId]
     );
+    if (!row) throw new DocumentRewriteNotFoundError();
+    return decodeRewrite(row);
+  }
+
+  // -- Rewrites (schema v23) ------------------------------------------------------
+
+  /**
+   * Durably accepts one "rewrite selection" request. The selection is
+   * re-derived from the immutable base-revision payload and its SHA-256 must
+   * equal the submitted hash — a mismatch, an invalid/surrogate-split range,
+   * or an over-bound selection never persists a row. At most one active
+   * rewrite per document (partial unique index) and at most
+   * `DOCUMENT_REWRITE_RETAINED_PER_DOCUMENT_MAX` retained rows; the evidence
+   * references of the base revision are copied by stable UUID at request time.
+   */
+  async acceptDocumentRewriteRequest(
+    accountIdValue: string,
+    documentIdValue: string,
+    input: AcceptDocumentRewriteRequestInput
+  ): Promise<StoredDocumentRewrite> {
+    const accountId = uuidIdentity(accountIdValue, "account id");
+    const documentId = uuidIdentity(documentIdValue, "document id");
+    const baseRevisionId = uuidIdentity(input.baseRevisionId, "rewrite base revision id");
+    const sectionId = uuidIdentity(input.sectionId, "rewrite section id");
+    const selectionHash = input.selectionSha256;
+    if (
+      typeof selectionHash !== "string" ||
+      selectionHash.length !== 64 ||
+      selectionHash !== selectionHash.toLowerCase() ||
+      !/^[0-9a-f]{64}$/.test(selectionHash)
+    ) {
+      throw new TypeError("rewrite selection hash must be a lowercase SHA-256 hex digest");
+    }
+    const instruction = textValue(input.instruction, "rewrite instruction", DOCUMENT_REWRITE_INSTRUCTION_MAX_CHARS);
+    if (!instruction.trim()) {
+      throw new DocumentValidationError("DOCUMENT_INVALID", "rewrite instruction must not be blank");
+    }
+    if (input.rangeStart !== undefined && input.rangeStart !== null && !Number.isSafeInteger(input.rangeStart)) {
+      throw new TypeError("rewrite range start must be an integer");
+    }
+    if (input.rangeEnd !== undefined && input.rangeEnd !== null && !Number.isSafeInteger(input.rangeEnd)) {
+      throw new TypeError("rewrite range end must be an integer");
+    }
+    const rangeStart = input.rangeStart ?? null;
+    const rangeEnd = input.rangeEnd ?? null;
+    if ((rangeStart === null) !== (rangeEnd === null)) {
+      throw new DocumentRewriteSelectionInvalidError("invalid-range", "range start and end must be supplied together");
+    }
+    const timestamp = this.timestamp();
+    const rewriteId = randomUUID();
+
+    await this.ledger.withImmediateTransaction((transaction) => {
+      this.headInTransaction(transaction, accountId, documentId);
+      const revision = this.requireRevisionRow(transaction, accountId, documentId, baseRevisionId);
+      const payload = parseDocumentTreePayload(requiredString(revision.payload, "document revision payload"));
+      const section = payload.sections.find((entry) => entry.id === sectionId);
+      if (!section)
+        throw new DocumentRewriteSelectionMismatchError({ cause: new Error("section not in base revision") });
+      const selectionText = resolveRewriteSelectionText(section.markdown, rangeStart, rangeEnd);
+      if (sha256Hex(selectionText) !== selectionHash) {
+        throw new DocumentRewriteSelectionMismatchError({ cause: new Error("selection hash mismatch") });
+      }
+      const retained = transaction.get<{ count?: unknown }>(
+        "SELECT COUNT(*) AS count FROM document_rewrites WHERE document_id=? AND account_id=?",
+        [documentId, accountId]
+      );
+      if (
+        decodeSafeInteger(retained?.count ?? 0, "retained rewrite count") >= DOCUMENT_REWRITE_RETAINED_PER_DOCUMENT_MAX
+      ) {
+        throw new DocumentRewriteQuotaError();
+      }
+      const evidenceRefs = JSON.stringify(payload.evidence.map((entry) => entry.id));
+      try {
+        transaction.run(
+          `INSERT INTO document_rewrites
+             (id,account_id,document_id,base_revision_id,section_id,range_start,range_end,
+              selection_sha256,selection_chars,instruction,status,evidence_refs,created_at,updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,'queued',?,?,?)`,
+          [
+            rewriteId,
+            accountId,
+            documentId,
+            baseRevisionId,
+            sectionId,
+            rangeStart,
+            rangeEnd,
+            selectionHash,
+            selectionText.length,
+            instruction.trim(),
+            evidenceRefs,
+            timestamp,
+            timestamp,
+          ]
+        );
+      } catch (error) {
+        if (error instanceof SqliteConstraintError) throw new DocumentRewriteActiveError({ cause: error });
+        throw error;
+      }
+    });
+
+    const stored = await this.getDocumentRewrite(accountId, documentId, rewriteId);
+    if (!stored) throw new DocumentRewriteNotFoundError({ cause: new Error("rewrite append vanished") });
+    return stored;
+  }
+
+  async getDocumentRewrite(
+    accountIdValue: string,
+    documentIdValue: string,
+    rewriteIdValue: string
+  ): Promise<StoredDocumentRewrite | undefined> {
+    const accountId = uuidIdentity(accountIdValue, "account id");
+    const documentId = uuidIdentity(documentIdValue, "document id");
+    const rewriteId = uuidIdentity(rewriteIdValue, "rewrite id");
+    const row = await this.ledger.get<RewriteRow>(
+      `SELECT ${REWRITE_COLUMNS} FROM document_rewrites WHERE id=? AND document_id=? AND account_id=?`,
+      [rewriteId, documentId, accountId]
+    );
+    return row ? decodeRewrite(row) : undefined;
+  }
+
+  async listDocumentRewrites(
+    accountIdValue: string,
+    documentIdValue: string,
+    pageValue: CatalogPageRequest = defaultCatalogPageRequest()
+  ): Promise<CatalogStorePage<StoredDocumentRewrite>> {
+    const accountId = uuidIdentity(accountIdValue, "account id");
+    const documentId = uuidIdentity(documentIdValue, "document id");
+    if (!(await this.ledger.get("SELECT 1 FROM documents WHERE id=? AND account_id=?", [documentId, accountId]))) {
+      throw new DocumentNotFoundError();
+    }
+    const page = validateCatalogPageRequest(pageValue);
+    const parameters: Array<string | number> = [documentId, accountId];
+    const after = page.after ? " AND (created_at,id) < (?,?)" : "";
+    if (page.after) parameters.push(page.after.timestamp, page.after.id);
+    parameters.push(page.limit + 1);
+    const rows = await this.ledger.all<RewriteRow>(
+      `SELECT ${REWRITE_COLUMNS} FROM document_rewrites
+       WHERE document_id=? AND account_id=?${after}
+       ORDER BY created_at DESC,id DESC LIMIT ?`,
+      parameters
+    );
+    return catalogStorePage(
+      rows.map((row) => decodeRewrite(row)),
+      page,
+      (item) => ({ timestamp: item.createdAt, id: item.id })
+    );
+  }
+
+  async getDocumentRewriteCancelState(
+    accountIdValue: string,
+    documentIdValue: string,
+    rewriteIdValue: string
+  ): Promise<{ status: DocumentRewriteStatus; cancelRequested: boolean } | null> {
+    const accountId = uuidIdentity(accountIdValue, "account id");
+    const documentId = uuidIdentity(documentIdValue, "document id");
+    const rewriteId = uuidIdentity(rewriteIdValue, "rewrite id");
+    const row = await this.ledger.get<{ status?: unknown; cancel_requested?: unknown }>(
+      "SELECT status,cancel_requested FROM document_rewrites WHERE id=? AND document_id=? AND account_id=?",
+      [rewriteId, documentId, accountId]
+    );
+    if (!row) return null;
+    return { status: rewriteStatus(row.status), cancelRequested: decodeBoolean(row.cancel_requested, "cancel flag") };
+  }
+
+  /**
+   * The runner's prompt material: instruction plus the selection re-derived
+   * (and hash re-verified) from the immutable base revision, plus the copied
+   * evidence subset in base-revision order. Nothing else may reach the model.
+   */
+  async getDocumentRewritePromptContext(
+    accountIdValue: string,
+    documentIdValue: string,
+    rewriteIdValue: string
+  ): Promise<DocumentRewritePromptContext | undefined> {
+    const accountId = uuidIdentity(accountIdValue, "account id");
+    const documentId = uuidIdentity(documentIdValue, "document id");
+    const rewriteId = uuidIdentity(rewriteIdValue, "rewrite id");
+    const rewrite = await this.getDocumentRewrite(accountId, documentId, rewriteId);
+    if (!rewrite) return undefined;
+    const revision = await this.getDocumentRevision(accountId, documentId, rewrite.baseRevisionId);
+    if (!revision) throw new DocumentRewriteNotFoundError({ cause: new Error("rewrite base revision vanished") });
+    const section = revision.payload.sections.find((entry) => entry.id === rewrite.sectionId);
+    if (!section) throw new DocumentRewriteSelectionMismatchError({ cause: new Error("section not in base revision") });
+    const selectionText = resolveRewriteSelectionText(section.markdown, rewrite.rangeStart, rewrite.rangeEnd);
+    if (sha256Hex(selectionText) !== rewrite.selectionSha256) {
+      throw new DocumentRewriteSelectionMismatchError({ cause: new Error("selection hash mismatch") });
+    }
+    const copied = new Set(rewrite.evidenceRefs);
+    return Object.freeze({
+      instruction: rewrite.instruction,
+      selectionText,
+      evidence: Object.freeze(revision.payload.evidence.filter((entry) => copied.has(entry.id))),
+      model: rewrite.model,
+    });
+  }
+
+  /**
+   * Claim transition: `queued → running` under status CAS. A pending durable
+   * cancellation wins instead and finalizes the row as `cancelled`.
+   */
+  async markDocumentRewriteRunning(
+    accountIdValue: string,
+    documentIdValue: string,
+    rewriteIdValue: string,
+    model: string
+  ): Promise<StoredDocumentRewrite> {
+    const accountId = uuidIdentity(accountIdValue, "account id");
+    const documentId = uuidIdentity(documentIdValue, "document id");
+    const rewriteId = uuidIdentity(rewriteIdValue, "rewrite id");
+    const modelName = textValue(model.trim(), "rewrite model", 256);
+    return this.ledger.withImmediateTransaction((transaction) => {
+      const rewrite = this.requireRewriteRowInTransaction(transaction, accountId, documentId, rewriteId);
+      if (rewrite.status !== "queued") return rewrite;
+      if (rewrite.cancelRequested) {
+        this.finalizeRewriteInTransaction(transaction, rewriteId, "cancelled", this.timestamp());
+        return this.requireRewriteRowInTransaction(transaction, accountId, documentId, rewriteId);
+      }
+      const started = transaction.run(
+        `UPDATE document_rewrites
+         SET status='running',started_at=?,model=?,updated_at=?
+         WHERE id=? AND account_id=? AND status='queued' AND cancel_requested=0`,
+        [this.timestamp(), modelName, this.timestamp(), rewriteId, accountId]
+      );
+      if (started.changes !== 1)
+        return this.requireRewriteRowInTransaction(transaction, accountId, documentId, rewriteId);
+      return this.requireRewriteRowInTransaction(transaction, accountId, documentId, rewriteId);
+    });
+  }
+
+  /** Records the model's bounded proposal: `running → completed`. */
+  async completeDocumentRewrite(
+    accountIdValue: string,
+    documentIdValue: string,
+    rewriteIdValue: string,
+    proposal: { replacement: string; model?: string }
+  ): Promise<StoredDocumentRewrite> {
+    const accountId = uuidIdentity(accountIdValue, "account id");
+    const documentId = uuidIdentity(documentIdValue, "document id");
+    const rewriteId = uuidIdentity(rewriteIdValue, "rewrite id");
+    const replacement = textValue(proposal.replacement, "rewrite replacement", 20_000);
+    if (!replacement.trim())
+      throw new DocumentValidationError("DOCUMENT_INVALID", "rewrite replacement must not be blank");
+    const model = proposal.model === undefined ? null : textValue(proposal.model.trim(), "rewrite model", 256);
+    const timestamp = this.timestamp();
+    return this.ledger.withImmediateTransaction((transaction) => {
+      const rewrite = this.requireRewriteRowInTransaction(transaction, accountId, documentId, rewriteId);
+      if (rewrite.status !== "running") throw new DocumentRewriteStateError();
+      const completed = transaction.run(
+        `UPDATE document_rewrites
+         SET status='completed',replacement=?,model=COALESCE(?,model),finished_at=?,error_code=NULL,
+             error_reason=NULL,updated_at=?
+         WHERE id=? AND account_id=? AND status='running'`,
+        [replacement, model, timestamp, timestamp, rewriteId, accountId]
+      );
+      if (completed.changes !== 1) throw new DocumentRewriteStateError();
+      return this.requireRewriteRowInTransaction(transaction, accountId, documentId, rewriteId);
+    });
+  }
+
+  /** Generic bounded failure: `running → failed`. Terminal rows settle unchanged. */
+  async failDocumentRewrite(
+    accountIdValue: string,
+    documentIdValue: string,
+    rewriteIdValue: string,
+    failure: { errorCode: string; errorReason?: string; model?: string }
+  ): Promise<StoredDocumentRewrite | null> {
+    const accountId = uuidIdentity(accountIdValue, "account id");
+    const documentId = uuidIdentity(documentIdValue, "document id");
+    const rewriteId = uuidIdentity(rewriteIdValue, "rewrite id");
+    const errorCode = textValue(failure.errorCode, "rewrite error code", 128);
+    const errorReason = optionalText(failure.errorReason, "rewrite error reason", 500);
+    const model = failure.model === undefined ? null : textValue(failure.model.trim(), "rewrite model", 256);
+    const timestamp = this.timestamp();
+    return this.ledger.withImmediateTransaction((transaction) => {
+      const rewrite = this.requireRewriteRowInTransaction(transaction, accountId, documentId, rewriteId);
+      if (isTerminalDocumentRewriteStatus(rewrite.status)) return rewrite;
+      const failed = transaction.run(
+        `UPDATE document_rewrites
+         SET status='failed',error_code=?,error_reason=?,model=COALESCE(?,model),finished_at=?,updated_at=?
+         WHERE id=? AND account_id=? AND status='running'`,
+        [errorCode, errorReason, model, timestamp, timestamp, rewriteId, accountId]
+      );
+      if (failed.changes !== 1)
+        return this.requireRewriteRowInTransaction(transaction, accountId, documentId, rewriteId);
+      return this.requireRewriteRowInTransaction(transaction, accountId, documentId, rewriteId);
+    });
+  }
+
+  /** Runner-side interruption settlement: `running → cancelled`. */
+  async cancelDocumentRewrite(
+    accountIdValue: string,
+    documentIdValue: string,
+    rewriteIdValue: string
+  ): Promise<StoredDocumentRewrite | null> {
+    const accountId = uuidIdentity(accountIdValue, "account id");
+    const documentId = uuidIdentity(documentIdValue, "document id");
+    const rewriteId = uuidIdentity(rewriteIdValue, "rewrite id");
+    return this.ledger.withImmediateTransaction((transaction) => {
+      const rewrite = this.requireRewriteRowInTransaction(transaction, accountId, documentId, rewriteId);
+      if (isTerminalDocumentRewriteStatus(rewrite.status)) return rewrite;
+      this.finalizeRewriteInTransaction(transaction, rewriteId, "cancelled", this.timestamp());
+      return this.requireRewriteRowInTransaction(transaction, accountId, documentId, rewriteId);
+    });
+  }
+
+  /**
+   * Durable cancellation request: `queued` finalizes immediately; `running`
+   * only records the flag for the runner's safe-point observation; terminal
+   * rows settle idempotently.
+   */
+  async requestDocumentRewriteCancel(
+    accountIdValue: string,
+    documentIdValue: string,
+    rewriteIdValue: string
+  ): Promise<{ rewrite: StoredDocumentRewrite; outcome: "cancelled" | "cancelling" | "terminal" }> {
+    const accountId = uuidIdentity(accountIdValue, "account id");
+    const documentId = uuidIdentity(documentIdValue, "document id");
+    const rewriteId = uuidIdentity(rewriteIdValue, "rewrite id");
+    return this.ledger.withImmediateTransaction((transaction) => {
+      const rewrite = this.requireRewriteRowInTransaction(transaction, accountId, documentId, rewriteId);
+      if (rewrite.status === "queued") {
+        const settled = transaction.run(
+          `UPDATE document_rewrites
+           SET status='cancelled',cancel_requested=1,finished_at=?,updated_at=?
+           WHERE id=? AND account_id=? AND status='queued'`,
+          [this.timestamp(), this.timestamp(), rewriteId, accountId]
+        );
+        if (settled.changes !== 1) throw new DocumentRewriteStateError();
+        return {
+          rewrite: this.requireRewriteRowInTransaction(transaction, accountId, documentId, rewriteId),
+          outcome: "cancelled" as const,
+        };
+      }
+      if (rewrite.status === "running") {
+        transaction.run(
+          "UPDATE document_rewrites SET cancel_requested=1,updated_at=? WHERE id=? AND account_id=? AND status='running'",
+          [this.timestamp(), rewriteId, accountId]
+        );
+        return {
+          rewrite: this.requireRewriteRowInTransaction(transaction, accountId, documentId, rewriteId),
+          outcome: "cancelling" as const,
+        };
+      }
+      return { rewrite, outcome: "terminal" as const };
+    });
+  }
+
+  /**
+   * Explicit deletion of a retained proposal (frees one slot of the 100-per-
+   * document quota). Active rows refuse: cancellation goes through the
+   * cancel path, deletion only after the row is terminal.
+   */
+  async deleteDocumentRewrite(
+    accountIdValue: string,
+    documentIdValue: string,
+    rewriteIdValue: string
+  ): Promise<boolean> {
+    const accountId = uuidIdentity(accountIdValue, "account id");
+    const documentId = uuidIdentity(documentIdValue, "document id");
+    const rewriteId = uuidIdentity(rewriteIdValue, "rewrite id");
+    return this.ledger.withImmediateTransaction((transaction) => {
+      const rewrite = this.requireRewriteRowInTransaction(transaction, accountId, documentId, rewriteId);
+      if (!isTerminalDocumentRewriteStatus(rewrite.status)) throw new DocumentRewriteStateError();
+      return (
+        transaction.run("DELETE FROM document_rewrites WHERE id=? AND document_id=? AND account_id=?", [
+          rewriteId,
+          documentId,
+          accountId,
+        ]).changes === 1
+      );
+    });
+  }
+
+  /**
+   * Revision-CAS acceptance. Creates one new draft revision (author kind
+   * `model`) only while the proposal's base revision is still the head AND
+   * the stored selection still matches it byte-for-byte. Any drift durably
+   * marks the proposal `stale` — inspectable forever, never auto-applied —
+   * and rejects with the current head metadata. A `stale` proposal can never
+   * replace newer content, and an applied proposal applies exactly once.
+   */
+  async applyDocumentRewriteProposal(
+    accountIdValue: string,
+    documentIdValue: string,
+    rewriteIdValue: string
+  ): Promise<{ rewrite: StoredDocumentRewrite; result: CreateDocumentResult }> {
+    const accountId = uuidIdentity(accountIdValue, "account id");
+    const documentId = uuidIdentity(documentIdValue, "document id");
+    const rewriteId = uuidIdentity(rewriteIdValue, "rewrite id");
+    const revisionId = randomUUID();
+
+    const outcome = await this.ledger.withImmediateTransaction((transaction) => {
+      const rewrite = this.requireRewriteRowInTransaction(transaction, accountId, documentId, rewriteId);
+      if (rewrite.appliedRevisionId !== null) return Object.freeze({ kind: "already-applied" as const });
+      if (rewrite.status === "stale") return Object.freeze({ kind: "stale" as const });
+      if (rewrite.status !== "completed" || rewrite.replacement === null) {
+        return Object.freeze({ kind: "state" as const });
+      }
+      const head = this.headInTransaction(transaction, accountId, documentId);
+      if (head.id !== rewrite.baseRevisionId) {
+        return Object.freeze({ kind: "needs-stale" as const });
+      }
+      const revision = this.requireRevisionRow(transaction, accountId, documentId, head.id);
+      const payload = parseDocumentTreePayload(requiredString(revision.payload, "document revision payload"));
+      const section = payload.sections.find((entry) => entry.id === rewrite.sectionId);
+      if (!section) return Object.freeze({ kind: "needs-stale" as const });
+      let selectionText: string;
+      try {
+        selectionText = resolveRewriteSelectionText(section.markdown, rewrite.rangeStart, rewrite.rangeEnd);
+      } catch {
+        return Object.freeze({ kind: "needs-stale" as const });
+      }
+      if (sha256Hex(selectionText) !== rewrite.selectionSha256) {
+        return Object.freeze({ kind: "needs-stale" as const });
+      }
+
+      const replaced = `${section.markdown.slice(0, rewrite.rangeStart ?? 0)}${rewrite.replacement}${section.markdown.slice(
+        rewrite.rangeEnd ?? section.markdown.length
+      )}`;
+      const normalized = normalizeDocumentTree({
+        title: payload.title,
+        subtitle: payload.subtitle,
+        verified: payload.verified,
+        sections: payload.sections.map((entry) => (entry.id === section.id ? { ...entry, markdown: replaced } : entry)),
+        charts: payload.charts,
+        tables: payload.tables,
+        evidence: payload.evidence,
+      });
+      const timestamp = this.timestamp();
+      const cas = transaction.run(
+        `UPDATE documents SET title=?,current_revision=?,updated_at=?
+         WHERE id=? AND account_id=? AND current_revision=?`,
+        [normalized.tree.title, head.revision + 1, timestamp, documentId, accountId, head.revision]
+      );
+      if (cas.changes !== 1) {
+        throw this.conflictInTransaction(transaction, accountId, documentId);
+      }
+      this.insertRevisionInTransaction(transaction, {
+        revisionId,
+        documentId,
+        accountId,
+        revision: head.revision + 1,
+        title: normalized.tree.title,
+        payload: normalized.serialized,
+        authorKind: "model",
+        baseRevisionId: head.id,
+        timestamp,
+      });
+      const applied = transaction.run(
+        `UPDATE document_rewrites SET applied_revision_id=?,updated_at=?
+         WHERE id=? AND account_id=? AND status='completed' AND applied_revision_id IS NULL`,
+        [revisionId, timestamp, rewriteId, accountId]
+      );
+      if (applied.changes !== 1) throw new DocumentRewriteStateError();
+      return Object.freeze({
+        kind: "applied" as const,
+        rewrite: this.requireRewriteRowInTransaction(transaction, accountId, documentId, rewriteId),
+      });
+    });
+
+    if (outcome.kind === "already-applied") throw new DocumentRewriteAlreadyAppliedError();
+    if (outcome.kind === "stale") {
+      const currentHead = await this.currentHeadMetadata(accountId, documentId);
+      if (!currentHead) throw new DocumentNotFoundError();
+      throw new DocumentRewriteStaleError(currentHead);
+    }
+    if (outcome.kind === "state") throw new DocumentRewriteStateError();
+    if (outcome.kind === "needs-stale") {
+      // Mark outside the deciding transaction so the durable stale mark
+      // commits even though acceptance then rejects.
+      await this.ledger.run(
+        `UPDATE document_rewrites SET status='stale',updated_at=?
+         WHERE id=? AND account_id=? AND status='completed' AND applied_revision_id IS NULL`,
+        [this.timestamp(), rewriteId, accountId]
+      );
+      const currentHead = await this.currentHeadMetadata(accountId, documentId);
+      if (!currentHead) throw new DocumentNotFoundError();
+      throw new DocumentRewriteStaleError(currentHead);
+    }
+    const document = await this.getDocument(accountId, documentId);
+    const newRevision = await this.getDocumentRevision(accountId, documentId, revisionId);
+    if (!document || !newRevision) throw new DocumentStoreError("DOCUMENT_NOT_FOUND", "rewrite application vanished");
+    return Object.freeze({ rewrite: outcome.rewrite, result: Object.freeze({ document, revision: newRevision }) });
+  }
+
+  private finalizeRewriteInTransaction(
+    transaction: SqliteTransaction,
+    rewriteId: string,
+    status: "cancelled",
+    timestamp: string
+  ): void {
+    transaction.run(
+      `UPDATE document_rewrites SET status=?,cancel_requested=1,finished_at=?,updated_at=?
+       WHERE id=? AND status IN ('queued','running')`,
+      [status, timestamp, timestamp, rewriteId]
+    );
+  }
+
+  private async currentHeadMetadata(accountId: string, documentId: string): Promise<DocumentHeadMetadata | null> {
+    const document = await this.getDocument(accountId, documentId);
+    if (!document) return null;
+    return Object.freeze({
+      revisionId: document.currentRevisionId,
+      revision: document.currentRevision,
+      title: document.title,
+      authorKind: document.headAuthorKind,
+      updatedAt: document.updatedAt,
+    });
+  }
+
+  /**
+   * Crash recovery: `running` rows become durable `failed` records with a
+   * generic code. The provider call is never replayed — a fresh request is
+   * required — and no half-applied rewrite can exist because mutation only
+   * ever happens at acceptance.
+   */
+  async recoverInterruptedDocumentRewrites(): Promise<number> {
+    return this.ledger.withImmediateTransaction((transaction) => {
+      const interrupted = transaction.all<{ id?: unknown }>(
+        "SELECT id FROM document_rewrites WHERE status='running' ORDER BY updated_at,id"
+      );
+      for (const row of interrupted) {
+        transaction.run(
+          `UPDATE document_rewrites
+           SET status='failed',error_code='SERVER_RESTARTED',error_reason=NULL,finished_at=?,updated_at=?
+           WHERE id=? AND status='running'`,
+          [this.timestamp(), this.timestamp(), uuidIdentity(row.id, "rewrite id")]
+        );
+      }
+      return interrupted.length;
+    });
+  }
+
+  async listQueuedDocumentRewrites(limit = 50): Promise<readonly StoredDocumentRewrite[]> {
+    const bounded = decodeSafeInteger(limit, "rewrite claim limit");
+    if (bounded < 1 || bounded > 1_000) throw new RangeError("rewrite claim limit violates the store contract");
+    const rows = await this.ledger.all<RewriteRow>(
+      `SELECT ${REWRITE_COLUMNS} FROM document_rewrites
+       WHERE status='queued' ORDER BY created_at,id LIMIT ?`,
+      [bounded]
+    );
+    return Object.freeze(rows.map((row) => decodeRewrite(row)));
   }
 
   private requireIntentInTransaction(
