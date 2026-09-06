@@ -393,14 +393,15 @@ selection UI remains a later stage of `docs/AGENT_EDITOR_ROLLOUT.md`.
 
 ### Libraries
 
-| Endpoint                         | Response                                                                                             |
-| -------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| `GET /api/libraries`             | Paginated `{items,next_cursor}` of `{id,name,member_count,created_at,updated_at}`, newest first.     |
-| `POST /api/libraries`            | Body `{name}` (1–120 chars, unique per account); returns `201` with the library.                     |
-| `GET /api/libraries/:id`         | `{id,name,created_at,updated_at,members}`; members use the full source resource DTO described below. |
-| `PATCH /api/libraries/:id`       | Body `{name}`; returns the renamed library.                                                          |
-| `PUT /api/libraries/:id/sources` | Body `{source_ids}` (≤100, distinct, all owned by the account); replaces membership exactly.         |
-| `DELETE /api/libraries/:id`      | `{"ok":true}`; membership rows cascade. Sources and their data are never touched.                    |
+| Endpoint                                        | Response                                                                                                                              |
+| ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /api/libraries`                            | Paginated `{items,next_cursor}` of `{id,name,member_count,created_at,updated_at}`, newest first.                                      |
+| `POST /api/libraries`                           | Body `{name}` (1–120 chars, unique per account); returns `201` with the library.                                                      |
+| `GET /api/libraries/:id`                        | `{id,name,revision,created_at,updated_at,members}`; members use the full source resource DTO described below.                          |
+| `PATCH /api/libraries/:id`                      | Body `{name}`; returns the renamed library.                                                                                           |
+| `PUT /api/libraries/:id/sources`                | Body `{source_ids}` (≤100, distinct, all owned by the account); replaces membership exactly.                                          |
+| `POST /api/libraries/:id/directory-imports`     | Copied-directory manifest commit; see below.                                                                                          |
+| `DELETE /api/libraries/:id`                     | `{"ok":true}`; membership rows cascade. Sources and their data are never touched.                                                     |
 
 Libraries reference sources; they never copy or move them. There is no server
 side chat–library binding: attaching a library expands its ready members into
@@ -411,6 +412,87 @@ upload/reingest responses do; no source or library DTO ever exposes a local
 `file_path` (the durable path remains internal to ingestion and cleanup).
 Replacing membership returns `{"ok":true}` and rejects an unknown or
 foreign source with `404` without changing the existing membership.
+
+`GET /api/libraries/:id` also returns `revision`, a collision-resistant digest
+of the exact member set. Browser copied-directory import uses it as a
+compare-and-swap token.
+
+#### Browser copied-directory import
+
+`POST /api/libraries/:id/directory-imports` is the browser counterpart of the
+desktop folder picker: files first arrive through the ordinary
+`POST /api/sources/upload` flow, then one manifest commit binds them to a
+library with their normalized relative paths. This is a one-shot copied
+snapshot — it creates no refreshable folder connection and no durable import
+kind. The body is `{operation_id, expected_revision, items:[{source_id,
+relative_path}]}` (1–100 items):
+
+- `operation_id` is a caller-chosen UUID that makes the commit idempotent — a
+  retry whose every item already carries the operation's stamp and membership
+  returns `{added:0, idempotent:true}` instead of failing its own stale
+  revision;
+- `expected_revision` must equal the library's current `revision`; any
+  membership change between the client's read and the commit returns `409
+  LIBRARY_REVISION_CONFLICT`;
+- the server re-validates the manifest: relative paths re-run managed identity
+  normalization (traversal, absolute, and hidden-segment paths refuse with
+  `400`), and only ready, owned, upload-backed, non-connector sources commit
+  (foreign `404 SOURCE_NOT_FOUND`, unready `409
+  DIRECTORY_IMPORT_SOURCE_NOT_READY`, connector `400
+  DIRECTORY_IMPORT_SOURCE_CONNECTOR`, aggregate over 100 MiB `413
+  DIRECTORY_IMPORT_SIZE_EXCEEDED`, capacity `409
+  DIRECTORY_IMPORT_LIBRARY_FULL`);
+- a successful commit returns `{operation_id, library_id, revision, added,
+  idempotent:false}`, adds the sources to membership through normal rules, and
+  stamps each source's `meta.directory_import` with content-free provenance
+  (`operation_id`, `relative_path`, `library_id`, `committed_at`).
+
+Failed or cancelled imports leave the already-uploaded sources visible in
+Sources with their normal explicit removal action; the server never deletes
+them implicitly.
+
+### Knowledge connections (folder and WebDAV transports)
+
+Living knowledge libraries (M14) are driven by two read-only transports whose
+bytes are staged through ordinary account/source upload storage and normal
+ingestion admission — they are not HTTP endpoints in this stage:
+
+- **`desktop_folder`** scans a directory selected through the native macOS
+  picker. Electron main owns the dialog, resolves the canonical real path, and
+  forwards only `{grant_id, root_path, display_label}` to the backend over the
+  private utility-process channel; the renderer receives only an opaque
+  `grant_id`, a label, and bounded preview metadata (`{grant_id,label,preview:
+  {entry_count,truncated}}`) and never the path. A grant is a one-time token
+  held in backend memory, expires after 10 minutes if uncommitted, and is
+  consumed by the single `desktop_folder` connection-creation path — so no
+  HTTP endpoint accepts an arbitrary absolute local path, and picker
+  cancellation creates no connection and no ingestion job. The scan is bounded
+  (≤100 managed entries, ≤10 directory levels, ≤1,000 visited, ≤100 MiB
+  aggregate, additionally capped by the per-file upload limit); hidden
+  directories, every symlink, and `.git`/`node_modules`/Borealis workspace
+  directories are excluded and reported as skips; over-limit fails the whole
+  preview without partial activation.
+- **`webdav`** reads an application-password Basic-authenticated read-only DAV
+  collection. HTTPS is required except the operator-supported
+  loopback/`.local` network policy; each request DNS-pins its validated
+  resolution and refuses redirects outright, so credentials never continue to
+  another origin. Traversal is bounded `PROPFIND Depth:1` per directory; the
+  `multistatus` body is parsed with a strict structural subset that refuses
+  DTD/entity constructs and bounds byte/element counts. Content hashes are
+  computed over `GET` bytes (ETag/last-modified are hints only); downloads run
+  through two slots on a per-request (default 30 s) ceiling.
+
+The application password lives only in the shared connection secret store
+(keyed by the same account/connection pair as MCP custody) and never in a
+ledger row, DTO, or error; the connection exposes only a
+`credential_configured` boolean. Bad credentials surface as an actionable
+disconnected state; reconnect updates only future transport snapshots, and
+partial remote failures retain ready content with per-item status. Managed
+identity is the normalized relative path: a same-path replacement reuses the
+source with a new ingestion generation, a rename is a missing old path plus a
+new path, and missing upstream is retained as `missing_upstream`. No
+connection scan or deletion removes sources, reports, or captured evidence,
+and a refresh never widens or narrows a chat's source selection.
 
 The macOS app creates its single local account and passes a fresh session from
 Electron main through the trusted preload exactly once. That bootstrap is not an

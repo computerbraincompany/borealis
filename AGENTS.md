@@ -503,7 +503,11 @@ distinct.
   permission requests and arbitrary navigation/popups. The main window may open
   only the controlled `about:blank` report-preview window; that child has an
   empty preload and embeds report HTML in an opaque-origin sandbox. The main
-  preload exposes only the one-shot bootstrap operation.
+  preload exposes only the one-shot bootstrap operation plus the narrow M14
+  selected-folder chooser (`borealisDesktop.chooseFolder`), which returns an
+  opaque `{grant_id,label,preview}` and never a path, listing, read, or general
+  IPC; main forwards the resolved canonical root to the backend grant registry
+  over the private utility-process channel only.
 - On quit, main requests orderly backend shutdown. The backend aborts active
   runs, stops ingestion, closes DuckDB, LanceDB, and SQLite, then acknowledges;
   main applies a bounded kill timeout.
