@@ -6,6 +6,7 @@ import {
   ApiError,
   agentsApi,
   chatsApi,
+  chatsFromJobApi,
   librariesApi,
   modelsApi,
   sourcesApi,
@@ -15,6 +16,7 @@ import {
   type Chat,
   type ChatDetail,
   type ChatModelOption,
+  type ChatWithJob,
   type LibrarySummary,
   type Message,
   type Source,
@@ -1068,5 +1070,111 @@ describe("ChatView orchestration", () => {
     await act(async () => deletion.resolve({ ok: true }));
     expect(screen.getByRole("heading", { name: "Chat with Borealis" })).toBeInTheDocument();
     expect(window.location.hash).toBe("#/chat");
+  });
+
+  const jobAgent: AgentSummary = {
+    ...agentA,
+    job_setup: {
+      starter_prompts: ["Analyze the quarterly CSVs"],
+      output_template: null,
+      library_ids: ["library-a"],
+    },
+  };
+
+  const jobChat: ChatWithJob = {
+    ...chat,
+    id: "chat-job",
+    job: {
+      starter_prompts: ["Analyze the quarterly CSVs"],
+      output_template: null,
+      suggested_library_ids: ["library-a"],
+      suggested_source_ids: ["source-1"],
+    },
+  };
+
+  const jobDetail = (sources: AttachedSource[]): ChatDetail => detail({ ...jobChat, sources, messages: [] });
+
+  async function openComposerWithJobAgent(user: ReturnType<typeof userEvent.setup>) {
+    vi.mocked(agentsApi.list).mockResolvedValue(catalogPage([jobAgent]));
+    vi.mocked(sourcesApi.list).mockResolvedValue(catalogPage([source]));
+    render(<ChatView />);
+    await user.click(await screen.findByRole("button", { name: "Agent: None" }));
+    await user.click(await screen.findByRole("menuitemradio", { name: /Analyst/ }));
+  }
+
+  it("creates a job chat through the job contract and holds the first message until the sources are confirmed", async () => {
+    const user = userEvent.setup();
+    let streamCalls = 0;
+    vi.spyOn(apiModule, "streamAgentChat").mockImplementation(async () => {
+      streamCalls += 1;
+    });
+    const createJob = vi.spyOn(chatsFromJobApi, "create").mockResolvedValue(jobChat);
+    vi.spyOn(chatsApi, "create").mockResolvedValue(chat);
+    vi.mocked(chatsApi.get).mockImplementation(async (id) => (id === "chat-job" ? jobDetail([]) : detail()));
+    const updateSources = vi.mocked(chatsApi.updateSources).mockResolvedValue({
+      source_mode: "selected",
+      sources: [attachedSource],
+    });
+
+    await openComposerWithJobAgent(user);
+    const composer = await screen.findByPlaceholderText("Ask Borealis about your data…");
+    await user.type(composer, "Give me the summary");
+    await user.click(screen.getByTitle("Send"));
+
+    // Creation goes through the job contract, never the plain create, and the
+    // server-expanded ready list is confirmed before anything is sent.
+    expect(await screen.findByText(/confirm sources before the first message/i)).toBeInTheDocument();
+    expect(createJob).toHaveBeenCalledWith({
+      agentId: "agent-a",
+      suggestedLibraryIds: ["library-a"],
+      model: "qwen-chat",
+    });
+    expect(chatsApi.create).not.toHaveBeenCalled();
+    expect(streamCalls).toBe(0);
+
+    // A second send attempt while pending is still blocked.
+    await user.click(screen.getByTitle("Send"));
+    expect(streamCalls).toBe(0);
+    expect(updateSources).not.toHaveBeenCalled();
+
+    // The starter prompt fills the composer instead of sending.
+    await user.click(screen.getByRole("button", { name: /Analyze the quarterly CSVs/ }));
+    expect(composer).toHaveValue("Analyze the quarterly CSVs");
+
+    await user.click(screen.getByRole("button", { name: /Attach 1 suggested source/ }));
+    await waitFor(() =>
+      expect(updateSources).toHaveBeenCalledWith("chat-job", { source_mode: "selected", source_ids: ["source-1"] }),
+    );
+    expect(await screen.findByText("Sources confirmed")).toBeInTheDocument();
+
+    await user.click(screen.getByTitle("Send"));
+    await waitFor(() => expect(streamCalls).toBe(1));
+    // The confirmed scope is exactly the server-expanded list; it never widens.
+    expect(updateSources.mock.calls[0][1]).toEqual({ source_mode: "selected", source_ids: ["source-1"] });
+  });
+
+  it("declining the job suggestion starts selected-empty and never attaches or widens sources", async () => {
+    const user = userEvent.setup();
+    let streamCalls = 0;
+    vi.spyOn(apiModule, "streamAgentChat").mockImplementation(async () => {
+      streamCalls += 1;
+    });
+    const createJob = vi.spyOn(chatsFromJobApi, "create").mockResolvedValue(jobChat);
+    vi.mocked(chatsApi.get).mockImplementation(async (id) => (id === "chat-job" ? jobDetail([]) : detail()));
+    const updateSources = vi.mocked(chatsApi.updateSources);
+
+    await openComposerWithJobAgent(user);
+    const composer = await screen.findByPlaceholderText("Ask Borealis about your data…");
+    await user.type(composer, "Skip the sources this time");
+    await user.click(screen.getByTitle("Send"));
+
+    expect(await screen.findByText(/confirm sources before the first message/i)).toBeInTheDocument();
+    expect(createJob).toHaveBeenCalledTimes(1);
+    await user.click(screen.getByRole("button", { name: /Start without these sources/ }));
+
+    await user.click(screen.getByTitle("Send"));
+    await waitFor(() => expect(streamCalls).toBe(1));
+    expect(updateSources).not.toHaveBeenCalled();
+    expect(chatsApi.create).not.toHaveBeenCalled();
   });
 });

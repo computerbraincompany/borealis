@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useReducer, useRef, useState, type UIEvent } from "react";
 import { Cpu, Loader2, Plus, Send, Square, Sparkles, X } from "lucide-react";
 import {
+  agentJobSetupOf,
   ApiError,
   chatsApi,
+  chatsFromJobApi,
   formatApiError,
   librariesApi,
   parseCitationRefs,
@@ -12,6 +14,8 @@ import {
   type AttachedSource,
   type Chat,
   type ChatDetail,
+  type ChatJobProjection,
+  type ChatWithJob,
   type ChatRunTerminalStatus,
   type LibrarySummary,
   type Message,
@@ -27,6 +31,7 @@ import { ChatMessage } from "@/components/ChatMessage";
 import { ModelSelector } from "@/components/ModelSelector";
 import { AgentSelector } from "@/components/AgentSelector";
 import { ChatSourcePicker } from "@/components/ChatSourcePicker";
+import { JobConfirmationCard, type JobConfirmState } from "@/components/JobConfirmationCard";
 import { ChatHistory } from "@/components/ChatHistory";
 import { ToolActivity } from "@/components/ToolActivity";
 import { createStreamState, EMPTY_STREAM_STATE, streamsByChatReducer, type StreamState } from "@/lib/chatStream";
@@ -91,6 +96,18 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
     source_mode: "selected",
     source_ids: [],
   });
+  // Chat-creation-from-job: the created chat stays selected-empty and the
+  // first message is blocked until the expanded suggestion is confirmed or
+  // explicitly declined (never a fallback to `all`).
+  const [pendingJob, setPendingJob] = useState<{
+    chatId: string;
+    agentName: string;
+    job: ChatJobProjection;
+  } | null>(null);
+  const [jobConfirmState, setJobConfirmState] = useState<JobConfirmState>("pending");
+  const [jobConfirmError, setJobConfirmError] = useState<string | null>(null);
+  const [jobCreateFailed, setJobCreateFailed] = useState(false);
+  const jobConfirmInFlightRef = useRef(false);
   const abortByChatRef = useRef(new Map<string, AbortController>());
   const runRevisionByChatRef = useRef(new Map<string, number>());
   const rehydratedRunByChatRef = useRef(new Map<string, string>());
@@ -691,6 +708,50 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
     }
   };
 
+  // Chat-creation-from-job confirmation: the created chat is selected-empty.
+  // Confirming applies exactly the server-expanded ready-source ids; declining
+  // starts the chat without sources. Neither path ever widens the scope.
+  const confirmJobSources = async () => {
+    if (!detail || !pendingJob || pendingJob.chatId !== detail.id || jobConfirmInFlightRef.current) return;
+    const targetChatId = detail.id;
+    const suggestedIds = [...pendingJob.job.suggested_source_ids];
+    if (suggestedIds.length === 0) return;
+    jobConfirmInFlightRef.current = true;
+    setJobConfirmState("confirming");
+    setJobConfirmError(null);
+    try {
+      const updated = await chatsApi.updateSources(targetChatId, { source_mode: "selected", source_ids: suggestedIds });
+      if (!isMounted() || currentChatId() !== targetChatId) return;
+      setDetail((current) =>
+        current?.id === targetChatId
+          ? { ...current, source_mode: updated.source_mode, sources: updated.sources }
+          : current,
+      );
+      setChats((current) =>
+        current.map((chat) => (chat.id === targetChatId ? { ...chat, source_mode: updated.source_mode } : chat)),
+      );
+      setJobConfirmState("confirmed");
+    } catch (error: unknown) {
+      if (isMounted() && currentChatId() === targetChatId) {
+        setJobConfirmError(
+          formatApiError(
+            error,
+            "The suggested sources could not be attached. You can try again or start without them.",
+          ),
+        );
+        setJobConfirmState("pending");
+      }
+    } finally {
+      jobConfirmInFlightRef.current = false;
+    }
+  };
+
+  const dismissJobConfirmation = () => {
+    if (jobConfirmInFlightRef.current) return;
+    setJobConfirmState("dismissed");
+    setJobConfirmError(null);
+  };
+
   const removeAttachedSource = (sourceId: string) => {
     if (!detail || detail.source_mode !== "selected") return;
     const targetChatId = detail.id;
@@ -1015,10 +1076,21 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
     })();
   };
 
+  const jobGateActive = Boolean(
+    detail &&
+      pendingJob &&
+      pendingJob.chatId === detail.id &&
+      (jobConfirmState === "pending" || jobConfirmState === "confirming"),
+  );
+
   const send = async (text?: string) => {
     const content = (text ?? draft).trim();
     if (!content) return;
     setNewChatError(null);
+
+    // A freshly created job chat holds its first message until the expanded
+    // source suggestion is confirmed or explicitly declined.
+    if (detail && jobGateActive) return;
 
     if (detail) {
       sendToChat(detail, content);
@@ -1040,6 +1112,89 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
         ? { source_mode: "all" }
         : { source_mode: "selected", source_ids: [...newChatSourceScope.source_ids] };
     let createdChatId: string | null = null;
+
+    // Chat-creation-from-job: an agent with a job setup creates the chat
+    // through the job contract (selected-empty until confirmed) and does NOT
+    // send the draft. An explicit user scope choice skips the job route.
+    const selectedAgent = selectedAgentId
+      ? (agentCatalog.find((candidate) => candidate.id === selectedAgentId) ?? null)
+      : null;
+    const jobSetup = selectedAgent ? agentJobSetupOf(selectedAgent) : null;
+    const jobEligible = Boolean(
+      jobSetup &&
+        !jobCreateFailed &&
+        (jobSetup.starter_prompts.length > 0 || jobSetup.library_ids.length > 0 || jobSetup.output_template !== null),
+    );
+    const jobScopeProvided = newChatSourceScope.source_mode === "all" || newChatSourceScope.source_ids.length > 0;
+    if (jobEligible && jobSetup && !jobScopeProvided) {
+      try {
+        await createChat(
+          () =>
+            chatsFromJobApi.create({
+              agentId: selectedAgentId as string,
+              suggestedLibraryIds: [...jobSetup.library_ids],
+              ...(selectedModel ? { model: selectedModel } : {}),
+            }),
+          async (created: ChatWithJob) => {
+            createdChatId = created.id;
+            chatListRequestRef.current += 1;
+            setChats((current) => [created, ...current.filter((chat) => chat.id !== created.id)]);
+            firstSubmitTargetChatIdRef.current = created.id;
+            let createdDetail = await loadChat(created.id);
+            if (!createdDetail) {
+              if (currentChatId() === created.id && isMounted()) {
+                setNewChatError("The chat was created, but could not be opened. Try selecting it from the chat list.");
+              }
+              return;
+            }
+            if (currentChatId() !== created.id) return;
+            if (selectedModel && selectedModel !== createdDetail.model) {
+              const updated = await chatsApi.updateModel(created.id, selectedModel);
+              if (!isMounted() || currentChatId() !== created.id) return;
+              createdDetail = { ...createdDetail, model: updated.model, updated_at: updated.updated_at };
+              setDetail((current) =>
+                current?.id === created.id
+                  ? { ...current, model: updated.model, updated_at: updated.updated_at }
+                  : current,
+              );
+              setChats((current) => current.map((chat) => (chat.id === created.id ? { ...chat, ...updated } : chat)));
+            }
+            if (!isMounted() || currentChatId() !== created.id) return;
+            setPendingJob({
+              chatId: created.id,
+              agentName: selectedAgent?.name ?? "Job",
+              job: created.job ?? {
+                starter_prompts: [...jobSetup.starter_prompts],
+                output_template: jobSetup.output_template,
+                suggested_library_ids: [...jobSetup.library_ids],
+                suggested_source_ids: [],
+              },
+            });
+            setJobConfirmState("pending");
+            setJobConfirmError(null);
+            setNewChatModelSelection(null);
+            setNewChatAgentSelection(null);
+            setNewChatSourceScope({ source_mode: "selected", source_ids: [] });
+            firstSubmitSetupCompleteRef.current = true;
+          },
+        );
+        await loadChats();
+      } catch (error: unknown) {
+        if (!isMounted()) return;
+        if (!createdChatId || currentChatId() === createdChatId) {
+          // The server never creates a chat on failure (JOB_SCOPE_LIMIT and
+          // invalid-library rejections create nothing); offer the plain path.
+          setNewChatError(formatApiError(error, "Could not start the chat from this job."));
+          setJobCreateFailed(true);
+        }
+        await loadChats();
+      } finally {
+        if (!firstSubmitSetupCompleteRef.current || currentChatId() !== firstSubmitTargetChatIdRef.current) {
+          releaseFirstSubmit();
+        }
+      }
+      return;
+    }
 
     try {
       await createChat(
@@ -1085,6 +1240,9 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
           setNewChatModelSelection(null);
           setNewChatAgentSelection(null);
           setNewChatSourceScope({ source_mode: "selected", source_ids: [] });
+          setPendingJob(null);
+          setJobConfirmState("pending");
+          setJobCreateFailed(false);
           firstSubmitSetupCompleteRef.current = true;
         },
       );
@@ -1361,6 +1519,19 @@ export function ChatView({ chatId, newChatRequest }: { chatId?: string; newChatR
         {/* composer */}
         <div className="border-t bg-background px-6 pb-5 pt-3">
           <div className="mx-auto max-w-4xl">
+            {detail && pendingJob && pendingJob.chatId === detail.id && jobConfirmState !== "dismissed" && (
+              <JobConfirmationCard
+                agentName={pendingJob.agentName}
+                job={pendingJob.job}
+                state={jobConfirmState}
+                sources={sources}
+                error={jobConfirmError}
+                busy={jobConfirmState === "confirming"}
+                onConfirm={() => void confirmJobSources()}
+                onDismiss={dismissJobConfirmation}
+                onUsePrompt={(prompt) => setDraft(prompt)}
+              />
+            )}
             {isEmpty && !detailError && (
               <div className="mb-6 grid gap-2 sm:grid-cols-2">
                 {SUGGESTIONS.map((s) => (
