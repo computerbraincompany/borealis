@@ -1677,14 +1677,37 @@ unverified draft with new section UUIDs and no attachments.
 ### Local research (shipped in the M15 wave)
 
 Owner-scoped durable research definitions, runs, evidence dossiers, and typed
-comparison tables (schema v25). Stage 1 ships the persistence, Start admission,
-dossier reads, review, and cancellation surfaces; plan generation, the runner,
-artifact publication, and export are stages 2–3 and answer reserved `501`
-codes. All routes authenticate in `onRequest` before parsing, use keyset
-pagination with endpoint-bound cursors (`research`, `research_runs`,
-`research_evidence`, `research_table`), default to a page of 25 (evidence max
-50, the others max 100), and expose stable `code` values on failures. Responses
-never include the captured provider origin.
+comparison tables (schema v25). Stages 1–2 ship the persistence, Start
+admission, bounded editable plan proposals, durable execution, dossier reads,
+review, and cancellation surfaces; artifact publication and export remain
+stage 3 and answer reserved `501` codes. All routes authenticate in `onRequest`
+before parsing, use keyset pagination with endpoint-bound cursors (`research`,
+`research_runs`, `research_evidence`, `research_table`), default to a page of 25
+(evidence max 50, the others max 100), and expose stable `code` values on
+failures. Responses never include the captured provider origin.
+
+Execution is one owned executor registered on the application runtime (like the
+saved-analysis and rewrite runners). It claims resumable runs in acceptance
+order and executes exactly one run per account at a time (the rest wait in the
+durable queue), one active run per definition. Each sequential step searches the
+run's pinned `(source, generation)` contract through M14 `searchCapturedScope`
+(keyword per planned question, then one optional semantic pass through the
+account-authorized embedding boundary with a consent recheck and content-free
+audit). Evidence is captured immutably during steps, always before any synthesis
+call, deduplicated by `(run, source, generation, chunk, excerpt hash)` and
+bounded to 100 items / 2,000 characters each / 200,000 total. Budgets — 8 steps,
+32 searches, 40 model requests including synthesis, and a 15-minute wall clock —
+are enforced through the store's usage CAS; exhaustion finishes honestly as
+`needs_review` with explicit gap rows and preserved partial work, never as a
+completed exhaustive answer. Memo synthesis produces claims/gaps whose citations
+resolve only to this run's own dossier (invalid or foreign references are
+dropped, a `conflicting` claim needs at least two differing excerpts, otherwise
+it is honestly `unsupported`); comparison synthesis extracts each column's typed
+cell values, storing an off-type value verbatim as `invalid` (never coerced). A
+`completed` run means computation finished; publishing still requires the
+reserved stage-3 artifact action. Cancellation is the DELETE-side durable flag
+observed at safe points, and shutdown interrupts in-flight transports and leaves
+the run durable for the bounded at-most-one startup resume.
 
 | Endpoint | Contract |
 | --- | --- |
@@ -1693,8 +1716,8 @@ never include the captured provider origin.
 | `GET /api/research/:id` | Definition at the head revision with source availability (`ready\|unready\|missing`) and the current `active_run` summary. |
 | `PATCH /api/research/:id` | Body requires `expected_revision`; the optimistic head CAS commits a new immutable revision in one transaction. A stale revision answers `409 RESEARCH_REVISION_CONFLICT`; a foreign definition is `404`. |
 | `DELETE /api/research/:id` | Refuses while a run is active with `409 RESEARCH_ACTIVE_RUN` (`existing_run_id`); the route requests durable cancellation and retries the owned deletion within a bounded drain window. `{"ok":true}` on success. |
-| `POST /api/research/:id/plan` | **Reserved — stage 2.** After the ownership check the route answers `501 {"code":"RESEARCH_PLANNER_NOT_READY"}`; nothing executes and no run starts. |
-| `POST /api/research/:id/runs` | Body `{expected_revision?,definition_revision?,rerun_of?,rerun_selection?}`. The remote-egress gate answers `403 REMOTE_EGRESS_CONSENT_REQUIRED` before persistence. Start pins the chosen revision, the concrete ready source/generation set, the model, the provider authorization snapshot, and the budget copy atomically and returns `201` with the frozen run. `409 RESEARCH_SCOPE_EMPTY` for a selected-empty selection, `409 RESEARCH_INPUTS_NOT_READY` (`unready_source_ids`) for a removed/non-ready source (never silently dropped), `409 RESEARCH_ACTIVE_RUN` (`existing_run_id`) for one-active-per-definition, and `409 RESEARCH_QUEUE_FULL` past ten queued runs per account. |
+| `POST /api/research/:id/plan` | Generates one bounded, editable plan PROPOSAL through the account-authorized runtime (consent-gated, content-free audit, no reasoning exposure). Body `{expected_revision?}`; a stale `expected_revision` answers `409 RESEARCH_REVISION_CONFLICT` before any provider call, and the remote-egress gate answers `403 REMOTE_EGRESS_CONSENT_REQUIRED` first. `200` returns `{definition_id,base_revision,model,model_used,fallback,error_code,plan}` where `plan` is `{steps:[{id,objective,questions[]}]}` (≤8 steps, ≤8 questions each, ≤32 total). A provider failure or unusable output returns the deterministic four-step fallback (find → compare → gaps → synthesize) with `fallback:true` and a stable `error_code`. The proposal is returned for review only: it creates no run and approves nothing; the user persists it as a new revision through a CAS `PATCH`. |
+| `POST /api/research/:id/runs` | Body `{expected_revision?,definition_revision?,rerun_of?,rerun_selection?}`. The remote-egress gate answers `403 REMOTE_EGRESS_CONSENT_REQUIRED` before persistence. When model discovery is live, the definition's chat model is checked against the provider's available models and a mismatch answers `409 RESEARCH_MODEL_UNAVAILABLE`; an unreachable provider does not refuse admission (the durable row is the contract and the runner revalidates/settles at transport). Start pins the chosen revision, the concrete ready source/generation set, the model, the provider authorization snapshot, and the budget copy atomically, dispatches the accepted `queued` row to the registered runner (fire-and-forget; a busy account defers to the claim loop), and returns `201` with the frozen run. `409 RESEARCH_SCOPE_EMPTY` for a selected-empty selection, `409 RESEARCH_INPUTS_NOT_READY` (`unready_source_ids`) for a removed/non-ready source (never silently dropped), `409 RESEARCH_ACTIVE_RUN` (`existing_run_id`) for one-active-per-definition, and `409 RESEARCH_QUEUE_FULL` past ten queued runs per account. |
 | `GET /api/research/:id/runs` | Paginated run summaries, newest first. |
 | `GET /api/research-runs/:id` | Frozen run (`status`, `sources`, `budgets`, `usage`, `rerun_of`, `review_revision`, timestamps), persisted `steps`, captured `claims`/`gaps`, `counts`, and `run_notes`. |
 | `GET /api/research-runs/:id/evidence` | Paginated captured evidence (≤50/page): `source_id`, `generation`, `chunk_id`, sanitized `label`, M14 `locators`, bounded `excerpt`, `content_hash`, `retrieved_at`, `step_ordinal`, `query`, `irrelevant`. Source deletion never erases a captured excerpt. |
