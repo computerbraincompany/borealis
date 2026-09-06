@@ -124,11 +124,10 @@ async function markRunning(
 describe("AnalysisStore", () => {
   it("ships a byte-identical v018 fixture that upgrades a seeded v16 installation", async () => {
     // The v018.sql fixture is byte-identical to the migration delta. The
-    // inventory holds exactly one fixture per version with the single
-    // documented pending-merge v17 gap; the coordinator empties
-    // PENDING_MERGE_SCHEMA_VERSIONS after the v17 merge and this assertion
-    // becomes contiguous with no other test edits.
-    expect(expectedFixtureVersions()).toEqual([...Array.from({ length: 16 }, (_, index) => index + 1), 18]);
+    // inventory holds exactly one contiguous fixture per version.
+    expect(expectedFixtureVersions()).toEqual(
+      Array.from({ length: LATEST_SQLITE_SCHEMA_VERSION }, (_, index) => index + 1)
+    );
     const fixtureSql = await fs.readFile(fileURLToPath(new URL("./fixtures/sqlite/v018.sql", import.meta.url)), "utf8");
     expect(fixtureSql).toBe(SCHEMA_V18);
 

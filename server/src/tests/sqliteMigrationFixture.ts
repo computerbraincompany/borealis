@@ -32,7 +32,7 @@ export const HISTORICAL_FIXTURE_SEED = {
  * becomes contiguous with no other test edits. Nothing here fakes a v17
  * schema: unknown files and every other missing version still fail closed.
  */
-export const PENDING_MERGE_SCHEMA_VERSIONS: readonly number[] = Object.freeze([17]);
+export const PENDING_MERGE_SCHEMA_VERSIONS: readonly number[] = Object.freeze([]);
 
 /** Versions that must exist as historical fixtures on the current branch. */
 export function expectedFixtureVersions(): number[] {

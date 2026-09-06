@@ -753,7 +753,6 @@ CREATE INDEX pending_vector_ops_periodic_idx ON pending_vector_ops (attempts, up
 CREATE INDEX dataset_cache_cleanup_jobs_periodic_idx ON dataset_cache_cleanup_jobs (attempts, updated_at, account_id, name, location);
 `;
 
-<<<<<<< HEAD
 // Schema v17 introduces Connected agents: account-scoped MCP connection
 // records and their published tool-discovery snapshots. `config` holds only
 // validated non-secret JSON (the strict kind-specific shape is owned by the
@@ -803,7 +802,8 @@ CREATE TABLE connection_tool_snapshots (
   UNIQUE (connection_id, discovery_revision, name),
   FOREIGN KEY (connection_id, account_id) REFERENCES connections(id, account_id) ON DELETE CASCADE
 ) STRICT;
-=======
+`;
+
 // Schema v18 — saved analyses (M12). Six owner-scoped tables plus one
 // capture table. Definitions are optimistic-revisioned heads (analyses) over
 // immutable full-content revisions (analysis_revisions); the explicit selected
@@ -955,7 +955,6 @@ CREATE TABLE query_captures (
   FOREIGN KEY (run_id, account_id) REFERENCES chat_runs(id, account_id) ON DELETE CASCADE
 ) STRICT;
 CREATE INDEX query_captures_run_idx ON query_captures (account_id, run_id, id);
->>>>>>> 4d1a1b6 (feat(db): allocate schema v18 for saved analyses and query captures)
 `;
 
 const migrations = [
