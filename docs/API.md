@@ -509,7 +509,7 @@ reingest or mass embedding request.
 
 Living knowledge libraries (M14) are driven by two read-only transports whose
 bytes are staged through ordinary account/source upload storage and normal
-ingestion admission — they are not HTTP endpoints in this stage:
+ingestion admission:
 
 - **`desktop_folder`** scans a directory selected through the native macOS
   picker. Electron main owns the dialog, resolves the canonical real path, and
@@ -547,6 +547,43 @@ source with a new ingestion generation, a rename is a missing old path plus a
 new path, and missing upstream is retained as `missing_upstream`. No
 connection scan or deletion removes sources, reports, or captured evidence,
 and a refresh never widens or narrows a chat's source selection.
+
+#### The knowledge workflow surface
+
+The typed routes above put the ledger, the transports, and the durable
+`refreshAndWaitReady` service behind `requireAuth` resource routes. DTOs carry
+stable `KNOWLEDGE_*` state codes only, never a folder's absolute root path or
+any credential material, and every failure is a stable code with a fixed
+generic message.
+
+| Endpoint                                      | Contract                                                                                                                                                     |
+| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `POST /api/knowledge-connections`             | Creates a `desktop_folder` connection strictly from a consumed grant (a WebDAV form may not name a local path) or a `webdav` connection whose password goes straight to shared custody. Returns `201` with the metadata DTO. |
+| `GET /api/knowledge-connections`              | Endpoint-bound keyset catalog `{items,next_cursor}`, default 25, max 100.                                                                                     |
+| `PATCH /api/knowledge-connections/:id`        | Version-checked (`expected_revision`) name edit, `watch_enabled` toggle, and optional WebDAV credential replacement (`credentials: {password}` or `null`).     |
+| `DELETE /api/knowledge-connections/:id`       | Requests cancellation of the connection's active refresh, removes the mapping/custody record/watch state, and returns `{"ok":true}`. Sources, library membership, and every artifact are retained. |
+| `POST /api/knowledge-connections/:id/previews`| Starts the durable bounded scan; returns `202 {preview, run_id}` while the pending row is polled below.                                                       |
+| `GET /api/knowledge-previews/:id`             | The exact-account diff with per-entry selection tokens (`{preview, entries}`). Uncommitted previews expire after 10 minutes.                                  |
+| `POST /api/knowledge-previews/:id/apply`      | Commits `selections[{entry_id, selection_token}]` against the exact preview revision; stale tokens/revision → `409 KNOWLEDGE_PREVIEW_STALE`, expiry → `410 KNOWLEDGE_PREVIEW_EXPIRED`. Registers one durable `apply` refresh and returns its ID alongside `{preview, items}`. |
+| `POST /api/knowledge-connections/:id/refreshes` | Manual refresh (`202 {refresh}`); exactly one active refresh per connection (`409 KNOWLEDGE_REFRESH_ACTIVE`).                                                  |
+| `GET /api/knowledge-connections/:id/refreshes`| Bounded newest-first refresh history (the newest 100 runs per connection).                                                                                     |
+| `GET /api/knowledge-refreshes/:id`            | Exact-target `{refresh, counts, items}` status with bounded per-item source/generation outcomes.                                                              |
+| `DELETE /api/knowledge-refreshes/:id`         | Durable cancellation request; idempotent — a repeat on a settled refresh reports its state rather than an error.                                               |
+
+Preview and refresh scans run on per-app background drives cut off at server
+shutdown, never as open-ended HTTP requests. The `status_code` values
+`KNOWLEDGE_UPSTREAM_UNAUTHORIZED` and `KNOWLEDGE_CREDENTIALS_MISSING` record an
+actionable disconnected state, and archive restore records
+`KNOWLEDGE_RESTORE_RECONNECT_REQUIRED` (WebDAV) or
+`KNOWLEDGE_FOLDER_RESELECT_REQUIRED` (desktop folder) after a cross-machine
+restore — the Web UI renders exactly those reconnect/reselect states.
+
+Desktop watch is durable ledger state (`watch_enabled`, off by default), but
+the periodic scan pump runs only inside the trusted desktop composition: 2
+seconds of debounce, a 30-second minimum scan interval, and a 5-minute full
+reconciliation pass, with every timer cleared on shutdown. Browser mode
+persists the setting and starts no scan; the Web UI labels watch as a
+desktop-app capability.
 
 The macOS app creates its single local account and passes a fresh session from
 Electron main through the trusted preload exactly once. That bootstrap is not an
@@ -1842,8 +1879,10 @@ limits are:
 | Account model preference                                                              |    3,424 bytes |
 | Compact mutations, including chat patch and migration start                           |          8 KiB |
 | Connector creation                                                                    |   29,962 bytes |
-| Chat creation/source scope, catalog-status UUID lists, and contained download request |         32 KiB |
+| Chat creation/source scope, catalog-status/knowledge-refresh UUID lists, and contained download request | 32 KiB |
 | Library source search (1,000-character query plus ≤100 filter UUIDs)                |         48 KiB |
+| Knowledge connection create/edit (name, DAV URL/username, bounded password, grant id) |   82,960 bytes |
+| Knowledge preview apply manifest (≤1,000 entry/token pairs)                          |    604,096 bytes |
 | Agent and automation long-text mutations                                              |        128 KiB |
 | Saved-analysis query-capture promotion                                                |     38,128 bytes |
 | Saved-analysis run acceptance (20 typed values plus the operation UUID)               |    484,864 bytes |

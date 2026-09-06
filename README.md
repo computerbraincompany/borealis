@@ -483,7 +483,17 @@ downloads, and a sandboxed preview live in the workbench. **Libraries** group so
 named, account-scoped collections you can curate and attach to a new chat as
 an explicit selected scope — from the Libraries surface or directly in the
 chat composer's source picker, which expands a library's ready members into
-the chat's selection at attach time. **Agents** use a shared create/edit modal with a name, description, icon, color,
+the chat's selection at attach time. **Living libraries** extend a library with
+refreshable knowledge connections: a folder you select in the desktop app (or a
+read-only WebDAV collection with an application password) keeps its managed
+files in sync through bounded previews and durable refreshes — preview shows
+new/changed/unchanged/missing before you import, refreshing reuses the same
+sources, deleting a connection never removes your sources, and watch (desktop
+only) rescans while the app runs. The Libraries surface also gains inspectable
+library search: on-device keyword search by default, explicit semantic search
+under the same remote-egress consent as chat, ranked passages with honest
+page/section/row locators, and a passage panel with neighboring text.
+**Agents** use a shared create/edit modal with a name, description, icon, color,
 system prompt, reusable Markdown skills, and individual built-in tool controls.
 Bind an agent when creating a chat; edits apply to its next message while running
 messages retain their original configuration. Source scope and account
