@@ -19,6 +19,7 @@ import {
 } from "../../catalogPagination.js";
 import {
   ANALYSIS_RETAINED_RESULTS_MAX,
+  analysisSourceContentIdentity,
   normalizeAnalysisDefinition,
   normalizeAnalysisResult,
   normalizeComparisonKey,
@@ -589,10 +590,11 @@ function decodeResultSummary(row: ResultRow): AnalysisResultSummary {
  * the run admission snapshot CAS compares against.
  */
 function sourceContentIdentity(row: SourceStateRow): string {
-  const generation = decodeSafeInteger(row.ready_generation, "source ready generation");
-  const size = decodeSafeInteger(row.size_bytes, "source size bytes");
-  const filePath = optionalStoredString(row.file_path, "source file path") ?? "";
-  return `g${generation}|s${size}|p${filePath}`;
+  return analysisSourceContentIdentity({
+    readyGeneration: decodeSafeInteger(row.ready_generation, "source ready generation"),
+    sizeBytes: decodeSafeInteger(row.size_bytes, "source size bytes"),
+    filePath: optionalStoredString(row.file_path, "source file path"),
+  });
 }
 
 function placeholders(length: number): string {
@@ -1427,6 +1429,75 @@ export class AnalysisStore {
           [this.timestamp()]
         ).changes
     );
+  }
+
+  /**
+   * Startup-resume claim: durable `queued` runs in acceptance order. Repair
+   * (`recoverInterruptedAnalysisRuns`) never reruns a dispatched job, and this
+   * claim never returns `running` or terminal rows — it only hands undispatched
+   * accepted runs to a live executor.
+   */
+  async listQueuedAnalysisRuns(limit = 100): Promise<readonly StoredAnalysisRun[]> {
+    if (!Number.isSafeInteger(limit) || limit < 1) throw new RangeError("claim limit must be a positive integer");
+    const rows = await this.ledger.all<RunRow>(
+      `SELECT ${RUN_COLUMNS} FROM analysis_runs WHERE status='queued' ORDER BY created_at,id LIMIT ?`,
+      [limit]
+    );
+    const runs: StoredAnalysisRun[] = [];
+    for (const row of rows) {
+      const run = decodeRun(row);
+      const sources = await this.ledger.all<RunSourceRow>(
+        `SELECT source_id,ready_generation,content_identity FROM analysis_run_sources
+         WHERE run_id=? AND account_id=? ORDER BY source_id`,
+        [run.id, run.accountId]
+      );
+      runs.push(Object.freeze({ ...run, sources: sources.map((sourceRow) => decodeRunSource(sourceRow)) }));
+    }
+    return runs;
+  }
+
+  /**
+   * Exact immutable SQL for one run's frozen revision. The executor reads the
+   * run's own revision number — never the mutable head — so a later definition
+   * edit cannot change an accepted run. `null` means the analysis or revision
+   * is gone (e.g. the analysis was deleted after acceptance).
+   */
+  async getAnalysisRevisionSql(
+    accountIdValue: string,
+    analysisIdValue: string,
+    revision: number
+  ): Promise<string | null> {
+    const accountId = uuidIdentity(accountIdValue, "account id");
+    const analysisId = uuidIdentity(analysisIdValue, "analysis id");
+    if (!Number.isSafeInteger(revision) || revision < 1) throw new RangeError("revision must be a positive integer");
+    const row = await this.ledger.get<{ sql?: unknown }>(
+      "SELECT sql FROM analysis_revisions WHERE account_id=? AND analysis_id=? AND revision=?",
+      [accountId, analysisId, revision]
+    );
+    return row ? requiredString(row.sql, "analysis revision sql") : null;
+  }
+
+  /**
+   * Lightweight executor-facing cancel probe polled at safe points. Returns
+   * `null` when the run is no longer owned (deletion cascade).
+   */
+  async getAnalysisRunCancelState(
+    accountIdValue: string,
+    analysisIdValue: string,
+    runIdValue: string
+  ): Promise<{ status: AnalysisRunStatus; cancelRequested: boolean } | null> {
+    const accountId = uuidIdentity(accountIdValue, "account id");
+    const analysisId = uuidIdentity(analysisIdValue, "analysis id");
+    const runId = uuidIdentity(runIdValue, "analysis run id");
+    const row = await this.ledger.get<RunRow>(
+      "SELECT status,cancel_requested FROM analysis_runs WHERE id=? AND analysis_id=? AND account_id=?",
+      [runId, analysisId, accountId]
+    );
+    if (!row) return null;
+    return Object.freeze({
+      status: runStatus(row.status),
+      cancelRequested: decodeBoolean(row.cancel_requested, "analysis run cancel_requested"),
+    });
   }
 
   // -- Internals ------------------------------------------------------------------

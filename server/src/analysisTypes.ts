@@ -431,6 +431,22 @@ export interface StoredAnalysisRunSource {
   readonly contentIdentity: string;
 }
 
+/**
+ * Deterministic content/version identity for a live source row: the SQLite
+ * authoritative generation plus the physical file identity. A connector
+ * refresh that replaces bytes publishes a new location/generation pair, which
+ * the run admission snapshot CAS and the stage-2 execution-time re-verification
+ * both compare against. Single source of truth for the durable store and the
+ * execution boundary.
+ */
+export function analysisSourceContentIdentity(input: {
+  readonly readyGeneration: number;
+  readonly sizeBytes: number;
+  readonly filePath: string | null;
+}): string {
+  return `g${input.readyGeneration}|s${input.sizeBytes}|p${input.filePath ?? ""}`;
+}
+
 export interface StoredAnalysisRun {
   readonly id: string;
   readonly accountId: string;
