@@ -13,7 +13,7 @@ import { createAutomationRunner } from "../automationRunner.js";
 import type { AutomationStore } from "../automationStore.js";
 import { listEgressEvents } from "../egressAudit.js";
 import { installHttpBoundary } from "../httpErrors.js";
-import { automationRoutes } from "../routes/automations.js";
+import { automationRoutes, type AutomationSchedulerStatus } from "../routes/automations.js";
 import { completeSourceDeleteIntents } from "../sourceCleanup.js";
 import { closeRuntimeSettings, initializeRuntimeSettings, runtimeSettingsStore } from "../runtimeSettings.js";
 import { closeStorageRuntime, initializeStorageRuntime, storageRuntime } from "../storageRuntime.js";
@@ -61,11 +61,13 @@ afterEach(async () => {
   runtimeDirectory = "";
 });
 
-async function buildApp(): Promise<FastifyInstance> {
+const stoppedScheduler: AutomationSchedulerStatus = { isRunning: () => false };
+
+async function buildApp(scheduler: AutomationSchedulerStatus = stoppedScheduler): Promise<FastifyInstance> {
   const app = Fastify();
   apps.push(app);
   installHttpBoundary(app);
-  await app.register(automationRoutes);
+  await app.register(automationRoutes, { automationScheduler: scheduler });
   await app.ready();
   return app;
 }
@@ -916,5 +918,39 @@ describe("remote egress consent for connector_sync automations", () => {
     });
     expect(created.statusCode).toBe(201);
     expect(created.json()).toMatchObject({ kind: "connector_sync", state: "active" });
+  });
+});
+
+describe("scheduler status route", () => {
+  it("reflects only the injected scheduler capability", async () => {
+    let running = false;
+    const app = await buildApp({ isRunning: () => running });
+
+    const stopped = await app.inject({ method: "GET", url: "/api/automations/_scheduler", headers: ownerAuth });
+    expect(stopped.statusCode).toBe(200);
+    expect(stopped.json()).toEqual({ running: false });
+
+    running = true;
+    const started = await app.inject({ method: "GET", url: "/api/automations/_scheduler", headers: ownerAuth });
+    expect(started.json()).toEqual({ running: true });
+  });
+
+  it("answers from the injected capability even when storage is closed, without constructing another runner", async () => {
+    let running = true;
+    const app = await buildApp({ isRunning: () => running });
+    // The old module-global accessor would have reached through storage to
+    // lazily build a runner. With injection there is no such path: closing
+    // the active storage cannot make this route construct or touch anything
+    // — it still reports exactly the injected value.
+    await closeStorageRuntime();
+
+    const response = await app.inject({ method: "GET", url: "/api/automations/_scheduler", headers: ownerAuth });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ running: true });
+    running = false;
+    const after = await app.inject({ method: "GET", url: "/api/automations/_scheduler", headers: ownerAuth });
+    expect(after.json()).toEqual({ running: false });
+    // Reopening for afterEach symmetry is unnecessary: closeStorageRuntime is
+    // idempotent and the harness reinitializes per test.
   });
 });

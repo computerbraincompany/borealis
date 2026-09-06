@@ -7,8 +7,7 @@ import type { FastifyInstance } from "fastify";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-  initDb: vi.fn(),
-  closeDb: vi.fn(),
+  createApplicationRuntime: vi.fn(),
   recoverInterruptedRuns: vi.fn(),
   shutdownActiveRuns: vi.fn(),
   startIngestionWorkers: vi.fn(),
@@ -16,21 +15,18 @@ const mocks = vi.hoisted(() => ({
   restoreDatasets: vi.fn(),
   shutdownDatasetWorker: vi.fn(),
   createDesktopBootstrapSession: vi.fn(),
-  initializeRuntimeSettings: vi.fn(),
-  closeRuntimeSettings: vi.fn(),
   /** Composition options the routes mock received, newest last. */
   routesOptions: [] as Array<Record<string, unknown>>,
 }));
 
-// Stable module-cached runner seam; plan 014 will replace this ownership model.
-const runner = vi.hoisted(() => ({
-  start: vi.fn<() => void>(),
-  stop: vi.fn<() => Promise<void>>(),
-  tick: vi.fn<() => Promise<void>>(),
-  isRunning: vi.fn<() => boolean>(),
+// Plan 014: serverApp now owns exactly one ApplicationRuntime per start and
+// injects its runner into route composition. These mocks replace the old
+// deleted db/automation module-global lifecycle seams.
+vi.mock("../applicationRuntime.js", () => ({
+  createApplicationRuntime: mocks.createApplicationRuntime,
+  isApplicationRuntimeLeaseRetained: (error: unknown) =>
+    typeof error === "object" && error !== null && (error as { leaseRetained?: unknown }).leaseRetained === true,
 }));
-
-vi.mock("../db.js", () => ({ initDb: mocks.initDb, closeDb: mocks.closeDb }));
 vi.mock("../chatRuns.js", () => ({
   recoverInterruptedRuns: mocks.recoverInterruptedRuns,
   shutdownActiveRuns: mocks.shutdownActiveRuns,
@@ -41,11 +37,6 @@ vi.mock("../ingest.js", () => ({
   restoreDatasets: mocks.restoreDatasets,
 }));
 vi.mock("../data/datasets.js", () => ({ shutdownDatasetWorker: mocks.shutdownDatasetWorker }));
-vi.mock("../runtimeSettings.js", () => ({
-  initializeRuntimeSettings: mocks.initializeRuntimeSettings,
-  closeRuntimeSettings: mocks.closeRuntimeSettings,
-}));
-vi.mock("../automationRuntime.js", () => ({ automationRunner: () => runner }));
 vi.mock("../desktopBootstrap.js", () => ({
   createDesktopBootstrapSession: mocks.createDesktopBootstrapSession,
 }));
@@ -63,6 +54,100 @@ import { acquireWorkspaceLock, WorkspaceLockedError } from "../workspaceLock.js"
 
 const apps: FastifyInstance[] = [];
 const directories: string[] = [];
+
+interface MockRuntimeSpec {
+  readonly label: string;
+  readonly events: string[];
+  readonly stopDrain?: () => Promise<void>;
+  readonly quiesceDrain?: () => Promise<void>;
+  readonly closeImpl?: (proof: { externalStorageConsumersDrained: boolean }) => Promise<void>;
+}
+
+interface MockRuntime {
+  readonly label: string;
+  readonly object: {
+    storage: unknown;
+    runner: {
+      start: () => void;
+      stop: () => Promise<void>;
+      tick: () => Promise<void>;
+      isRunning: () => boolean;
+    };
+    startAutomationScheduler: ReturnType<typeof vi.fn>;
+    stopAutomationScheduler: ReturnType<typeof vi.fn>;
+    quiesceDownloads: ReturnType<typeof vi.fn>;
+    close: ReturnType<typeof vi.fn>;
+  };
+  readonly runner: MockRuntime["object"]["runner"];
+  readonly closeProofs: Array<{ externalStorageConsumersDrained: boolean }>;
+}
+
+function newMockRuntime(spec: MockRuntimeSpec): MockRuntime {
+  const { label, events } = spec;
+  const runner = {
+    start: vi.fn(() => {
+      events.push(`${label}:runner-start`);
+    }),
+    stop: vi.fn(async () => undefined),
+    tick: vi.fn(async () => undefined),
+    isRunning: vi.fn(() => false),
+  };
+  const closeProofs: MockRuntime["closeProofs"] = [];
+  const runtime: MockRuntime = {
+    label,
+    runner,
+    closeProofs,
+    object: {
+      storage: { mockRuntime: label },
+      runner,
+      startAutomationScheduler: vi.fn(() => {
+        events.push(`${label}:scheduler-start`);
+      }),
+      stopAutomationScheduler: vi.fn(() => {
+        events.push(`${label}:scheduler-stop`);
+        return spec.stopDrain ? spec.stopDrain() : Promise.resolve();
+      }),
+      quiesceDownloads: vi.fn(() => {
+        events.push(`${label}:download-quiesce`);
+        return spec.quiesceDrain ? spec.quiesceDrain() : Promise.resolve();
+      }),
+      close: vi.fn(async (proof: { externalStorageConsumersDrained: boolean }) => {
+        closeProofs.push(proof);
+        events.push(`${label}:runtime-close:${proof.externalStorageConsumersDrained ? "proved" : "unproved"}`);
+        if (spec.closeImpl) {
+          await spec.closeImpl(proof);
+          return;
+        }
+        events.push(`${label}:storage-closed`);
+      }),
+    },
+  };
+  return runtime;
+}
+
+/**
+ * Installs the mocked `createApplicationRuntime`: each start constructs a
+ * fresh mock runtime (cycling through `labels`/`specs` once exhausted) and
+ * appends it to `runtimes` in creation order.
+ */
+function useRuntimeFactory(
+  runtimes: MockRuntime[],
+  labels: string[],
+  events: string[],
+  specs: Partial<MockRuntimeSpec>[] = []
+) {
+  let attempt = 0;
+  mocks.createApplicationRuntime.mockImplementation(async () => {
+    const index = Math.min(attempt, Math.max(labels.length - 1, 0));
+    const label = labels[index] ?? `runtime-${attempt}`;
+    const spec = specs[Math.min(attempt, Math.max(specs.length - 1, 0))] ?? {};
+    attempt += 1;
+    const runtime = newMockRuntime({ label, events, ...spec });
+    events.push(`${label}:factory`);
+    runtimes.push(runtime);
+    return runtime.object;
+  });
+}
 
 /** Exact directive-token map for the shell CSP response header. */
 function cspDirectives(header: unknown): Map<string, string[]> {
@@ -127,28 +212,19 @@ beforeEach(() => {
     if (Array.isArray(mock)) mock.length = 0;
     else mock.mockReset();
   }
-  mocks.initDb.mockResolvedValue(undefined);
-  mocks.closeDb.mockResolvedValue(undefined);
   mocks.recoverInterruptedRuns.mockResolvedValue(0);
   mocks.shutdownActiveRuns.mockResolvedValue(0);
   mocks.startIngestionWorkers.mockResolvedValue(undefined);
   mocks.stopIngestionWorkers.mockResolvedValue(undefined);
   mocks.restoreDatasets.mockResolvedValue({ restored: 0, failed: 0 });
   mocks.shutdownDatasetWorker.mockResolvedValue(undefined);
-  mocks.initializeRuntimeSettings.mockResolvedValue(undefined);
-  mocks.closeRuntimeSettings.mockReturnValue(undefined);
   mocks.createDesktopBootstrapSession.mockResolvedValue({
     token: "bootstrap-token",
     user: { id: "00000000-0000-4000-8000-000000000001", email: "local@borealis.app" },
   });
-  runner.start.mockReset();
-  runner.stop.mockReset();
-  runner.tick.mockReset();
-  runner.isRunning.mockReset();
-  runner.start.mockReturnValue(undefined);
-  runner.stop.mockResolvedValue(undefined);
-  runner.tick.mockResolvedValue(undefined);
-  runner.isRunning.mockReturnValue(false);
+  // Default factory: one clean owned runtime per start, events visible to
+  // tests through the returned runtime records.
+  useRuntimeFactory([], [], []);
 });
 
 afterEach(async () => {
@@ -289,7 +365,7 @@ describe("Fastify same-origin static host", () => {
 });
 
 describe("trusted desktop composition mode", () => {
-  it("forwards the composition desktop flag to route composition and defaults to browser mode", async () => {
+  it("forwards the composition desktop flag and scheduler capability to route composition, defaulting to browser mode", async () => {
     const browserApp = await buildBorealisApp({ logger: false });
     apps.push(browserApp);
     expect(mocks.routesOptions.at(-1)).toEqual({ desktop: false });
@@ -297,6 +373,11 @@ describe("trusted desktop composition mode", () => {
     const desktopApp = await buildBorealisApp({ logger: false, desktop: true });
     apps.push(desktopApp);
     expect(mocks.routesOptions.at(-1)).toEqual({ desktop: true });
+
+    const scheduler = { isRunning: () => true };
+    const composedApp = await buildBorealisApp({ logger: false, automationScheduler: scheduler });
+    apps.push(composedApp);
+    expect(mocks.routesOptions.at(-1)).toEqual({ desktop: false, automationScheduler: scheduler });
   });
 });
 
@@ -359,22 +440,22 @@ describe("desktop listener guard", () => {
     expect(isLoopbackDesktopHost("0.0.0.0")).toBe(false);
   });
 
-  it("rejects a non-loopback desktop host before opening storage or workers", async () => {
+  it("rejects a non-loopback desktop host before creating the runtime or workers", async () => {
     await expect(
       startBorealisServer({ desktop: true, host: "0.0.0.0", port: 0, staticWebDir: "/does/not/matter" })
     ).rejects.toThrow("desktop server must bind to 127.0.0.1");
-    expect(mocks.initDb).not.toHaveBeenCalled();
+    expect(mocks.createApplicationRuntime).not.toHaveBeenCalled();
     expect(mocks.startIngestionWorkers).not.toHaveBeenCalled();
   });
 
-  it("requires a static UI before opening any desktop storage", async () => {
+  it("requires a static UI before creating the desktop runtime", async () => {
     const previousStaticWebDir = process.env.STATIC_WEB_DIR;
     delete process.env.STATIC_WEB_DIR;
     try {
       await expect(startBorealisServer({ desktop: true, host: "127.0.0.1", port: 0 })).rejects.toThrow(
         "desktop server requires STATIC_WEB_DIR"
       );
-      expect(mocks.initDb).not.toHaveBeenCalled();
+      expect(mocks.createApplicationRuntime).not.toHaveBeenCalled();
     } finally {
       if (previousStaticWebDir !== undefined) process.env.STATIC_WEB_DIR = previousStaticWebDir;
     }
@@ -382,13 +463,13 @@ describe("desktop listener guard", () => {
 });
 
 describe("workspace instance ownership", () => {
-  it("refuses startup before opening stores when another process owns the workspace lock", async () => {
+  it("refuses startup before creating the runtime when another process owns the workspace lock", async () => {
     const lock = await acquireWorkspaceLock(config.storageDir);
     try {
       await expect(startBorealisServer({ host: "127.0.0.1", port: 0, logger: false })).rejects.toBeInstanceOf(
         WorkspaceLockedError
       );
-      expect(mocks.initDb).not.toHaveBeenCalled();
+      expect(mocks.createApplicationRuntime).not.toHaveBeenCalled();
       expect(mocks.startIngestionWorkers).not.toHaveBeenCalled();
     } finally {
       await lock.release();
@@ -402,6 +483,18 @@ function deferred<T = void>(): { promise: Promise<T>; resolve: (value: T | Promi
     resolve = res;
   });
   return { promise, resolve };
+}
+
+async function isPending(promise: Promise<unknown>): Promise<boolean> {
+  const PENDING = Symbol("pending");
+  const outcome = await Promise.race([
+    promise.then(
+      () => "settled",
+      () => "rejected"
+    ),
+    new Promise((resolve) => setTimeout(() => resolve(PENDING), 30)),
+  ]);
+  return outcome === PENDING;
 }
 
 /** Runs the lifecycle against a private storage directory, never operator state. */
@@ -418,45 +511,56 @@ async function withTempWorkspace(run: () => Promise<void>): Promise<void> {
 }
 
 describe("automation scheduler drain on server shutdown", () => {
-  it("stops the scheduler when close begins and defers closeDb until the drain settles", async () => {
+  it("synchronously quiesces scheduler/download admission and defers the owned runtime close until the drain settles", async () => {
+    const events: string[] = [];
+    const runtimes: MockRuntime[] = [];
     const drain = deferred();
-    const closeDbSnapshotCounts: number[] = [];
-    runner.stop.mockImplementation(() => drain.promise);
-    mocks.closeDb.mockImplementation(async () => {
-      closeDbSnapshotCounts.push(mocks.shutdownActiveRuns.mock.calls.length);
-    });
+    const closeSnapshotCounts: number[] = [];
+    useRuntimeFactory(runtimes, ["A"], events, [
+      {
+        stopDrain: () => drain.promise,
+        closeImpl: async () => {
+          closeSnapshotCounts.push(mocks.shutdownActiveRuns.mock.calls.length);
+        },
+      },
+    ]);
 
     await withTempWorkspace(async () => {
       const server = await startBorealisServer({ host: "127.0.0.1", port: 0, logger: false });
-      expect(runner.start).toHaveBeenCalledOnce();
+      expect(runtimes).toHaveLength(1);
+      const runtimeA = runtimes[0]!;
+      expect(runtimeA.object.startAutomationScheduler).toHaveBeenCalledOnce();
       expect(mocks.shutdownActiveRuns).not.toHaveBeenCalled();
-      expect(mocks.closeDb).not.toHaveBeenCalled();
+      expect(runtimeA.object.close).not.toHaveBeenCalled();
 
       const closePromise = server.close();
-      // The scheduler is quiesced synchronously as close begins, before the
-      // first HTTP drain snapshot, and storage is untouched.
-      expect(runner.stop).toHaveBeenCalledOnce();
+      // Both admission sources close synchronously as close begins, before
+      // the first HTTP drain snapshot, and the owned runtime close has not
+      // started.
+      expect(runtimeA.object.stopAutomationScheduler).toHaveBeenCalledOnce();
+      expect(runtimeA.object.quiesceDownloads).toHaveBeenCalledOnce();
       expect(mocks.shutdownActiveRuns).toHaveBeenCalledTimes(1);
-      expect(mocks.closeDb).not.toHaveBeenCalled();
+      expect(runtimeA.object.close).not.toHaveBeenCalled();
 
       // Active-run cancellation repeats while the scheduler drain is held.
       await vi.waitFor(() => expect(mocks.shutdownActiveRuns.mock.calls.length).toBeGreaterThanOrEqual(3), {
         timeout: 10_000,
       });
-      expect(mocks.closeDb).not.toHaveBeenCalled();
+      expect(runtimeA.object.close).not.toHaveBeenCalled();
       const snapshotsDuringHold = mocks.shutdownActiveRuns.mock.calls.length;
 
       drain.resolve();
       await closePromise;
 
-      expect(mocks.closeDb).toHaveBeenCalledOnce();
+      expect(runtimeA.object.close).toHaveBeenCalledOnce();
+      expect(runtimeA.closeProofs).toEqual([{ externalStorageConsumersDrained: true }]);
       // Storage closed only after the drain settled and one final snapshot ran.
-      expect(closeDbSnapshotCounts[0]).toBeGreaterThanOrEqual(snapshotsDuringHold + 1);
+      expect(closeSnapshotCounts[0]).toBeGreaterThanOrEqual(snapshotsDuringHold + 1);
 
       // close() stays idempotent through its cached promise.
       await server.close();
-      expect(runner.stop).toHaveBeenCalledOnce();
-      expect(mocks.closeDb).toHaveBeenCalledOnce();
+      expect(runtimeA.object.stopAutomationScheduler).toHaveBeenCalledOnce();
+      expect(runtimeA.object.close).toHaveBeenCalledOnce();
     });
   }, 20_000);
 
@@ -469,15 +573,13 @@ describe("automation scheduler drain on server shutdown", () => {
 
     // The drain models a claim already inside acceptChatTurn that was paused
     // immediately before beginRun when shutdown quiesced the scheduler.
-    runner.stop.mockImplementation(() => {
-      events.push("scheduler-stop");
-      return claimPausedBeforeBeginRun.promise.then(() => {
+    const stopDrain = () =>
+      claimPausedBeforeBeginRun.promise.then(() => {
         events.push("begin-run");
         registered = true;
         // The agent turn keeps running until a later snapshot aborts it.
         return runHeld.promise;
       });
-    });
     mocks.shutdownActiveRuns.mockImplementation(async () => {
       events.push("snapshot");
       if (registered) {
@@ -487,20 +589,26 @@ describe("automation scheduler drain on server shutdown", () => {
       }
       return registered ? 1 : 0;
     });
-    mocks.closeDb.mockImplementation(async () => {
-      events.push("closeDb");
-    });
 
     await withTempWorkspace(async () => {
+      const runtimes: MockRuntime[] = [];
+      useRuntimeFactory(runtimes, ["A"], events, [
+        {
+          stopDrain,
+          closeImpl: async () => {
+            events.push("owned-close");
+          },
+        },
+      ]);
       const server = await startBorealisServer({ host: "127.0.0.1", port: 0, logger: false });
       const closePromise = server.close();
-      expect(events[0]).toBe("scheduler-stop");
+      expect(events).toContain("A:scheduler-stop");
 
       // Let the first cancellation snapshot complete with nothing registered.
       await vi.waitFor(() => expect(events).toContain("snapshot"), { timeout: 10_000 });
       expect(registered).toBe(false);
       expect(controller.signal.aborted).toBe(false);
-      expect(mocks.closeDb).not.toHaveBeenCalled();
+      expect(events).not.toContain("owned-close");
 
       // beginRun registers only after that snapshot: the registration gap.
       claimPausedBeforeBeginRun.resolve();
@@ -510,16 +618,16 @@ describe("automation scheduler drain on server shutdown", () => {
       expect(controller.signal.aborted).toBe(true);
 
       await closePromise;
-      expect(mocks.closeDb).toHaveBeenCalledOnce();
+      expect(events).toContain("owned-close");
       const beginRunIndex = events.indexOf("begin-run");
       const abortIndex = events.indexOf("abort");
-      const closeDbIndex = events.indexOf("closeDb");
+      const closeIndex = events.indexOf("owned-close");
       const lastSnapshotIndex = events.lastIndexOf("snapshot");
       expect(beginRunIndex).toBeLessThan(abortIndex);
       // The final cancellation snapshot runs after the late abort and before
-      // storage close, leaving no controller behind.
+      // the owned runtime close (storage/settings closure).
       expect(lastSnapshotIndex).toBeGreaterThan(abortIndex);
-      expect(lastSnapshotIndex).toBeLessThan(closeDbIndex);
+      expect(lastSnapshotIndex).toBeLessThan(closeIndex);
     });
   }, 20_000);
 
@@ -531,32 +639,261 @@ describe("automation scheduler drain on server shutdown", () => {
     });
     const address = occupied.address();
     if (!address || typeof address === "string") throw new Error("occupied listener did not bind a TCP socket");
+    const events: string[] = [];
+    const runtimes: MockRuntime[] = [];
     const drain = deferred();
-    runner.stop.mockImplementation(() => drain.promise);
+    useRuntimeFactory(runtimes, ["A"], events, [{ stopDrain: () => drain.promise }]);
 
     try {
       await withTempWorkspace(async () => {
         const startup = startBorealisServer({ host: "127.0.0.1", port: address.port, logger: false });
         await vi.waitFor(
           () => {
-            expect(runner.stop).toHaveBeenCalledOnce();
+            expect(runtimes[0]?.object.stopAutomationScheduler).toHaveBeenCalledOnce();
             expect(mocks.shutdownActiveRuns.mock.calls.length).toBeGreaterThanOrEqual(2);
           },
           { timeout: 10_000 }
         );
-        expect(mocks.closeDb).not.toHaveBeenCalled();
-        expect(mocks.closeRuntimeSettings).not.toHaveBeenCalled();
+        expect(runtimes[0]?.object.close).not.toHaveBeenCalled();
         const snapshotsDuringHold = mocks.shutdownActiveRuns.mock.calls.length;
 
         drain.resolve();
         await expect(startup).rejects.toThrow(/EADDRINUSE/);
-        expect(mocks.closeDb).toHaveBeenCalledOnce();
-        expect(mocks.closeRuntimeSettings).toHaveBeenCalledOnce();
+        // The same synchronous quiesce/drain applies, then the proof-bearing
+        // owned close — including settings/storage closure it now owns.
+        expect(runtimes[0]?.object.close).toHaveBeenCalledOnce();
+        expect(runtimes[0]?.closeProofs).toEqual([{ externalStorageConsumersDrained: true }]);
         // The post-drain final snapshot ran before storage close.
         expect(mocks.shutdownActiveRuns.mock.calls.length).toBeGreaterThanOrEqual(snapshotsDuringHold + 1);
       });
     } finally {
       await new Promise<void>((resolve) => occupied.close(() => resolve()));
     }
+  }, 20_000);
+});
+
+describe("owned application runtime orchestration", () => {
+  it("runs two sequential server lifecycles with distinct runtimes and no cross-owner calls", async () => {
+    const events: string[] = [];
+    const runtimes: MockRuntime[] = [];
+    useRuntimeFactory(runtimes, ["A", "B"], events);
+
+    await withTempWorkspace(async () => {
+      const serverA = await startBorealisServer({ host: "127.0.0.1", port: 0, logger: false });
+      // App A's scheduler route received exactly runtime A's runner.
+      expect(mocks.routesOptions.at(-1)?.automationScheduler).toBe(runtimes[0]!.runner);
+      await serverA.close();
+
+      const serverB = await startBorealisServer({ host: "127.0.0.1", port: 0, logger: false });
+      expect(mocks.routesOptions.at(-1)?.automationScheduler).toBe(runtimes[1]!.runner);
+      await serverB.close();
+
+      // Runtime A synchronously quiesced both admission sources and closed
+      // before runtime B was created; B's lifecycle mirrors it exactly.
+      expect(events).toEqual([
+        "A:factory",
+        "A:scheduler-start",
+        "A:scheduler-stop",
+        "A:download-quiesce",
+        "A:runtime-close:proved",
+        "A:storage-closed",
+        "B:factory",
+        "B:scheduler-start",
+        "B:scheduler-stop",
+        "B:download-quiesce",
+        "B:runtime-close:proved",
+        "B:storage-closed",
+      ]);
+
+      // Each runtime closed exactly once with a true external proof.
+      expect(runtimes[0]!.closeProofs).toEqual([{ externalStorageConsumersDrained: true }]);
+      expect(runtimes[1]!.closeProofs).toEqual([{ externalStorageConsumersDrained: true }]);
+
+      // B's lifecycle never invoked methods on A.
+      expect(runtimes[0]!.object.stopAutomationScheduler).toHaveBeenCalledOnce();
+      expect(runtimes[0]!.object.quiesceDownloads).toHaveBeenCalledOnce();
+      expect(runtimes[0]!.object.close).toHaveBeenCalledOnce();
+      expect(runtimes[1]!.object.stopAutomationScheduler).toHaveBeenCalledOnce();
+      expect(runtimes[1]!.object.quiesceDownloads).toHaveBeenCalledOnce();
+      expect(runtimes[1]!.object.close).toHaveBeenCalledOnce();
+    });
+  }, 20_000);
+
+  it("keeps close unresolved until a held download drain releases, gating settings/storage closure", async () => {
+    const events: string[] = [];
+    const runtimes: MockRuntime[] = [];
+    const held = deferred();
+    useRuntimeFactory(runtimes, ["A"], events, [
+      {
+        quiesceDrain: () => held.promise,
+        closeImpl: async () => {
+          // The owned runtime close joins the download drain before it can
+          // close settings/storage.
+          await held.promise;
+          events.push("A:storage-closed");
+        },
+      },
+    ]);
+
+    await withTempWorkspace(async () => {
+      const server = await startBorealisServer({ host: "127.0.0.1", port: 0, logger: false });
+      const closing = server.close();
+      await vi.waitFor(() => expect(runtimes[0]?.object.quiesceDownloads).toHaveBeenCalledOnce(), { timeout: 5_000 });
+      expect(await isPending(closing)).toBe(true);
+      expect(events).not.toContain("A:storage-closed");
+
+      held.resolve();
+      await closing;
+      expect(events).toContain("A:storage-closed");
+    });
+  }, 20_000);
+
+  it("keeps close unresolved while an ingestion worker (OCR helper owner) is held", async () => {
+    const events: string[] = [];
+    const runtimes: MockRuntime[] = [];
+    useRuntimeFactory(runtimes, ["A"], events);
+    const held = deferred();
+    mocks.stopIngestionWorkers.mockReturnValue(held.promise);
+
+    await withTempWorkspace(async () => {
+      const server = await startBorealisServer({ host: "127.0.0.1", port: 0, logger: false });
+      const closing = server.close();
+      await vi.waitFor(() => expect(runtimes[0]?.object.stopAutomationScheduler).toHaveBeenCalledOnce(), {
+        timeout: 5_000,
+      });
+      expect(await isPending(closing)).toBe(true);
+      // The owned close may not begin beneath an unfinished ingestion drain.
+      expect(runtimes[0]?.object.close).not.toHaveBeenCalled();
+
+      held.resolve();
+      await closing;
+      expect(runtimes[0]?.closeProofs).toEqual([{ externalStorageConsumersDrained: true }]);
+    });
+  }, 20_000);
+
+  it("retains the workspace lock while a held migration coordinator drain gates the owned close", async () => {
+    const events: string[] = [];
+    const runtimes: MockRuntime[] = [];
+    const held = deferred();
+    useRuntimeFactory(runtimes, ["A"], events, [
+      {
+        closeImpl: async () => {
+          await held.promise;
+          events.push("A:storage-closed");
+        },
+      },
+    ]);
+
+    const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "borealis-server-migration-hold-"));
+    directories.push(workspace);
+    const previousStorageDirectory = config.storageDir;
+    config.storageDir = workspace;
+    try {
+      const server = await startBorealisServer({ host: "127.0.0.1", port: 0, logger: false });
+      const closing = server.close();
+      await vi.waitFor(() => expect(runtimes[0]?.object.close).toHaveBeenCalledOnce(), { timeout: 5_000 });
+      expect(await isPending(closing)).toBe(true);
+      // The cross-process workspace lock is retained during the uncertain
+      // drain: this workspace cannot be re-acquired.
+      await expect(acquireWorkspaceLock(workspace)).rejects.toBeInstanceOf(WorkspaceLockedError);
+      expect(events).not.toContain("A:storage-closed");
+
+      held.resolve();
+      await closing;
+      expect(events).toContain("A:storage-closed");
+      await expect(acquireWorkspaceLock(workspace)).resolves.toBeDefined();
+    } finally {
+      config.storageDir = previousStorageDirectory;
+    }
+  }, 20_000);
+
+  it("passes a false external proof on ingestion drain failure, skips settings/storage closure, and rejects close", async () => {
+    const events: string[] = [];
+    const runtimes: MockRuntime[] = [];
+    useRuntimeFactory(runtimes, ["A"], events, [
+      {
+        closeImpl: async (proof) => {
+          if (!proof.externalStorageConsumersDrained) throw new Error("simulated owned close refusal");
+          events.push("A:storage-closed");
+        },
+      },
+    ]);
+    mocks.stopIngestionWorkers.mockRejectedValue(new Error("simulated ingestion drain failure"));
+
+    const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "borealis-server-ingest-fail-"));
+    directories.push(workspace);
+    const previousStorageDirectory = config.storageDir;
+    config.storageDir = workspace;
+    try {
+      const server = await startBorealisServer({ host: "127.0.0.1", port: 0, logger: false });
+      await expect(server.close()).rejects.toThrow("simulated owned close refusal");
+
+      // The owned close was attempted with the exact false proof and
+      // refused; settings/storage closure never happened.
+      expect(runtimes[0]?.closeProofs).toEqual([{ externalStorageConsumersDrained: false }]);
+      expect(events).not.toContain("A:storage-closed");
+      // All other independent safe stops were still attempted.
+      expect(mocks.shutdownDatasetWorker).toHaveBeenCalledOnce();
+      // No graceful stopped acknowledgement: the workspace lock stays
+      // retained alongside the poisoned ownership.
+      await expect(acquireWorkspaceLock(workspace)).rejects.toBeInstanceOf(WorkspaceLockedError);
+    } finally {
+      config.storageDir = previousStorageDirectory;
+    }
+  }, 20_000);
+
+  it("passes a false external proof on dataset worker drain failure and rejects close", async () => {
+    const events: string[] = [];
+    const runtimes: MockRuntime[] = [];
+    useRuntimeFactory(runtimes, ["A"], events, [
+      {
+        closeImpl: async (proof) => {
+          if (!proof.externalStorageConsumersDrained) throw new Error("simulated owned close refusal");
+          events.push("A:storage-closed");
+        },
+      },
+    ]);
+    mocks.shutdownDatasetWorker.mockRejectedValue(new Error("simulated dataset drain failure"));
+
+    const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "borealis-server-dataset-fail-"));
+    directories.push(workspace);
+    const previousStorageDirectory = config.storageDir;
+    config.storageDir = workspace;
+    try {
+      const server = await startBorealisServer({ host: "127.0.0.1", port: 0, logger: false });
+      await expect(server.close()).rejects.toThrow("simulated owned close refusal");
+
+      expect(runtimes[0]?.closeProofs).toEqual([{ externalStorageConsumersDrained: false }]);
+      expect(events).not.toContain("A:storage-closed");
+      // Ingestion stop was still attempted alongside the drain.
+      expect(mocks.stopIngestionWorkers).toHaveBeenCalledOnce();
+      await expect(acquireWorkspaceLock(workspace)).rejects.toBeInstanceOf(WorkspaceLockedError);
+    } finally {
+      config.storageDir = previousStorageDirectory;
+    }
+  }, 20_000);
+
+  it("closes only the runtime created by a partially failed startup attempt", async () => {
+    const events: string[] = [];
+    const runtimes: MockRuntime[] = [];
+    useRuntimeFactory(runtimes, ["A", "B"], events);
+
+    await withTempWorkspace(async () => {
+      const serverA = await startBorealisServer({ host: "127.0.0.1", port: 0, logger: false });
+      await serverA.close();
+      const aCloseCalls = runtimes[0]!.object.close.mock.calls.length;
+
+      mocks.recoverInterruptedRuns.mockRejectedValueOnce(new Error("simulated recovery failure"));
+      await expect(startBorealisServer({ host: "127.0.0.1", port: 0, logger: false })).rejects.toThrow(
+        "simulated recovery failure"
+      );
+
+      // The second attempt created runtime B and closed exactly runtime B.
+      expect(runtimes).toHaveLength(2);
+      expect(runtimes[1]!.object.close).toHaveBeenCalledOnce();
+      expect(runtimes[1]!.closeProofs).toEqual([{ externalStorageConsumersDrained: true }]);
+      // Runtime A's objects were never touched by B's lifecycle.
+      expect(runtimes[0]!.object.close.mock.calls.length).toBe(aCloseCalls);
+    });
   }, 20_000);
 });

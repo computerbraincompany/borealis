@@ -56,7 +56,7 @@ let runtimeDirectory = "";
 async function buildApp(): Promise<FastifyInstance> {
   const app = Fastify();
   apps.push(app);
-  await routes(app);
+  await routes(app, { automationScheduler: { isRunning: () => false } });
   await app.ready();
   return app;
 }

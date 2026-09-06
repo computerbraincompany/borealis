@@ -53,7 +53,7 @@ async function buildApp(): Promise<FastifyInstance> {
   await initializeRuntimeSettings({ settingsFile: path.join(directory, "settings.json"), env: {} });
   const app = Fastify();
   apps.push(app);
-  await routes(app);
+  await routes(app, { automationScheduler: { isRunning: () => false } });
   await app.ready();
   return app;
 }

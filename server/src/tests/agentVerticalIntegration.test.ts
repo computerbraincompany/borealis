@@ -120,9 +120,11 @@ describe("vertical agent turn", () => {
       apps.push(app);
       // Composition-only update for the plan 007 authority gate: this vertical
       // test runs in browser mode, so no token here can control contained
-      // processes. Provider, agent, tool, persistence, and SSE assertions and
-      // the operator claim stay exactly as plan 004 specified (never minted).
-      await routes(app, { desktop: false });
+      // processes, and plan 014's scheduler status arrives as an explicit
+      // stopped stub rather than a module global. Provider, agent, tool,
+      // persistence, and SSE assertions and the operator claim stay exactly
+      // as plan 004 specified (never minted).
+      await routes(app, { desktop: false, automationScheduler: { isRunning: () => false } });
       await app.ready();
 
       // An explicit manual title keeps the automatic titling model call out of

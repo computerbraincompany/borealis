@@ -8,21 +8,23 @@ import type { FastifyInstance } from "fastify";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-  initDb: vi.fn(),
-  closeDb: vi.fn(),
+  createApplicationRuntime: vi.fn(),
   recoverInterruptedRuns: vi.fn(),
   shutdownActiveRuns: vi.fn(),
   startIngestionWorkers: vi.fn(),
   stopIngestionWorkers: vi.fn(),
   restoreDatasets: vi.fn(),
   shutdownDatasetWorker: vi.fn(),
-  initializeRuntimeSettings: vi.fn(),
-  closeRuntimeSettings: vi.fn(),
-  automationStart: vi.fn(),
-  automationStop: vi.fn(),
 }));
 
-vi.mock("../db.js", () => ({ initDb: mocks.initDb, closeDb: mocks.closeDb }));
+// Plan 014: the server now owns one ApplicationRuntime covering settings,
+// stores, scheduler, download lifecycle, and shutdown; the workspace lock
+// remains serverApp's own concern, acquired before runtime construction.
+vi.mock("../applicationRuntime.js", () => ({
+  createApplicationRuntime: mocks.createApplicationRuntime,
+  isApplicationRuntimeLeaseRetained: (error: unknown) =>
+    typeof error === "object" && error !== null && (error as { leaseRetained?: unknown }).leaseRetained === true,
+}));
 vi.mock("../chatRuns.js", () => ({
   recoverInterruptedRuns: mocks.recoverInterruptedRuns,
   shutdownActiveRuns: mocks.shutdownActiveRuns,
@@ -33,14 +35,23 @@ vi.mock("../ingest.js", () => ({
   restoreDatasets: mocks.restoreDatasets,
 }));
 vi.mock("../data/datasets.js", () => ({ shutdownDatasetWorker: mocks.shutdownDatasetWorker }));
-vi.mock("../runtimeSettings.js", () => ({
-  initializeRuntimeSettings: mocks.initializeRuntimeSettings,
-  closeRuntimeSettings: mocks.closeRuntimeSettings,
-}));
-vi.mock("../automationRuntime.js", () => ({
-  automationRunner: () => ({ start: mocks.automationStart, stop: mocks.automationStop }),
-}));
 vi.mock("../routes.js", () => ({ routes: async (_app: FastifyInstance) => undefined }));
+
+function mockRuntime() {
+  return {
+    storage: {},
+    runner: {
+      start: vi.fn(),
+      stop: vi.fn(() => Promise.resolve()),
+      tick: vi.fn(async () => undefined),
+      isRunning: vi.fn(() => false),
+    },
+    startAutomationScheduler: vi.fn(),
+    stopAutomationScheduler: vi.fn(() => Promise.resolve()),
+    quiesceDownloads: vi.fn(() => Promise.resolve()),
+    close: vi.fn(async () => undefined),
+  };
+}
 
 import { config } from "../config.js";
 import { startBorealisServer } from "../serverApp.js";
@@ -87,15 +98,13 @@ async function runLockedStartup(options: {
 
 beforeEach(() => {
   for (const mock of Object.values(mocks)) mock.mockReset();
-  mocks.initDb.mockResolvedValue(undefined);
-  mocks.closeDb.mockResolvedValue(undefined);
+  mocks.createApplicationRuntime.mockImplementation(async () => mockRuntime());
   mocks.recoverInterruptedRuns.mockResolvedValue(0);
   mocks.shutdownActiveRuns.mockResolvedValue(0);
   mocks.startIngestionWorkers.mockResolvedValue(undefined);
   mocks.stopIngestionWorkers.mockResolvedValue(undefined);
   mocks.restoreDatasets.mockResolvedValue({ restored: 0, failed: 0 });
   mocks.shutdownDatasetWorker.mockResolvedValue(undefined);
-  mocks.initializeRuntimeSettings.mockResolvedValue(undefined);
 });
 
 afterEach(async () => {
@@ -183,7 +192,7 @@ describe("server workspace lock lifecycle", () => {
     await fs.mkdir(workspace);
     const previousStorageDirectory = config.storageDir;
     config.storageDir = workspace;
-    mocks.initDb.mockRejectedValueOnce(new Error("simulated startup failure"));
+    mocks.createApplicationRuntime.mockRejectedValueOnce(new Error("simulated startup failure"));
     try {
       await expect(startBorealisServer({ host: "127.0.0.1", port: 0, logger: false })).rejects.toThrow(
         "simulated startup failure"

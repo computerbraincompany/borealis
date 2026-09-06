@@ -87,7 +87,7 @@ let runtimeDirectory = "";
 async function buildApp(): Promise<FastifyInstance> {
   const app = Fastify({ bodyLimit: 1024 * 1024 });
   apps.push(app);
-  await routes(app);
+  await routes(app, { automationScheduler: { isRunning: () => false } });
   await app.ready();
   return app;
 }

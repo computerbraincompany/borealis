@@ -3,9 +3,20 @@ import { getAccountId, requireAuth } from "../auth.js";
 import { catalogPageQuerySchema, catalogResponse, parseCatalogPageQuery } from "../catalogPagination.js";
 import { idParamsSchema } from "./schemas.js";
 import { AutomationValidationError, type Automation } from "../automationStore.js";
+import type { AutomationRunner } from "../automationRunner.js";
 import { enforceRemoteEgressConsent } from "../egressPolicy.js";
 import { storageRuntime } from "../storageRuntime.js";
-import { automationRunner } from "../automationRuntime.js";
+
+/**
+ * Narrow read-only scheduler status capability injected by route composition
+ * from the owned application runtime. There is deliberately no module-global
+ * fallback: the route reports only the object it was given.
+ */
+export type AutomationSchedulerStatus = Pick<AutomationRunner, "isRunning">;
+
+export interface AutomationRoutesOptions {
+  readonly automationScheduler: AutomationSchedulerStatus;
+}
 import {
   BODYLESS_MUTATION_LIMIT_BYTES,
   COMPACT_JSON_BODY_LIMIT_BYTES,
@@ -37,7 +48,7 @@ function publicAutomation(automation: Automation) {
   };
 }
 
-export async function automationRoutes(app: FastifyInstance): Promise<void> {
+export async function automationRoutes(app: FastifyInstance, options: AutomationRoutesOptions): Promise<void> {
   app.get(
     "/api/automations",
     { onRequest: requireAuth, schema: { querystring: catalogPageQuerySchema } },
@@ -182,8 +193,10 @@ export async function automationRoutes(app: FastifyInstance): Promise<void> {
   );
 
   // The scheduler runs while the server does; the route exists so operators can
-  // verify it is alive from the same surface as everything else.
+  // verify it is alive from the same surface as everything else. It reads only
+  // the injected owned scheduler status capability — never a module global and
+  // never a freshly constructed runner.
   app.get("/api/automations/_scheduler", { onRequest: requireAuth }, async (_req, reply) => {
-    return reply.send({ running: automationRunner().isRunning() });
+    return reply.send({ running: options.automationScheduler.isRunning() });
   });
 }

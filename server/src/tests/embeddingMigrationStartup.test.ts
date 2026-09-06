@@ -4,6 +4,8 @@ import path from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
 
+import type { ApplicationRuntime } from "../applicationRuntime.js";
+
 const ACCOUNT_ID = "11111111-1111-4111-8111-111111111111";
 const SOURCE_ID = "22222222-2222-4222-8222-222222222222";
 const CHUNK_ID = "33333333-3333-4333-8333-333333333333";
@@ -34,11 +36,12 @@ describe("production embedding-migration startup composition", () => {
     const runtimeSettings = await import("../runtimeSettings.js");
     const storage = await import("../storageRuntime.js");
     const migration = await import("../embeddingMigration.js");
+    const applicationRuntime = await import("../applicationRuntime.js");
     const { openSqliteLedger } = await import("../db/sqlite.js");
-    const { initDb } = await import("../db.js");
     const { retrieveWithVector } = await import("../vector/retrieve.js");
 
     let preparing: InstanceType<typeof migration.EmbeddingMigrationCoordinator> | undefined;
+    let application: ApplicationRuntime | undefined;
     try {
       await runtimeSettings.initializeRuntimeSettings();
       const settings = runtimeSettings.runtimeSettingsStore();
@@ -104,11 +107,12 @@ describe("production embedding-migration startup composition", () => {
       preparing = undefined;
       await storage.closeStorageRuntime();
 
-      // This is the production startup boundary: initDb owns migration
-      // recovery, configured store opening, post-open retrieval smoke, and
-      // rollback routing. The test deliberately does not call those phases.
-      await initDb();
-      activeRuntime = storage.storageRuntime();
+      // This is the production startup boundary: the owned application
+      // runtime owns migration recovery, configured store opening, post-open
+      // retrieval smoke, and rollback routing. The test deliberately does
+      // not call those phases itself.
+      application = await applicationRuntime.createApplicationRuntime();
+      activeRuntime = application.storage;
 
       await expect(settings.read()).resolves.toMatchObject({
         settings: { embedModel: "new-embed", embeddingDimension: 5 },
@@ -139,6 +143,7 @@ describe("production embedding-migration startup composition", () => {
       await expect(fs.readdir(migrationRoot)).resolves.toEqual([]);
     } finally {
       await preparing?.close().catch(() => undefined);
+      await application?.close({ externalStorageConsumersDrained: true }).catch(() => undefined);
       await migration.closeEmbeddingMigrationCoordinator().catch(() => undefined);
       await storage.closeStorageRuntime().catch(() => undefined);
       runtimeSettings.closeRuntimeSettings();
