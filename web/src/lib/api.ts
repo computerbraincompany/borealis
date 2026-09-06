@@ -1476,7 +1476,7 @@ export const librariesApi = {
   search: (
     id: string,
     body: { query: string; mode?: "keyword" | "semantic"; source_ids?: string[]; kind?: "document" | "tabular" },
-    signal?: AbortSignal
+    signal?: AbortSignal,
   ) => api<LibrarySearchResult>(`/api/libraries/${id}/search`, { method: "POST", body: JSON.stringify(body), signal }),
 };
 
@@ -1637,16 +1637,7 @@ export interface KnowledgeRefreshItem {
   item_id: string;
   source_id: string;
   relative_path: string;
-  status:
-    | "pending"
-    | "staged"
-    | "committed"
-    | "ready"
-    | "unchanged"
-    | "missing"
-    | "failed"
-    | "blocked"
-    | "cancelled";
+  status: "pending" | "staged" | "committed" | "ready" | "unchanged" | "missing" | "failed" | "blocked" | "cancelled";
   error_code: string | null;
   current_ready_generation: number | null;
   expected_generation: number | null;
@@ -1673,7 +1664,7 @@ export interface KnowledgeCreateInput {
 export const knowledgeApi = {
   list: async (options: CatalogPageOptions = {}) =>
     parseTypedCatalogEnvelope<KnowledgeConnection>(
-      await api<unknown>(catalogPath("/api/knowledge-connections", options), { signal: options.signal })
+      await api<unknown>(catalogPath("/api/knowledge-connections", options), { signal: options.signal }),
     ),
   create: (body: KnowledgeCreateInput, signal?: AbortSignal) =>
     api<KnowledgeConnection>("/api/knowledge-connections", { method: "POST", body: JSON.stringify(body), signal }),
@@ -1685,8 +1676,13 @@ export const knowledgeApi = {
       watch_enabled?: boolean;
       credentials?: { password: string } | null;
     },
-    signal?: AbortSignal
-  ) => api<KnowledgeConnection>(`/api/knowledge-connections/${id}`, { method: "PATCH", body: JSON.stringify(body), signal }),
+    signal?: AbortSignal,
+  ) =>
+    api<KnowledgeConnection>(`/api/knowledge-connections/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+      signal,
+    }),
   remove: (id: string, signal?: AbortSignal) =>
     api<{ ok: true }>(`/api/knowledge-connections/${id}`, { method: "DELETE", signal }),
   /** Starts the durable bounded scan; the pending preview + run id return now. */
@@ -1702,7 +1698,7 @@ export const knowledgeApi = {
   applyPreview: (
     previewId: string,
     body: { expected_revision: number; selections: { entry_id: string; selection_token: string }[] },
-    signal?: AbortSignal
+    signal?: AbortSignal,
   ) =>
     api<{
       preview: KnowledgePreview;
@@ -1712,18 +1708,25 @@ export const knowledgeApi = {
   startRefresh: (
     id: string,
     body: { expected_connection_revision?: number; item_ids?: string[] } = {},
-    signal?: AbortSignal
-  ) => api<{ refresh: KnowledgeRefresh }>(`/api/knowledge-connections/${id}/refreshes`, { method: "POST", body: JSON.stringify(body), signal }),
+    signal?: AbortSignal,
+  ) =>
+    api<{ refresh: KnowledgeRefresh }>(`/api/knowledge-connections/${id}/refreshes`, {
+      method: "POST",
+      body: JSON.stringify(body),
+      signal,
+    }),
   listRefreshes: async (id: string, options: CatalogPageOptions = {}) =>
     parseTypedCatalogEnvelope<KnowledgeRefresh>(
-      await api<unknown>(catalogPath(`/api/knowledge-connections/${id}/refreshes`, options), { signal: options.signal })
+      await api<unknown>(catalogPath(`/api/knowledge-connections/${id}/refreshes`, options), {
+        signal: options.signal,
+      }),
     ),
   getRefresh: (refreshId: string, signal?: AbortSignal) =>
     api<KnowledgeRefreshDetail>(`/api/knowledge-refreshes/${refreshId}`, { signal }),
   cancelRefresh: (refreshId: string, signal?: AbortSignal) =>
     api<{ ok: true; cancel_requested: boolean; status: KnowledgeRefreshStatus }>(
       `/api/knowledge-refreshes/${refreshId}`,
-      { method: "DELETE", signal }
+      { method: "DELETE", signal },
     ),
 };
 

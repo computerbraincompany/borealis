@@ -77,7 +77,13 @@ export function HighlightedExcerpt({ text, query }: { text: string; query: strin
     position = mark + termLength;
   }
   if (position < text.length) nodes.push({ key: `t${position}`, node: text.slice(position) });
-  return <span>{nodes.map(({ key, node }) => <span key={key}>{node}</span>)}</span>;
+  return (
+    <span>
+      {nodes.map(({ key, node }) => (
+        <span key={key}>{node}</span>
+      ))}
+    </span>
+  );
 }
 
 function locatorBadges(locators: SourceLocator[] | undefined): React.ReactNode {
@@ -119,7 +125,6 @@ export function LibrarySearchPanel({ libraryId, members, onClose }: Props) {
   const requestRef = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
   const mountedRef = useRef(false);
-  const busyRef = useRef(false);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -130,14 +135,14 @@ export function LibrarySearchPanel({ libraryId, members, onClose }: Props) {
     };
   }, []);
 
+  /** A newer search aborts the in-flight one; only the latest target may settle. */
   const runSearch = useCallback(async () => {
     const trimmed = query.trim();
-    if (!trimmed || busyRef.current) return;
+    if (!trimmed) return;
     const requestId = ++requestRef.current;
     abortRef.current?.abort();
     const abort = new AbortController();
     abortRef.current = abort;
-    busyRef.current = true;
     setSearching(true);
     setError(null);
     setConsentRequired(false);
@@ -155,7 +160,7 @@ export function LibrarySearchPanel({ libraryId, members, onClose }: Props) {
           ...(selectedSourceIds.length ? { source_ids: selectedSourceIds } : {}),
           ...(kindFilter === "all" ? {} : { kind: kindFilter }),
         },
-        abort.signal
+        abort.signal,
       );
       if (!mountedRef.current || requestId !== requestRef.current || abort.signal.aborted) return;
       setResult(page);
@@ -167,7 +172,6 @@ export function LibrarySearchPanel({ libraryId, members, onClose }: Props) {
         setError(formatApiError(caught, "Search failed"));
       }
     } finally {
-      busyRef.current = false;
       if (mountedRef.current && requestId === requestRef.current && !abort.signal.aborted) setSearching(false);
     }
   }, [query, mode, kindFilter, sourceFilter, libraryId]);
@@ -198,27 +202,17 @@ export function LibrarySearchPanel({ libraryId, members, onClose }: Props) {
             aria-label="Search query"
             placeholder="Search this library…"
           />
-          <Button type="submit" size="sm" disabled={searching || !query.trim()}>
+          <Button type="submit" size="sm" disabled={!query.trim()}>
             {searching ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />} Search
           </Button>
         </div>
         <div className="flex flex-wrap items-center gap-3 text-sm">
           <label className="flex items-center gap-1.5">
-            <input
-              type="radio"
-              name="search-mode"
-              checked={mode === "keyword"}
-              onChange={() => setMode("keyword")}
-            />
+            <input type="radio" name="search-mode" checked={mode === "keyword"} onChange={() => setMode("keyword")} />
             Keyword (on-device, no model request)
           </label>
           <label className="flex items-center gap-1.5">
-            <input
-              type="radio"
-              name="search-mode"
-              checked={mode === "semantic"}
-              onChange={() => setMode("semantic")}
-            />
+            <input type="radio" name="search-mode" checked={mode === "semantic"} onChange={() => setMode("semantic")} />
             Semantic
           </label>
           <select
@@ -234,19 +228,23 @@ export function LibrarySearchPanel({ libraryId, members, onClose }: Props) {
         </div>
         {mode === "semantic" && (
           <p className="rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-muted-foreground">
-            Semantic search sends your query to the configured model provider and requires remote egress
-            acknowledgment. Remember: {EGRESS_PAYLOAD_CLASSES} can leave the machine under that provider's policy.
+            Semantic search sends your query to the configured model provider and requires remote egress acknowledgment.
+            Remember: {EGRESS_PAYLOAD_CLASSES} can leave the machine under that provider's policy.
           </p>
         )}
         <details className="text-sm">
-          <summary className="cursor-pointer text-muted-foreground">Filter sources ({members.length} in library)</summary>
+          <summary className="cursor-pointer text-muted-foreground">
+            Filter sources ({members.length} in library)
+          </summary>
           <div className="mt-2 max-h-40 space-y-1 overflow-y-auto rounded-md border p-2">
             {members.map((member) => (
               <label key={member.id} className="flex items-center gap-2 text-sm">
                 <input
                   type="checkbox"
                   checked={!!sourceFilter[member.id]}
-                  onChange={(event) => setSourceFilter((current) => ({ ...current, [member.id]: event.target.checked }))}
+                  onChange={(event) =>
+                    setSourceFilter((current) => ({ ...current, [member.id]: event.target.checked }))
+                  }
                 />
                 <span className="truncate">{member.display_name || member.name}</span>
               </label>
@@ -256,10 +254,11 @@ export function LibrarySearchPanel({ libraryId, members, onClose }: Props) {
       </form>
 
       {consentRequired && (
-        <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive" role="alert">
-          <p>
-            Remote model-provider consent is required before a semantic search query may leave this machine.
-          </p>
+        <div
+          className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+          role="alert"
+        >
+          <p>Remote model-provider consent is required before a semantic search query may leave this machine.</p>
           <Button variant="outline" size="sm" className="mt-2" asChild>
             <a href="#/settings">
               <ExternalLink className="h-4 w-4" /> Open Settings to acknowledge
@@ -268,7 +267,10 @@ export function LibrarySearchPanel({ libraryId, members, onClose }: Props) {
         </div>
       )}
       {error && (
-        <p role="alert" className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+        <p
+          role="alert"
+          className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+        >
           {error}
         </p>
       )}
@@ -279,12 +281,14 @@ export function LibrarySearchPanel({ libraryId, members, onClose }: Props) {
             {result.hits.length} hit{result.hits.length === 1 ? "" : "s"}
             {result.query_truncated ? " (query was truncated)" : ""}
             {result.truncated ? " (result page truncated)" : ""}
-            {result.ignored_source_ids.length > 0 ? ` · ${result.ignored_source_ids.length} filter id(s) outside the library were ignored` : ""}
+            {result.ignored_source_ids.length > 0
+              ? ` · ${result.ignored_source_ids.length} filter id(s) outside the library were ignored`
+              : ""}
           </p>
           {changedScope.length > 0 && (
             <p className="text-xs text-warning">
-              {changedScope.length} captured source generation(s) changed or were unavailable during the search;
-              newer content was not searched.
+              {changedScope.length} captured source generation(s) changed or were unavailable during the search; newer
+              content was not searched.
             </p>
           )}
           <ul className="space-y-2">
@@ -415,7 +419,10 @@ export function PassagePanel({
         </p>
       )}
       {(state === "unavailable" || state === "error") && (
-        <p role={state === "error" ? "alert" : "status"} className={cn("py-3 text-sm", state === "error" ? "text-destructive" : "text-muted-foreground")}>
+        <p
+          role={state === "error" ? "alert" : "status"}
+          className={cn("py-3 text-sm", state === "error" ? "text-destructive" : "text-muted-foreground")}
+        >
           {message}
         </p>
       )}

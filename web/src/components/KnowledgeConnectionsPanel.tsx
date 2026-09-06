@@ -32,7 +32,7 @@ import { ConfirmDialog } from "@/components/ConfirmDialog";
 export function knowledgeStatusPresentation(
   status: KnowledgeConnection["status"],
   code: string | null,
-  desktopAvailable: boolean
+  desktopAvailable: boolean,
 ): { label: string; tone: "success" | "pending" | "destructive" } {
   if (code) {
     switch (code) {
@@ -48,7 +48,10 @@ export function knowledgeStatusPresentation(
       case "KNOWLEDGE_FOLDER_UNAVAILABLE":
         return { label: "The granted folder is unavailable", tone: "destructive" };
       default:
-        return { label: `${status === "disconnected" ? "Disconnected" : "Needs attention"} (${code})`, tone: "destructive" };
+        return {
+          label: `${status === "disconnected" ? "Disconnected" : "Needs attention"} (${code})`,
+          tone: "destructive",
+        };
     }
   }
   if (status === "ready") return { label: "Ready", tone: "success" };
@@ -57,14 +60,16 @@ export function knowledgeStatusPresentation(
   return { label: "Needs attention", tone: "destructive" };
 }
 
-const REFRESH_LABELS: Record<KnowledgeRefresh["status"], { label: string; tone: "success" | "pending" | "destructive" }> =
-  {
-    active: { label: "Running", tone: "pending" },
-    completed: { label: "Completed", tone: "success" },
-    partial: { label: "Partial", tone: "destructive" },
-    failed: { label: "Failed", tone: "destructive" },
-    cancelled: { label: "Cancelled", tone: "pending" },
-  };
+const REFRESH_LABELS: Record<
+  KnowledgeRefresh["status"],
+  { label: string; tone: "success" | "pending" | "destructive" }
+> = {
+  active: { label: "Running", tone: "pending" },
+  completed: { label: "Completed", tone: "success" },
+  partial: { label: "Partial", tone: "destructive" },
+  failed: { label: "Failed", tone: "destructive" },
+  cancelled: { label: "Cancelled", tone: "pending" },
+};
 
 const ENTRY_LABELS: Record<KnowledgePreviewEntry["classification"], string> = {
   new: "New",
@@ -238,7 +243,7 @@ export function KnowledgeConnectionsPanel({ libraries }: Props) {
 
   const applyPreview = async (
     preview: KnowledgePreview,
-    selections: { entry_id: string; selection_token: string }[]
+    selections: { entry_id: string; selection_token: string }[],
   ) => {
     if (!previewState || busyRef.current) return;
     const connectionId = previewState.connection.id;
@@ -249,8 +254,7 @@ export function KnowledgeConnectionsPanel({ libraries }: Props) {
         expected_revision: preview.revision,
         selections,
       });
-      const refresh =
-        applied.refresh_id !== null ? (await knowledgeApi.getRefresh(applied.refresh_id)).refresh : null;
+      const refresh = applied.refresh_id !== null ? (await knowledgeApi.getRefresh(applied.refresh_id)).refresh : null;
       closePreview();
       setPageError(null);
       if (refresh) setActiveRefresh({ connectionId, refresh });
@@ -265,7 +269,7 @@ export function KnowledgeConnectionsPanel({ libraries }: Props) {
                   ? "The preview no longer matches the connection. Run a new preview and re-select."
                   : formatApiError(error, "Could not apply the selection"),
             }
-          : current
+          : current,
       );
     } finally {
       busyRef.current = false;
@@ -336,11 +340,13 @@ export function KnowledgeConnectionsPanel({ libraries }: Props) {
     if (deletingId === connection.id) return;
     setDeletingId(connection.id);
     setPageError(null);
+    // Bump the catalog generation before filtering so a still-in-flight list
+    // response cannot resurrect the deleted row.
+    catalogRequestRef.current += 1;
     try {
       await knowledgeApi.remove(connection.id);
       setConnections((current) => current.filter((entry) => entry.id !== connection.id));
       setDeleteTarget(null);
-      void load();
     } catch (error: unknown) {
       setPageError(formatApiError(error, "Could not delete the connection"));
     } finally {
@@ -354,8 +360,7 @@ export function KnowledgeConnectionsPanel({ libraries }: Props) {
         <div>
           <h2 className="text-lg font-semibold tracking-tight">Knowledge connections</h2>
           <p className="mt-1 text-sm text-muted-foreground">
-            Refreshable folders and WebDAV collections. Previewing or deleting a connection never removes your
-            sources.
+            Refreshable folders and WebDAV collections. Previewing or deleting a connection never removes your sources.
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-2">
@@ -432,7 +437,7 @@ export function KnowledgeConnectionsPanel({ libraries }: Props) {
                   className={cn(
                     "flex items-center gap-1.5 text-xs",
                     connection.kind !== "desktop_folder" && "invisible",
-                    !desktopAvailable && "opacity-60"
+                    !desktopAvailable && "opacity-60",
                   )}
                   title={
                     desktopAvailable
@@ -464,14 +469,20 @@ export function KnowledgeConnectionsPanel({ libraries }: Props) {
                     disabled={refreshBusyId === connection.id || running}
                     onClick={() => void startRefresh(connection)}
                   >
-                    <RefreshCw className={cn("h-4 w-4", (refreshBusyId === connection.id || running) && "animate-spin")} />
+                    <RefreshCw
+                      className={cn("h-4 w-4", (refreshBusyId === connection.id || running) && "animate-spin")}
+                    />
                     Refresh
                   </Button>
                   <Button variant="ghost" size="sm" onClick={() => setHistoryTarget(connection)}>
                     <History className="h-4 w-4" /> History
                   </Button>
                   {running && (
-                    <Button variant="outline" size="sm" onClick={() => void cancelRefresh(connection.id, activeRefresh!.refresh.id)}>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => void cancelRefresh(connection.id, activeRefresh!.refresh.id)}
+                    >
                       Cancel
                     </Button>
                   )}
@@ -565,11 +576,15 @@ export function KnowledgeConnectionsPanel({ libraries }: Props) {
       )}
       {activeRefresh && (
         <div className="sr-only" role="status">
-          Refresh for this connection: {REFRESH_LABELS[activeRefresh.refresh.status]?.label ?? activeRefresh.refresh.status}
+          Refresh for this connection:{" "}
+          {REFRESH_LABELS[activeRefresh.refresh.status]?.label ?? activeRefresh.refresh.status}
         </div>
       )}
       {pageError && (
-        <div className="mt-3 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive" role="alert">
+        <div
+          className="mt-3 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+          role="alert"
+        >
           {pageError}
         </div>
       )}
@@ -596,8 +611,8 @@ function FolderCreateForm({ libraries, onCreate }: { libraries: LibrarySummary[]
         autoFocus
       />
       <p className="text-xs text-muted-foreground">
-        Imports into “{libraries[0]?.name}”. A native folder picker opens when you create the connection; cancelling
-        it creates nothing.
+        Imports into “{libraries[0]?.name}”. A native folder picker opens when you create the connection; cancelling it
+        creates nothing.
       </p>
       <div className="flex justify-end gap-2">
         <Button type="submit" size="sm" disabled={!name.trim()}>
@@ -629,7 +644,7 @@ function WebdavCreateForm({
     () => () => {
       abortRef.current?.abort();
     },
-    []
+    [],
   );
   const submit = async () => {
     if (busyRef.current) return;
@@ -650,7 +665,7 @@ function WebdavCreateForm({
           library_id: libraryId,
           config: { url: url.trim(), username: username.trim(), password },
         },
-        abort.signal
+        abort.signal,
       );
       if (abort.signal.aborted) return;
       setPassword("");
@@ -676,7 +691,14 @@ function WebdavCreateForm({
           {error}
         </p>
       )}
-      <Input value={name} onChange={(e) => setName(e.target.value)} maxLength={120} aria-label="Connection name" placeholder="Team docs" autoFocus />
+      <Input
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+        maxLength={120}
+        aria-label="Connection name"
+        placeholder="Team docs"
+        autoFocus
+      />
       <select
         aria-label="Target library"
         value={libraryId}
@@ -689,8 +711,18 @@ function WebdavCreateForm({
           </option>
         ))}
       </select>
-      <Input value={url} onChange={(e) => setUrl(e.target.value)} aria-label="Collection URL" placeholder="https://dav.example.test/collections/team" />
-      <Input value={username} onChange={(e) => setUsername(e.target.value)} aria-label="Username" autoComplete="username" />
+      <Input
+        value={url}
+        onChange={(e) => setUrl(e.target.value)}
+        aria-label="Collection URL"
+        placeholder="https://dav.example.test/collections/team"
+      />
+      <Input
+        value={username}
+        onChange={(e) => setUsername(e.target.value)}
+        aria-label="Username"
+        autoComplete="username"
+      />
       <Input
         type="password"
         value={password}
@@ -752,7 +784,7 @@ function PreviewDialog({
     setApplyBusy(true);
     onApply(
       preview,
-      chosen.map((entry) => ({ entry_id: entry.entry_id, selection_token: entry.selection_token }))
+      chosen.map((entry) => ({ entry_id: entry.entry_id, selection_token: entry.selection_token })),
     );
   };
   return (
@@ -873,7 +905,9 @@ function RefreshHistory({ connection }: { connection: KnowledgeConnection }) {
           <Badge variant={REFRESH_LABELS[row.status]?.tone ?? "default"}>
             {REFRESH_LABELS[row.status]?.label ?? row.status}
           </Badge>
-          {row.cancel_requested && row.status === "active" && <span className="text-xs text-muted-foreground">cancelling…</span>}
+          {row.cancel_requested && row.status === "active" && (
+            <span className="text-xs text-muted-foreground">cancelling…</span>
+          )}
           {row.error_code && <span className="text-xs text-muted-foreground">{row.error_code}</span>}
           <span className="ml-auto text-xs text-muted-foreground">{new Date(row.created_at).toLocaleString()}</span>
         </li>

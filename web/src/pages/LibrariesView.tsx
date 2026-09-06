@@ -594,7 +594,13 @@ export function LibrariesView() {
               remote model-provider consent rules.
             </DialogDescription>
           </DialogHeader>
-          {open && <LibrarySearchPanel libraryId={open.summary.id} members={open.members} onClose={() => setSearching(false)} />}
+          {open && (
+            <LibrarySearchPanel
+              libraryId={open.summary.id}
+              members={open.members}
+              onClose={() => setSearching(false)}
+            />
+          )}
         </DialogContent>
       </Dialog>
 
