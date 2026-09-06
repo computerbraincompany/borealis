@@ -4,7 +4,12 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { signToken } from "../auth.js";
-import { closeConnectionService, configureConnectionService } from "../connections/service.js";
+import {
+  closeConnectionService,
+  configureConnectionService,
+  registerConnectionAuthorizationProvider,
+  ConnectionAuthUnsupportedError,
+} from "../connections/service.js";
 import { FileConnectionSecretStore, FileKeyCustody } from "../connections/secrets.js";
 import {
   McpTransportAuthError,
@@ -125,11 +130,23 @@ beforeEach(async () => {
     operationTimeoutMs: 150,
   });
   setMcpTransportProvider(fake);
+  // The default sign-in provider is the real OAuth manager (covered by the
+  // integration partition against the committed issuer fixture). This unit
+  // suite pins the explicit-unsupported override so `authorize` stays a
+  // deterministic 501 with no network in the process.
+  registerConnectionAuthorizationProvider(
+    Object.freeze({
+      start: async (): Promise<never> => {
+        throw new ConnectionAuthUnsupportedError();
+      },
+    })
+  );
 });
 
 afterEach(async () => {
   await Promise.all(apps.splice(0).map((app) => app.close()));
   setMcpTransportProvider(undefined);
+  registerConnectionAuthorizationProvider(undefined);
   closeConnectionService();
   await closeStorageRuntime();
   await Promise.all(cleanups.splice(0).map((cleanup) => cleanup()));
