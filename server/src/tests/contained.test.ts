@@ -112,16 +112,20 @@ async function waitForState(
 }
 
 describe("contained config store", () => {
+  const DIGEST = "a".repeat(64);
+
   it("round-trips a valid enabled config with 0600 mode", async () => {
     const saved = await writeContainedConfig({
       enabled: true,
       binaryPath: "/opt/homebrew/bin/llama-server",
       modelPath: path.join(tempDataDir, "models", "model.gguf"),
+      binarySha256: DIGEST,
       extraArgs: ["-ngl", "99"],
     });
     expect(saved).toMatchObject({
       enabled: true,
       binary_path: "/opt/homebrew/bin/llama-server",
+      binary_sha256: DIGEST,
       extra_args: ["-ngl", "99"],
     });
     const read = await readContainedConfig();
@@ -140,6 +144,7 @@ describe("contained config store", () => {
       enabled: true,
       binaryPath: "/opt/homebrew/bin/llama-server",
       modelPath: path.join(tempDataDir, "models", "model.gguf"),
+      binarySha256: DIGEST,
       extraArgs: ["-ngl", "99"],
     });
     expect(await readContainedConfig()).toEqual(saved);
@@ -151,12 +156,14 @@ describe("contained config store", () => {
       enabled: true,
       binaryPath: "/opt/homebrew/bin/llama-server",
       modelPath: path.join(tempDataDir, "models", "model.gguf"),
+      binarySha256: DIGEST,
     });
     await writeContainedConfig({ enabled: false });
     await writeContainedConfig({
       enabled: true,
       binaryPath: "/usr/local/bin/llama-server",
       modelPath: path.join(tempDataDir, "models", "model.gguf"),
+      binarySha256: DIGEST,
     });
 
     const entries = await fs.readdir(config.storageDir);
@@ -169,6 +176,7 @@ describe("contained config store", () => {
       enabled: true,
       binaryPath: "/opt/homebrew/bin/llama-server",
       modelPath: path.join(tempDataDir, "models", "model.gguf"),
+      binarySha256: DIGEST,
     });
     const before = await readContainedConfig();
 
@@ -183,6 +191,7 @@ describe("contained config store", () => {
           enabled: true,
           binaryPath: "/usr/local/bin/llama-server",
           modelPath: path.join(tempDataDir, "models", "model.gguf"),
+          binarySha256: DIGEST,
         })
       ).rejects.toMatchObject({ code: "EACCES" });
     } finally {
@@ -209,9 +218,103 @@ describe("contained config store", () => {
         enabled: true,
         binaryPath: "/bin/x",
         modelPath: "/tmp/model",
+        binarySha256: DIGEST,
         extraArgs: Array(33).fill("a"),
       })
     ).rejects.toBeInstanceOf(ContainedConfigError);
+  });
+
+  it("requires a 64-hex binary digest for enabled configs and fails legacy files closed", async () => {
+    await expect(
+      writeContainedConfig({
+        enabled: true,
+        binaryPath: "/bin/x",
+        modelPath: "/tmp/model.gguf",
+        extraArgs: ["-ngl", "99"],
+      })
+    ).rejects.toBeInstanceOf(ContainedConfigError);
+    await expect(
+      writeContainedConfig({
+        enabled: true,
+        binaryPath: "/bin/x",
+        modelPath: "/tmp/model.gguf",
+        binarySha256: "abc123",
+      })
+    ).rejects.toBeInstanceOf(ContainedConfigError);
+
+    // An enabled config written before the digest requirement (or with a
+    // widened/garbage value) fails closed on read with a generic
+    // reconfiguration error.
+    const reconfiguration = (error: unknown) =>
+      error instanceof ContainedConfigError && /requires reconfiguration/i.test(error.message);
+    await fs.writeFile(
+      path.join(config.storageDir, "contained.json"),
+      JSON.stringify({ enabled: true, binary_path: "/bin/x", model_path: "/tmp/model.gguf", extra_args: [] })
+    );
+    await expect(readContainedConfig()).rejects.toSatisfy(reconfiguration);
+    await fs.writeFile(
+      path.join(config.storageDir, "contained.json"),
+      JSON.stringify({
+        enabled: true,
+        binary_path: "/bin/x",
+        model_path: "/tmp/model.gguf",
+        binary_sha256: "not-a-digest-at-all",
+        extra_args: [],
+      })
+    );
+    await expect(readContainedConfig()).rejects.toSatisfy(reconfiguration);
+
+    // Disabled configs remain readable regardless.
+    await writeContainedConfig({ enabled: false });
+    expect((await readContainedConfig())?.binary_sha256).toBe("");
+  });
+
+  it("rejects extra arguments that can restate the fixed model, host, or port flags", async () => {
+    const reservedSpellings = [
+      ["-m", "/tmp/other.gguf"],
+      ["--model", "/tmp/other.gguf"],
+      ["--model=/tmp/other.gguf"],
+      ["-m=/tmp/other.gguf"],
+      ["--host", "0.0.0.0"],
+      ["--host=0.0.0.0"],
+      ["--port", "9999"],
+      ["--port=9999"],
+      ["-ngl", "99", "--port", "1234"],
+    ];
+    for (const extraArgs of reservedSpellings) {
+      await expect(
+        writeContainedConfig({
+          enabled: true,
+          binaryPath: "/bin/llama-server",
+          modelPath: "/tmp/model.gguf",
+          binarySha256: DIGEST,
+          extraArgs,
+        })
+      ).rejects.toBeInstanceOf(ContainedConfigError);
+    }
+
+    // A reserved flag smuggled into the durable file also fails the reader.
+    await fs.writeFile(
+      path.join(config.storageDir, "contained.json"),
+      JSON.stringify({
+        enabled: true,
+        binary_path: "/bin/llama-server",
+        model_path: "/tmp/model.gguf",
+        binary_sha256: DIGEST,
+        extra_args: ["--host=0.0.0.0"],
+      })
+    );
+    await expect(readContainedConfig()).rejects.toBeInstanceOf(ContainedConfigError);
+
+    // Allowed llama tuning flags stay writable.
+    const saved = await writeContainedConfig({
+      enabled: true,
+      binaryPath: "/bin/llama-server",
+      modelPath: "/tmp/model.gguf",
+      binarySha256: DIGEST,
+      extraArgs: ["-ngl", "99", "-t", "8", "-mlock", "--flash-attn"],
+    });
+    expect(saved.extra_args).toEqual(["-ngl", "99", "-t", "8", "-mlock", "--flash-attn"]);
   });
 });
 
@@ -465,6 +568,7 @@ describe("contained config redaction", () => {
       enabled: true,
       binary: "llama-server",
       model: "model.gguf",
+      binary_digest_configured: true,
       extra_arg_count: 2,
     });
     for (const forbidden of [
@@ -475,6 +579,7 @@ describe("contained config redaction", () => {
       "-ngl",
       tempDataDir,
       "binary_sha256",
+      "a".repeat(64),
     ]) {
       expect(body).not.toContain(forbidden);
     }
@@ -490,6 +595,7 @@ describe("contained config redaction", () => {
         enabled: true,
         binary_path: "/opt/homebrew/bin/llama-server",
         model_path: path.join(tempDataDir, "models", "model.gguf"),
+        binary_sha256: "a".repeat(64),
         extra_args: ["-ngl", "99"],
       },
     });
@@ -505,6 +611,7 @@ describe("contained config redaction", () => {
     expect(stored).toMatchObject({
       enabled: true,
       binary_path: "/opt/homebrew/bin/llama-server",
+      binary_sha256: "a".repeat(64),
       extra_args: ["-ngl", "99"],
     });
   });
@@ -517,6 +624,12 @@ describe("contained config redaction", () => {
       headers: operatorAuth,
       body: { enabled: false },
     });
-    expect(put.json()).toEqual({ enabled: false, binary: null, model: null, extra_arg_count: 0 });
+    expect(put.json()).toEqual({
+      enabled: false,
+      binary: null,
+      model: null,
+      binary_digest_configured: false,
+      extra_arg_count: 0,
+    });
   });
 });

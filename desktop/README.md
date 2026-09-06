@@ -209,7 +209,13 @@ file below `models/` and promotes it to a complete model only after mandatory
 SHA-256 verification. It can start a user-supplied `llama-server` binary on an
 OS-assigned loopback port, health-check the process, switch the live provider
 origin to it unless `LLM_BASE_URL` is environment-managed, restore the previous
-origin on stop, and stop the process during orderly app shutdown. See the
+origin on stop, and stop the process during orderly app shutdown. Contained
+control is desktop-operator-only: the mutations require the capability that
+only the one-shot bootstrap handoff signs, the packaged desktop server always
+runs in trusted desktop mode, and enabled configuration additionally requires
+the binary's verified SHA-256, a model file kept below `models/` (symlinks and
+reserved `.part` artifact names are rejected at spawn), and no `extra_args`
+that could restate the model, host, or port flags. See the
 [contained-model API contract](../docs/API.md#contained-models) for setup,
 download, and lifecycle details. Contained configuration alone does not start
 the engine.

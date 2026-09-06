@@ -1,4 +1,4 @@
-import type { FastifyInstance, FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
+import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
 import path from "node:path";
 import { hasDesktopOperatorCapability, requireAuth } from "../auth.js";
 import {
@@ -35,18 +35,27 @@ interface RedactedContainedConfig {
   readonly enabled: boolean;
   readonly binary: string | null;
   readonly model: string | null;
+  readonly binary_digest_configured: boolean;
   readonly extra_arg_count: number;
 }
 
 function redactContainedConfig(config: ContainedConfig | null): RedactedContainedConfig | null {
   if (!config) return null;
   if (!config.enabled) {
-    return { enabled: false, binary: null, model: null, extra_arg_count: 0 };
+    return {
+      enabled: false,
+      binary: null,
+      model: null,
+      binary_digest_configured: false,
+      extra_arg_count: 0,
+    };
   }
   return {
     enabled: true,
     binary: path.basename(config.binary_path) || null,
     model: path.basename(config.model_path) || null,
+    // A presence flag only: the digest itself never leaves the server.
+    binary_digest_configured: config.binary_sha256.length === 64,
     extra_arg_count: config.extra_args.length,
   };
 }
@@ -76,6 +85,7 @@ const containedConfigSchema = {
     enabled: { type: "boolean" },
     binary_path: { type: "string", minLength: 1, maxLength: 4_096 },
     model_path: { type: "string", minLength: 1, maxLength: 4_096 },
+    binary_sha256: { type: "string", pattern: "^[0-9a-fA-F]{64}$" },
     extra_args: {
       type: "array",
       maxItems: MAX_CONTAINED_EXTRA_ARGS,
@@ -146,12 +156,14 @@ export const containedRoutes: FastifyPluginAsync<ContainedRoutesOptions> = async
           enabled: boolean;
           binary_path?: string;
           model_path?: string;
+          binary_sha256?: string;
           extra_args?: string[];
         };
         const saved = await writeContainedConfig({
           enabled: body.enabled,
           binaryPath: body.binary_path,
           modelPath: body.model_path,
+          binarySha256: body.binary_sha256,
           extraArgs: body.extra_args,
         });
         return reply.send(redactContainedConfig(saved));

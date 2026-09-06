@@ -167,11 +167,20 @@ Drafts remain when switching panels; saving or discarding affects only the curre
 panel. Provider and chat changes must be saved or discarded before embedding
 qualification and migration. Personal chat-model overrides remain in **Account**.
 
-The contained-mode backend is an authenticated, API-driven local path beside
-those options. Point Borealis at a `llama-server` binary and model file (which
-it can download and SHA-256-verify into the app's own data directory), then use
-the [contained-model API](docs/API.md#contained-models) to start and stop the
-engine. Borealis health-checks and stops that process as part of the workspace,
+The contained-mode backend is an API-driven local path beside those options.
+Point Borealis at a `llama-server` binary and model file (which it can
+download and SHA-256-verify into the app's own data directory), then use the
+[contained-model API](docs/API.md#contained-models) to start and stop the
+engine. Config, download, and engine mutations are desktop-operator-only: they
+require the capability carried by the desktop bootstrap session plus the
+server's trusted desktop mode, so browser deployments configure contained mode
+out-of-band and ordinary accounts can never control the process. Enabled
+configuration also requires the executable's SHA-256 (verified against the
+open file handle before every spawn, never returned or logged), the model must
+live below the contained model directory with symlinks and reserved `.part`
+names rejected, and `extra_args` cannot restate the model, host, or port
+flags. `GET`/`PUT` expose only a redacted status projection. Borealis
+health-checks and stops that process as part of the workspace,
 switches the provider to its keyless loopback origin — a saved remote
 credential never follows the switch — and restores the original endpoint/key
 pair on stop. That restore is an atomic compare-and-swap: any Settings write

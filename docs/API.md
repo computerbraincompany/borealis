@@ -184,16 +184,32 @@ accepted by a provider and not an exhaustive network-egress audit.
 
 Contained mode lets Borealis own a local model engine end to end: verified
 weight downloads, a managed loopback `llama-server` process, and first-class
-provider switching. All routes require authentication.
+provider switching. These mutations write global host configuration, start or
+stop a host process, and drive model downloads, so they are desktop-operator
+only: every mutating endpoint requires **both** a valid signed
+desktop-operator capability — carried exclusively by the one-shot Electron
+bootstrap session handed to the trusted preload; registration and login never
+issue it, it is never serializable through any API response, and it is not a
+user-manageable token — **and** the server instance's trusted desktop
+composition mode. Missing either returns a stable generic `403` before any
+body parsing, config access, download, or process work. The stable desktop
+account email alone grants nothing. Browser/server deployments therefore
+configure contained mode only out-of-band; an ordinary JWT can never gain
+process control. `GET /api/contained` stays ordinary-authenticated for status
+chrome and returns a redacted config projection:
+`{enabled,binary,model,binary_digest_configured,extra_arg_count}` with binary
+and model reduced to basenames, the digest exposed only as a presence flag,
+and never `binary_path`, `model_path`, `binary_sha256`, or the raw argument
+array. `PUT /api/contained/config` returns the same projection.
 
 | Endpoint                                    | Response                                                                                                                   |
 | ------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| `GET /api/contained`                        | `{config,engine,downloads}` — current configuration, engine state, and in-process download states.                         |
-| `PUT /api/contained/config`                 | Body `{enabled,binary_path?,model_path?,extra_args?}`; returns the normalized config, and paths are required when enabled. |
-| `POST /api/contained/downloads`             | Body `{url,filename,sha256}`; `202` with the download state.                                                               |
-| `DELETE /api/contained/downloads/:filename` | `{"ok":true}`; cancels a tracked download and removes its `.part` artifact; an untracked filename returns `404`.           |
-| `POST /api/contained/engine/start`          | `202` with the engine state; health is polled in the background.                                                           |
-| `POST /api/contained/engine/stop`           | Engine state after an orderly SIGTERM (bounded SIGKILL).                                                                   |
+| `GET /api/contained`                        | `{config,engine,downloads}` — redacted config projection, engine state, and in-process download states.                     |
+| `PUT /api/contained/config`                 | Body `{enabled,binary_path?,model_path?,binary_sha256?,extra_args?}`; returns the redacted projection. Desktop operator.     |
+| `POST /api/contained/downloads`             | Body `{url,filename,sha256}`; `202` with the download state. Desktop operator.                                              |
+| `DELETE /api/contained/downloads/:filename` | `{"ok":true}`; cancels a tracked download and removes its `.part` artifact; an untracked filename returns `404`. Desktop operator. |
+| `POST /api/contained/engine/start`          | `202` with the engine state; health is polled in the background. Desktop operator.                                          |
+| `POST /api/contained/engine/stop`           | Engine state after an orderly SIGTERM with bounded SIGKILL escalation. Desktop operator.                                    |
 
 Configuration is stored at `<BOREALIS_DATA_DIR>/contained.json`. Writes replace
 the file atomically within the same directory with mode `0600` — a pre-existing
@@ -201,9 +217,19 @@ widened mode is repaired, and a failed write leaves the previous configuration
 intact with no temporary artifacts.
 Disabling needs only `{enabled:false}` and normalizes the path/argument fields
 to empty values. Enabling requires absolute `binary_path` and `model_path`
-values (no `~` or NUL); existence is checked when the engine starts.
-`extra_args` accepts at most 32 strings of 1–200 characters.
-`config` is `null` before one is saved. `engine` contains
+values (no `~` or NUL) plus a `binary_sha256` 64-character hex digest of the
+engine binary; the digest is verified against the open file handle on every
+start and is never returned through HTTP or logged. Enabled configurations
+written before the digest requirement fail closed with a generic
+reconfiguration error rather than spawning. `model_path` must be a non-symlink
+regular file lexically and really below `CONTAINED_DIR`, and its basename can
+never be dot-only, the reserved internal `.borealis-partials` directory name,
+or end in `.part` under ASCII case folding — download partials can never be
+selected as models. `extra_args` accepts at most 32 strings of 1–200
+characters of llama tuning flags; arguments that could restate or override the
+fixed process authority (`-m`, `--model`, `--host`, `--port`, including any
+`--flag=value`/`-m=value` spelling) are rejected at config write and again
+before spawn. `config` is `null` before one is saved. `engine` contains
 `{state,model,endpoint_host,endpoint_managed_by_env,pid,started_at,error}`, with
 state in `off|starting|healthy|crashed|stopped`; download rows contain
 `{filename,url_host,state,bytes_received,total_bytes,error}`, with state in
@@ -241,11 +267,33 @@ of being overridden. Engine process output and provider credentials are never
 read or logged, and orderly shutdown stops the engine before the embedded
 stores close.
 
-Engine start checks the configured paths deterministically (binary before
-model, so an absent binary always wins the diagnostic) and subscribes to the
-spawned child's `error` event, so a non-executable or raced-away binary enters
-the bounded `crashed` state instead of surfacing as an unhandled process
-error.
+Engine start proves the files immediately before spawning: the binary's
+configured components must resolve exactly (the final entry is a non-symlink
+executable regular file), it is opened without following the final symlink,
+its SHA-256 is streamed from that handle and compared in constant time with
+`binary_sha256`, and the model is re-proven contained below `CONTAINED_DIR`.
+Immediately before `spawn`, both canonical paths are re-statted and their
+device, inode, size, and high-resolution modification/change timestamps are
+compared with the retained open-handle identities; any replacement rejects
+without spawning and releases the proof handles. This final check closes
+deterministic application races; it is not an OS sandbox and makes no claim
+against a hostile process with the same OS-user filesystem authority in the
+remaining kernel-open window. Spawn arguments and errors are checked again
+(full reserved-flag validation) in the same pass.
+
+One start owns one synchronous reservation plus a generation-bound setup
+promise covering config read, file proof, port reservation, final identity
+check, and spawn, with an identity recheck after every await; stop
+synchronously invalidates the generation, signals the exact captured child,
+and drains both the setup promise and the health/auto-apply pump before
+restoring the provider origin or acknowledging shutdown. A late probe or
+apply result for a dead or replaced child is inert. For a running child stop
+sends `SIGTERM`, waits a bounded deadline, escalates to `SIGKILL`, and waits a
+second bounded deadline for that exact child's `exit`/`close` — a child that
+cannot be observed exited fails stop with a stable lifecycle error, retains
+its exact identity, and permanently rejects new starts for that process rather
+than risking a second engine beside an unobserved first one. The child `error`
+event still lands in the bounded `crashed` state.
 
 `GET /api/status` carries the ambient `contained` section
 (`{state,model,endpoint_host,endpoint_managed_by_env}` or `null`) so the
