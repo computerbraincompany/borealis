@@ -34,13 +34,20 @@ proposals; they are not current setup instructions or a list of unimplemented
 requirements.
 
 The completed baseline is M01–M11 plus the agent-editor foundation and later
-bounded extensions. MCP/OAuth remains pending. The
-[selected functional wave](milestones/README.md#selected-functional-wave)
-specifies connected agents, saved analyses, editable reports, living libraries,
-scoped research, and reviewed recurring briefs for implementation. These are
-not shipping features. Coding agents should start with the
-[development handoff](docs/DEVELOPMENT_HANDOFF.md) and keep
-[execution evidence](milestones/EXECUTION.md) current.
+bounded extensions. The
+[selected functional wave](milestones/README.md#selected-functional-wave) is
+now landing rather than merely specified: Connected agents (MCP connections,
+OAuth, selected tools, and reusable job setup), saved analyses, the report and
+document workbench, and living libraries with folder/WebDAV knowledge
+connections and source search are implemented on `main` and documented as
+shipped contracts in the [API reference](docs/API.md). Local research ships
+its durable execution stages there, and reviewed briefs currently ship their
+recipe, calendar, and run API (the API reference marks exactly which brief and
+research actions remain reserved). Acceptance evidence — packaged, browser,
+and live-model — is tracked in the [execution ledger](milestones/EXECUTION.md),
+which distinguishes accepted work from implemented code. Coding agents should
+start with the [development handoff](docs/DEVELOPMENT_HANDOFF.md) and keep the
+ledger current.
 
 ## Architecture
 
@@ -493,12 +500,27 @@ only) rescans while the app runs. The Libraries surface also gains inspectable
 library search: on-device keyword search by default, explicit semantic search
 under the same remote-egress consent as chat, ranked passages with honest
 page/section/row locators, and a passage panel with neighboring text.
-**Agents** use a shared create/edit modal with a name, description, icon, color,
-system prompt, reusable Markdown skills, and individual built-in tool controls.
-Bind an agent when creating a chat; edits apply to its next message while running
-messages retain their original configuration. Source scope and account
-authorization remain enforced. MCP connections and OAuth are not implemented yet;
-see the [agent rollout plan](docs/AGENT_EDITOR_ROLLOUT.md). Each account can set a **personal
+**Settings → Connections** manages MCP connections — a Streamable HTTP
+endpoint or a locally installed stdio executable — with bounded connect/tool
+tests, published tool discovery, and PKCE OAuth sign-in; on desktop the sign-in
+link opens in the system browser. Credentials are sealed server-side, never
+echoed or exported, and disabling or revoking a connection stops future
+connected-tool calls without interrupting a running turn.
+**Agents** use a shared create/edit modal with **General**, **Connected**, and
+**Job** tabs: a name, description, icon, color, system prompt, reusable
+Markdown skills, individual built-in tool controls, explicit selection from the
+connected tools of your enabled connections (at most 16; tools the editor
+flags as write-oriented need an explicit allowance, and tools whose schema this
+workspace refuses to execute are visibly non-selectable), and a job setup with
+up to five editable starter prompts, an output template, and suggested
+libraries. Two bundled starter jobs (finance analysis and diligence memo) seed
+editable agents that attach no data and need no remote service. Bind an agent
+when creating a chat; edits apply to its next message while running messages
+retain their original configuration, including their frozen connected-tool
+selection. Source scope and account authorization remain enforced. A chat
+started from a job shows its starter prompts and stays deliberately without
+sources until you confirm the expanded ready-source list; the rollout history
+is in the [agent rollout plan](docs/AGENT_EDITOR_ROLLOUT.md). Each account can set a **personal
 default chat model** in Settings → Account; new chats start from it and fall
 back to the workspace default when it is unset. For small teams on one Borealis
 instance, reports can be shared with sibling accounts as read-only snapshots,
@@ -711,6 +733,20 @@ restore, and forward-version behavior.
   stored table only, and a canonical chart-spec copy bound to a result. Chat
   receipts promote only from a verified full-query capture; legacy receipts
   get an editor path that requires the complete SQL.
+- Connected agents: operator-added MCP connections over Streamable HTTP or
+  stdio with bounded probes and budgeted tool discovery, PKCE OAuth through a
+  one-use loopback callback, frozen per-turn connected-tool bindings with
+  per-call revocation/credential re-checks, write-oriented tools denied unless
+  explicitly allowed, no sampling/roots/elicitation, and credentials that never
+  leave sealed custody or appear in the ledger, responses, or run metadata.
+  Job setup adds versioned starter prompts, an output template, and suggested
+  libraries; a job-started chat stays selected-empty until the user confirms
+  the expanded ready-source list.
+- Local research and reviewed briefs ship as durable server/API surfaces:
+  research definitions, editable plan proposals, evidence dossiers, cited
+  memos, and typed comparison tables execute through the durable runner with
+  reserved artifact/export actions marked as such, while briefs currently ship
+  the recipe ledger, civil-calendar scheduling, and run-stage ledger.
 - Account-scoped libraries, versioned agent identity, Markdown skills and tool
   selections, and personal model
   defaults that never widen a chat's source scope or authorization.
