@@ -354,3 +354,103 @@ all required tests, docs, and end-to-end evidence are complete. Continue fixing
 failures rather than leaving implementation TODOs. When a required external
 runtime/viewer is genuinely unavailable, report the exact unresolved acceptance
 step and keep the milestone incomplete; do not report a clean completion.
+
+## Execution record 2026-09-06 (stage 4 — publication and all four export formats)
+
+Branch `codex/m13-document-workbench`, base `353ed2e` (main at dispatch; main
+subsequently advanced ~20 commits with other stages — the report compares the
+five stage-4 commits against that merge base; merging is the coordinator's
+step). No new schema version was needed: the stage-1 v20
+publications/intents/cleanup tables and triggers carried the whole protocol
+(v25 remains the next free product slot, unused).
+
+Implemented for real:
+
+- `server/src/data/documents.ts` — one compile of a frozen revision through
+  the existing bounded renderer pipeline produces all four artifacts with
+  magic-byte validation before any write: self-contained static HTML (embedded
+  canonical PNGs, no external refs), static PDF (existing Playwright/Electron
+  dispatch — the deny-by-default desktop render contract is untouched), a
+  deterministic Markdown ZIP (real `document.md` with relative
+  `assets/chart-N.png` references, `manifest.json` provenance, hand-rolled
+  deterministic ZIP writer with a strict reader/CRC validator; no remote refs,
+  absolute paths, or macros), and DOCX through the pinned `docx@9.7.1`
+  workspace dependency (native headings/paragraphs/tables, embedded PNGs,
+  citations appendix; no macros or linked media). Typed per-format failures
+  (`PUBLICATION_{HTML|PDF|MARKDOWN|DOCX}_FAILED`) leave the publication
+  retryable. Markdown/DOCX ceilings: 20 MiB each.
+- `server/src/data/reports.ts` — the shared report contract gained the shared
+  versioned fields only: optional `appendix` (≤150,000 chars, final bounded
+  block) and `status` (≤300 chars, masthead pill). Legacy payloads normalize
+  byte-identically; the 20-section + appendix compile can never fail at
+  export because the appendix rides its own field, not a 21st section.
+  `documentTypes.ts` adds deterministic validity/appendix builders marking
+  each reference provenance verified or unknown.
+- Publication flow: `documentService.publishDocumentRevision` drives the
+  durable intent protocol (operation-UUID idempotency, expected-head guard,
+  explicit non-head selection bit, one active render per document in-process
+  plus the store's partial unique index), writes to the exact
+  account/document/publication-UUID directory, records `ready` only with both
+  required paths, and assigns the next version transactionally only after all
+  four verified artifacts exist; failures mark the intent durably failed and
+  remove the exact partial directory. Startup wires
+  `repairDocumentPublications()` (interrupted renders → durable
+  `SERVER_RESTARTED` failures + exact-directory cleanup, never auto-publish)
+  and `repairDocumentArtifactCleanup()` into `startBorealisServer`. Routes:
+  real `POST .../publish` (201/200 replayed/202 rendering; 409
+  `DOCUMENT_REVISION_CONFLICT`/`DOCUMENT_HEAD_MOVED`/`DOCUMENT_REVISION_SELECTION`/
+  `DOCUMENT_PUBLICATION_ACTIVE`; 502 per-format failure), owner-only
+  `GET .../publications/:publicationId/export?format=html|pdf|markdown|docx`
+  serving exact frozen bytes behind an anchored path resolver, and
+  `publication_status` on the document detail. Deletion cleanup proves the v20
+  trigger end-to-end.
+- Web: workbench publish button (saved-head only, expected head sent,
+  operation UUID reused across retries of one attempt), per-history-row publish
+  with the explicit selection bit, active/head-moved conflict surfaces,
+  publication history with four-format authenticated downloads and the
+  sandboxed report-preview preview path, plus provenance-verified/unknown
+  badges matching the server contract.
+- Tests: `documents.test.ts` (integration partition, 10 tests — four-format
+  compile matrix with verified/unknown evidence and unresolved tokens,
+  20-section + 40-reference appendix compile, injected bad-magic refusals, one
+  real-Playwright default-renderer contract proof, operation replay, head-move
+  rejection at completion, explicit non-head publish, crash-mid-render startup
+  recovery, one-active render, per-format failure + exact-directory cleanup +
+  retry, owner-only exports, deletion-cleanup repair). Route matrix (19 tests
+  in `documentsRoutes.test.ts`, deterministic via a test-only renderer seam
+  mirroring `__renderIsolatedHtmlPdfForTests`). Workbench tests (+6 in the
+  373-test web suite) cover publish busy rules, dirty guard, conflict surfaces,
+  non-head selection, retry-UUID reuse, exports, and preview.
+
+Exact commands and outcomes (repo root, Node 22.22.3, pnpm 10.x):
+
+- `pnpm --filter borealis-server typecheck|lint|format:check|build` → exit 0.
+- `pnpm --filter borealis-server test` → 1119/1119 (86 files). (The first
+  full-unit run before the route-test seam flaked 1/1119 under turbo parallel
+  load — real Chromium launches contending; the seam made the route tests
+  browser-free and every subsequent full run is green.)
+- `pnpm --filter borealis-server test:integration` → 331/331 (25 files,
+  serialized).
+- `pnpm --filter borealis-web typecheck|test|lint|format:check|build` → exit 0
+  (47 files / 373 tests; budgets: initial 232955/245760, largest lazy
+  121426/133120 gzip bytes).
+- `pnpm --filter borealis-desktop verify` → exit 0: native isolation smokes
+  under Node and the Electron utility process, and the hidden-renderer smoke
+  `{"ok":true,"png_bytes":28231,"pdf_bytes":16303,"network_hits":0,`
+  `"blocked_unsafe_requests":2}` — document exports reuse the same compiled-HTML
+  contract, so the desktop render path stayed green without contract changes.
+- `pnpm policy` → exit 0.
+- `pnpm verify` → `ALL GATES GREEN` (16/16 tasks), run twice after the final
+  commit set.
+
+What remains before this milestone can be marked DONE (stage 5): the shared
+end-to-end acceptance run in an isolated browser workspace and packaged Apple
+Silicon profile (journey C: fixtures → report → editable copy → live-model
+selected-passage rewrite with reject/retry/accept → M12 table refresh →
+publish two versions with immutable older exports → real browser and packaged
+downloads of all four formats with content assertions and visual inspection,
+including a DOCX viewer); `pnpm package:unsigned` plus
+`package:native:smoke` and `package:entitlements:smoke` proof that `docx`
+resolves in the packaged runtime; the live-model acceptance record; and the
+stage-5 ledger/`END_TO_END_ACCEPTANCE`/AGENTS/VISION alignment. Spec status is
+deliberately left TODO.

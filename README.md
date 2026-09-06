@@ -466,11 +466,20 @@ against the base revision it loaded; a conflicting save preserves your local
 draft and offers a diff, a reload, or an explicit reapply, never a silent
 merge. Version history and a deterministic server-side diff live beside the
 evidence inspector, which labels each entry verified or unknown-provenance and
-leaves unresolved citation markers as plain text. Three built-in templates
+leaves unresolved citation markers as plain text. "Rewrite selection" asks the
+configured model for a proposal against one exact revision and selection; a
+proposal is durable, reviewable as a side-by-side diff, and becomes a new
+revision only when you accept it while the head and selection still match —
+stale proposals stay inspectable and can never overwrite newer text. Three built-in templates
 (monthly financial brief, evidence memo, comparison report) plus your own
 saved structure templates ship without ever carrying evidence excerpts, table
-results, or source bindings. Publishing and export of documents arrive with
-the next milestone stage. **Libraries** group sources into
+results, or source bindings. **Publishing** compiles a saved revision into an
+immutable version with its deterministic evidence appendix and validity state,
+and every publication exports the exact frozen bytes as self-contained HTML,
+static PDF, a Markdown ZIP bundle with relative chart assets, or DOCX with
+native structure and embedded charts — all four from the same frozen revision,
+with verified/unknown provenance rendered in each. Publication history,
+downloads, and a sandboxed preview live in the workbench. **Libraries** group sources into
 named, account-scoped collections you can curate and attach to a new chat as
 an explicit selected scope — from the Libraries surface or directly in the
 chat composer's source picker, which expands a library's ready members into

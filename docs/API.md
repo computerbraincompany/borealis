@@ -1537,7 +1537,7 @@ zero-row result is a success, and an exact row count is claimed only when the
 worker established the total.
 
 
-### Documents, rewrites, and document templates (M13 stages 2–3)
+### Documents, rewrites, publication, exports, and templates (M13)
 
 Owner-scoped editable documents with immutable, append-only revisions
 (schema v20/v21/v23). All routes require authentication; every identifier is a
@@ -1548,7 +1548,7 @@ filesystem paths.
 | ------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `GET /api/documents`                                    | Paginated `{items,next_cursor}` of `{id,title,current_revision,current_revision_id,head_author_kind,origin,latest_publication_version,revision_count,created_at,updated_at}`, newest first.                                                   |
 | `POST /api/documents`                                   | Exactly one creation shape: `{title?}` (blank draft), `{title?, template_id}` (instantiate a template — never auto-binds sources or data), `{tree}` (explicit tree), or `{copy_from_report_id}` (editable copy of an owned published legacy report). `201` with `{document,revision}`. A payload-less legacy report answers `409 {"code":"DOCUMENT_UNAVAILABLE"}`; missing/foreign/pending reports answer `404`. |
-| `GET /api/documents/:id`                                | Document metadata and head pointer as in the list row.                                                                                                                                                                                         |
+| `GET /api/documents/:id`                                | Document metadata and head pointer as in the list row, plus `publication_status` — the latest attempt `{operation_id,revision_id,revision,status,updated_at,error_code}` with `status` `rendering\|ready\|completed\|failed`, or `null`. No artifact paths. |
 | `DELETE /api/documents/:id`                             | `{"ok":true}`; reserves and eagerly completes durable artifact cleanup, `503 {"error":"document cleanup deferred"}` keeps the intent durable. Revisions cascade; legacy reports, chats, and sources are untouched.                            |
 | `GET /api/documents/:id/revisions`                      | Paginated revision summaries `{id,revision,title,author_kind,base_revision_id,payload_chars,published_version,created_at}`, newest first.                                                                                                     |
 | `POST /api/documents/:id/revisions`                     | Body `{base_revision_id,tree}`. `201` with `{document,revision}`. A stale base answers `409 {"code":"DOCUMENT_REVISION_CONFLICT","current_head":{revision_id,revision,title,author_kind,updated_at}}` and writes nothing; the server never merges. Oversize/invalid trees answer `400` with `DOCUMENT_OVERSIZE`/`DOCUMENT_INVALID` and persist nothing. |
@@ -1559,8 +1559,9 @@ filesystem paths.
 | `GET /api/documents/:id/rewrites/:rewriteId` | One operation as above. Stale and failed rows stay inspectable forever. |
 | `DELETE /api/documents/:id/rewrites/:rewriteId` | Active operations cancel durably: `{"ok":true,"action":"cancelled"\|"cancelling","rewrite":{…}}` (`cancelling` finalizes `cancelled` when the running model call observes the flag). Terminal proposals are explicitly deleted: `{"ok":true,"action":"deleted"}`; deletion is what frees a quota slot. |
 | `POST /api/documents/:id/rewrites/:rewriteId/accept` | Revision-CAS acceptance. `201` with `{document,revision,rewrite}` — one new draft revision (`author_kind:"model"`) created only while the proposal's base revision is still the head and the stored selection still matches byte-for-byte. A changed head/selection marks the proposal durably `stale` and answers `409 {"code":"DOCUMENT_REWRITE_STALE","current_head":{…}}`; a `stale` proposal can never be applied. Re-acceptance answers `409 DOCUMENT_REWRITE_ALREADY_APPLIED` (application is one-shot). Non-completed rows answer `409 DOCUMENT_REWRITE_STATE`. |
-| `GET /api/documents/:id/publications`                   | Owner publication history (empty until publication ships). No artifact paths.                                                                                                                                                                 |
-| `POST /api/documents/:id/revisions/:revisionId/publish` | **Reserved — not implemented.** Body `{operation_id,expected_revision_id?}` is validated, then the route answers `501 {"code":"PUBLICATION_NOT_READY"}`. Publication execution arrives with M13 stage 4.                                       |
+| `GET /api/documents/:id/publications`                   | Paginated owner publication history `{id,document_id,revision_id,revision,version,title,supersedes,created_at}`, newest version first — completed publications only; the in-flight/failed attempt state rides `publication_status` on the document detail. No artifact paths. |
+| `POST /api/documents/:id/revisions/:revisionId/publish` | Body `{operation_id, expected_revision_id?, allow_non_head_revision?}`. Compiles the frozen revision into all four export formats through the bounded renderer pipeline into the exact account/document/publication directory, verifies every magic byte, and transactionally assigns the next per-document version only after all required artifacts exist. `operation_id` (UUID) is idempotent: a retry of a completed operation returns `200 {"status":"published","replayed":true,publication}` — never a second publication; a new completion answers `201`. The default action publishes the head and requires the head to be unchanged (`409 DOCUMENT_REVISION_CONFLICT` on a stale `expected_revision_id`, `409 DOCUMENT_HEAD_MOVED` if the head moved between render start and completion). Publishing a non-head revision requires `allow_non_head_revision:true` (`409 DOCUMENT_REVISION_SELECTION` without it). One active render/publication per document: `409 DOCUMENT_PUBLICATION_ACTIVE`; an in-flight same-operation replay answers `202 {"status":"rendering",publication_status}`. Missing/foreign document or revision answers `404`. A per-format failure answers `502` with `PUBLICATION_HTML_FAILED\|PUBLICATION_PDF_FAILED\|PUBLICATION_MARKDOWN_FAILED\|PUBLICATION_DOCX_FAILED\|PUBLICATION_RENDER_FAILED`, records a durable retryable failure, and leaves the draft, head, and previous publication untouched. Startup recovery turns interrupted renders into durable `SERVER_RESTARTED` failures and cleans their exact partial directories; it never auto-publishes. |
+| `GET /api/documents/:id/publications/:publicationId/export?format=html\|pdf\|markdown\|docx` | Serves the exact frozen artifact bytes of that publication version, owner-only (`404` for foreign accounts, missing publications, or vanished artifacts). `html` is the self-contained static document (inline styles, embedded chart PNGs, report CSP, no external references); `pdf` the static PDF; `markdown` a ZIP bundle (`document.md` with relative chart assets, `manifest.json` provenance, `assets/chart-N.png` — no remote references, no absolute paths); `docx` native OOXML (headings, paragraphs, tables, embedded PNGs, evidence appendix — no macros or linked media). Every format compiles from the same frozen revision and carries the deterministic evidence appendix and validity state. |
 
 Document trees carry `title` (≤200), `subtitle` (≤500), `verified`, at most
 20 sections with stable document-local UUIDs (`heading` ≤200,
@@ -1575,6 +1576,27 @@ ceiling is 2,531,072 bytes. An oversize tree is rejected with
 `DOCUMENT_OVERSIZE` — unlike optional legacy report payloads, a document
 never silently drops its tree. `author_kind` is server-assigned; HTTP saves
 are always `user`.
+
+Publication compiles one frozen revision through the shared report contract —
+the existing renderer bounds (20 sections, 200,000 section-Markdown characters,
+20 charts, 8 tables with their row/column/cell limits) plus the shared versioned
+appendix fields: an optional evidence `appendix` (≤150,000 characters, rendered
+as a final bounded block) and an optional validity `status` line (≤300
+characters) shown in every format and in the masthead. The evidence appendix
+numbers entries deterministically by revision position and marks each one
+provenance verified or unknown; unresolved citation tokens stay plain text in
+every export. All four artifacts are produced from the same tree in one
+compile: self-contained static HTML and static PDF through the existing
+Playwright/Electron bounded renderer backends (deny-by-default network policy
+unchanged), a Markdown ZIP bundle (real `.md`, relative `assets/chart-N.png`
+canonical PNGs, `manifest.json` provenance; no remote references, absolute
+paths, or macros), and DOCX through the pinned `docx` writer (native
+paragraphs/headings/tables, embedded PNGs, citations appendix; no macros or
+linked media). Markdown and DOCX outputs are bounded at 20 MiB each, and every
+artifact is magic-byte validated (`%PDF-`, PNG, ZIP, and the OOXML part list)
+before the publication is recorded. A 20-section revision plus its appendix
+always compiles because the appendix rides its own separately bounded field
+rather than a 21st section.
 
 A rewrite is one durable model operation with exactly one bounded provider
 call and no tools. Its prompt carries only the selection re-derived from the
