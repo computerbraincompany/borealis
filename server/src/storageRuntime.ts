@@ -5,6 +5,7 @@ import { DEFAULT_LLM_SETTINGS, type SettingsSnapshot } from "./settingsStore.js"
 
 import { ChatStore } from "./db/stores/chatStore.js";
 import { AgentStore } from "./db/stores/agentStore.js";
+import { ConnectionStore } from "./connections/store.js";
 import { AutomationStore } from "./automationStore.js";
 import { ConnectorRefreshStore } from "./db/stores/connectorRefreshStore.js";
 import { SqliteIngestionStore } from "./db/stores/ingestionStore.js";
@@ -34,6 +35,12 @@ export interface StorageRuntime {
   readonly sources: SourceStore;
   readonly libraries: LibraryStore;
   readonly agents: AgentStore;
+  /**
+   * Account-scoped Connected-agents ledger (schema v17). Stage 4's agent
+   * store registers its connection-deletion cascade hook on this exact
+   * instance during composition; the ledger never holds credential material.
+   */
+  readonly connections: ConnectionStore;
   readonly automations: AutomationStore;
   readonly sourceIngestion: SourceIngestionTransitions;
   readonly connectorRefresh: ConnectorRefreshStore;
@@ -115,6 +122,7 @@ export async function initializeStorageRuntime(optionsValue: StorageRuntimeOptio
         runs: new RunStore(ledger),
         libraries: new LibraryStore(ledger),
         agents: new AgentStore(ledger),
+        connections: new ConnectionStore(ledger),
         automations: new AutomationStore(ledger),
         sources: new SourceStore(ledger),
         sourceIngestion: new SourceIngestionTransitions(ledger),

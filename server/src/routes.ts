@@ -11,6 +11,7 @@ import { auditRoutes } from "./routes/audit.js";
 import { automationRoutes, type AutomationSchedulerStatus } from "./routes/automations.js";
 import { containedRoutes } from "./routes/contained.js";
 import { consentRoutes } from "./routes/consent.js";
+import { connectionRoutes } from "./routes/connections.js";
 import { connectorRoutes } from "./routes/connectors.js";
 import { embeddingMigrationRoutes } from "./routes/embeddingMigration.js";
 import { libraryRoutes } from "./routes/libraries.js";
@@ -84,6 +85,7 @@ export async function routes(app: FastifyInstance, options: RoutesOptions = {}):
   await app.register(agentRoutes);
   await app.register(agentSkillRoutes);
   await app.register(containedRoutes, { desktop: options.desktop ?? false });
+  await app.register(connectionRoutes);
   await app.register(connectorRoutes);
   await app.register(reportRoutes);
   await app.register(chartRoutes);

@@ -12,7 +12,15 @@ const ISO_TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 const BASE64URL_PATTERN = /^[A-Za-z0-9_-]+$/;
 
 export type CatalogEndpoint =
-  "sources" | "connectors" | "chats" | "reports" | "shared_reports" | "agents" | "libraries" | "automations";
+  | "sources"
+  | "connectors"
+  | "chats"
+  | "reports"
+  | "shared_reports"
+  | "agents"
+  | "libraries"
+  | "automations"
+  | "connections";
 
 export interface CatalogPosition {
   readonly timestamp: string;

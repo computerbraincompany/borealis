@@ -342,6 +342,14 @@ export const config = {
   uploadDir: path.resolve(process.env.UPLOAD_DIR || path.join(storageDir, "uploads")),
   reportDir: path.resolve(process.env.REPORT_DIR || path.join(storageDir, "reports")),
   containedDir: path.resolve(process.env.CONTAINED_DIR || path.join(storageDir, "models")),
+  // Browser-development connection secret custody: operator-managed private
+  // key file plus mode-0600 encrypted records. Path-only at import like every
+  // other durable path; creation happens lazily inside the running server at
+  // the first credential mutation, never during configuration import.
+  // Packaged desktop replaces this custody with OS-protected storage through
+  // main and does not use these paths.
+  connectionSecretsDir: path.resolve(process.env.CONNECTION_SECRETS_DIR || path.join(storageDir, "secrets")),
+  connectionsKeyFile: path.resolve(process.env.CONNECTIONS_KEY_FILE || path.join(storageDir, "connections.key")),
 };
 
 /**

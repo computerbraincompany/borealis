@@ -1,5 +1,18 @@
 import { MAX_API_KEY_CHARS, MAX_ENDPOINT_CHARS, MODEL_ID_MAX_CHARS } from "../settingsStore.js";
 import {
+  MAX_CONNECTION_NAME_CHARS,
+  MAX_CONNECTION_URL_CHARS,
+  MAX_STDIO_ARGS,
+  MAX_STDIO_ARG_CHARS,
+  MAX_STDIO_COMMAND_CHARS,
+} from "../connections/store.js";
+import {
+  MAX_SECRET_ENV_ENTRIES,
+  MAX_SECRET_HEADER_ENTRIES,
+  MAX_SECRET_NAME_CHARS,
+  MAX_SECRET_VALUE_CHARS,
+} from "../connections/secrets.js";
+import {
   CONNECTOR_DISPLAY_NAME_MAX_CHARS,
   CONNECTOR_TABLE_MAX_CHARS,
   CONNECTOR_URL_MAX_CHARS,
@@ -44,3 +57,21 @@ export const CONNECTOR_JSON_BODY_LIMIT_BYTES =
 
 /** Account model preference, including an escaped astral model identifier. */
 export const PREFERENCE_JSON_BODY_LIMIT_BYTES = PREFERENCE_MODEL_MAX_CHARS * MAX_JSON_BYTES_PER_CODE_POINT + 1024;
+
+/**
+ * Connection create/edit contract: bounded name, endpoint URL or absolute
+ * command/arguments/working directory, and the maximum credential material
+ * the secret store itself accepts (headers plus environment entries), all
+ * escaped astrally. The secret-store budget, not the transport, is the real
+ * bound; the durable semantic limits live in `connections/store.ts` and
+ * `connections/secrets.ts`.
+ */
+export const CONNECTION_JSON_BODY_LIMIT_BYTES =
+  (MAX_CONNECTION_NAME_CHARS +
+    MAX_CONNECTION_URL_CHARS +
+    MAX_STDIO_COMMAND_CHARS * 2 +
+    MAX_STDIO_ARGS * MAX_STDIO_ARG_CHARS +
+    MAX_SECRET_NAME_CHARS * (MAX_SECRET_HEADER_ENTRIES + MAX_SECRET_ENV_ENTRIES) +
+    MAX_SECRET_VALUE_CHARS * (MAX_SECRET_HEADER_ENTRIES + MAX_SECRET_ENV_ENTRIES)) *
+    MAX_JSON_BYTES_PER_CODE_POINT +
+  OBJECT_KEYS_AND_SYNTAX_HEADROOM_BYTES;
