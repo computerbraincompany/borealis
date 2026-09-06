@@ -508,7 +508,7 @@ export class BriefRecipeStore {
              report_title,report_instruction,source_ids,refresh_bindings,
              schedule_kind,weekday,day_of_month,hour,minute,time_zone,
              next_occurrence_key,next_run_at,revision,state,consecutive_failures,created_at,updated_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,'active',0,?,?)`,
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
           [
             recipeId,
             accountId,
@@ -524,6 +524,9 @@ export class BriefRecipeStore {
             ...BriefRecipeStore.scheduleColumns(content),
             next.occurrence_key,
             next.utc_at,
+            1,
+            "active",
+            0,
             timestamp,
             timestamp,
           ]

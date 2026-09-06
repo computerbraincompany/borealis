@@ -1780,10 +1780,12 @@ END;
 // cursor whose UTC is `next_run_at`. A gapped spring-forward civil key
 // resolves to the first valid instant after the gap; a repeated autumn civil
 // key resolves once, at the earlier instant. The bound saved analysis is a
-// composite same-account foreign key with ON DELETE SET NULL: deleting the
-// analysis pauses the recipe (the trigger below records the reason durably)
-// instead of retargeting or cascading it, and `analysis_revision` stays as
-// history. Source membership is validated at write against the bound M12
+// composite same-account foreign key guarded by a BEFORE DELETE trigger:
+// deleting the analysis nulls the head binding and pauses the recipe with a
+// durable reason instead of retargeting or cascading it, and
+// `analysis_revision` stays as history. (Plain ON DELETE SET NULL is unusable
+// because it would also null the scoping NOT NULL `account_id` half of the
+// composite child key.) Source membership is validated at write against the bound M12
 // revision's selected set (typed parameter values resolved against that
 // revision's declarations), and refresh bindings are validated kind-specific
 // connector/knowledge-connection ids per source at write.
@@ -1847,20 +1849,20 @@ CREATE TABLE brief_recipes (
     OR (schedule_kind = 'weekly' AND weekday IS NOT NULL AND day_of_month IS NULL)
     OR (schedule_kind = 'monthly' AND day_of_month IS NOT NULL AND weekday IS NULL)
   ),
-  FOREIGN KEY (analysis_id, account_id) REFERENCES analyses(id, account_id) ON DELETE SET NULL
+  FOREIGN KEY (analysis_id, account_id) REFERENCES analyses(id, account_id)
 ) STRICT;
 CREATE INDEX brief_recipes_account_catalog_idx ON brief_recipes (account_id, created_at DESC, id DESC);
 CREATE INDEX brief_recipes_claim_idx ON brief_recipes (next_run_at, id) WHERE state = 'active';
 
 CREATE TRIGGER brief_recipes_pause_on_analysis_delete
-AFTER UPDATE OF analysis_id ON brief_recipes
-WHEN OLD.analysis_id IS NOT NULL AND NEW.analysis_id IS NULL
+BEFORE DELETE ON analyses
 BEGIN
   UPDATE brief_recipes
-     SET state = 'paused',
+     SET analysis_id = NULL,
+         state = 'paused',
          paused_reason = 'the bound analysis was deleted',
          updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
-   WHERE id = OLD.id;
+   WHERE analysis_id = OLD.id AND account_id = OLD.account_id;
 END;
 
 CREATE TABLE brief_recipe_revisions (
@@ -2001,7 +2003,6 @@ CREATE TABLE brief_notifications (
 CREATE INDEX brief_notifications_account_catalog_idx
   ON brief_notifications (account_id, created_at DESC, id DESC);
 `;
-
 
 const migrations = [
   { version: 1, sql: SCHEMA_V1 },

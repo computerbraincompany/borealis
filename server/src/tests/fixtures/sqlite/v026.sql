@@ -36,20 +36,20 @@ CREATE TABLE brief_recipes (
     OR (schedule_kind = 'weekly' AND weekday IS NOT NULL AND day_of_month IS NULL)
     OR (schedule_kind = 'monthly' AND day_of_month IS NOT NULL AND weekday IS NULL)
   ),
-  FOREIGN KEY (analysis_id, account_id) REFERENCES analyses(id, account_id) ON DELETE SET NULL
+  FOREIGN KEY (analysis_id, account_id) REFERENCES analyses(id, account_id)
 ) STRICT;
 CREATE INDEX brief_recipes_account_catalog_idx ON brief_recipes (account_id, created_at DESC, id DESC);
 CREATE INDEX brief_recipes_claim_idx ON brief_recipes (next_run_at, id) WHERE state = 'active';
 
 CREATE TRIGGER brief_recipes_pause_on_analysis_delete
-AFTER UPDATE OF analysis_id ON brief_recipes
-WHEN OLD.analysis_id IS NOT NULL AND NEW.analysis_id IS NULL
+BEFORE DELETE ON analyses
 BEGIN
   UPDATE brief_recipes
-     SET state = 'paused',
+     SET analysis_id = NULL,
+         state = 'paused',
          paused_reason = 'the bound analysis was deleted',
          updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
-   WHERE id = OLD.id;
+   WHERE analysis_id = OLD.id AND account_id = OLD.account_id;
 END;
 
 CREATE TABLE brief_recipe_revisions (
