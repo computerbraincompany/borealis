@@ -22,11 +22,21 @@ const engineOff: ContainedResponse["engine"] = {
   error: null,
 };
 
+/** Redacted projection: basenames and a digest presence flag, never stored paths. */
 const savedConfig: ContainedResponse["config"] = {
   enabled: true,
-  binary_path: "/opt/homebrew/bin/llama-server",
-  model_path: "/Users/operator/Models/tinyllama.gguf",
-  extra_args: [],
+  binary: "llama-server",
+  model: "tinyllama.gguf",
+  binary_digest_configured: true,
+  extra_arg_count: 0,
+};
+
+const disabledConfig: ContainedResponse["config"] = {
+  enabled: false,
+  binary: null,
+  model: null,
+  binary_digest_configured: false,
+  extra_arg_count: 0,
 };
 
 const payload: ContainedResponse = { config: null, engine: engineOff, downloads: [] };
@@ -123,14 +133,20 @@ describe("useContained", () => {
     await act(async () => {
       ok = await result.current.saveConfig({
         enabled: true,
-        binary_path: savedConfig.binary_path,
-        model_path: savedConfig.model_path,
+        binary_path: "/opt/homebrew/bin/llama-server",
+        model_path: "/Users/operator/Models/tinyllama.gguf",
+        binary_sha256: "ab".repeat(32),
       });
     });
 
     expect(ok).toBe(true);
     expect(save).toHaveBeenCalledWith(
-      { enabled: true, binary_path: savedConfig.binary_path, model_path: savedConfig.model_path },
+      {
+        enabled: true,
+        binary_path: "/opt/homebrew/bin/llama-server",
+        model_path: "/Users/operator/Models/tinyllama.gguf",
+        binary_sha256: "ab".repeat(32),
+      },
       expect.any(AbortSignal),
     );
     expect(result.current.config).toEqual(savedConfig);
@@ -259,7 +275,7 @@ describe("useContained", () => {
 
     rerender({ enabled: false });
     expect(signal.aborted).toBe(true);
-    await act(async () => pendingSave.resolve({ ...savedConfig, enabled: false }));
+    await act(async () => pendingSave.resolve(disabledConfig));
 
     expect(result.current.config).toBeNull();
     expect(result.current.action).toBeNull();

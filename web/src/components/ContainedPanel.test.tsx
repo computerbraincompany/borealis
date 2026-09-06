@@ -28,11 +28,21 @@ vi.mock("@/lib/api", async () => {
 
 import { ContainedPanel } from "@/components/ContainedPanel";
 
+/** Redacted projection: basenames and a digest presence flag, never stored paths. */
 const configOn: ContainedConfig = {
   enabled: true,
-  binary_path: "/opt/homebrew/bin/llama-server",
-  model_path: "/Users/operator/Models/tinyllama.gguf",
-  extra_args: [],
+  binary: "llama-server",
+  model: "tinyllama.gguf",
+  binary_digest_configured: true,
+  extra_arg_count: 0,
+};
+
+const configDisabled: ContainedConfig = {
+  enabled: false,
+  binary: null,
+  model: null,
+  binary_digest_configured: false,
+  extra_arg_count: 0,
 };
 
 const engineOff: ContainedEngineStatus = {
@@ -72,6 +82,10 @@ async function renderLoadedPanel(response: ContainedResponse) {
   await screen.findByLabelText("Binary path");
 }
 
+function summaryCard() {
+  return screen.getByLabelText("Stored contained configuration");
+}
+
 describe("ContainedPanel", () => {
   beforeEach(() => {
     mocks.containedGet.mockReset();
@@ -86,8 +100,16 @@ describe("ContainedPanel", () => {
     await renderLoadedPanel(containedResponse({ engine: engineHealthy, downloads: [downloadingRow] }));
 
     expect(screen.getByRole("checkbox", { name: /enable contained engine/i })).toBeChecked();
-    expect(screen.getByLabelText("Binary path")).toHaveValue("/opt/homebrew/bin/llama-server");
-    expect(screen.getByLabelText("Model path")).toHaveValue("/Users/operator/Models/tinyllama.gguf");
+    // The projection never carries paths, so the write-side inputs start empty.
+    expect(screen.getByLabelText("Binary path")).toHaveValue("");
+    expect(screen.getByLabelText("Model path")).toHaveValue("");
+    expect(screen.getByLabelText("Binary SHA-256")).toHaveValue("");
+    const summary = summaryCard();
+    expect(summary).toHaveTextContent("Enabled");
+    expect(within(summary).getByText("llama-server")).toBeInTheDocument();
+    expect(within(summary).getByText("tinyllama.gguf")).toBeInTheDocument();
+    expect(summary).toHaveTextContent("binary digest configured");
+    expect(summary).toHaveTextContent("no extra args");
     expect(screen.getByText("Running")).toBeInTheDocument();
     const engineCard = screen.getByLabelText("Contained engine state");
     expect(within(engineCard).getByText("tinyllama.gguf")).toBeInTheDocument();
@@ -102,6 +124,22 @@ describe("ContainedPanel", () => {
     expect(rows).toHaveTextContent("Downloading…");
     expect(rows).toHaveTextContent("1.5 KB of 4.0 KB");
     expect(screen.getByRole("button", { name: "Cancel" })).toBeEnabled();
+  });
+
+  it("shows the extra-arg count from the projection", async () => {
+    await renderLoadedPanel(containedResponse({ config: { ...configOn, extra_arg_count: 3 } }));
+    expect(summaryCard()).toHaveTextContent("3 extra args");
+  });
+
+  it("summarizes a disabled projection without inventing names", async () => {
+    await renderLoadedPanel(containedResponse({ config: configDisabled }));
+    expect(summaryCard()).toHaveTextContent("A contained configuration is saved but disabled.");
+    expect(screen.queryByText("Enabled")).not.toBeInTheDocument();
+  });
+
+  it("states that no configuration exists before the first save", async () => {
+    await renderLoadedPanel(containedResponse({ config: null }));
+    expect(summaryCard()).toHaveTextContent("No contained configuration has been saved yet.");
   });
 
   it("shows the endpoint-managed hint and crashed diagnostics while gating the engine buttons", async () => {
@@ -125,30 +163,51 @@ describe("ContainedPanel", () => {
     expect(screen.getByRole("button", { name: "Stop engine" })).toBeDisabled();
   });
 
-  it("saves the edited configuration draft through saveConfig", async () => {
-    mocks.containedSaveConfig.mockResolvedValue({
-      ...configOn,
-      enabled: false,
-      binary_path: "/usr/local/bin/llama-server",
-    });
-    await renderLoadedPanel(containedResponse());
+  it("saves an enabling draft with fresh paths and the binary digest through saveConfig", async () => {
+    mocks.containedSaveConfig.mockResolvedValue({ ...configOn, extra_arg_count: 1 });
+    await renderLoadedPanel(containedResponse({ config: configDisabled }));
 
     fireEvent.change(screen.getByLabelText("Binary path"), { target: { value: "/usr/local/bin/llama-server" } });
+    fireEvent.change(screen.getByLabelText("Model path"), {
+      target: { value: "/Users/operator/Models/tinyllama.gguf" },
+    });
+    fireEvent.change(screen.getByLabelText("Binary SHA-256"), { target: { value: "ab".repeat(32) } });
     fireEvent.click(screen.getByRole("checkbox", { name: /enable contained engine/i }));
     fireEvent.click(screen.getByRole("button", { name: "Save configuration" }));
 
     await waitFor(() =>
       expect(mocks.containedSaveConfig).toHaveBeenCalledWith(
-        { enabled: false, binary_path: "/usr/local/bin/llama-server", model_path: configOn.model_path },
+        {
+          enabled: true,
+          binary_path: "/usr/local/bin/llama-server",
+          model_path: "/Users/operator/Models/tinyllama.gguf",
+          binary_sha256: "ab".repeat(32),
+        },
         expect.any(AbortSignal),
       ),
     );
     expect(await screen.findByText("Contained configuration saved.")).toBeInTheDocument();
+    expect(summaryCard()).toHaveTextContent("llama-server");
+    expect(summaryCard()).toHaveTextContent("1 extra arg");
     expect(screen.getByRole("button", { name: "Save configuration" })).toBeEnabled();
   });
 
+  it("saves a plain disable without any path fields", async () => {
+    mocks.containedSaveConfig.mockResolvedValue(configDisabled);
+    await renderLoadedPanel(containedResponse());
+
+    fireEvent.click(screen.getByRole("checkbox", { name: /enable contained engine/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Save configuration" }));
+
+    await waitFor(() =>
+      expect(mocks.containedSaveConfig).toHaveBeenCalledWith({ enabled: false }, expect.any(AbortSignal)),
+    );
+    expect(await screen.findByText("Contained configuration saved.")).toBeInTheDocument();
+    expect(summaryCard()).toHaveTextContent("disabled");
+  });
+
   it("blocks an invalid configuration before any request", async () => {
-    await renderLoadedPanel(containedResponse({ config: { ...configOn, enabled: false } }));
+    await renderLoadedPanel(containedResponse({ config: configDisabled }));
 
     fireEvent.change(screen.getByLabelText("Binary path"), { target: { value: "models/llama-server" } });
     fireEvent.click(screen.getByRole("button", { name: "Save configuration" }));
@@ -156,12 +215,22 @@ describe("ContainedPanel", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("Binary path must be an absolute path.");
     expect(mocks.containedSaveConfig).not.toHaveBeenCalled();
 
-    fireEvent.change(screen.getByLabelText("Binary path"), { target: { value: "" } });
+    fireEvent.change(screen.getByLabelText("Binary path"), { target: { value: "/usr/local/bin/llama-server" } });
+    fireEvent.change(screen.getByLabelText("Model path"), {
+      target: { value: "/Users/operator/Models/tinyllama.gguf" },
+    });
+    fireEvent.change(screen.getByLabelText("Binary SHA-256"), { target: { value: "abc" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save configuration" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Binary SHA-256 must be a 64-character hex digest.");
+    expect(mocks.containedSaveConfig).not.toHaveBeenCalled();
+
+    fireEvent.change(screen.getByLabelText("Binary SHA-256"), { target: { value: "" } });
     fireEvent.click(screen.getByRole("checkbox", { name: /enable contained engine/i }));
     fireEvent.click(screen.getByRole("button", { name: "Save configuration" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent(
-      "An enabled engine needs absolute binary and model paths.",
+      "An enabled engine needs absolute binary and model paths and the binary's 64-character SHA-256.",
     );
     expect(mocks.containedSaveConfig).not.toHaveBeenCalled();
   });
@@ -246,7 +315,7 @@ describe("ContainedPanel", () => {
     expect(screen.queryByText(/secret socket path/i)).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Try again" }));
-    expect(await screen.findByLabelText("Binary path")).toHaveValue(configOn.binary_path);
+    expect(await screen.findByLabelText("Stored contained configuration")).toHaveTextContent("llama-server");
   });
 
   it("keeps operator edits when the two-second poll refreshes server state", async () => {
@@ -255,10 +324,11 @@ describe("ContainedPanel", () => {
       mocks.containedGet.mockResolvedValue(containedResponse());
       render(<ContainedPanel />);
       await act(async () => undefined);
-      expect(screen.getByLabelText("Binary path")).toHaveValue(configOn.binary_path);
+      expect(summaryCard()).toHaveTextContent("llama-server");
+      expect(screen.getByRole("checkbox", { name: /enable contained engine/i })).toBeChecked();
 
       fireEvent.change(screen.getByLabelText("Binary path"), { target: { value: "/next/bin/llama-server" } });
-      mocks.containedGet.mockResolvedValue(containedResponse({ config: { ...configOn, enabled: false } }));
+      mocks.containedGet.mockResolvedValue(containedResponse({ config: configDisabled }));
       await act(async () => {
         vi.advanceTimersByTime(2_000);
       });

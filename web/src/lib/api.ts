@@ -1173,17 +1173,33 @@ export const consentApi = {
 };
 
 // ------------------------------------------------------------------ contained
+/**
+ * Redacted server projection of the stored contained configuration. Durable
+ * absolute paths, the binary digest, and the raw argument array never leave
+ * the server: `binary` and `model` are basenames only, the digest appears as a
+ * presence flag, and extra arguments as a count. A disabled or unsaved
+ * configuration carries no names, flag false, and count zero.
+ */
 export interface ContainedConfig {
   enabled: boolean;
-  binary_path: string;
-  model_path: string;
-  extra_args: string[];
+  binary: string | null;
+  model: string | null;
+  binary_digest_configured: boolean;
+  extra_arg_count: number;
 }
 
+/**
+ * Write-side payload. Unlike the read projection it still carries full
+ * absolute paths; the request schema accepts them even though no response
+ * ever echoes them. An enabled write additionally needs `binary_sha256`
+ * because the server verifies the binary against it on every spawn.
+ */
 export interface ContainedConfigInput {
   enabled: boolean;
   binary_path?: string;
   model_path?: string;
+  /** Operator-declared SHA-256 of the engine binary; required to enable. Never returned. */
+  binary_sha256?: string;
   extra_args?: string[];
 }
 

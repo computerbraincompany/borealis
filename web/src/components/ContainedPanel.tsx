@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useContained } from "@/hooks/useContained";
-import type { ContainedConfigInput, ContainedDownloadState, ContainedEngineState } from "@/lib/api";
+import type { ContainedConfig, ContainedConfigInput, ContainedDownloadState, ContainedEngineState } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 const CONTAINED_FILENAME_PATTERN = /^[A-Za-z0-9._-]{1,180}$/;
@@ -44,10 +44,16 @@ const DOWNLOAD_STATE_LABEL: Record<ContainedDownloadState["state"], string> = {
   canceled: "Cancelled",
 };
 
+/**
+ * Write-side draft. The server's read projection never carries absolute paths
+ * or the digest, so these fields start empty and are re-supplied by the
+ * operator; a PUT is a whole-config write, not a merge.
+ */
 interface ContainedConfigDraft {
   enabled: boolean;
   binary_path: string;
   model_path: string;
+  binary_sha256: string;
 }
 
 interface ContainedDownloadDraft {
@@ -65,6 +71,7 @@ function absolutePathError(label: string, value: string): string | null {
 function validateConfigForm(form: ContainedConfigDraft): string | null {
   const binaryPath = form.binary_path.trim();
   const modelPath = form.model_path.trim();
+  const binarySha256 = form.binary_sha256.trim();
   if (binaryPath) {
     const error = absolutePathError("Binary path", binaryPath);
     if (error) return error;
@@ -73,8 +80,11 @@ function validateConfigForm(form: ContainedConfigDraft): string | null {
     const error = absolutePathError("Model path", modelPath);
     if (error) return error;
   }
-  if (form.enabled && (!binaryPath || !modelPath)) {
-    return "An enabled engine needs absolute binary and model paths.";
+  if (binarySha256 && !CONTAINED_SHA256_PATTERN.test(binarySha256)) {
+    return "Binary SHA-256 must be a 64-character hex digest.";
+  }
+  if (form.enabled && (!binaryPath || !modelPath || !binarySha256)) {
+    return "An enabled engine needs absolute binary and model paths and the binary's 64-character SHA-256.";
   }
   return null;
 }
@@ -113,6 +123,51 @@ function formatBytes(bytes: number): string {
 }
 
 /**
+ * Honest read-only view of the server's redacted projection: basenames for
+ * the configured binary and model, a presence flag for the binary digest, and
+ * a count of extra arguments. Absolute paths and the digest itself never
+ * reach the browser, so nothing here can render them.
+ */
+function StoredConfigSummary({ config }: { config: ContainedConfig | null }) {
+  return (
+    <div className="mt-3 rounded-lg border bg-card p-4" aria-label="Stored contained configuration">
+      <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Stored configuration</p>
+      {!config ? (
+        <p className="mt-1 text-xs text-muted-foreground">No contained configuration has been saved yet.</p>
+      ) : !config.enabled ? (
+        <p className="mt-1 text-xs text-muted-foreground">A contained configuration is saved but disabled.</p>
+      ) : (
+        <div className="mt-2 flex min-w-0 flex-wrap items-center gap-2 text-xs text-muted-foreground">
+          <span className="rounded-md border border-success/30 bg-success/10 px-2 py-0.5 text-xs font-medium text-success">
+            Enabled
+          </span>
+          {config.binary && (
+            <code className="max-w-full truncate font-mono" title="Configured engine binary (basename only)">
+              {config.binary}
+            </code>
+          )}
+          {config.model && (
+            <code className="max-w-full truncate font-mono" title="Configured model file (basename only)">
+              {config.model}
+            </code>
+          )}
+          <span className="rounded border bg-secondary px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+            {config.binary_digest_configured ? "binary digest configured" : "binary digest missing"}
+          </span>
+          <span className="rounded border bg-secondary px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+            {config.extra_arg_count === 0
+              ? "no extra args"
+              : config.extra_arg_count === 1
+                ? "1 extra arg"
+                : `${config.extra_arg_count} extra args`}
+          </span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
  * Bounded contained-model management under Settings → Models. It is mounted
  * only while that section is open, so the live two-second poll inside
  * `useContained` stops on unmount.
@@ -123,18 +178,22 @@ export function ContainedPanel({ standalone = false }: { standalone?: boolean })
     enabled: false,
     binary_path: "",
     model_path: "",
+    binary_sha256: "",
   });
   const [configDirty, setConfigDirty] = useState(false);
   const [configError, setConfigError] = useState<string | null>(null);
   const [downloadDraft, setDownloadDraft] = useState<ContainedDownloadDraft>({ url: "", filename: "", sha256: "" });
   const [downloadError, setDownloadError] = useState<string | null>(null);
 
-  // Follow server state only while the operator has not edited the draft;
-  // polling must never clobber in-progress edits.
+  // The redacted projection cannot prefill path or digest inputs — only the
+  // enabled flag may follow server state, and only while the operator has not
+  // edited the draft; polling must never clobber in-progress edits.
   useEffect(() => {
     const config = contained.config;
     if (!config || configDirty) return;
-    setConfigDraft({ enabled: config.enabled, binary_path: config.binary_path, model_path: config.model_path });
+    setConfigDraft((current) =>
+      current.enabled === config.enabled ? current : { ...current, enabled: config.enabled },
+    );
   }, [contained.config, configDirty]);
 
   const engine = contained.engine;
@@ -155,8 +214,10 @@ export function ContainedPanel({ standalone = false }: { standalone?: boolean })
     const body: ContainedConfigInput = { enabled: configDraft.enabled };
     const binaryPath = configDraft.binary_path.trim();
     const modelPath = configDraft.model_path.trim();
+    const binarySha256 = configDraft.binary_sha256.trim();
     if (binaryPath) body.binary_path = binaryPath;
     if (modelPath) body.model_path = modelPath;
+    if (binarySha256) body.binary_sha256 = binarySha256;
     if (await contained.saveConfig(body)) setConfigDirty(false);
   };
 
@@ -215,9 +276,11 @@ export function ContainedPanel({ standalone = false }: { standalone?: boolean })
         </div>
       ) : (
         <>
+          <StoredConfigSummary config={contained.config} />
+
           <form
             className="mt-3 overflow-hidden rounded-lg border bg-card"
-            aria-label="Contained configuration"
+            aria-label="Update contained configuration"
             onSubmit={(event) => {
               event.preventDefault();
               void submitConfig();
@@ -272,8 +335,26 @@ export function ContainedPanel({ standalone = false }: { standalone?: boolean })
                 />
               </div>
 
+              <div className="sm:col-span-2">
+                <Label htmlFor="settings-contained-binary-sha256">Binary SHA-256</Label>
+                <Input
+                  id="settings-contained-binary-sha256"
+                  type="text"
+                  spellCheck={false}
+                  maxLength={64}
+                  className="mt-2 font-mono"
+                  placeholder="64-character hex digest of the engine binary"
+                  value={configDraft.binary_sha256}
+                  onChange={(event) => editConfig({ binary_sha256: event.target.value })}
+                  disabled={busy}
+                  aria-describedby="settings-contained-paths-help"
+                />
+              </div>
+
               <p id="settings-contained-paths-help" className="text-xs leading-5 text-muted-foreground sm:col-span-2">
-                Both paths must be absolute on this Mac and may not contain ~.
+                Paths must be absolute on this Mac and may not contain ~. The server never returns stored paths or
+                digests, so saving replaces the whole configuration: enabling must supply both paths and the binary's
+                SHA-256 again.
               </p>
 
               {configError && (
