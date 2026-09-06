@@ -248,6 +248,8 @@ export async function connectorRoutes(app: FastifyInstance): Promise<void> {
       const linked = (await storageRuntime().automations.listConnectorSyncsForTargets(accountId, [connectorId])).get(
         connectorId
       );
+      // Defensive only: the v15 partial unique index makes more than one
+      // connector_sync automation per connector impossible to store.
       if (linked && linked.length > 1) {
         return reply.code(409).send({
           error: "multiple connector_sync automations target this connector; clean up in Automations",
@@ -280,16 +282,14 @@ export async function connectorRoutes(app: FastifyInstance): Promise<void> {
       const connectorId = (req.params as { id: string }).id;
       try {
         await embeddingMigrationCoordinator().runSourceMutation(async () => {
+          // M09 teardown is a database invariant since schema v15: deleting
+          // the connector row cascades the bound connector_sync automation
+          // and its automation_runs through the composite foreign key, and
+          // sync history cascades through its v10 composite foreign key. No
+          // manual best-effort helper can leave a dangling schedule.
           const deletion = await storageRuntime().sources.deleteConnector(accountId, connectorId);
           await completeSourceDeleteIntents(deletion.intents);
         });
-        // M09 teardown: the connector's derived schedule automations go with it
-        // (runs and sync history cascade through their foreign keys). Best
-        // effort and idempotent — connector deletion never fails or leaves a
-        // dangling schedule because this cleanup stumbled.
-        await storageRuntime()
-          .automations.deleteConnectorAutomations(accountId, connectorId)
-          .catch(() => {});
         return reply.send({ ok: true });
       } catch (error) {
         return sendConnectorError(reply, error);

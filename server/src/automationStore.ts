@@ -136,7 +136,7 @@ export class AutomationStore {
           // connector's schedule surface derives from this single row; silent
           // duplicates would make the schedule ambiguous.
           const duplicate = transaction.get(
-            "SELECT 1 FROM automations WHERE account_id=? AND kind='connector_sync' AND target_id=?",
+            "SELECT 1 FROM automations WHERE account_id=? AND kind='connector_sync' AND connector_id=?",
             [accountId, targetId]
           );
           if (duplicate) {
@@ -146,10 +146,26 @@ export class AutomationStore {
           const owned = transaction.get("SELECT 1 FROM chats WHERE id=? AND account_id=?", [targetId, accountId]);
           if (!owned) throw new AutomationValidationError("target_id must reference a chat of this account");
         }
+        // v15 stores the target once in the kind-appropriate canonical column;
+        // the generated `target_id` projects it back for the public DTO. The
+        // partial unique index on (account_id,connector_id) is the race-proof
+        // final word on connector-schedule uniqueness.
         transaction.run(
-          `INSERT INTO automations (id,account_id,name,kind,target_id,prompt,schedule_minutes,next_run_at,created_at,updated_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?)`,
-          [id, accountId, name, kind, targetId, prompt, schedule, nextRun, at, at]
+          `INSERT INTO automations (id,account_id,name,kind,connector_id,chat_id,prompt,schedule_minutes,next_run_at,created_at,updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+          [
+            id,
+            accountId,
+            name,
+            kind,
+            kind === "connector_sync" ? targetId : null,
+            kind === "agent_turn" ? targetId : null,
+            prompt,
+            schedule,
+            nextRun,
+            at,
+            at,
+          ]
         );
       });
     } catch (error) {
@@ -288,8 +304,9 @@ export class AutomationStore {
   /**
    * Connector_sync automations grouped by target connector id. The derived
    * connector schedule surface only exposes targets with exactly one linked
-   * automation; legacy multiples surface through the PUT 409 instead of a
-   * guessed row.
+   * automation. The v15 partial unique index on (account_id,connector_id)
+   * makes more than one row per connector impossible in-database, so the
+   * multi-row Map shape is retained only as a fail-closed read contract.
    */
   async listConnectorSyncsForTargets(
     accountIdValue: string,
@@ -301,7 +318,7 @@ export class AutomationStore {
     if (!ids.length) return grouped;
     const placeholders = ids.map(() => "?").join(",");
     const rows = await this.ledger.all<AutomationRow>(
-      `SELECT * FROM automations WHERE account_id=? AND kind='connector_sync' AND target_id IN (${placeholders})
+      `SELECT * FROM automations WHERE account_id=? AND kind='connector_sync' AND connector_id IN (${placeholders})
        ORDER BY created_at DESC,id DESC`,
       [accountId, ...ids]
     );
@@ -312,19 +329,6 @@ export class AutomationStore {
       else grouped.set(automation.target_id, [automation]);
     }
     return grouped;
-  }
-
-  /**
-   * Teardown helper for connector deletion: removes every connector_sync
-   * automation bound to the connector (runs cascade via the automation_runs
-   * foreign key). Idempotent; returns the number of removed automations.
-   */
-  async deleteConnectorAutomations(accountIdValue: string, connectorIdValue: string): Promise<number> {
-    const deleted = await this.ledger.run(
-      "DELETE FROM automations WHERE account_id=? AND kind='connector_sync' AND target_id=?",
-      [requiredId(accountIdValue, "account id"), requiredId(connectorIdValue, "connector id")]
-    );
-    return deleted.changes;
   }
 
   /**
