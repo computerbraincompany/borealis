@@ -278,3 +278,111 @@ browser/packaged E2E evidence above, plus no unresolved implementation TODOs.
 Continue repairing failures until those criteria hold. Update API/storage docs
 in the same change as contracts; preserve historical verification dates and add
 new evidence instead of rewriting old records.
+
+## Execution record 2026-09-06 (stage 4 — browser E2E journey B)
+
+Branch `codex/m12-saved-analyses`, base `846d4ba` (`origin/main` `fc87913` is an
+ancestor of the base; no rebase was needed — main did not move during the
+work, and the harness quiesce gate is intact and still used by the journey).
+Platform: Apple Silicon macOS, Node 22.22.3, pnpm 10.x, Playwright Chromium.
+
+Implemented for real: `scripts/e2e/journeys/B.mjs` (`IMPLEMENTED=true`), driven
+by the production build (`pnpm --filter borealis-server build`,
+`pnpm --filter borealis-web build`) against the scripted provider fixture and
+a real Chromium session. Backward-compatible fixture/harness extensions:
+`POST /fixture/script` runtime step-script install on
+`scripts/e2e/fixtures/openai-provider.mjs` (+ self-test, + README),
+`provider.setScript`, `server.restart({token})` (quiesce → orderly stop →
+re-boot on the same isolated data directory and loopback port so the session
+origin/JWT survive), `session.apiFetch` JSON mutations,
+`session.apiFetchText` (raw bytes, disposition, byte-level BOM),
+`session.allowStatuses([...])` exact-code negative-path admits, and the
+committed expected-value helper
+`scripts/e2e/fixtures/lib/finance-expected.mjs` (new self-test group
+`finance`). `data/generate_sample.ts` gained an `E2E_SAMPLE_DIR` redirect so
+the journey regenerates the four CSVs into the run workspace (bytes
+byte-compared in-journey against the committed fixtures; `pnpm policy` re-verifies
+determinism).
+
+Exact commands and outcomes:
+
+- `node scripts/e2e/fixtures/selftest.mjs` → PASS (79 checks; includes the
+  new provider runtime-script checks and the `finance` aggregate group).
+- `node scripts/e2e/run-product.mjs --journey=smoke --skip-build` → pass.
+- `node scripts/e2e/run-product.mjs --journey=B --skip-build` → pass ×3
+  consecutive: `duration_ms` 11395 / 11201 / 11771; every summary
+  `passed:true`, `lock_released:true`, `pids_gone:true`, cleanup
+  `problems:[]`; 12 content-free screenshots per run
+  (`shot-001.png`…`shot-012.png`) plus `provider-delta.txt` counters only.
+- `node scripts/e2e/run-product.mjs --journey=all --skip-build` →
+  B `pass`; A/C/D/E/F `not_implemented`; `passed:false` with cleanup clean —
+  i.e. `all` fails only on the still-unimplemented stubs.
+- `pnpm --filter borealis-server typecheck|lint|format:check|test|test:integration`
+  → all exit 0 (integration 272/272).
+- `pnpm --filter borealis-web typecheck|test|lint|format:check|build` → all
+  exit 0 (bundle budgets pass: initial 232058/245760, largest lazy
+  121426/133120 gzip bytes).
+- `pnpm policy` → exit 0.
+
+Fixture identifiers and independently computed committed expectations
+(`fixtures/lib/finance-expected.mjs`, seed-42 generator output; runtime CSV
+recomputation is asserted against both the committed constants and the stored
+product results — never model prose): 697 transactions; year income
+`149669.89`, expense `74398.64`; 142 distinct (month, category) groups;
+June = 14 groups with Groceries 6 rows / `-518.65`, Salary `12400`,
+Travel `-8324.35`, Interest raw `29.39397901842078`, Rent 23 rows; May = 12
+groups with Groceries 7 rows / `-468.01`; deterministic marker row
+(`2025-06-15,E2E Marker,Groceries,-50,Credit card,expense`) moves June
+Groceries to 7 rows / `-568.65` only.
+
+Journey B coverage as executed through the real UI/API-with-browser-session:
+four-CSV upload/ingest via the chat picker into an explicitly `selected` chat
+scope; real scripted `query_data` DuckDB roundtrip (exact provider-call arity
+asserted: 2 loop calls + 1 non-streaming title probe that the stream-only
+fixture rejects and the title flow absorbs); rendered receipt whose display
+SQL is the sliced 1 500-character preview (padded capture SQL ≈1.6 KiB >
+1 500, full text executed from the capture, 142 rows); UI promotion of the
+verified capture (`capture_id`/`can_save_analysis`); edit adding the typed
+`month` string parameter + `[month, category]` comparison key (revision CAS);
+UI reruns for June and May outside chat with per-cell numeric equality against
+the helper (cent-granular tolerance); keyed comparison UI+API (June↔May:
+14 removed / 12 added / 0 changed, parameter diff; exhaustive); CSV/JSON/
+manifest export bytes parsed and compared to the stored snapshot including
+formula-leading `'` guarding (`'=2025-06|Borealis-E2E`) and RFC-style quote/
+comma escaping; provenance fields (typed parameter values, source
+id@generation, content identities, schema fingerprint); browser reload
+mid-flow; full backend restart (quiesce-gated SIGTERM + same-origin re-boot)
+with definitions/results surviving; cancellation of an active recursive-CTE
+run (`cancelled`, zero published partials); selected-empty never widens
+(table-referencing SQL fails `ANALYSIS_QUERY_*`, table-free SQL succeeds);
+foreign-account 404s from a second account session; stale-CAS edit `409
+ANALYSIS_REVISION_CONFLICT` with no write; duplicate submission replays by
+operation id (single durable run); controlled input replacement (explicit
+scope shrink → source delete marks binding unavailable without retargeting
+(`ANALYSIS_INPUTS_UNAVAILABLE`, never published) → re-upload of changed
+bytes under the same table name → explicit scope re-select → rerun whose
+keyed diff shows exactly the Groceries change with Δ `-50`/`+1` from stored
+finite values and source-version add/remove, while the old result refetches
+byte-identical).
+
+Two product observations from the runs (fail-closed behavior, reported not
+hidden): (1) startup dataset-registry restoration
+(`restoreDatasets`) settles asynchronously behind the listen line while
+`/api/health` already reports `data_service` operational, so a saved-analysis
+run accepted inside that warm-up window finalizes `stale-inputs`; the journey
+gates on the `/api/sources` catalog re-hydrating tabular summaries before
+rerunning post-restart (a readiness signal for the server to expose
+explicitly, or lazy registry hydration, would close this). (2) The first
+chat turn issues exactly three provider POSTs (two agent-loop calls plus the
+non-streaming chat-title probe), which stream-only providers must reject
+gracefully.
+
+Still open for DONE (not claimed here): genuine local-model acceptance with a
+tool-capable chat/embedding pair (`pnpm test:e2e:product:live` contract and
+the scoped finance run), the packaged-app (`pnpm package:unsigned` + isolated
+absolute `--user-data-dir`) browser/packaged desktop proof, and the complete
+root `pnpm verify`/`pnpm --filter borealis-desktop verify` gate chain on the
+final integrated state. Root verify was not run in this environment; the
+server/web sub-gates above were run individually and all exit 0. Status stays
+TODO: the deterministic fixture model proves protocol behavior; it is not
+genuine local-model evidence.
