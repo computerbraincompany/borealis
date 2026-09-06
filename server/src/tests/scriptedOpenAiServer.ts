@@ -117,45 +117,45 @@ export async function startScriptedOpenAiServer(
     });
     req.on("end", () => {
       void (async () => {
-      if (aborted) return;
-      if (req.method !== "POST" || req.url !== "/v1/chat/completions") {
-        res.writeHead(404).end();
-        return;
-      }
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(Buffer.concat(body).toString("utf8"));
-      } catch {
-        res.writeHead(400).end();
-        return;
-      }
-      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-        res.writeHead(400).end();
-        return;
-      }
-      calls.push(parsed as Record<string, unknown>);
-      try {
-        await options.onCall?.(calls.length - 1, parsed as Record<string, unknown>);
-      } catch {
-        res.destroy();
-        return;
-      }
-      const script = responses[nextResponse];
-      nextResponse += 1;
-      if ((parsed as { stream?: unknown }).stream !== true || !script) {
-        res.writeHead(400).end();
-        return;
-      }
-      res.writeHead(200, {
-        "Content-Type": "text/event-stream",
-        "Cache-Control": "no-cache, no-transform",
-        Connection: "keep-alive",
-      });
-      for (const frame of script) {
-        res.write(`data: ${JSON.stringify(frame)}\n\n`);
-      }
-      res.write("data: [DONE]\n\n");
-      res.end();
+        if (aborted) return;
+        if (req.method !== "POST" || req.url !== "/v1/chat/completions") {
+          res.writeHead(404).end();
+          return;
+        }
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(Buffer.concat(body).toString("utf8"));
+        } catch {
+          res.writeHead(400).end();
+          return;
+        }
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+          res.writeHead(400).end();
+          return;
+        }
+        calls.push(parsed as Record<string, unknown>);
+        try {
+          await options.onCall?.(calls.length - 1, parsed as Record<string, unknown>);
+        } catch {
+          res.destroy();
+          return;
+        }
+        const script = responses[nextResponse];
+        nextResponse += 1;
+        if ((parsed as { stream?: unknown }).stream !== true || !script) {
+          res.writeHead(400).end();
+          return;
+        }
+        res.writeHead(200, {
+          "Content-Type": "text/event-stream",
+          "Cache-Control": "no-cache, no-transform",
+          Connection: "keep-alive",
+        });
+        for (const frame of script) {
+          res.write(`data: ${JSON.stringify(frame)}\n\n`);
+        }
+        res.write("data: [DONE]\n\n");
+        res.end();
       })().catch(() => res.destroy());
     });
   });

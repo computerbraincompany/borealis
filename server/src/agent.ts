@@ -227,8 +227,7 @@ export async function runAgent(opts: {
   signal?: AbortSignal;
   emit: (event: AgentEvent) => Promise<void> | void;
 }): Promise<AgentCompletion> {
-  const { accountId, chatId, content, model, sourceScope, agentInstructions, agentMcp, runId, emit, signal } =
-    opts; // The durable run owns the accepted user-message boundary. Loading through
+  const { accountId, chatId, content, model, sourceScope, agentInstructions, agentMcp, runId, emit, signal } = opts; // The durable run owns the accepted user-message boundary. Loading through
   // that exact account/chat/run tuple prevents mutable chat state or a caller-
   // supplied cursor from widening the prompt history.
   const prior = await storageRuntime().chats.listAgentHistoryForRun(accountId, chatId, runId, {

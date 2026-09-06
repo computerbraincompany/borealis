@@ -339,19 +339,21 @@ describe("SQLite ledger foundation", () => {
         tool_id: randomUUID(),
         discovery_revision: 3,
         name: "echo_query",
-        description: "echo_query (connected tool via \"Local\") Echo the provided text back.",
+        description: 'echo_query (connected tool via "Local") Echo the provided text back.',
         input_schema: { type: "object", properties: { text: { type: "string" } }, required: ["text"] },
         authorization_reference: "secret:0123456789abcdef0123456789abcdef",
       },
     ]);
     await ledger.run("UPDATE chat_runs SET agent_mcp_tools=? WHERE id=?", [snapshot, runId]);
-    await expect(ledger.get<{ agent_mcp_tools: string }>("SELECT agent_mcp_tools FROM chat_runs WHERE id=?", [runId]))
-      .resolves.toEqual({ agent_mcp_tools: snapshot });
+    await expect(
+      ledger.get<{ agent_mcp_tools: string }>("SELECT agent_mcp_tools FROM chat_runs WHERE id=?", [runId])
+    ).resolves.toEqual({ agent_mcp_tools: snapshot });
 
     // The last-line durable guards: invalid JSON and the aggregate ceiling
     // fail closed on any write path, including direct SQL.
-    await expect(ledger.run("UPDATE chat_runs SET agent_mcp_tools=? WHERE id=?", ["{not json", runId])).rejects
-      .toMatchObject({ kind: "check" });
+    await expect(
+      ledger.run("UPDATE chat_runs SET agent_mcp_tools=? WHERE id=?", ["{not json", runId])
+    ).rejects.toMatchObject({ kind: "check" });
     await expect(
       ledger.run("UPDATE chat_runs SET agent_mcp_tools=? WHERE id=?", [`"${"x".repeat(524_289)}"`, runId])
     ).rejects.toMatchObject({ kind: "check" });

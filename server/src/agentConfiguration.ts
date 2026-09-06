@@ -48,8 +48,12 @@ export interface AgentMcpBindingSelection {
   readonly connection_id: string;
   readonly tool_id: string;
   readonly discovery_revision: number;
-  /** Explicit operator acknowledgement for a write-oriented tool. */
-  readonly allow_write: boolean;
+  /**
+   * Explicit operator acknowledgement for a write-oriented tool. Optional
+   * on input (default-deny); the codec's canonical output always carries a
+   * boolean.
+   */
+  readonly allow_write?: boolean;
 }
 
 /**
@@ -117,12 +121,16 @@ function boundedText(value: unknown, field: string, maximum: number): string {
 function jobSetup(value: unknown): AgentJobSetup {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new AgentConfigurationError();
   const input = value as { starter_prompts?: unknown; output_template?: unknown; library_ids?: unknown };
-  if (Object.keys(input).some((key) => key !== "starter_prompts" && key !== "output_template" && key !== "library_ids")) {
+  if (
+    Object.keys(input).some((key) => key !== "starter_prompts" && key !== "output_template" && key !== "library_ids")
+  ) {
     throw new AgentConfigurationError();
   }
   const promptsRaw = input.starter_prompts === undefined ? [] : input.starter_prompts;
   if (!Array.isArray(promptsRaw) || promptsRaw.length > MAX_JOB_STARTER_PROMPTS) throw new AgentConfigurationError();
-  const starterPrompts = promptsRaw.map((prompt) => boundedText(prompt, "starter prompt", MAX_JOB_STARTER_PROMPT_CHARS));
+  const starterPrompts = promptsRaw.map((prompt) =>
+    boundedText(prompt, "starter prompt", MAX_JOB_STARTER_PROMPT_CHARS)
+  );
 
   let outputTemplate: AgentOutputTemplate | null = null;
   if (input.output_template !== undefined && input.output_template !== null) {
@@ -200,8 +208,7 @@ function mcpBindingSelections(value: unknown): AgentMcpBindingSelection[] {
     );
   }
   selections.sort(
-    (left, right) =>
-      left.connection_id.localeCompare(right.connection_id) || left.tool_id.localeCompare(right.tool_id)
+    (left, right) => left.connection_id.localeCompare(right.connection_id) || left.tool_id.localeCompare(right.tool_id)
   );
   return selections;
 }

@@ -201,10 +201,7 @@ export class LibraryStore {
    * fail closed. The result is never truncated; callers apply the chat
    * source-scope cap and must fail rather than shorten the list.
    */
-  async listReadySourceIds(
-    accountIdValue: string,
-    libraryIdsValue: readonly string[]
-  ): Promise<readonly string[]> {
+  async listReadySourceIds(accountIdValue: string, libraryIdsValue: readonly string[]): Promise<readonly string[]> {
     const accountId = requiredId(accountIdValue, "account id");
     const libraryIds = [...new Set(libraryIdsValue.map((id) => requiredId(id, "library id")))];
     if (!libraryIds.length) return Object.freeze([]);

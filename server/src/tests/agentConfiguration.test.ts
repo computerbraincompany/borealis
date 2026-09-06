@@ -96,9 +96,7 @@ describe("agent configuration codec — job_setup", () => {
   });
 
   it("enforces the budgets and the discriminated template seam", () => {
-    expect(() =>
-      agentConfiguration({ job_setup: { starter_prompts: ["a", "b", "c", "d", "e", "f"] } })
-    ).toThrow();
+    expect(() => agentConfiguration({ job_setup: { starter_prompts: ["a", "b", "c", "d", "e", "f"] } })).toThrow();
     expect(() => agentConfiguration({ job_setup: { starter_prompts: ["x".repeat(2_001)] } })).toThrow();
     expect(() => agentConfiguration({ job_setup: { starter_prompts: [""] } })).toThrow();
     expect(() =>
@@ -160,7 +158,7 @@ describe("run MCP snapshot codec", () => {
       tool_id: TOOL_A,
       discovery_revision: 2,
       name: "echo_query",
-      description: "echo_query (connected tool via \"Local\") Echo text.",
+      description: 'echo_query (connected tool via "Local") Echo text.',
       input_schema: { type: "object", properties: { text: { type: "string" } }, required: ["text"] },
       authorization_reference: "secret:0123456789abcdef0123456789abcdef",
       ...overrides,

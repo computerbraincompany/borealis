@@ -151,19 +151,24 @@ async function startScenario(
   for (const tool of discovered.tools) toolIds[tool.name] = tool.tool_id;
 
   const selected = ["echo_query", ...(options.bindings === "echo-only" ? [] : ["finance_sum"])];
-  const agent = await storageRuntime().agents.createAgent(OWNER_ID, "Connected analyst", "Use the connected tools when asked.", {
-    mcp_tools: selected.map((name) => ({
-      connection_id: connection.id,
-      tool_id: toolIds[name],
-      discovery_revision: discovered.discovery_revision,
-      allow_write: false,
-    })),
-    job_setup: {
-      starter_prompts: ["Echo the word canary through the connection."],
-      output_template: { kind: "instruction", instruction: "Answer briefly." },
-      library_ids: [],
-    },
-  });
+  const agent = await storageRuntime().agents.createAgent(
+    OWNER_ID,
+    "Connected analyst",
+    "Use the connected tools when asked.",
+    {
+      mcp_tools: selected.map((name) => ({
+        connection_id: connection.id,
+        tool_id: toolIds[name],
+        discovery_revision: discovered.discovery_revision,
+        allow_write: false,
+      })),
+      job_setup: {
+        starter_prompts: ["Echo the word canary through the connection."],
+        output_template: { kind: "instruction", instruction: "Answer briefly." },
+        library_ids: [],
+      },
+    }
+  );
   const chat = await storageRuntime().chats.createChat({
     accountId: OWNER_ID,
     title: "Connected turn",
@@ -213,17 +218,12 @@ async function rescript(
 }
 
 function echoCall(id: string, alias: string, text: string): readonly Record<string, unknown>[] {
-  return assistantToolCallChunks(CHAT_MODEL, id, [alias.slice(0, 8), alias.slice(8)], [
-    '{"text":"',
-    `${text}"}`,
-  ]);
+  return assistantToolCallChunks(CHAT_MODEL, id, [alias.slice(0, 8), alias.slice(8)], ['{"text":"', `${text}"}`]);
 }
 
 async function readCallLog(scenario: Scenario): Promise<string[]> {
   try {
-    return (await fs.readFile(scenario.callLog, "utf8"))
-      .split("\n")
-      .filter((line) => line.length > 0);
+    return (await fs.readFile(scenario.callLog, "utf8")).split("\n").filter((line) => line.length > 0);
   } catch {
     return [];
   }
@@ -447,89 +447,83 @@ describe("MCP agent turn", () => {
     }
   );
 
-  it(
-    "blocks the next call mid-run when the connection is disabled",
-    { timeout: 120_000 },
-    async () => {
-      const scenario = await startScenario({ bindings: "echo-only" });
-      const echoAlias = mcpToolAlias(scenario.connectionId, scenario.toolIds.echo_query);
-      await rescript(
-        scenario,
-        [
-          echoCall("call-dis-1", echoAlias, "alpha"),
-          echoCall("call-dis-2", echoAlias, "beta"),
-          assistantTextChunks(CHAT_MODEL, ["Finished after one disabled call."]),
-        ],
-        async (index) => {
-          if (index !== 1) return;
-          const live = await storageRuntime().connections.requireConnection(OWNER_ID, scenario.connectionId);
-          await storageRuntime().connections.updateConnection(OWNER_ID, scenario.connectionId, {
-            expected_revision: live.revision,
-            enabled: false,
-          });
-        }
-      );
+  it("blocks the next call mid-run when the connection is disabled", { timeout: 120_000 }, async () => {
+    const scenario = await startScenario({ bindings: "echo-only" });
+    const echoAlias = mcpToolAlias(scenario.connectionId, scenario.toolIds.echo_query);
+    await rescript(
+      scenario,
+      [
+        echoCall("call-dis-1", echoAlias, "alpha"),
+        echoCall("call-dis-2", echoAlias, "beta"),
+        assistantTextChunks(CHAT_MODEL, ["Finished after one disabled call."]),
+      ],
+      async (index) => {
+        if (index !== 1) return;
+        const live = await storageRuntime().connections.requireConnection(OWNER_ID, scenario.connectionId);
+        await storageRuntime().connections.updateConnection(OWNER_ID, scenario.connectionId, {
+          expected_revision: live.revision,
+          enabled: false,
+        });
+      }
+    );
 
-      const response = await postMessage(scenario, "Echo alpha, then beta.");
-      expect(response.statusCode).toBe(200);
-      const events = parseSseEvents(response.body);
-      const stepEnds = events.filter((event) => event.type === "step-end");
-      expect(stepEnds.map((event) => event.status)).toEqual(["ok", "error"]);
-      expect(stepEnds[1].summary).toMatch(/currently unavailable/i);
-      expect(await readCallLog(scenario)).toEqual(["echo_query"]);
-      expect(events.at(-1)).toMatchObject({ status: "completed" });
-    }
-  );
+    const response = await postMessage(scenario, "Echo alpha, then beta.");
+    expect(response.statusCode).toBe(200);
+    const events = parseSseEvents(response.body);
+    const stepEnds = events.filter((event) => event.type === "step-end");
+    expect(stepEnds.map((event) => event.status)).toEqual(["ok", "error"]);
+    expect(stepEnds[1].summary).toMatch(/currently unavailable/i);
+    expect(await readCallLog(scenario)).toEqual(["echo_query"]);
+    expect(events.at(-1)).toMatchObject({ status: "completed" });
+  });
 
-  it(
-    "does not replay external tool calls across restart",
-    { timeout: 120_000 },
-    async () => {
-      const scenario = await startScenario({ bindings: "echo-only" });
-      const echoAlias = mcpToolAlias(scenario.connectionId, scenario.toolIds.echo_query);
-      const provider = await rescript(scenario, [
-        echoCall("call-restart-1", echoAlias, "once"),
-        assistantTextChunks(CHAT_MODEL, ["Echoed once."]),
-      ]);
+  it("does not replay external tool calls across restart", { timeout: 120_000 }, async () => {
+    const scenario = await startScenario({ bindings: "echo-only" });
+    const echoAlias = mcpToolAlias(scenario.connectionId, scenario.toolIds.echo_query);
+    const provider = await rescript(scenario, [
+      echoCall("call-restart-1", echoAlias, "once"),
+      assistantTextChunks(CHAT_MODEL, ["Echoed once."]),
+    ]);
 
-      const response = await postMessage(scenario, "Echo once.");
-      expect(response.statusCode).toBe(200);
-      expect(await readCallLog(scenario)).toEqual(["echo_query"]);
-      const runRow = await storageRuntime().ledger.get<{ status: string }>(
-        "SELECT status FROM chat_runs WHERE chat_id=?",
-        [scenario.chatId]
-      );
-      expect(runRow?.status).toBe("completed");
+    const response = await postMessage(scenario, "Echo once.");
+    expect(response.statusCode).toBe(200);
+    expect(await readCallLog(scenario)).toEqual(["echo_query"]);
+    const runRow = await storageRuntime().ledger.get<{ status: string }>(
+      "SELECT status FROM chat_runs WHERE chat_id=?",
+      [scenario.chatId]
+    );
+    expect(runRow?.status).toBe("completed");
 
-      // Restart: close everything durable, reopen the same ledger, and run
-      // the startup recovery the application runtime performs.
-      await apps.splice(0)[0]!.close().catch(() => undefined);
-      closeConnectionService();
-      closeRuntimeSettings();
-      await closeStorageRuntime();
-      const runtime = await initializeStorageRuntime({
-        sqlitePath: path.join(scenario.directory, "ledger.sqlite"),
-        lanceDirectory: path.join(scenario.directory, "lancedb"),
-        embeddingDimension: 3,
-      });
-      await initializeRuntimeSettings({
-        settingsFile: path.join(scenario.directory, "settings.json"),
-        env: {},
-      });
-      configureConnectionService({ store: () => runtime.connections, secrets: () => scenario.secrets });
-      const recovered = await recoverInterruptedRuns();
-      expect(recovered).toBe(0);
-      const runAfter = await runtime.ledger.get<{ status: string }>(
-        "SELECT status FROM chat_runs WHERE chat_id=?",
-        [scenario.chatId]
-      );
-      expect(runAfter?.status).toBe("completed");
-      // No new model calls and no new external side effects: the completed
-      // run is durable history, never a replay queue.
-      expect(provider.calls).toHaveLength(2);
-      expect(await readCallLog(scenario)).toEqual(["echo_query"]);
-    }
-  );
+    // Restart: close everything durable, reopen the same ledger, and run
+    // the startup recovery the application runtime performs.
+    await apps
+      .splice(0)[0]!
+      .close()
+      .catch(() => undefined);
+    closeConnectionService();
+    closeRuntimeSettings();
+    await closeStorageRuntime();
+    const runtime = await initializeStorageRuntime({
+      sqlitePath: path.join(scenario.directory, "ledger.sqlite"),
+      lanceDirectory: path.join(scenario.directory, "lancedb"),
+      embeddingDimension: 3,
+    });
+    await initializeRuntimeSettings({
+      settingsFile: path.join(scenario.directory, "settings.json"),
+      env: {},
+    });
+    configureConnectionService({ store: () => runtime.connections, secrets: () => scenario.secrets });
+    const recovered = await recoverInterruptedRuns();
+    expect(recovered).toBe(0);
+    const runAfter = await runtime.ledger.get<{ status: string }>("SELECT status FROM chat_runs WHERE chat_id=?", [
+      scenario.chatId,
+    ]);
+    expect(runAfter?.status).toBe("completed");
+    // No new model calls and no new external side effects: the completed
+    // run is durable history, never a replay queue.
+    expect(provider.calls).toHaveLength(2);
+    expect(await readCallLog(scenario)).toEqual(["echo_query"]);
+  });
 
   it("refuses acceptance when a selected tool was removed from the current snapshot, atomically", async () => {
     const scenario = await startScenario({ bindings: "echo-only" });
@@ -578,9 +572,15 @@ describe("MCP agent turn", () => {
       enabled: false,
     });
     await expect(
-      storageRuntime().chats.acceptChatTurn(OWNER_ID, scenario.chatId, "disabled", {}, {
-        mcpAuthorizationReferences: { [scenario.connectionId]: "absent" },
-      })
+      storageRuntime().chats.acceptChatTurn(
+        OWNER_ID,
+        scenario.chatId,
+        "disabled",
+        {},
+        {
+          mcpAuthorizationReferences: { [scenario.connectionId]: "absent" },
+        }
+      )
     ).rejects.toBeInstanceOf(AgentConfigurationError);
 
     expect(await storageRuntime().ledger.get<{ n: bigint }>("SELECT COUNT(*) AS n FROM messages")).toMatchObject({

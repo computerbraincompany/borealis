@@ -21,38 +21,12 @@ export async function jobRoutes(app: FastifyInstance): Promise<void> {
     {
       onRequest: requireAuth,
       bodyLimit: BODYLESS_MUTATION_LIMIT_BYTES,
-      schema: {
-        tags: ["jobs"],
-        summary: "List the bundled editable starter job templates",
-        response: {
-          200: {
-            type: "object",
-            required: ["jobs"],
-            additionalProperties: false,
-            properties: {
-              jobs: {
-                type: "array",
-                maxItems: 8,
-                items: {
-                  type: "object",
-                  required: ["id", "name", "description", "icon", "color", "instructions", "tools", "job_setup"],
-                  additionalProperties: false,
-                  properties: {
-                    id: { type: "string" },
-                    name: { type: "string" },
-                    description: { type: "string" },
-                    icon: { type: "string" },
-                    color: { type: "string" },
-                    instructions: { type: "string" },
-                    tools: { type: "array", items: { type: "string" } },
-                    job_setup: { type: "object" },
-                  },
-                },
-              },
-            },
-          },
-        },
-      },
+      // No response schema on purpose: the job-setup block is a versioned
+      // discriminated shape (M13 adds template variants) and Fastify's
+      // serializer would strip properties it does not enumerate. The
+      // definitions are static server-side constants validated by the
+      // job-codec test matrix, never user input.
+      schema: { tags: ["jobs"], summary: "List the bundled editable starter job templates" },
     },
     async (req, reply) => {
       // Static definitions; `getAccountId` only enforces the session.

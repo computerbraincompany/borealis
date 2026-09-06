@@ -386,13 +386,11 @@ export class ConnectionService {
       if (read.state === "available") staticSecrets = read.secrets;
     } catch (error) {
       // A custody store that throws outright is an unavailable custody state.
-      if (
-        !(
-          error instanceof ConnectionCustodyUnavailableError ||
-          error instanceof McpTransportAuthError ||
-          error instanceof ConnectionAuthRefreshFailedError
-        )
-      ) {
+      if (!(
+        error instanceof ConnectionCustodyUnavailableError ||
+        error instanceof McpTransportAuthError ||
+        error instanceof ConnectionAuthRefreshFailedError
+      )) {
         await this.recordDisconnected(call.accountId, call.connectionId, "CONNECTION_CUSTODY_UNAVAILABLE").catch(
           () => undefined
         );

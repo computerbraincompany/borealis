@@ -164,9 +164,7 @@ describe("chat creation from a job", () => {
     // Selected-empty until the user confirms the expanded list.
     expect(body.source_mode).toBe("selected");
     const chatId = body.id as string;
-    expect(
-      await storageRuntime().ledger.all("SELECT 1 FROM chat_sources WHERE chat_id=?", [chatId])
-    ).toEqual([]);
+    expect(await storageRuntime().ledger.all("SELECT 1 FROM chat_sources WHERE chat_id=?", [chatId])).toEqual([]);
     // Ready ids only, in stable scope order (display-name ordering).
     expect(body.job).toMatchObject({
       suggested_library_ids: [library],

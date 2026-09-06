@@ -733,7 +733,7 @@ async function executeMcpToolCall(
     };
   } catch (error) {
     if (error instanceof Error && (error.name === "AbortError" || error.message === "run cancelled")) {
-      throw new Error("run cancelled");
+      throw new Error("run cancelled", { cause: error });
     }
     const code = error && typeof error === "object" ? (error as { code?: unknown }).code : undefined;
     // Stable code only; provider detail, endpoints, and payloads never leave
