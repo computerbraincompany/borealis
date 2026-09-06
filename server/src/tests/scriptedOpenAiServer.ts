@@ -24,6 +24,18 @@ export interface ScriptedOpenAiServer {
   close(): Promise<void>;
 }
 
+export interface ScriptedOpenAiServerOptions {
+  /**
+   * Invoked with the zero-based call index and parsed body immediately after
+   * a chat-completion request arrives and before its scripted frames are
+   * served. Lets a test mutate durable state at an exact provider-call
+   * boundary (for example revoking or disabling an MCP connection between
+   * two tool rounds of one running turn). Bodies are for inspection only and
+   * are never logged.
+   */
+  readonly onCall?: (index: number, body: Readonly<Record<string, unknown>>) => Promise<void> | void;
+}
+
 function chunk(
   model: string,
   delta: Record<string, unknown>,
@@ -84,7 +96,8 @@ export function assistantToolCallChunks(
 
 export async function startScriptedOpenAiServer(
   model: string,
-  responses: readonly (readonly Record<string, unknown>[])[]
+  responses: readonly (readonly Record<string, unknown>[])[],
+  options: ScriptedOpenAiServerOptions = {}
 ): Promise<ScriptedOpenAiServer> {
   const calls: Record<string, unknown>[] = [];
   const sockets = new Set<Socket>();
@@ -103,6 +116,7 @@ export async function startScriptedOpenAiServer(
       body.push(piece);
     });
     req.on("end", () => {
+      void (async () => {
       if (aborted) return;
       if (req.method !== "POST" || req.url !== "/v1/chat/completions") {
         res.writeHead(404).end();
@@ -120,6 +134,12 @@ export async function startScriptedOpenAiServer(
         return;
       }
       calls.push(parsed as Record<string, unknown>);
+      try {
+        await options.onCall?.(calls.length - 1, parsed as Record<string, unknown>);
+      } catch {
+        res.destroy();
+        return;
+      }
       const script = responses[nextResponse];
       nextResponse += 1;
       if ((parsed as { stream?: unknown }).stream !== true || !script) {
@@ -136,6 +156,7 @@ export async function startScriptedOpenAiServer(
       }
       res.write("data: [DONE]\n\n");
       res.end();
+      })().catch(() => res.destroy());
     });
   });
   server.on("connection", (socket) => {
