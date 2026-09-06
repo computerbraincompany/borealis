@@ -24,6 +24,24 @@ export const HISTORICAL_FIXTURE_SEED = {
   messageContent: "Historical fixture question",
 } as const;
 
+/**
+ * Pre-merge fixture-inventory exception. Schema v17 belongs to the parallel
+ * MCP-connections branch; until its `v017.sql` fixture merges, exactly that
+ * one slot is legitimately absent. This list is the single documented gap:
+ * the coordinator empties it when v17 lands, and the inventory assertion
+ * becomes contiguous with no other test edits. Nothing here fakes a v17
+ * schema: unknown files and every other missing version still fail closed.
+ */
+export const PENDING_MERGE_SCHEMA_VERSIONS: readonly number[] = Object.freeze([17]);
+
+/** Versions that must exist as historical fixtures on the current branch. */
+export function expectedFixtureVersions(): number[] {
+  const pending = new Set(PENDING_MERGE_SCHEMA_VERSIONS);
+  return Array.from({ length: LATEST_SQLITE_SCHEMA_VERSION }, (_, index) => index + 1).filter(
+    (version) => !pending.has(version)
+  );
+}
+
 export interface HistoricalSqliteFixture {
   readonly directory: string;
   readonly filename: string;
@@ -42,11 +60,12 @@ export async function listHistoricalFixtureVersions(): Promise<number[]> {
     versions.push(Number(match[1]));
   }
   versions.sort((left, right) => left - right);
-  const expected = Array.from({ length: LATEST_SQLITE_SCHEMA_VERSION }, (_, index) => index + 1);
+  const expected = expectedFixtureVersions();
   if (versions.length !== expected.length || versions.some((version, index) => version !== expected[index])) {
     throw new Error(
-      `historical fixture inventory ${JSON.stringify(versions)} must hold exactly one fixture ` +
-        `for every schema version 1..${LATEST_SQLITE_SCHEMA_VERSION}`
+      `historical fixture inventory ${JSON.stringify(versions)} must hold exactly one fixture for every ` +
+        `schema version 1..${LATEST_SQLITE_SCHEMA_VERSION} except pending-merge ` +
+        `${JSON.stringify(PENDING_MERGE_SCHEMA_VERSIONS)}`
     );
   }
   return versions;
@@ -124,6 +143,9 @@ export async function createHistoricalSqliteFixture(startVersion: number): Promi
     throw new RangeError(
       `historical fixture start version must be an integer between 1 and ${LATEST_SQLITE_SCHEMA_VERSION}`
     );
+  }
+  if (PENDING_MERGE_SCHEMA_VERSIONS.includes(startVersion)) {
+    throw new RangeError(`historical fixture start version ${startVersion} has no fixture before its merge`);
   }
   await listHistoricalFixtureVersions();
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "borealis-sqlite-fixture-"));
