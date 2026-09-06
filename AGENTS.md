@@ -131,7 +131,16 @@ below `~/Library/Application Support/Borealis/`:
   account/connection) for MCP and WebDAV custody; machine-bound and never
   archived;
 - `connections.key` — browser-development operator connection custody key,
-  mode `0600`; machine-bound and never archived.
+  mode `0600`; machine-bound and never archived;
+- `connection-custody/sealed-key.bin` — desktop-only connection custody data
+  key sealed through Electron main's `safeStorage`; the envelope unseals only
+  on the same machine's login keychain, and main answers only schema-checked
+  `read`/`ensure` custody requests over the utility-process port.
+
+The connected-agent ledger itself stays in SQLite: schema v17 owns the
+`connections` rows and published `connection_tool_snapshots`, and schema v21
+owns the per-run frozen `chat_runs.agent_mcp_tools` snapshot; only the sealed
+credential records and their custody key live outside the ledger.
 
 Environment overrides are documented in `server/.env.example`. A configured
 `JWT_SECRET` wins and must be strong. Without one, `config.ts` opens or creates
@@ -290,6 +299,36 @@ runtime startup alone republishes that matching marker.
   chat-creation contract; never add a server-side dynamic chat↔library
   resolution path without speccing it against the scope semantics above.
   Library deletion cascades membership only — never sources or their data.
+- Connected agents (`server/src/connections/`, `server/src/mcp/`, routes in
+  `server/src/routes/connections.ts`) freeze one per-run MCP binding map in
+  `chat_runs.agent_mcp_tools` (schema v21) inside the accept transaction: a
+  deterministic `mcp_<32 hex>` alias, the captured discovery descriptor, and
+  a non-secret `authorization_reference` (`absent`, or an `oauth:`/`secret:`
+  custody digest that excludes volatile token entries). Tokens, endpoints, and
+  credential values never enter the ledger, DTOs, SSE, agent revisions, or run
+  metadata. Dispatch re-checks connection existence, enablement, and live
+  custody against the captured reference before every call — revocation or
+  credential replacement blocks the next call while the turn continues — and a
+  failed call reaches the model only as a stable `CONNECTION_*` code.
+  Arguments validate against the frozen captured schema under a 30-second tool
+  deadline inside the run budget with 32 KiB/64 KiB argument/result ceilings,
+  and non-text content is reported, never auto-fetched. Selection defaults
+  write-oriented tools to deny (conservative `agentConfiguration.ts`
+  classifier; explicit `allow_write` acknowledgement required; a server's
+  `readOnlyHint` is never trusted). The MCP client registers no sampling,
+  roots, elicitation, or delegation capabilities, and reserved `MCP_OAUTH_*`
+  custody entries never enter a stdio child environment. Custody is one
+  injectable interface: browser development uses `secrets/` records
+  AES-256-GCM-sealed by `connections.key`; packaged desktop answers only
+  schema-checked `read`/`ensure` custody requests with main's
+  `safeStorage`-sealed key (no list, no per-record crypto); missing custody is
+  always an actionable disconnected state, never plaintext and never a crash.
+  OAuth is authorization-code with PKCE/S256, one-use state, a five-minute
+  window, and RFC 8707 resource binding through the SDK 1.30.0 auth layer
+  (negotiated protocol `2025-11-25`); the only callback surface is the
+  backend-owned loopback `GET /callback` listener (no session credentials, no
+  reflection, replay-refusing), and desktop reaches it from the system browser
+  only through the one-time open-intent flow.
 - Schema v12 owns the current keyset-catalog indexes. Schema v13 adds agent identity,
   versioned capability configuration, skills, and accepted-turn tool snapshots,
   ahead of the remaining remediation work by the September 5 sequencing decision. Schema
@@ -520,11 +559,18 @@ distinct.
   permission requests and arbitrary navigation/popups. The main window may open
   only the controlled `about:blank` report-preview window; that child has an
   empty preload and embeds report HTML in an opaque-origin sandbox. The main
-  preload exposes only the one-shot bootstrap operation plus the narrow M14
-  selected-folder chooser (`borealisDesktop.chooseFolder`), which returns an
-  opaque `{grant_id,label,preview}` and never a path, listing, read, or general
-  IPC; main forwards the resolved canonical root to the backend grant registry
-  over the private utility-process channel only.
+  preload exposes exactly three narrow operations: the one-shot bootstrap
+  (`borealisDesktop.consumeBootstrap`); the M14 selected-folder chooser
+  (`chooseFolder`), which returns an opaque `{grant_id,label,preview}` and
+  never a path, listing, read, or general IPC, with main forwarding the
+  resolved canonical root to the backend grant registry over the private
+  utility-process channel only; and the Connected-agents sign-in opener
+  (`openSignInLink`), which opens the system browser only for an exact URL
+  paired with the one-time intent token the backend minted for it — main
+  verifies-and-consumes that token with the backend over the utility-process
+  channel before `shell.openExternal` ever runs, so a renderer cannot open an
+  arbitrary URL. There is no path, directory-listing, file-read, or general
+  IPC surface.
 - On quit, main requests orderly backend shutdown. The backend aborts active
   runs, stops ingestion, closes DuckDB, LanceDB, and SQLite, then acknowledges;
   main applies a bounded kill timeout.
