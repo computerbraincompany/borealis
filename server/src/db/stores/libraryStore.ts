@@ -194,6 +194,38 @@ export class LibraryStore {
     return rows.map((row) => decodeSource(row as never));
   }
 
+  /**
+   * Explicit READY source ids for a job's suggested libraries, in the stable
+   * source-scope order the normal chat-creation selected contract uses. Every
+   * id must name a library owned by this account — unknown or foreign ids
+   * fail closed. The result is never truncated; callers apply the chat
+   * source-scope cap and must fail rather than shorten the list.
+   */
+  async listReadySourceIds(
+    accountIdValue: string,
+    libraryIdsValue: readonly string[]
+  ): Promise<readonly string[]> {
+    const accountId = requiredId(accountIdValue, "account id");
+    const libraryIds = [...new Set(libraryIdsValue.map((id) => requiredId(id, "library id")))];
+    if (!libraryIds.length) return Object.freeze([]);
+    return this.ledger.withImmediateTransaction((transaction) => {
+      for (const libraryId of libraryIds) {
+        const owned = transaction.get("SELECT 1 FROM libraries WHERE id=? AND account_id=?", [libraryId, accountId]);
+        if (!owned) throw new LibraryNotFoundError();
+      }
+      const placeholders = libraryIds.map(() => "?").join(",");
+      const rows = transaction.all<{ id?: unknown }>(
+        `SELECT DISTINCT s.id
+         FROM library_sources ls
+         JOIN sources s ON s.id=ls.source_id AND s.account_id=ls.account_id
+         WHERE ls.account_id=? AND s.status='ready' AND ls.library_id IN (${placeholders})
+         ORDER BY lower(s.display_name),s.display_name,s.id`,
+        [accountId, ...libraryIds]
+      );
+      return Object.freeze(rows.map((row) => requiredId(String(row.id), "ready source id")));
+    });
+  }
+
   async replaceMembers(accountIdValue: string, libraryIdValue: string, sourceIds: readonly string[]): Promise<void> {
     const accountId = requiredId(accountIdValue, "account id");
     const libraryId = requiredId(libraryIdValue, "library id");

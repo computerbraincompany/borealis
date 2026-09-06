@@ -18,6 +18,53 @@ import { storageRuntime } from "../storageRuntime.js";
 import { idParamsSchema } from "./schemas.js";
 import { BODYLESS_MUTATION_LIMIT_BYTES, LONG_TEXT_JSON_BODY_LIMIT_BYTES } from "./bodyLimits.js";
 
+// Connected-tool selections and job setup live beside the legacy `tools`
+// array (which keeps its built-in-only meaning for old clients). Cross-row
+// validation — connection exists/enabled, tool published, schema supported,
+// write policy — runs in the agent store transaction; these schemas enforce
+// the structural budgets. `mcp_tool_binding` and `job_setup` shapes mirror
+// the codec in `agentConfiguration.ts` exactly.
+const mcpToolBindingSchema = {
+  type: "object",
+  required: ["connection_id", "tool_id", "discovery_revision"],
+  additionalProperties: false,
+  properties: {
+    connection_id: { type: "string", format: "uuid" },
+    tool_id: { type: "string", format: "uuid" },
+    discovery_revision: { type: "integer", minimum: 1, maximum: 1_000_000 },
+    allow_write: { type: "boolean" },
+  },
+} as const;
+
+const jobSetupSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    starter_prompts: {
+      type: "array",
+      maxItems: 5,
+      items: { type: "string", minLength: 1, maxLength: 2_000 },
+    },
+    output_template: {
+      // Discriminated reference: only the bounded instruction variant ships;
+      // M13's document-template catalog adds its variant to this codec.
+      oneOf: [
+        { type: "null" },
+        {
+          type: "object",
+          required: ["kind", "instruction"],
+          additionalProperties: false,
+          properties: {
+            kind: { type: "string", const: "instruction" },
+            instruction: { type: "string", minLength: 1, maxLength: 8_000 },
+          },
+        },
+      ],
+    },
+    library_ids: { type: "array", maxItems: 10, uniqueItems: true, items: { type: "string", format: "uuid" } },
+  },
+} as const;
+
 const agentBodySchema = {
   type: "object",
   required: ["name", "instructions"],
@@ -28,6 +75,8 @@ const agentBodySchema = {
     color: { type: "string", enum: AGENT_COLORS },
     tools: { type: "array", maxItems: 7, uniqueItems: true, items: { type: "string", enum: AGENT_TOOLS } },
     skill_ids: { type: "array", maxItems: 8, uniqueItems: true, items: { type: "string", format: "uuid" } },
+    mcp_tools: { type: "array", maxItems: 16, items: mcpToolBindingSchema },
+    job_setup: jobSetupSchema,
     name: { type: "string", minLength: 1, maxLength: MAX_AGENT_NAME_CHARS, pattern: "\\S" },
     instructions: { type: "string", minLength: 1, maxLength: MAX_AGENT_INSTRUCTION_CHARS },
   },
@@ -43,6 +92,8 @@ const agentPatchSchema = {
     color: { type: "string", enum: AGENT_COLORS },
     tools: { type: "array", maxItems: 7, uniqueItems: true, items: { type: "string", enum: AGENT_TOOLS } },
     skill_ids: { type: "array", maxItems: 8, uniqueItems: true, items: { type: "string", format: "uuid" } },
+    mcp_tools: { type: "array", maxItems: 16, items: mcpToolBindingSchema },
+    job_setup: jobSetupSchema,
     name: { type: "string", minLength: 1, maxLength: MAX_AGENT_NAME_CHARS, pattern: "\\S" },
     instructions: { type: "string", minLength: 1, maxLength: MAX_AGENT_INSTRUCTION_CHARS },
   },

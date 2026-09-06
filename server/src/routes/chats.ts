@@ -7,6 +7,9 @@ import { enforceRemoteEgressConsent } from "../egressPolicy.js";
 import { auditRemoteEgressTarget } from "../egressAudit.js";
 import { beginRun, cancelRun, completeRunWithAssistant, finishRunDurably, isRunCancellation } from "../chatRuns.js";
 import { config } from "../config.js";
+import { MAX_CHAT_SOURCE_SCOPE } from "../db/stores/chatStore.js";
+import { LibraryNotFoundError } from "../db/stores/libraryStore.js";
+import { MAX_JOB_LIBRARIES } from "../agentConfiguration.js";
 import {
   ActiveChatRunError,
   AgentBindingUnavailableError,
@@ -60,19 +63,53 @@ export async function chatRoutes(app: FastifyInstance): Promise<void> {
       schema: { tags: ["chats"], summary: "Create a chat", body: chatCreateBodySchema },
     },
     async (req, reply) => {
-      let parsed: {
-        title: string;
-        titleIsManual: boolean;
-        scope: SourceScopeInput;
-        agentId: string | null;
-        model: string | null;
-      };
+      let parsed: ReturnType<typeof parseChatCreateBody>;
       try {
         parsed = parseChatCreateBody(req.body);
       } catch (error) {
         return sendSourceScopeError(reply, error);
       }
       const accountId = getAccountId(req);
+      // Chat-creation-from-job: expand the suggested libraries into explicit
+      // READY source ids through the normal selected-scope contract BEFORE
+      // creating the chat. The chat itself is created selected-empty until
+      // the user confirms the expanded list; expansion never falls back to
+      // `all` and never truncates — over the 100-source cap fails outright.
+      let jobProjection: {
+        starter_prompts: readonly string[];
+        output_template: { kind: "instruction"; instruction: string } | null;
+        suggested_library_ids: readonly string[];
+        suggested_source_ids: readonly string[];
+      } | null = null;
+      let scope = parsed.scope;
+      if (parsed.suggestedLibraryIds !== null) {
+        let expanded: readonly string[];
+        try {
+          expanded = await storageRuntime().libraries.listReadySourceIds(accountId, parsed.suggestedLibraryIds);
+        } catch (error) {
+          if (error instanceof LibraryNotFoundError)
+            return reply.code(400).send({ error: "one or more suggested libraries do not exist in this account" });
+          throw error;
+        }
+        if (expanded.length > MAX_CHAT_SOURCE_SCOPE) {
+          return reply.code(409).send({
+            error: `suggested libraries expand to ${expanded.length} ready sources; the chat scope cap is ${MAX_CHAT_SOURCE_SCOPE}. Select fewer libraries.`,
+            code: "JOB_SCOPE_LIMIT",
+          });
+        }
+        // Stay selected-empty until the user confirms, unless the client
+        // already supplied an explicit (confirmed) scope in the same request.
+        scope = parsed.scopeProvided ? parsed.scope : { source_mode: "selected", source_ids: [] };
+        const jobSetup = parsed.agentId
+          ? await storageRuntime().agents.getAgentJobSetup(accountId, parsed.agentId)
+          : undefined;
+        jobProjection = {
+          starter_prompts: jobSetup?.starter_prompts ?? [],
+          output_template: jobSetup?.output_template ?? null,
+          suggested_library_ids: parsed.suggestedLibraryIds,
+          suggested_source_ids: expanded,
+        };
+      }
       try {
         const [runtime, accountDefaultModel] = await Promise.all([
           getRuntimeSettings(),
@@ -88,10 +125,10 @@ export async function chatRoutes(app: FastifyInstance): Promise<void> {
           title: parsed.title,
           titleIsManual: parsed.titleIsManual,
           model,
-          sourceScope: parsed.scope,
+          sourceScope: scope,
           agentId: parsed.agentId,
         });
-        return reply.send(chat);
+        return reply.send(jobProjection ? { ...chat, job: jobProjection } : chat);
       } catch (error) {
         return sendChatStoreError(reply, error, "create");
       }
@@ -463,24 +500,26 @@ function parseChatCreateBody(body: unknown): {
   title: string;
   titleIsManual: boolean;
   scope: SourceScopeInput;
+  scopeProvided: boolean;
   agentId: string | null;
   model: string | null;
+  suggestedLibraryIds: readonly string[] | null;
 } {
   const value = body ?? {};
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new SourceScopeError(400, "invalid chat body");
   const record = value as Record<string, unknown>;
-  const allowed = new Set(["title", "source_mode", "source_ids", "agent_id", "model"]);
+  const allowed = new Set(["title", "source_mode", "source_ids", "agent_id", "model", "job"]);
   if (Object.keys(record).some((key) => !allowed.has(key))) throw new SourceScopeError(400, "invalid chat body");
   const titleIsManual = Object.prototype.hasOwnProperty.call(record, "title");
   const title = titleIsManual ? parseChatTitle(record.title) : "New chat";
   const hasMode = Object.prototype.hasOwnProperty.call(record, "source_mode");
   const hasIds = Object.prototype.hasOwnProperty.call(record, "source_ids");
-  const scope =
-    !hasMode && !hasIds
-      ? ({ source_mode: "all" } as const)
-      : parseSourceScopeInput(
-          Object.fromEntries(Object.entries(record).filter(([key]) => key === "source_mode" || key === "source_ids"))
-        );
+  const scopeProvided = hasMode || hasIds;
+  const scope = !scopeProvided
+    ? ({ source_mode: "all" } as const)
+    : parseSourceScopeInput(
+        Object.fromEntries(Object.entries(record).filter(([key]) => key === "source_mode" || key === "source_ids"))
+      );
   // The agent binding is write-once at creation and must reference an owned
   // agent; unknown or foreign ids fail closed before any row is written.
   let agentId: string | null = null;
@@ -500,7 +539,33 @@ function parseChatCreateBody(body: unknown): {
       throw new SourceScopeError(400, "invalid chat model");
     model = record.model.trim();
   }
-  return { title, titleIsManual, scope, agentId, model };
+  // Chat-creation-from-job. Only the suggested-library block is accepted in
+  // the request; prompts/template live on the bound agent's job_setup, and
+  // the expanded ready-source ids are returned for user confirmation — the
+  // server never sends a message because of a job.
+  let suggestedLibraryIds: readonly string[] | null = null;
+  if (Object.prototype.hasOwnProperty.call(record, "job")) {
+    const job = record.job;
+    if (!job || typeof job !== "object" || Array.isArray(job)) throw new SourceScopeError(400, "invalid job");
+    const jobRecord = job as Record<string, unknown>;
+    if (Object.keys(jobRecord).some((key) => key !== "suggested_library_ids"))
+      throw new SourceScopeError(400, "invalid job");
+    const ids = jobRecord.suggested_library_ids ?? [];
+    if (
+      !Array.isArray(ids) ||
+      ids.length > MAX_JOB_LIBRARIES ||
+      new Set(ids).size !== ids.length ||
+      ids.some(
+        (id) =>
+          typeof id !== "string" ||
+          !/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(id)
+      )
+    ) {
+      throw new SourceScopeError(400, `job.suggested_library_ids accepts at most ${MAX_JOB_LIBRARIES} library ids`);
+    }
+    suggestedLibraryIds = Object.freeze((ids as string[]).map((id) => id.toLowerCase()));
+  }
+  return { title, titleIsManual, scope, scopeProvided, agentId, model, suggestedLibraryIds };
 }
 
 function parseChatTitle(value: unknown): string {

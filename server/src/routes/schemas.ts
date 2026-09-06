@@ -1,4 +1,5 @@
 import { settingsDraftProperties } from "../settingsDraft.js";
+import { MAX_JOB_LIBRARIES } from "../agentConfiguration.js";
 import { MAX_CHAT_SOURCE_SCOPE } from "../db/stores/chatStore.js";
 
 export const UUID_PATTERN = "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$";
@@ -207,9 +208,11 @@ export const sourceScopeBodySchema = {
 
 export const chatCreateBodySchema = {
   type: "object",
-  propertyNames: { enum: ["title", "agent_id", "source_mode", "source_ids", "model"] },
+  propertyNames: { enum: ["title", "agent_id", "source_mode", "source_ids", "model", "job"] },
   description:
-    "Optional title and agent binding plus the exact source-scope union. Omitting scope preserves legacy all-source behavior.",
+    "Optional title and agent binding plus the exact source-scope union. Omitting scope preserves legacy " +
+    "all-source behavior. The optional job block creates the chat from a job: it stays selected-empty until the " +
+    "user confirms the expanded ready-source list, and the response carries the job projection.",
   properties: {
     // Runtime validation owns type checking so Fastify's coercion cannot turn
     // a numeric title into a valid string before the exact-shape parser sees it.
@@ -221,6 +224,22 @@ export const chatCreateBodySchema = {
       type: "array",
       maxItems: MAX_CHAT_SOURCE_SCOPE,
       items: { type: "string", pattern: UUID_PATTERN },
+    },
+    // Chat-creation-from-job (Connected agents stage 4). Suggested library
+    // ids are validated as owned at the handler; starter prompts and the
+    // output template come from the bound agent's job_setup and are only
+    // returned to the client — never auto-sent.
+    job: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        suggested_library_ids: {
+          type: "array",
+          maxItems: MAX_JOB_LIBRARIES,
+          uniqueItems: true,
+          items: { type: "string", pattern: UUID_PATTERN },
+        },
+      },
     },
   },
 } as const;
