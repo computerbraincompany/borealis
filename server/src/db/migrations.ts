@@ -1,6 +1,6 @@
 import { SqliteMigrationError } from "./types.js";
 
-export const LATEST_SQLITE_SCHEMA_VERSION = 21;
+export const LATEST_SQLITE_SCHEMA_VERSION = 22;
 
 interface MigrationDatabase {
   exec(sql: string): unknown;
@@ -1353,6 +1353,36 @@ ALTER TABLE chat_runs ADD COLUMN agent_mcp_tools TEXT
   CHECK (agent_mcp_tools IS NULL OR (json_valid(agent_mcp_tools) AND length(agent_mcp_tools) <= 524288));
 `;
 
+// Schema v22 — reusable document templates (coordinator re-keyed from v21; v21 = MCP run snapshot) (M13 stage 2). Owner-scoped rows
+// beside the v20 document ledger: a template stores one immutable-by-policy
+// normalized structure snapshot (headings, bounded instructions, formatting,
+// and empty placeholders) captured by the `documentTemplates.ts` codec, which
+// strips source excerpts, table results, chart values, credentials, analysis
+// provenance, and source bindings before anything reaches this table. The
+// `snapshot` CHECK applies the same 400,000-character document revision bound
+// as the last-line durable guard; the store enforces the 100-per-account
+// quota and the per-name uniqueness inside the same transaction. `revision`
+// is the optimistic edit counter (stale `expected_revision` conflicts in the
+// store). Snapshots are ordinary rows — updates are allowed here (unlike the
+// immutable v20 revision/publication ledgers) because a template is a
+// mutable catalog entry, not durable document history. Account deletion
+// cascades; built-in templates are server constants and never stored rows.
+export const SCHEMA_V22 = `
+CREATE TABLE document_templates (
+  id TEXT PRIMARY KEY,
+  account_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name TEXT NOT NULL CHECK (length(name) BETWEEN 1 AND 200),
+  description TEXT NOT NULL DEFAULT '' CHECK (length(description) <= 500),
+  revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+  snapshot TEXT NOT NULL CHECK (json_valid(snapshot) AND length(snapshot) BETWEEN 1 AND 400000),
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  UNIQUE (id, account_id),
+  UNIQUE (account_id, name)
+) STRICT;
+CREATE INDEX document_templates_account_catalog_idx ON document_templates (account_id, created_at DESC, id DESC);
+`;
+
 const migrations = [
   { version: 1, sql: SCHEMA_V1 },
   { version: 2, sql: SCHEMA_V2 },
@@ -1373,6 +1403,8 @@ const migrations = [
   { version: 17, sql: SCHEMA_V17 },
   { version: 18, sql: SCHEMA_V18 },
   { version: 19, sql: SCHEMA_V19 },
+  // v19 is intentionally absent: it is the parallel M14 slot, coordinated at
+  // merge (see the SCHEMA_V20 header). Do not insert v19 after these entries.
   { version: 20, sql: SCHEMA_V20 },
   { version: 21, sql: SCHEMA_V21 },
 ] as const;

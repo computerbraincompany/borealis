@@ -393,8 +393,15 @@ describe("SQLite ledger foundation", () => {
     await expect(listHistoricalFixtureVersions()).resolves.toEqual(expectedFixtureVersions());
   });
 
+  // A pending-merge slot also blocks fixture-built starts above it: replaying
+  // deltas 1..start would need the missing v019.sql. Those installations are
+  // still covered by upgrading to the latest schema from every start version
+  // below the gap, which steps over it through the real migration array.
+  const firstPendingMergeSlot = PENDING_MERGE_SCHEMA_VERSIONS.length
+    ? Math.min(...PENDING_MERGE_SCHEMA_VERSIONS)
+    : Number.POSITIVE_INFINITY;
   for (const startVersion of expectedFixtureVersions().filter(
-    (version) => version < LATEST_SQLITE_SCHEMA_VERSION && !PENDING_MERGE_SCHEMA_VERSIONS.includes(version)
+    (version) => version < LATEST_SQLITE_SCHEMA_VERSION && version < firstPendingMergeSlot
   )) {
     it(`upgrades a historical v${startVersion} installation to schema v${LATEST_SQLITE_SCHEMA_VERSION}`, async () => {
       const fixture = await createHistoricalSqliteFixture(startVersion);
@@ -488,8 +495,9 @@ describe("SQLite ledger foundation", () => {
             ])
           );
           // v18 saved-analysis tables survive upgrades from every historical
-          // installation, and the v20 document tables land through this
-          // branch's documented step over the pending-merge v19 slot.
+          // installation, and the v20 document tables plus the v21 template
+          // catalog land through this branch's documented step over the
+          // pending-merge v19 slot.
           expect([...tables]).toEqual(
             expect.arrayContaining([
               "analyses",
@@ -505,6 +513,7 @@ describe("SQLite ledger foundation", () => {
               "document_publication_intents",
               "document_artifact_cleanup_jobs",
               "document_publication_cleanup_jobs",
+              "document_templates",
             ])
           );
           // v19 living-knowledge tables survive upgrades from every
@@ -567,6 +576,7 @@ describe("SQLite ledger foundation", () => {
               "knowledge_refreshes_one_active_uidx",
               "knowledge_refreshes_connection_history_idx",
               "knowledge_refresh_items_recovery_idx",
+              "document_templates_account_catalog_idx",
             ])
           );
           const recipientIndex = await ledger.get<{ sql: string }>(
@@ -1345,8 +1355,9 @@ describe("SQLite ledger foundation", () => {
           });
           // v16 protocol state is proven to survive upgrade into the exact
           // current latest schema (v17 connections, v18 analyses, v19 knowledge, the
-          // v20 document tables, and the v21 frozen MCP run-snapshot column ride on top).
-          expect(LATEST_SQLITE_SCHEMA_VERSION).toBe(21);
+          // v20 document tables, the v21 frozen MCP run-snapshot column, and the v22
+              // template catalog ride on top).
+          expect(LATEST_SQLITE_SCHEMA_VERSION).toBe(22);
 
           const rows = await ledger.all<Record<string, unknown>>(
             `SELECT source_id,phase,generation,refresh_version,candidate_location,
