@@ -1386,6 +1386,59 @@ zero-row result is a success, and an exact row count is claimed only when the
 worker established the total.
 
 
+### Documents and document templates (M13 stage 2)
+
+Owner-scoped editable documents with immutable, append-only revisions
+(schema v20/v21). All routes require authentication; every identifier is a
+UUID and every catalog uses keyset pagination. Responses never include
+filesystem paths.
+
+| Endpoint                                                | Contract                                                                                                                                                                                                                                     |
+| ------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /api/documents`                                    | Paginated `{items,next_cursor}` of `{id,title,current_revision,current_revision_id,head_author_kind,origin,latest_publication_version,revision_count,created_at,updated_at}`, newest first.                                                   |
+| `POST /api/documents`                                   | Exactly one creation shape: `{title?}` (blank draft), `{title?, template_id}` (instantiate a template — never auto-binds sources or data), `{tree}` (explicit tree), or `{copy_from_report_id}` (editable copy of an owned published legacy report). `201` with `{document,revision}`. A payload-less legacy report answers `409 {"code":"DOCUMENT_UNAVAILABLE"}`; missing/foreign/pending reports answer `404`. |
+| `GET /api/documents/:id`                                | Document metadata and head pointer as in the list row.                                                                                                                                                                                         |
+| `DELETE /api/documents/:id`                             | `{"ok":true}`; reserves and eagerly completes durable artifact cleanup, `503 {"error":"document cleanup deferred"}` keeps the intent durable. Revisions cascade; legacy reports, chats, and sources are untouched.                            |
+| `GET /api/documents/:id/revisions`                      | Paginated revision summaries `{id,revision,title,author_kind,base_revision_id,payload_chars,published_version,created_at}`, newest first.                                                                                                     |
+| `POST /api/documents/:id/revisions`                     | Body `{base_revision_id,tree}`. `201` with `{document,revision}`. A stale base answers `409 {"code":"DOCUMENT_REVISION_CONFLICT","current_head":{revision_id,revision,title,author_kind,updated_at}}` and writes nothing; the server never merges. Oversize/invalid trees answer `400` with `DOCUMENT_OVERSIZE`/`DOCUMENT_INVALID` and persist nothing. |
+| `GET /api/documents/:id/revisions/:revisionId`          | `{id,document_id,revision,title,author_kind,base_revision_id,payload,payload_chars,created_at}` — the immutable full snapshot.                                                                                                                |
+| `GET /api/documents/:id/diff?base=…&target=…`           | Deterministic bounded diff of two revisions of the same document (structure by stable section UUID: added/removed/moved/modified; line-level unified text diff per modified section; chart/table/evidence summaries). Bounds surface through `truncated` flags. Identical revisions produce empty diffs; the same pair always yields byte-identical output. |
+| `GET /api/documents/:id/publications`                   | Owner publication history (empty until publication ships). No artifact paths.                                                                                                                                                                 |
+| `POST /api/documents/:id/revisions/:revisionId/publish` | **Reserved — not implemented.** Body `{operation_id,expected_revision_id?}` is validated, then the route answers `501 {"code":"PUBLICATION_NOT_READY"}`. Publication execution arrives with M13 stage 4.                                       |
+
+Document trees carry `title` (≤200), `subtitle` (≤500), `verified`, at most
+20 sections with stable document-local UUIDs (`heading` ≤200,
+`markdown` ≤50,000 and 200,000 total characters — the evidence appendix is
+charged against the same budget at save time), at most 20 canonical charts,
+8 tables (60 rows, 32 columns, 500-character cells), and the versioned
+evidence contract (≤100 references, 800-character excerpts, 100,000
+serialized characters; `generation`/`content_identity` are server-verified
+numbers or the literal `"unknown"` — never invented). The evidence-inclusive
+serialized revision is bounded at 400,000 characters; the parser transport
+ceiling is 2,531,072 bytes. An oversize tree is rejected with
+`DOCUMENT_OVERSIZE` — unlike optional legacy report payloads, a document
+never silently drops its tree. `author_kind` is server-assigned; HTTP saves
+are always `user`.
+
+Templates come in two kinds. `GET /api/document-templates` lists the three
+built-in structure-only templates as server constants (`Monthly financial
+brief`, `Evidence memo`, `Comparison report`; `built_in: true`, no
+`revision`) followed by the paginated custom catalog (`built_in: false`, with
+`revision`). A snapshot copies structure only — `title`, `subtitle`, and each
+section's `heading`/`markdown` — and the codec (`server/src/documentTemplates.ts`)
+rejects any other key, so evidence excerpts, source identities/bindings,
+numeric table results, chart values, analysis provenance, and credentials can
+never enter a stored snapshot. Applying a template instantiates a fresh
+unverified draft with new section UUIDs and no attachments.
+
+| Endpoint                             | Contract                                                                                                                                  |
+| ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /api/document-templates`        | Built-ins first, then the caller's paginated custom templates.                                                                            |
+| `POST /api/document-templates`       | Body `{name,description?,document_id}` snapshots the document's current head through the codec. `201`. Quota: 100 per account (`409 DOCUMENT_TEMPLATE_QUOTA_REACHED`); duplicate names `409 DOCUMENT_TEMPLATE_NAME_TAKEN`. |
+| `GET /api/document-templates/:id`    | Built-in by its fixed UUID or an owned custom row; anything else `404`.                                                                   |
+| `PATCH /api/document-templates/:id`  | Body `{expected_revision, name?, description?}`. A stale revision answers `409 {"code":"DOCUMENT_TEMPLATE_CONFLICT","current_revision":N}`. Built-ins answer `409 BUILTIN_TEMPLATE_IMMUTABLE`. |
+| `DELETE /api/document-templates/:id` | Body `{expected_revision}`; same conflict/immutable codes. `{"ok":true}`.                                                                 |
+
 ## Agent tools
 
 These operations run inside an accepted chat turn, not as independently callable
@@ -1580,6 +1633,7 @@ limits are:
 | Saved-analysis definition create/edit                                                 |  1,344,256 bytes |
 | Settings patch/test and model-qualification draft                                     |  157,696 bytes |
 | Contained-engine configuration                                                        |        256 KiB |
+| Document draft/revision save tree                                                     |    2,531,072 bytes |
 
 The non-round ceilings above derive from the schemas' maximum decoded lengths
 and worst-case JSON escape expansion. Message JSON uses

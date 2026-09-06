@@ -456,7 +456,21 @@ passage; markers that do not resolve stay plain text. **Download CSV** exports
 the saved preview, not an unlimited rerun of the SQL.
 Open generated HTML/PDF from chat or **Reports**. Reports keep per-chat
 versions with a supersedes chain, can be renamed in place, and the Reports
-surface lists the account's chart artifacts. **Libraries** group sources into
+surface lists the account's chart artifacts.
+**Documents** is the editable companion to Reports: create a blank draft or a
+template draft, or turn an owned published report into an editable copy
+(reports without a stored normalized payload show a clear unavailable state).
+The workbench edits sections by stable UUID — headings, Markdown, add, remove,
+reorder — shows an explicit unsaved state, and saves an immutable revision
+against the base revision it loaded; a conflicting save preserves your local
+draft and offers a diff, a reload, or an explicit reapply, never a silent
+merge. Version history and a deterministic server-side diff live beside the
+evidence inspector, which labels each entry verified or unknown-provenance and
+leaves unresolved citation markers as plain text. Three built-in templates
+(monthly financial brief, evidence memo, comparison report) plus your own
+saved structure templates ship without ever carrying evidence excerpts, table
+results, or source bindings. Publishing and export of documents arrive with
+the next milestone stage. **Libraries** group sources into
 named, account-scoped collections you can curate and attach to a new chat as
 an explicit selected scope — from the Libraries surface or directly in the
 chat composer's source picker, which expands a library's ready members into
