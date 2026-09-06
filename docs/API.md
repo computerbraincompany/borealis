@@ -454,6 +454,57 @@ Failed or cancelled imports leave the already-uploaded sources visible in
 Sources with their normal explicit removal action; the server never deletes
 them implicitly.
 
+#### Library source search
+
+`POST /api/libraries/:id/search` searches the library's ready members without
+widening chat scope and without ever exposing file paths. Body
+(48 KiB ceiling): `{query, mode?, source_ids?, kind?}` where `query` is
+1–1,000 characters, `mode` is `keyword` (default) or `semantic`, `source_ids`
+is an optional filter of ≤100 UUIDs, and `kind` is `document` or `tabular`.
+Filter IDs are validated against library membership and account: non-member
+IDs never widen the scope and are reported in `ignored_source_ids`; a filter
+that resolves to nothing is an empty page (`hits: []`), never all library or
+account content. Invalid query/mode/filter grammar returns `400`.
+
+- **Keyword** is the default and makes no model request. It is a scoped
+  SQLite FTS5 search whose account and exact `(source_id, generation)`
+  predicates ride inside the search itself. The user query is compiled into a
+  literal-only grammar: whitespace-separated tokens, each one double-quoted
+  phrase with quotes doubled, `*` never acting as the prefix operator; FTS5
+  keywords (`AND`, `OR`, `NEAR`), parentheses, and column specifiers can only
+  ever match as literal text. More than 64 tokens are truncated honestly and
+  reported as `query_truncated: true`.
+- **Semantic** embeds the query through the ordinary account-authorized
+  embedding boundary, so a remote model provider requires the same
+  remote-egress acknowledgment as chat turns — without it the request returns
+  `403 REMOTE_EGRESS_CONSENT_REQUIRED` before any search work. The vector
+  side reuses the scoped LanceDB KNN restricted to the captured pairs.
+
+Acceptance captures the concrete ready `(source_id, generation)` set and the
+response echoes it as `captured_scope` entries with `status`: `ready`,
+`source_changed` (a captured generation was superseded or removed — its newer
+content is never searched or returned), or `unavailable` (the member had no
+ready generation at acceptance). A refresh promoting mid-search can therefore
+only make captured text disappear from a stale capture, never leak newer text.
+
+`hits` are ranked (`rank` is 1-based; `score` is bm25 relevance for keyword
+or cosine similarity for semantic) and carry `source_id`, `generation`,
+`chunk_id`, a sanitized `label`, an `excerpt` that is a verbatim prefix of the
+chunk (≤2,000 characters), and typed `locators`. Budgets: at most 50 hits and
+100,000 total returned characters (`truncated: true` when any budget cut the
+page). Locators are honest or absent — chunk-level typed spans recorded at
+ingestion:
+
+| Locator kind      | Meaning                                                                          |
+| ----------------- | -------------------------------------------------------------------------------- |
+| `pdf_page`        | Real 1-based `page`, `ocr` flag, and `char_start`/`char_len` inside that page's extracted text (OCR-stamped pages keep their page number and flag) |
+| `text_span`       | `char_start`/`char_len` inside the normalized extracted document text, plus `heading` only when Markdown extraction saw an ATX heading |
+| `tabular_rows`    | `sheet`/table name and inclusive 1-based `row_start`/`row_end` only when the tabular preview actually knows the rows |
+
+Chunks ingested before this feature (or without known structure) simply carry
+no `locators` — an explicit location-unavailable state; there is no implicit
+reingest or mass embedding request.
+
 ### Knowledge connections (folder and WebDAV transports)
 
 Living knowledge libraries (M14) are driven by two read-only transports whose
@@ -1036,6 +1087,15 @@ deletion.
 | `POST /api/sources/upload`       | One multipart file, conventionally named `file`, without text fields; returns the reserved source and `processing: true`. |
 | `POST /api/sources/:id/reingest` | No body; returns the source and `processing: true` after reserving a new ingestion generation.                            |
 | `DELETE /api/sources/:id`        | Removes the owned source from the ledger and queues scoped artifact cleanup; returns `{"ok":true}`.                       |
+| `GET /api/sources/:id/passages/:chunkId` | Owned current-chunk read: `{source,chunk{seq,content,locators},neighbors{before,after}}` with bounded neighboring text. |
+| `GET /api/sources/:id/passages/:chunkId/neighboring-context` | Just the neighboring text at a bounded `context_chars` width (default 400, max 4,000). |
+
+The passage routes back the source-search hit and the source passage panel.
+They answer honestly about generation truth: `404` for a foreign or absent
+source, and `410 PASSAGE_UNAVAILABLE` when the chunk was pruned or belongs to
+a superseded generation — a passage is never silently re-resolved against the
+newest content. Neighboring chunks come from the same source and generation
+only (never across a generation boundary).
 
 List entries contain `id`, `name`, `kind` (`document` or `tabular`),
 `display_name`, `mime`, `size_bytes`, `status`, `created_at`, and `meta`.
@@ -1740,6 +1800,7 @@ limits are:
 | Compact mutations, including chat patch and migration start                           |          8 KiB |
 | Connector creation                                                                    |   29,962 bytes |
 | Chat creation/source scope, catalog-status UUID lists, and contained download request |         32 KiB |
+| Library source search (1,000-character query plus ≤100 filter UUIDs)                |         48 KiB |
 | Agent and automation long-text mutations                                              |        128 KiB |
 | Saved-analysis query-capture promotion                                                |     38,128 bytes |
 | Saved-analysis run acceptance (20 typed values plus the operation UUID)               |    484,864 bytes |

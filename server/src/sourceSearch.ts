@@ -92,16 +92,23 @@ export class SourceSearchError extends Error {
 
 /**
  * Compile a user query into the bounded literal FTS5 grammar. Each
- * whitespace-separated token becomes one double-quoted phrase with embedded
- * quotes doubled; consecutive phrases combine with FTS5's implicit AND. The
- * token count is capped, and truncation is reported honestly rather than
- * silently changing the question.
+ * whitespace/control-separated token becomes one double-quoted phrase with
+ * embedded quotes doubled; consecutive phrases combine with FTS5's implicit
+ * AND. Leading/trailing `*` are stripped before quoting because FTS5 applies
+ * its prefix operator to a `*` even at the end of a quoted phrase — without
+ * stripping, a user's `*` would silently gain operator power. Token count is
+ * capped, and truncation is reported honestly rather than silently changing
+ * the question.
  */
 export function buildFtsLiteralQuery(
   query: string,
   maxTokens = MAX_SEARCH_FTS_TOKENS
 ): { ftsQuery: string | null; truncated: boolean } {
-  const tokens = query.split(/[\s\p{Cc}]+/u).filter(Boolean);
+  const tokens = query
+    .split(/[\s\p{Cc}]+/u)
+    .filter(Boolean)
+    .map((token) => token.replace(/^\*+/, "").replace(/\*+$/, ""))
+    .filter((token) => token.length > 0);
   if (!tokens.length) return { ftsQuery: null, truncated: false };
   const truncated = tokens.length > maxTokens;
   const kept = tokens.slice(0, maxTokens);

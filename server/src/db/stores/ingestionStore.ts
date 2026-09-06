@@ -1269,8 +1269,9 @@ export class SqliteIngestionStore {
       label: source.displayName || source.name || "Source",
     });
     const row = await this.ledger.get<SearchJoinRow>(
-      `SELECT id AS chunk_id, source_id, generation, seq, meta, content,
-              COALESCE(NULLIF(display_name,''),source_name,'Source') AS label
+      `SELECT chunks.id AS chunk_id, chunks.source_id, chunks.generation, chunks.seq, chunks.meta,
+              chunks.content,
+              COALESCE(NULLIF(sources.display_name,''),chunks.source_name,'Source') AS label
        FROM chunks JOIN sources ON sources.id=chunks.source_id AND sources.account_id=chunks.account_id
        WHERE chunks.account_id=? AND chunks.source_id=? AND chunks.id=?`,
       [
