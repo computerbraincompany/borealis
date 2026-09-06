@@ -557,6 +557,50 @@ export function buildEvidenceAppendix(evidence: readonly DocumentEvidenceRef[]):
   return lines.join("\n\n");
 }
 
+/** True when a copied evidence reference carries server-verified provenance. */
+export function isVerifiedEvidenceRef(ref: DocumentEvidenceRef): boolean {
+  return typeof ref.generation === "number" && ref.content_identity !== DOCUMENT_EVIDENCE_UNKNOWN;
+}
+
+/**
+ * Deterministic one-line validity state for one revision, shown in every
+ * export and the workbench. Manual/unverified claims stay explicitly
+ * distinguished from verified citations; nothing is ever upgraded here.
+ */
+export function buildPublicationValidity(tree: Pick<DocumentTree, "verified" | "evidence">): string {
+  const total = tree.evidence.length;
+  if (!total) {
+    return tree.verified
+      ? "Evidence: verified origin — no evidence references in this revision"
+      : "Unverified document — manual claims, no evidence references";
+  }
+  const verified = tree.evidence.filter(isVerifiedEvidenceRef).length;
+  const unverified = total - verified;
+  const origin = tree.verified ? "Evidence" : "Unverified document";
+  if (!unverified) return `${origin}: ${total} reference${total === 1 ? "" : "s"}, provenance verified`;
+  if (!verified) return `${origin}: ${total} reference${total === 1 ? "" : "s"}, provenance unknown`;
+  return `${origin}: ${verified} provenance verified, ${unverified} unknown`;
+}
+
+/**
+ * Export-facing appendix text: the deterministic shared numbering with the
+ * same entry lines as `buildEvidenceAppendix` plus one explicit
+ * `provenance verified|unknown` marker per reference, so the verified/unknown
+ * distinction survives into HTML, PDF, Markdown, and DOCX.
+ */
+export function buildPublicationAppendix(tree: Pick<DocumentTree, "verified" | "evidence">): string {
+  if (tree.evidence.length === 0) return "";
+  const lines: string[] = ["## Evidence"];
+  tree.evidence.forEach((ref, index) => {
+    const parts = [`[${index + 1}] ${ref.source_name}`];
+    if (ref.locator) parts.push(`· ${ref.locator}`);
+    parts.push(isVerifiedEvidenceRef(ref) ? `· provenance verified` : `· provenance unknown`);
+    if (typeof ref.generation === "number") parts.push(`· generation ${ref.generation}`);
+    lines.push(`${parts.join(" ")}\n${ref.excerpt}`);
+  });
+  return lines.join("\n\n");
+}
+
 // The marker grammar admits at most the distinct values 0..99, so the scan
 // bound is the grammar itself (mirrors citations.ts; never widened per model).
 const MAX_DISTINCT_MARKERS = 100;
