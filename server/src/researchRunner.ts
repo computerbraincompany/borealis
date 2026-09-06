@@ -791,26 +791,13 @@ export function createResearchRunner(dependencies: ResearchRunnerDependencies) {
 
     let stopRun = false;
     for (const step of steps) {
-      if (stopRun) {
-        if (step.status === "pending") {
-          await settleStep(
-            accountId,
-            run.id,
-            step.ordinal,
-            "skipped",
-            state.sourceChanged
-              ? "skipped after a pinned source generation changed"
-              : "skipped after the run reached a budget or capture limit"
-          );
-        }
-        continue;
-      }
+      // After a stop, never-dispatched `pending` steps are left honestly
+      // pending (the store forbids settling a step that never ran); the run
+      // status plus an explicit gap carry the honest partial-work story.
+      if (stopRun) continue;
       assertAlive(execution);
       if (wallClockExceeded(run)) {
         state.wallClockExceeded = true;
-        if (step.status === "pending") {
-          await settleStep(accountId, run.id, step.ordinal, "skipped", "the run wall-time budget was exhausted");
-        }
         continue;
       }
       if (step.status !== "pending") continue;
@@ -902,19 +889,22 @@ export function createResearchRunner(dependencies: ResearchRunnerDependencies) {
         await store.finishResearchRun(accountId, runId, "failed", FAILURE_MODEL).catch(() => undefined);
         return;
       }
-      if (error instanceof ProviderFailure) {
-        await settleCurrentStep(execution, "failed", "the model provider call failed");
-        await store.finishResearchRun(accountId, runId, "failed", FAILURE_PROVIDER).catch(() => undefined);
-        return;
-      }
+      // The cancellation/shutdown signal is checked BEFORE provider-failure
+      // classification: interrupting an in-flight transport surfaces as the
+      // provider SDK's abort error (not a plain AbortError), yet the durable
+      // intent is cancellation. A shutdown interrupt leaves the durable
+      // running row for the bounded startup resume (never a silent rerun); an
+      // observed cancellation is settled now and the store's cancel-wins rule
+      // finalizes `cancelled`.
       if (execution.controller.signal.aborted) {
-        // A shutdown interrupt leaves the durable running row for the bounded
-        // startup resume (never a silent rerun here). A cancellation request
-        // — observed or raced — is settled now: the store's cancel-wins rule
-        // finalizes `cancelled`.
         if (execution.shutdownAborted || execution.ownershipLost) return;
         await settleCurrentStep(execution, "skipped", "cancelled mid-step");
         await store.finishResearchRun(accountId, runId, "needs_review").catch(() => undefined);
+        return;
+      }
+      if (error instanceof ProviderFailure) {
+        await settleCurrentStep(execution, "failed", "the model provider call failed");
+        await store.finishResearchRun(accountId, runId, "failed", FAILURE_PROVIDER).catch(() => undefined);
         return;
       }
       if (error instanceof ResearchRunStateError || error instanceof ResearchRunNotFoundError) return;

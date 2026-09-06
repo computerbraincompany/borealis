@@ -613,7 +613,10 @@ function decodePlan(value: unknown, field: string): ResearchPlan {
         return Object.freeze({
           id: storeUuid(record.id, `${field} step id`),
           objective: storedText(record.objective, `${field} step objective`),
-          questions: decodeStringArray(record.questions, `${field} step questions`),
+          // The plan is one parsed JSON envelope; the inner questions list is
+          // already an array (never a nested JSON string), so it uses the
+          // nested-array decoder like the column choices.
+          questions: nestedStringArray(record.questions, `${field} step questions`) ?? Object.freeze([]),
         });
       })
     ),
