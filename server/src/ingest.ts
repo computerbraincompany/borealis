@@ -1,7 +1,11 @@
 import { randomUUID } from "node:crypto";
 
 import { appLog } from "./appLogger.js";
-import { decodeJson } from "./db/codecs.js";
+import {
+  CONNECTOR_REFRESH_REPAIR_LIMIT,
+  type ConnectorRefreshIdentity,
+  type ConnectorRefreshState,
+} from "./db/stores/connectorRefreshStore.js";
 import type { DatasetCleanupJob, IngestionJob } from "./db/stores/ingestionStore.js";
 import { DataServiceError, dataService } from "./dataService.js";
 import { embeddingMigrationCoordinator, EmbeddingMigrationError } from "./embeddingMigration.js";
@@ -48,6 +52,14 @@ const PERIODIC_PENDING_VECTOR_OPERATIONS = 100;
 const PERIODIC_PENDING_SOURCE_DELETES = 100;
 const PERIODIC_DATASET_CLEANUP_JOBS = 20;
 const STARTUP_SOURCE_DELETE_PAGE = 100;
+/**
+ * True only once the post-registry startup typed refresh snapshot has
+ * settled for the current ingestion lifecycle. While false, periodic
+ * reconciliation runs the first three queues but never reads or mutates
+ * typed refresh rows: an empty in-memory DuckDB catalog would otherwise
+ * falsely classify an ambiguous activation.
+ */
+let connectorRefreshStartupSettled = false;
 
 export type IngestSourceOptions = IngestionExecutionInput;
 
@@ -67,7 +79,6 @@ interface RegistryRow {
   connector: string | null;
   mime: string | null;
   status: "ready" | "index" | "error" | null;
-  meta: string | null;
 }
 
 let cachedEngine: CachedEngine | undefined;
@@ -103,6 +114,7 @@ function engine(): CachedEngine {
     store: runtime.ingestion,
     lifecycle: runtime.vectorLifecycle,
     data: dataService,
+    refresh: runtime.connectorRefresh,
     embeddingDimension: runtime.vectors.dimension,
     createEmbeddingSession: createAuthorizedIngestionEmbeddingSession,
     resolveArtifact: resolveSourceArtifact,
@@ -119,6 +131,7 @@ function engine(): CachedEngine {
       store: runtime.ingestion,
       sources: runtime.sources,
       lifecycle: runtime.vectorLifecycle,
+      refresh: runtime.connectorRefresh,
       ingest: (input) => executor.ingest(input),
     }),
   });
@@ -176,6 +189,7 @@ export async function processOneJob(
             store: runtime.ingestion,
             sources: runtime.sources,
             lifecycle: runtime.vectorLifecycle,
+            refresh: runtime.connectorRefresh,
             ingest: runIngest,
           });
     return worker.processOne(signal);
@@ -291,19 +305,33 @@ async function processOnePreparingConnectorRefreshUnlocked(): Promise<boolean> {
   if (!job?.leaseToken) return false;
   const leaseToken = job.leaseToken;
   return runWithRequestContext(`connector-prepare.${job.sourceId}.${job.generation}`, async () => {
-    const source = await runtime.sources.getSource(job.accountId, job.sourceId);
+    const [refreshRow, source] = await Promise.all([
+      runtime.connectorRefresh.getState(job.accountId, job.sourceId),
+      runtime.sources.getSource(job.accountId, job.sourceId),
+    ]);
     const connector = source?.connectorId
       ? await runtime.sources.getConnector(job.accountId, source.connectorId)
       : undefined;
-    const meta = objectRecord(source?.meta);
-    const version = meta.connector_refresh_version;
     const connectorConfig = objectRecord(connector?.config);
     const url = connectorConfig.url;
     const expectedFormat: "csv" | "json" = connector?.type === "url_json" ? "json" : "csv";
-    if (!source || !connector || typeof version !== "string" || !version || typeof url !== "string" || !url) {
+    // The prepare pump reads the typed durable protocol row, never source
+    // metadata. Anything that no longer matches the claimed lease fails the
+    // exact preparing job closed.
+    if (
+      !refreshRow ||
+      refreshRow.phase !== "preparing" ||
+      refreshRow.generation !== job.generation ||
+      !source ||
+      !connector ||
+      source.connectorId !== refreshRow.connectorId ||
+      typeof url !== "string" ||
+      !url
+    ) {
       await failPreparingJob(job, connector?.id, "PREPARE_STATE_INVALID");
       return true;
     }
+    const version = refreshRow.refreshVersion;
 
     try {
       const prepared = await dataService.prepareDatasetRefresh(
@@ -449,12 +477,14 @@ export async function repairPendingSourceDeletesAtStartup(): Promise<number> {
  * One bounded steady-state reconciliation pass. It performs only: (1) at most
  * 100 pending vector operations, (2) one globally bounded 100-intent pending
  * source-delete page with each intent cleaned individually for failure
- * isolation, and (3) at most 20 dataset-cache cleanup jobs. It never calls
- * the startup sweep, the whole-ledger vector state read, the LanceDB row
- * scan, the DuckDB registry restoration, or any distinct-account scan. At
- * most one page per queue is processed per invocation even when successful
+ * isolation, (3) at most 20 dataset-cache cleanup jobs, and (4) at most one
+ * global 20-row page of typed connector-refresh protocol states. It never
+ * calls the startup sweep, the whole-ledger vector state read, the LanceDB
+ * row scan, the DuckDB registry restoration, or any distinct-account scan.
+ * At most one page per queue is processed per invocation even when successful
  * cleanup frees room for more; durable attempts-first ordering provides
- * progress on later ticks.
+ * progress on later ticks. The fourth queue is skipped (without reading or
+ * changing typed rows) until the post-registry startup snapshot settles.
  */
 export async function runPeriodicStorageReconciliation(): Promise<void> {
   await runSourceMaintenance(async () => {
@@ -466,7 +496,200 @@ export async function runPeriodicStorageReconciliation(): Promise<void> {
     // failed input batch.
     for (const intent of intents) await completeSourceDeleteIntents([intent]);
     await processDatasetCacheCleanup(undefined, undefined, PERIODIC_DATASET_CLEANUP_JOBS);
+    await runPeriodicConnectorRefreshRepair();
   }, undefined);
+}
+
+/** Fourth bounded queue: one global attempts-first page of typed refresh states. */
+async function runPeriodicConnectorRefreshRepair(): Promise<void> {
+  if (!connectorRefreshStartupSettled) return;
+  const runtime = storageRuntime();
+  const page = await runtime.connectorRefresh.listRepairableStates(CONNECTOR_REFRESH_REPAIR_LIMIT);
+  let failed = 0;
+  for (const state of page) {
+    if (!(await repairOneConnectorRefreshState(state))) failed += 1;
+  }
+  // Aggregate, content-free logging only: stable error codes and counts,
+  // never account/source IDs, URLs, table names, or paths.
+  if (failed > 0) {
+    appLog.warn(
+      { error_code: "CONNECTOR_REFRESH_REPAIR_RETRYING", failed_refresh_states: failed },
+      "connector refresh periodic repair left rows for retry"
+    );
+  }
+}
+
+function refreshIdentityOf(state: ConnectorRefreshState): ConnectorRefreshIdentity {
+  return Object.freeze({
+    accountId: state.accountId,
+    sourceId: state.sourceId,
+    connectorId: state.connectorId,
+    generation: state.generation,
+    refreshVersion: state.refreshVersion,
+  });
+}
+
+/**
+ * Attempt exactly one typed refresh state. A protocol/data-service failure
+ * for one row must not abort its peers: the row is retained, only a stable
+ * aggregate error code is recorded, and the exact still-current attempt is
+ * CAS-touched so attempts increments even under a fixed or backward clock.
+ * Any successful action that intentionally leaves the same phase is no
+ * progress and uses the same incrementing touch.
+ */
+async function repairOneConnectorRefreshState(state: ConnectorRefreshState): Promise<boolean> {
+  const runtime = storageRuntime();
+  const identity = refreshIdentityOf(state);
+  const touch = async (): Promise<boolean> => {
+    await runtime.connectorRefresh
+      .touchFailedAttempt({
+        identity,
+        expectedPhase: state.phase,
+        expectedAttempts: state.attempts,
+        expectedUpdatedAt: state.updatedAt,
+      })
+      .catch(() => false);
+    return false;
+  };
+  try {
+    switch (state.phase) {
+      case "preparing": {
+        // Validate the exact job/source/connector identity and make the
+        // prepare pump eligible. The row intentionally keeps its phase.
+        const [job, source] = await Promise.all([
+          runtime.ingestion.getJob(state.accountId, state.sourceId),
+          runtime.sources.getSource(state.accountId, state.sourceId),
+        ]);
+        if (
+          !job ||
+          job.generation !== state.generation ||
+          job.status !== "preparing" ||
+          job.leaseToken !== null ||
+          !source ||
+          source.connectorId !== state.connectorId
+        ) {
+          return await touch();
+        }
+        wakeConnectorPrepareWorkers();
+        return await touch();
+      }
+      case "prepared": {
+        // Validate the exact pending generation and queue it; the worker
+        // owns candidate-file validation through artifact proof.
+        const job = await runtime.ingestion.getJob(state.accountId, state.sourceId);
+        if (!job || job.generation !== state.generation || job.status !== "pending" || job.leaseToken !== null) {
+          return await touch();
+        }
+        wakeIngestionWorkers();
+        return await touch();
+      }
+      case "activating": {
+        const source = await runtime.sources.getSource(state.accountId, state.sourceId);
+        if (!source || source.connectorId !== state.connectorId) return await touch();
+        const current = await dataService.currentDatasetLocation(state.accountId, source.name);
+        if (current !== null && current === state.candidateLocation) {
+          if (await runtime.connectorRefresh.confirmActivation(identity)) {
+            wakeIngestionWorkers();
+            return true;
+          }
+          return await touch();
+        }
+        const unactivated =
+          (current === null && state.activationPreviousLocation === null) ||
+          (current !== null && current === state.activationPreviousLocation);
+        if (unactivated) {
+          if (await runtime.connectorRefresh.returnActivatingToPrepared(identity)) {
+            wakeIngestionWorkers();
+            return true;
+          }
+          return await touch();
+        }
+        // A third location is an invariant failure: durable, fail-closed,
+        // retryable only through this bounded fairness touch.
+        return await touch();
+      }
+      case "activated": {
+        // Resume only this exact generation's promotion path; never activate
+        // again. The row keeps its phase until the promotion transaction
+        // finalizes it.
+        const job = await runtime.ingestion.getJob(state.accountId, state.sourceId);
+        if (job && job.generation === state.generation && job.status === "pending" && job.leaseToken === null) {
+          wakeIngestionWorkers();
+        }
+        return await touch();
+      }
+      case "cleanup_pending": {
+        const source = await runtime.sources.getSource(state.accountId, state.sourceId);
+        if (!source || source.status !== "ready" || source.filePath !== state.candidateLocation) {
+          return await touch();
+        }
+        // Exact-location deactivation + cache cleanup only. Never the
+        // candidate, never a table-name-only drop, never a remote fetch.
+        await dataService.deactivateDatasetLocation(state.accountId, source.name, state.cleanupPreviousLocation);
+        await dataService.cleanupDatasetCache(state.accountId, source.name, state.cleanupPreviousLocation);
+        const queued = await runtime.ingestion.getDatasetCleanupJob(
+          state.accountId,
+          source.name,
+          state.cleanupPreviousLocation
+        );
+        if (queued) await runtime.ingestion.resolveDatasetCleanupJob(queued, "complete");
+        if (
+          await runtime.connectorRefresh.completeExactCleanup({
+            identity,
+            cleanupLocation: state.cleanupPreviousLocation,
+          })
+        ) {
+          return true;
+        }
+        return await touch();
+      }
+    }
+  } catch {
+    return await touch();
+  }
+}
+
+/**
+ * Finite startup snapshot pass over the typed refresh states. The
+ * `MAX(repair_ordinal)` bound is captured once; every row at or below it is
+ * attempted at most once through bounded keyset pages (never offsets, never
+ * a wall-clock cutoff). A concurrently inserted row has a larger ordinal and
+ * waits for periodic repair; a lost CAS or failure still counts as that
+ * snapshot row's attempt and the cursor advances regardless, so the pass
+ * always terminates.
+ */
+async function repairConnectorRefreshStatesAtStartup(): Promise<number> {
+  const runtime = storageRuntime();
+  const capturedMax = await runtime.connectorRefresh.captureMaxRepairOrdinal();
+  if (capturedMax === 0) return 0;
+  let cursor = 0;
+  let attempted = 0;
+  let retried = 0;
+  for (;;) {
+    const page = await runtime.connectorRefresh.listRepairableStatesUpTo(
+      capturedMax,
+      cursor,
+      CONNECTOR_REFRESH_REPAIR_LIMIT
+    );
+    if (page.length === 0) break;
+    for (const state of page) {
+      attempted += 1;
+      if (!(await repairOneConnectorRefreshState(state))) retried += 1;
+    }
+    cursor = page[page.length - 1]!.repairOrdinal;
+    if (page.length < CONNECTOR_REFRESH_REPAIR_LIMIT) break;
+  }
+  if (retried > 0) {
+    appLog.warn(
+      {
+        error_code: "CONNECTOR_REFRESH_STARTUP_RETRYING",
+        attempted_refresh_states: attempted,
+        retrying_refresh_states: retried,
+      },
+      "connector refresh startup reconciliation left rows for periodic retry"
+    );
+  }
+  return attempted;
 }
 
 /**
@@ -525,6 +748,10 @@ export function triggerLeaseRecovery(): void {
 /** Recover durable state before opening the listening socket, then start bounded pumps. */
 export async function startIngestionWorkers(): Promise<void> {
   if (activeWorkerEpoch !== 0) return;
+  // A fresh lifecycle never inherits typed-repair readiness; the fourth
+  // periodic queue stays gated until this runtime's post-registry snapshot
+  // attempt settles inside `restoreDatasets()`.
+  connectorRefreshStartupSettled = false;
   await recoverExpiredIngestionLeases(true);
   await recoverPreparingConnectorLeases(true);
   await runSourceMaintenance(
@@ -557,9 +784,11 @@ export async function stopIngestionWorkers(): Promise<void> {
   // Synchronously, before the first await: invalidate the epoch and close
   // wake admission (including the pre-start epoch 0), clear both unref'd
   // timers, and reset both repump flags so queued wakes cannot escape the
-  // old epoch.
+  // old epoch. Typed-refresh readiness is likewise never inherited by a
+  // sequential runtime.
   activeWorkerEpoch = 0;
   workersStopping = true;
+  connectorRefreshStartupSettled = false;
   if (leaseTimer) clearInterval(leaseTimer);
   leaseTimer = undefined;
   if (reconciliationTimer) clearInterval(reconciliationTimer);
@@ -603,7 +832,7 @@ export async function restoreDatasets(_attempts = 8): Promise<RestoreSummary> {
   const runtime = storageRuntime();
   const rows = await runtime.ledger.all<RegistryRow>(
     `SELECT u.id AS account_id, s.id AS source_id, s.name, s.file_path, s.display_name,
-            s.url, s.connector, s.mime, s.status, s.meta
+            s.url, s.connector, s.mime, s.status
        FROM users u
        LEFT JOIN sources s ON s.account_id=u.id AND s.kind='tabular'
        ORDER BY u.id,s.name`
@@ -665,11 +894,10 @@ export async function restoreDatasets(_attempts = 8): Promise<RestoreSummary> {
     }
 
     for (const source of ledger.ready) {
-      const meta = source.meta ? decodeJson<Record<string, unknown>>(source.meta, "source meta") : {};
-      let cleanupLocation =
-        typeof meta.connector_previous_location === "string" && meta.connector_previous_location !== source.file_path
-          ? meta.connector_previous_location
-          : undefined;
+      // Protocol cleanup locations are typed state, never metadata; the
+      // typed snapshot pass below owns them. Only a fresh previous location
+      // observed from the rebuilt registry is cleaned inline here.
+      let cleanupLocation: string | undefined;
       const existing = current.get(source.name!);
       if (existing?.exists === false || existing?.location !== source.file_path) {
         attempted += 1;
@@ -735,6 +963,15 @@ export async function restoreDatasets(_attempts = 8): Promise<RestoreSummary> {
         }
       }
     }
+  }
+  // The ready DuckDB registry is rebuilt only once the per-account loop has
+  // settled. Invoke the finite typed startup snapshot pass here (never from
+  // `startIngestionWorkers`) so an ambiguous activation is reconciled against
+  // a populated catalog, then release the periodic fourth-queue gate.
+  try {
+    await repairConnectorRefreshStatesAtStartup();
+  } finally {
+    connectorRefreshStartupSettled = true;
   }
   return { attempted, restored, failed, stale_attempted: staleAttempted, removed, remove_failed: removeFailed };
 }

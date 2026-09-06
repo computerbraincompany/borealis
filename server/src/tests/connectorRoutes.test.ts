@@ -232,12 +232,13 @@ describe("connector synchronization", () => {
       syncStatus: "indexing",
     });
     const source = await storageRuntime().sources.getSource(ACCOUNT, SOURCE);
-    expect(source).toMatchObject({
-      status: "index",
-      meta: expect.objectContaining({
-        connector_candidate_location: expect.stringContaining(`/safe/cache/`),
-        connector_activation_previous_location: "/safe/cache/previous.csv",
-      }),
+    expect(source).toMatchObject({ status: "index", meta: {} });
+    // Protocol state is typed, never metadata.
+    await expect(storageRuntime().connectorRefresh.getState(ACCOUNT, SOURCE)).resolves.toMatchObject({
+      phase: "prepared",
+      generation: 1,
+      candidateLocation: expect.stringContaining(`/safe/cache/`),
+      activationPreviousLocation: "/safe/cache/previous.csv",
     });
     await expect(storageRuntime().ingestion.getJob(ACCOUNT, SOURCE)).resolves.toMatchObject({
       generation: 1,
@@ -331,13 +332,25 @@ describe("connector synchronization", () => {
   it("reserves cleanup, removes all connector vectors, and clears markers after exact cache cleanup", async () => {
     const input = connectorStoreInput("ledger", "idle", {
       filePath: "/safe/cache/current.csv",
-      meta: {
-        connector_previous_location: "/safe/cache/previous.csv",
-        connector_candidate_location: "/safe/cache/candidate.csv",
-        connector_activation_previous_location: "/safe/cache/activation-previous.csv",
-      },
+      meta: {},
     });
     await storageRuntime().sources.createConnector(ACCOUNT, input);
+    // Typed protocol locations are snapshotted into the durable delete
+    // intent before the refresh row cascades away.
+    await storageRuntime().ledger.run(
+      `INSERT INTO connector_refresh_states
+         (source_id,account_id,connector_id,generation,refresh_version,phase,
+          candidate_location,activation_previous_location,cleanup_previous_location)
+       VALUES (?,?,?,1,'typed-cleanup-version','activating',?,?,?)`,
+      [
+        SOURCE,
+        ACCOUNT,
+        CONNECTOR,
+        "/safe/cache/candidate.csv",
+        "/safe/cache/activation-previous.csv",
+        "/safe/cache/previous.csv",
+      ]
+    );
     await storageRuntime().vectors.upsert([
       { chunkId: randomUUIDLike(), accountId: ACCOUNT, sourceId: SOURCE, generation: 1, vector: [1, 0, 0] },
     ]);
@@ -350,9 +363,9 @@ describe("connector synchronization", () => {
     expect(vectorDelete).toHaveBeenCalledWith(SOURCE);
     expect(deactivateMock.mock.calls.map((call) => call[2])).toEqual([
       "/safe/cache/current.csv",
-      "/safe/cache/previous.csv",
       "/safe/cache/candidate.csv",
       "/safe/cache/activation-previous.csv",
+      "/safe/cache/previous.csv",
     ]);
     expect(cacheCleanupMock.mock.calls.map((call) => call[2])).toEqual(
       deactivateMock.mock.calls.map((call) => call[2])

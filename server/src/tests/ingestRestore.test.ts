@@ -22,6 +22,7 @@ vi.mock("../dataService.js", () => ({
     prepareDatasetRefresh: vi.fn(),
     abortDatasetRefresh: vi.fn(),
     activateDatasetRefresh: vi.fn(),
+    currentDatasetLocation: vi.fn(async () => null),
   },
 }));
 vi.mock("../storageArtifacts.js", () => ({
@@ -30,6 +31,7 @@ vi.mock("../storageArtifacts.js", () => ({
   isMissingOwnedSourceArtifact: vi.fn(async () => false),
 }));
 
+import { appLog } from "../appLogger.js";
 import type { IngestionJob } from "../db/stores/ingestionStore.js";
 import { PENDING_SOURCE_DELETE_SNAPSHOT_TABLE } from "../db/stores/sourceStore.js";
 import { dataService } from "../dataService.js";
@@ -394,6 +396,17 @@ describe("dataset restoration", () => {
       sourceName: "Feed",
       chunks: [{ content: "new version", meta: {} }],
     });
+    // The promotion transaction requires the exact durable `activated`
+    // identity: drive the same typed CAS sequence the ingestion engine uses.
+    const refreshIdentity = {
+      accountId: CONNECTOR_ACCOUNT,
+      sourceId,
+      connectorId,
+      generation: job.generation,
+      refreshVersion,
+    };
+    await expect(storageRuntime().connectorRefresh.claimActivation(refreshIdentity)).resolves.toBe(true);
+    await expect(storageRuntime().connectorRefresh.confirmActivation(refreshIdentity)).resolves.toBe(true);
     await storageRuntime().ingestion.promoteGeneration({
       accountId: CONNECTOR_ACCOUNT,
       sourceId,
@@ -401,6 +414,7 @@ describe("dataset restoration", () => {
       leaseToken: job.leaseToken,
       sizeBytes: 11,
       promotedFilePath: newLocation,
+      refresh: refreshIdentity,
       verifyVectors: async () => true,
     });
     deactivateMock.mockImplementationOnce(async (accountId, name, exactLocation) => {
@@ -409,7 +423,10 @@ describe("dataset restoration", () => {
       ]);
       return { status: "dropped" };
     });
-    cleanupMock.mockRejectedValueOnce(new Error("simulated first delete failure"));
+    // The first delete (inline reconciliation retry) fails, and the typed
+    // snapshot pass at the end of the same startup attempt also fails; the
+    // row stays durable for the post-restart periodic retry.
+    cleanupMock.mockRejectedValue(new Error("simulated cache delete failure"));
     registration.resolve({});
 
     await expect(restoring).resolves.toMatchObject({ attempted: 1, restored: 0, failed: 1 });
@@ -419,7 +436,17 @@ describe("dataset restoration", () => {
     await expect(storageRuntime().sources.getSource(CONNECTOR_ACCOUNT, sourceId)).resolves.toMatchObject({
       status: "ready",
       filePath: newLocation,
-      meta: { connector_previous_location: oldLocation },
+      // Protocol state is typed: the promotion moved it to cleanup_pending
+      // and `sources.meta` never carries a protocol location.
+      meta: {},
+    });
+    await expect(storageRuntime().connectorRefresh.getState(CONNECTOR_ACCOUNT, sourceId)).resolves.toMatchObject({
+      phase: "cleanup_pending",
+      generation: 2,
+      refreshVersion,
+      candidateLocation: newLocation,
+      cleanupPreviousLocation: oldLocation,
+      attempts: 1,
     });
 
     await closeStorageRuntime();
@@ -428,6 +455,8 @@ describe("dataset restoration", () => {
       lanceDirectory: path.join(directory, "lancedb"),
       embeddingDimension: 3,
     });
+    // Replace the default rejection without clearing call counts.
+    cleanupMock.mockResolvedValue({ status: "deleted" });
     await expect(processDatasetCacheCleanup(CONNECTOR_ACCOUNT, "feed")).resolves.toBe(1);
     await expect(
       storageRuntime().ingestion.listDatasetCleanupJobs({ accountId: CONNECTOR_ACCOUNT, name: "feed" })
@@ -437,8 +466,14 @@ describe("dataset restoration", () => {
       filePath: newLocation,
       meta: {},
     });
-    expect(deactivateMock).toHaveBeenCalledTimes(2);
-    expect(cleanupMock).toHaveBeenCalledTimes(2);
+    // The durable cleanup queue completing does not erase the typed protocol
+    // row; only confirmed cleanup through the repair owner deletes it.
+    await expect(storageRuntime().connectorRefresh.getState(CONNECTOR_ACCOUNT, sourceId)).resolves.toMatchObject({
+      phase: "cleanup_pending",
+    });
+    // 1 reconciliation retry + 1 typed startup attempt + 1 post-restart pass.
+    expect(deactivateMock).toHaveBeenCalledTimes(3);
+    expect(cleanupMock).toHaveBeenCalledTimes(3);
   });
 });
 
@@ -492,12 +527,16 @@ async function snapshotTablePresence(): Promise<boolean> {
 
 describe("periodic storage reconciliation", () => {
   it("drains exactly the three bounded durable queues and never sweeps the corpus", async () => {
+    // The startup typed snapshot has not settled for this lifecycle (no
+    // restoreDatasets call), so the fourth queue is skipped without ever
+    // reading a typed refresh row.
     const runtime = storageRuntime();
     const drainSpy = vi.spyOn(runtime.vectorLifecycle, "drainPendingVectorOperations");
     const startupSpy = vi.spyOn(runtime.vectorLifecycle, "repairAtStartup");
     const scanSpy = vi.spyOn(runtime.vectors, "scanRows");
     const crossAccountSpy = vi.spyOn(runtime.sources, "listPendingSourceDeletesAcrossAccounts");
     const cleanupSpy = vi.spyOn(runtime.ingestion, "listDatasetCleanupJobs");
+    const refreshSpy = vi.spyOn(runtime.connectorRefresh, "listRepairableStates");
 
     await runPeriodicStorageReconciliation();
 
@@ -507,6 +546,7 @@ describe("periodic storage reconciliation", () => {
     expect(crossAccountSpy).toHaveBeenCalledWith(100);
     expect(cleanupSpy).toHaveBeenCalledTimes(1);
     expect(cleanupSpy).toHaveBeenCalledWith({ accountId: undefined, name: undefined, limit: 20 });
+    expect(refreshSpy).not.toHaveBeenCalled();
     expect(startupSpy).not.toHaveBeenCalled();
     expect(scanSpy).not.toHaveBeenCalled();
     expect(listMock).not.toHaveBeenCalled();
@@ -680,6 +720,359 @@ describe("startup source-delete snapshot repair", () => {
       // The durable intents remain periodically retryable after the failed pass.
       await runPeriodicStorageReconciliation();
       await expect(storageRuntime().sources.listPendingSourceDeletesAcrossAccounts(200)).resolves.toHaveLength(0);
+    }
+  );
+});
+
+describe("typed connector-refresh reconciliation", () => {
+  const REFRESH_PAGE_LIMIT = 20;
+
+  interface SeededRefreshRow {
+    readonly accountId: string;
+    readonly sourceId: string;
+    readonly connectorId: string;
+    readonly name: string;
+    readonly candidate: string;
+    readonly identity: {
+      accountId: string;
+      sourceId: string;
+      connectorId: string;
+      generation: number;
+      refreshVersion: string;
+    };
+  }
+
+  async function seedRefreshRow(options: {
+    account: string;
+    idPrefix: string;
+    index: number;
+    phase: "activating" | "cleanup_pending";
+    updatedAt: string;
+    activationPrevious?: string;
+    cleanup?: string;
+  }): Promise<SeededRefreshRow> {
+    const runtime = storageRuntime();
+    const sourceId = `${options.idPrefix}${String(options.index).padStart(4, "0")}-0000-4000-8000-000000000000`.slice(
+      0,
+      36
+    );
+    const connectorId = randomUUID();
+    const name = `refresh_${options.idPrefix.slice(0, 1)}${String(options.index).padStart(4, "0")}`.slice(0, 63);
+    const candidate = `/safe/cache/${name}-candidate.csv`;
+    await runtime.ledger.run(
+      `INSERT INTO connectors (id,account_id,name,type,config,target_table,sync_status)
+       VALUES (?,?,?,'url_csv','{}',?,'idle')`,
+      [connectorId, options.account, `Feed ${name}`, name]
+    );
+    await runtime.ledger.run(
+      `INSERT INTO sources (id,account_id,name,kind,connector,display_name,file_path,status,meta,ready_generation)
+       VALUES (?,?,?,'tabular',?,?,?,?,?,1)`,
+      [
+        sourceId,
+        options.account,
+        name,
+        connectorId,
+        `Feed ${name}`,
+        options.phase === "cleanup_pending" ? candidate : `/safe/cache/${name}-previous.csv`,
+        options.phase === "cleanup_pending" ? "ready" : "index",
+        "{}",
+      ]
+    );
+    await runtime.ledger.run(
+      `INSERT INTO connector_refresh_states
+         (source_id,account_id,connector_id,generation,refresh_version,phase,
+          candidate_location,activation_previous_location,cleanup_previous_location,
+          created_at,updated_at)
+       VALUES (?,?,?,1,?,?,?,?,?,?,?)`,
+      [
+        sourceId,
+        options.account,
+        connectorId,
+        `version-${options.idPrefix}-${options.index}`,
+        options.phase,
+        candidate,
+        options.activationPrevious ?? null,
+        options.cleanup ?? null,
+        options.updatedAt,
+        options.updatedAt,
+      ]
+    );
+    return {
+      accountId: options.account,
+      sourceId,
+      connectorId,
+      name,
+      candidate,
+      identity: {
+        accountId: options.account,
+        sourceId,
+        connectorId,
+        generation: 1,
+        refreshVersion: `version-${options.idPrefix}-${options.index}`,
+      },
+    };
+  }
+
+  async function seedActivatingFailures(
+    count: number,
+    idPrefix: string,
+    updatedAt: string
+  ): Promise<SeededRefreshRow[]> {
+    const rows: SeededRefreshRow[] = [];
+    for (let index = 0; index < count; index += 1) {
+      // `activationPrevious` never matches, so every repair pass reaches the
+      // durable third-location invariant failure for this row.
+      rows.push(
+        await seedRefreshRow({
+          account: CONNECTOR_ACCOUNT,
+          idPrefix,
+          index,
+          phase: "activating",
+          updatedAt,
+          activationPrevious: "/safe/cache/never-active.csv",
+        })
+      );
+    }
+    return rows;
+  }
+
+  it("runs the first three queues while the startup typed pass is in flight and reads no refresh rows", async () => {
+    await storageRuntime().sources.createSource(UPLOAD_ACCOUNT, {
+      id: randomUUID(),
+      name: "inflight_source",
+      kind: "tabular",
+      displayName: "In-flight.csv",
+      filePath: "/safe/uploads/inflight.csv",
+      status: "ready",
+      readyGeneration: 1,
+    });
+    const registration = deferred<Record<string, unknown>>();
+    registerMock.mockReturnValueOnce(registration.promise);
+
+    const restoring = restoreDatasets();
+    await vi.waitFor(() => expect(registerMock).toHaveBeenCalledTimes(1));
+
+    const runtime = storageRuntime();
+    const refreshSpy = vi.spyOn(runtime.connectorRefresh, "listRepairableStates");
+    const drainSpy = vi.spyOn(runtime.vectorLifecycle, "drainPendingVectorOperations");
+    const crossAccountSpy = vi.spyOn(runtime.sources, "listPendingSourceDeletesAcrossAccounts");
+    const cleanupSpy = vi.spyOn(runtime.ingestion, "listDatasetCleanupJobs");
+
+    await runPeriodicStorageReconciliation();
+    // First three queues run; the typed fourth queue is not even read.
+    expect(drainSpy).toHaveBeenCalledWith(100);
+    expect(crossAccountSpy).toHaveBeenCalledWith(100);
+    expect(cleanupSpy).toHaveBeenCalledWith({ accountId: undefined, name: undefined, limit: 20 });
+    expect(refreshSpy).not.toHaveBeenCalled();
+
+    registration.resolve({});
+    await restoring;
+
+    // Settled: all four bounded queues run, exactly one refresh page.
+    refreshSpy.mockClear();
+    await runPeriodicStorageReconciliation();
+    expect(refreshSpy).toHaveBeenCalledTimes(1);
+    expect(refreshSpy).toHaveBeenCalledWith(REFRESH_PAGE_LIMIT);
+  });
+
+  it("gates the fourth queue again across stop/start until the new runtime settles", async () => {
+    await restoreDatasets();
+    const runtime = storageRuntime();
+    const refreshSpy = vi.spyOn(runtime.connectorRefresh, "listRepairableStates");
+    await runPeriodicStorageReconciliation();
+    expect(refreshSpy).toHaveBeenCalledTimes(1);
+
+    await stopIngestionWorkers();
+    await runPeriodicStorageReconciliation();
+    expect(refreshSpy).toHaveBeenCalledTimes(1);
+
+    await startIngestionWorkers();
+    await runPeriodicStorageReconciliation();
+    expect(refreshSpy).toHaveBeenCalledTimes(1);
+
+    await restoreDatasets();
+    await runPeriodicStorageReconciliation();
+    expect(refreshSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it(
+    "moves a complete failing refresh page behind untouched work under fixed and backward clocks",
+    { timeout: 30_000 },
+    async () => {
+      const pinned = "2026-09-04T00:00:00.000Z";
+      // Settle the fourth-queue gate with an empty registry pass before the
+      // deterministic fake-clock section.
+      await restoreDatasets();
+      // idPrefix "a..." sorts before "f...", so the equal-timestamp page is
+      // taken by the failing rows first.
+      const failing = await seedActivatingFailures(20, "a000000", pinned);
+      const untouched = await seedActivatingFailures(5, "f000000", pinned);
+
+      vi.useFakeTimers({ now: new Date("2026-09-05T12:00:00.000Z") });
+      try {
+        await runPeriodicStorageReconciliation();
+        for (const row of failing) {
+          await expect(storageRuntime().connectorRefresh.getState(row.accountId, row.sourceId)).resolves.toMatchObject({
+            attempts: 1,
+            updatedAt: "2026-09-05T12:00:00.000Z",
+          });
+        }
+        for (const row of untouched) {
+          await expect(storageRuntime().connectorRefresh.getState(row.accountId, row.sourceId)).resolves.toMatchObject({
+            attempts: 0,
+            updatedAt: pinned,
+          });
+        }
+
+        // A backward clock still advances the touched rows strictly forward,
+        // and the attempt-zero untouched work is selected before any
+        // attempts-1 row even though its timestamps are older than the
+        // failed page's touched timestamps.
+        vi.setSystemTime(new Date("2026-09-01T00:00:00.000Z"));
+        await runPeriodicStorageReconciliation();
+        for (const row of untouched) {
+          const state = await storageRuntime().connectorRefresh.getState(row.accountId, row.sourceId);
+          expect(state).toMatchObject({ attempts: 1 });
+          expect(state!.updatedAt).toBe("2026-09-04T00:00:00.001Z");
+        }
+        const stillDurable = await storageRuntime().connectorRefresh.getState(
+          failing[19]!.accountId,
+          failing[19]!.sourceId
+        );
+        expect(stillDurable!.attempts).toBeGreaterThanOrEqual(1);
+      } finally {
+        vi.useRealTimers();
+      }
+    }
+  );
+
+  it("isolates one failing cleanup row from its valid peers and logs only aggregate codes", async () => {
+    const pinned = "2026-09-04T00:00:00.000Z";
+    const good: SeededRefreshRow[] = [];
+    for (const index of [0, 1]) {
+      good.push(
+        await seedRefreshRow({
+          account: CONNECTOR_ACCOUNT,
+          idPrefix: "b000000",
+          index,
+          phase: "cleanup_pending",
+          updatedAt: pinned,
+          cleanup: `/safe/cache/good-${index}-retired.csv`,
+        })
+      );
+    }
+    const bad = await seedRefreshRow({
+      account: CONNECTOR_ACCOUNT,
+      idPrefix: "c000000",
+      index: 9,
+      phase: "cleanup_pending",
+      updatedAt: pinned,
+      cleanup: "/safe/cache/bad-retired.csv",
+    });
+    cleanupMock.mockImplementation(async (_accountId, _name, location) => {
+      if (location === "/safe/cache/bad-retired.csv") throw new Error("simulated cleanup failure");
+      return { status: "deleted" };
+    });
+    const warnSpy = vi.spyOn(appLog, "warn");
+
+    // The startup typed snapshot pass attempts each captured row once.
+    await restoreDatasets();
+
+    for (const row of good) {
+      await expect(storageRuntime().connectorRefresh.getState(row.accountId, row.sourceId)).resolves.toBeUndefined();
+    }
+    await expect(storageRuntime().connectorRefresh.getState(bad.accountId, bad.sourceId)).resolves.toMatchObject({
+      phase: "cleanup_pending",
+      attempts: 1,
+      cleanupPreviousLocation: "/safe/cache/bad-retired.csv",
+    });
+    // Aggregate logging only: stable codes/counts, never IDs, paths, or URLs.
+    for (const call of warnSpy.mock.calls) {
+      const text = JSON.stringify(call[0] ?? {});
+      expect(text).not.toContain(CONNECTOR_ACCOUNT);
+      expect(text).not.toContain(bad.sourceId);
+      expect(text).not.toContain("bad-retired");
+    }
+    expect(
+      warnSpy.mock.calls.some(
+        (call) => (call[0] as { error_code?: string })?.error_code === "CONNECTOR_REFRESH_STARTUP_RETRYING"
+      )
+    ).toBe(true);
+    warnSpy.mockRestore();
+
+    // Periodic retry keeps failing the bad row while it stays durable.
+    await runPeriodicStorageReconciliation();
+    await expect(storageRuntime().connectorRefresh.getState(bad.accountId, bad.sourceId)).resolves.toMatchObject({
+      attempts: 2,
+    });
+  });
+
+  it(
+    "attempts every captured startup ordinal at most once and never reuses a deleted ordinal",
+    { timeout: 30_000 },
+    async () => {
+      const pinned = "2026-09-04T00:00:00.000Z";
+      const rows = await seedActivatingFailures(45, "d000000", pinned);
+      const capturedMax = await storageRuntime().connectorRefresh.captureMaxRepairOrdinal();
+      expect(capturedMax).toBe(45);
+
+      const runtime = storageRuntime();
+      const originalPage = runtime.connectorRefresh.listRepairableStatesUpTo.bind(runtime.connectorRefresh);
+      let reads = 0;
+      const cursors: number[] = [];
+      let mutated = false;
+      vi.spyOn(runtime.connectorRefresh, "listRepairableStatesUpTo").mockImplementation(async (max, after, limit) => {
+        reads += 1;
+        cursors.push(after);
+        const page = await originalPage(max, after, limit);
+        if (!mutated) {
+          mutated = true;
+          // A row created during the pass has a larger ordinal: it waits for
+          // periodic repair. A captured high row is deleted: the pass must
+          // simply never attempt it and the ordinal is never reused.
+          await seedRefreshRow({
+            account: CONNECTOR_ACCOUNT,
+            idPrefix: "e000000",
+            index: 99,
+            phase: "activating",
+            updatedAt: "2026-09-04T00:00:00.000Z",
+            activationPrevious: "/safe/cache/never-active.csv",
+          });
+          await runtime.ledger.run(`DELETE FROM connector_refresh_states WHERE source_id LIKE 'd0000000044%'`);
+        }
+        return page;
+      });
+
+      await restoreDatasets();
+
+      // The row inserted mid-pass waits for periodic repair untouched.
+      await expect(
+        runtime.ledger.get<{ attempts: bigint }>(
+          `SELECT attempts FROM connector_refresh_states WHERE refresh_version='version-e000000-99'`
+        )
+      ).resolves.toEqual({ attempts: 0n });
+
+      // More than two ordinal pages with a non-starving finite keyset cursor.
+      expect(reads).toBe(3);
+      expect(cursors).toEqual([0, 20, 40]);
+      let attempted = 0;
+      for (const row of rows.slice(0, 44)) {
+        const state = await runtime.connectorRefresh.getState(row.accountId, row.sourceId);
+        if (state && state.attempts === 1) attempted += 1;
+      }
+      expect(attempted).toBe(44);
+      // The deleted captured row is gone and its ordinal is not reused: a
+      // fresh insert continues strictly above the captured maximum.
+      const late = await seedRefreshRow({
+        account: CONNECTOR_ACCOUNT,
+        idPrefix: "e000000",
+        index: 98,
+        phase: "activating",
+        updatedAt: pinned,
+        activationPrevious: "/safe/cache/never-active.csv",
+      });
+      const lateState = await runtime.connectorRefresh.getState(late.accountId, late.sourceId);
+      expect(lateState!.repairOrdinal).toBeGreaterThan(45);
     }
   );
 });

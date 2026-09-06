@@ -17,6 +17,7 @@ export const SERVER_TEST_GLOB = "src/tests/**/*.test.ts";
 export const INTEGRATION_TEST_FILES = Object.freeze([
   "src/tests/applicationRuntime.test.ts",
   "src/tests/chatStore.test.ts",
+  "src/tests/connectorRefreshStore.test.ts",
   "src/tests/runStore.test.ts",
   "src/tests/sqliteFoundation.test.ts",
   "src/tests/sqliteSourceStore.test.ts",

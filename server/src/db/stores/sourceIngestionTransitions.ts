@@ -7,6 +7,12 @@ import {
   encodeJson,
 } from "../codecs.js";
 import { SqliteCodecError, type SqliteLedger, type SqliteTransaction } from "../types.js";
+import {
+  clearPreparingTx,
+  markPreparedTx,
+  reservePreparingTx,
+  type ConnectorRefreshIdentity,
+} from "./connectorRefreshStore.js";
 import type { ConnectorRecord, ConnectorType, SourceRecord } from "./sourceStore.js";
 
 const MAX_ID_LENGTH = 256;
@@ -265,7 +271,7 @@ export class SourceIngestionTransitions {
           displayName,
           url,
           type === "url_json" ? "application/json" : "text/csv",
-          encodeJson({ connector_refresh_version: refreshVersion }, "source meta"),
+          encodeJson({}, "source meta"),
         ]
       );
       const generation = reserveGeneration(transaction, {
@@ -278,6 +284,20 @@ export class SourceIngestionTransitions {
         leasedAt: timestamp,
         timestamp,
       });
+      // The durable `preparing` protocol row is reserved in this same
+      // transaction as the connector/source/job reservation.
+      if (
+        !reservePreparingTx(transaction, {
+          accountId,
+          sourceId,
+          connectorId,
+          generation,
+          refreshVersion,
+          timestamp,
+        })
+      ) {
+        refreshStateConflict();
+      }
       return Object.freeze({
         connector: requiredConnector(transaction, accountId, connectorId),
         source: requiredSource(transaction, accountId, sourceId),
@@ -315,16 +335,9 @@ export class SourceIngestionTransitions {
       const source = sources[0];
       assertSourceNotInActiveRun(transaction, accountId, source.id);
       const meta = objectMeta(source.meta);
-      removeKeys(meta, [
-        "error",
-        "error_code",
-        "error_detail",
-        "error_stage",
-        "connector_previous_location",
-        "connector_candidate_location",
-        "connector_activation_previous_location",
-      ]);
-      meta.connector_refresh_version = refreshVersion;
+      // `sources.meta` retains only bounded display/error metadata. Protocol
+      // state lives exclusively in the typed v16 row reserved below.
+      removeKeys(meta, ["error", "error_code", "error_detail", "error_stage"]);
       transaction.run(`UPDATE sources SET status='index',meta=? WHERE account_id=? AND id=?`, [
         encodeJson(meta, "source meta"),
         accountId,
@@ -344,6 +357,22 @@ export class SourceIngestionTransitions {
         leasedAt: timestamp,
         timestamp,
       });
+      // Reserve `preparing` in the same transaction. A superseded prepare or
+      // a cleanup whose exact location is still durably queued may be
+      // replaced; ambiguous activation or un-promoted state must never be
+      // silently discarded, so the reservation refuses the refresh instead.
+      if (
+        !reservePreparingTx(transaction, {
+          accountId,
+          sourceId: source.id,
+          connectorId,
+          generation,
+          refreshVersion,
+          timestamp,
+        })
+      ) {
+        refreshStateConflict();
+      }
       return Object.freeze({
         connector: requiredConnector(transaction, accountId, connectorId),
         source: requiredSource(transaction, accountId, source.id),
@@ -364,17 +393,16 @@ export class SourceIngestionTransitions {
       );
       const source = findSource(transaction, values.accountId, values.sourceId);
       const connector = findConnector(transaction, values.accountId, values.connectorId);
-      const sourceMeta = source ? objectMeta(source.meta) : undefined;
       if (
         !job ||
         !source ||
         source.connectorId !== values.connectorId ||
-        sourceMeta?.connector_refresh_version !== values.refreshVersion ||
         !connector ||
         connector.syncStatus !== "syncing"
       ) {
         prepareSuperseded();
       }
+      const sourceMeta = objectMeta(source.meta);
       // Cleanup reservation and candidate adoption serialize in SQLite. A
       // version can be prepared again only after its exact cleanup resolves.
       const cleanupReserved = transaction.get(
@@ -383,22 +411,30 @@ export class SourceIngestionTransitions {
         [values.accountId, source.name, values.candidateLocation]
       );
       if (cleanupReserved) prepareSuperseded();
-      removeKeys(sourceMeta, [
-        "error",
-        "error_code",
-        "error_detail",
-        "error_stage",
-        "connector_previous_location",
-        "connector_candidate_location",
-        "connector_activation_previous_location",
-      ]);
-      sourceMeta.connector_refresh_version = values.refreshVersion;
-      sourceMeta.connector_candidate_location = values.candidateLocation;
-      sourceMeta.connector_activation_previous_location = values.activationPreviousLocation;
-      if (values.cleanupPreviousLocation) {
-        sourceMeta.connector_previous_location = values.cleanupPreviousLocation;
-      }
+      removeKeys(sourceMeta, ["error", "error_code", "error_detail", "error_stage"]);
       const timestamp = this.timestamp();
+      // The exact typed `preparing` row (account/source/connector/generation/
+      // refresh-version, expected phase) adopts the candidate identities in
+      // this same transaction; a lost CAS means the prepare was superseded.
+      const identity: ConnectorRefreshIdentity = {
+        accountId: values.accountId,
+        sourceId: values.sourceId,
+        connectorId: values.connectorId,
+        generation: values.generation,
+        refreshVersion: values.refreshVersion,
+      };
+      if (
+        !markPreparedTx(
+          transaction,
+          identity,
+          values.candidateLocation,
+          values.activationPreviousLocation,
+          values.cleanupPreviousLocation,
+          this.now()
+        )
+      ) {
+        prepareSuperseded();
+      }
       const jobChanged = transaction.run(
         `UPDATE ingestion_jobs
          SET status='pending',available_at=?,leased_at=NULL,lease_token=NULL,last_error=NULL,updated_at=?
@@ -486,16 +522,7 @@ export class SourceIngestionTransitions {
           transaction.get(`SELECT 1 FROM chunks WHERE account_id=? AND source_id=? LIMIT 1`, [accountId, sourceId])
         );
       const meta = objectMeta(source.meta);
-      removeKeys(meta, [
-        "error",
-        "error_code",
-        "error_detail",
-        "error_stage",
-        "connector_refresh_version",
-        "connector_previous_location",
-        "connector_candidate_location",
-        "connector_activation_previous_location",
-      ]);
+      removeKeys(meta, ["error", "error_code", "error_detail", "error_stage"]);
       if (!hasLiveGeneration) meta.error_code = errorCode;
 
       const timestamp = this.timestamp();
@@ -516,6 +543,18 @@ export class SourceIngestionTransitions {
       );
       if (jobChanged.changes !== 1 || sourceChanged.changes !== 1 || connectorChanged.changes !== 1) {
         throw new Error("connector prepare failure lost transaction ownership");
+      }
+      // A terminal prepare failure clears its exact superseded `preparing`
+      // typed row; later-phase protocol state is never cleared here.
+      if (
+        !clearPreparingTx(transaction, {
+          accountId,
+          sourceId,
+          connectorId,
+          generation,
+        })
+      ) {
+        throw new Error("connector prepare failure lost refresh-state ownership");
       }
       transaction.run(`DELETE FROM ingestion_chunk_staging WHERE source_id=? AND generation=?`, [sourceId, generation]);
       if (generation !== source.readyGeneration) {
@@ -889,6 +928,18 @@ function prepareSuperseded(): never {
   throw new SourceIngestionTransitionError(
     "SOURCE_TRANSITION_PREPARE_SUPERSEDED",
     "connector prepare reservation was superseded"
+  );
+}
+
+/**
+ * A begin/create refused by unresolved durable refresh protocol state is
+ * reported with the existing connector-sync-active contract: the connector's
+ * refresh protocol is busy and reconciliation owns the row.
+ */
+function refreshStateConflict(): never {
+  throw new SourceIngestionTransitionError(
+    "SOURCE_TRANSITION_CONNECTOR_SYNC_ACTIVE",
+    "connector refresh protocol state is being reconciled"
   );
 }
 

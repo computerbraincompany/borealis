@@ -1,5 +1,10 @@
 import fs from "node:fs/promises";
 
+import type {
+  ActivatingConnectorRefresh,
+  ConnectorRefreshIdentity,
+  ConnectorRefreshStore,
+} from "./db/stores/connectorRefreshStore.js";
 import type { DatasetCleanupJob, IngestionJob, SqliteIngestionStore } from "./db/stores/ingestionStore.js";
 import type { SourceStore } from "./db/stores/sourceStore.js";
 import { DataServiceError } from "./dataService.js";
@@ -26,7 +31,6 @@ export interface IngestionExecutionInput {
   readonly connector?: string;
   readonly generation: number;
   readonly leaseToken: string;
-  readonly meta?: unknown;
   readonly signal?: AbortSignal;
 }
 
@@ -55,6 +59,7 @@ export interface IngestionDataOperations {
   ): Promise<{ version?: unknown; location?: unknown }>;
   deactivateDatasetLocation(accountId: string, name: string, location: string): Promise<unknown>;
   cleanupDatasetCache(accountId: string, name: string, location: string): Promise<unknown>;
+  currentDatasetLocation(accountId: string, name: string): Promise<string | null>;
 }
 
 const durableCleanupRuns = new WeakMap<object, Map<string, Promise<boolean>>>();
@@ -103,6 +108,7 @@ export interface IngestionExecutorDependencies {
   readonly store: SqliteIngestionStore;
   readonly lifecycle: IngestionVectorLifecycle;
   readonly data: IngestionDataOperations;
+  readonly refresh: ConnectorRefreshStore;
   readonly embeddingDimension: number;
   readonly createEmbeddingSession: (accountId: string) => Promise<IngestionEmbeddingSession>;
   readonly resolveArtifact: (input: {
@@ -146,23 +152,28 @@ export class IngestionExecutor {
   }
 
   async ingest(input: IngestionExecutionInput): Promise<void> {
-    const { store, lifecycle, data } = this.dependencies;
-    const sourceMeta = recordMeta(input.meta);
-    const refreshVersion =
-      input.connector && typeof sourceMeta.connector_refresh_version === "string"
-        ? sourceMeta.connector_refresh_version
-        : undefined;
-    const candidateLocation =
-      refreshVersion && typeof sourceMeta.connector_candidate_location === "string"
-        ? sourceMeta.connector_candidate_location
-        : undefined;
-    const activationPreviousLocation =
-      refreshVersion && typeof sourceMeta.connector_activation_previous_location === "string"
-        ? sourceMeta.connector_activation_previous_location
-        : null;
+    const { store, lifecycle, data, refresh } = this.dependencies;
+    const stored = input.connector ? await refresh.getState(input.accountId, input.sourceId) : undefined;
+    if (stored && (stored.generation !== input.generation || stored.connectorId !== input.connector)) {
+      throw new Error("connector refresh state superseded");
+    }
+    if (stored && (stored.phase === "preparing" || stored.phase === "cleanup_pending")) {
+      throw new Error("connector refresh state superseded");
+    }
+    const candidateLocation = stored ? stored.candidateLocation : undefined;
+    const isRefresh = Boolean(stored && candidateLocation && input.connector && input.url);
     const expectedFormat: "csv" | "json" = input.mime.toLowerCase().includes("json") ? "json" : "csv";
     const requestedPath = candidateLocation ?? input.filePath;
-    let activationStarted = false;
+    const identity: ConnectorRefreshIdentity | undefined = stored
+      ? Object.freeze({
+          accountId: stored.accountId,
+          sourceId: stored.sourceId,
+          connectorId: stored.connectorId,
+          generation: stored.generation,
+          refreshVersion: stored.refreshVersion,
+        })
+      : undefined;
+    let activationClaimed = false;
 
     throwIfAborted(input.signal);
     await store.assertLease(input.accountId, input.sourceId, input.generation, input.leaseToken);
@@ -179,12 +190,12 @@ export class IngestionExecutor {
       throwIfAborted(input.signal);
 
       let text: string;
-      if (refreshVersion && candidateLocation && input.connector && input.url) {
+      if (isRefresh && candidateLocation && stored) {
         text = this.dependencies.datasetPreviewText(
-          await data.extractPreparedDataset(input.accountId, input.name, refreshVersion, expectedFormat, 40)
+          await data.extractPreparedDataset(input.accountId, input.name, stored.refreshVersion, expectedFormat, 40)
         );
       } else if (this.dependencies.isTabular(artifact, input.mime)) {
-        const registration = await data.registerDataset(
+        await data.registerDataset(
           input.accountId,
           input.name,
           this.dependencies.datasetRegistration({
@@ -196,21 +207,8 @@ export class IngestionExecutor {
             expectedFormat: input.connector ? expectedFormat : undefined,
           })
         );
-        const previousLocation =
-          input.connector &&
-          typeof registration?.previous_location === "string" &&
-          registration.previous_location !== artifact
-            ? registration.previous_location
-            : undefined;
-        if (previousLocation) {
-          await store.rememberConnectorPreviousLocation({
-            accountId: input.accountId,
-            sourceId: input.sourceId,
-            generation: input.generation,
-            leaseToken: input.leaseToken,
-            location: previousLocation,
-          });
-        }
+        // The previous exact location a connector refresh must clean up lives
+        // on the typed protocol row, never in `sources.meta`.
         text = this.dependencies.datasetPreviewText(await data.extractDataset(input.accountId, input.name, 40));
       } else {
         text = await this.dependencies.extractText(artifact, input.mime, input.signal);
@@ -267,21 +265,35 @@ export class IngestionExecutor {
       const sizeBytes = await fs.stat(artifact).then((stat) => stat.size);
       throwIfAborted(input.signal);
       await store.assertLease(input.accountId, input.sourceId, input.generation, input.leaseToken);
-      if (refreshVersion && candidateLocation && input.connector && input.url) {
-        activationStarted = true;
-        const activated = await data.activateDatasetRefresh(
-          input.accountId,
-          input.name,
-          refreshVersion,
-          input.url,
-          input.displayName,
-          expectedFormat,
-          activationPreviousLocation
-        );
-        if (activated.version !== refreshVersion || activated.location !== candidateLocation) {
-          throw new Error("connector refresh activation mismatch");
+      if (isRefresh && candidateLocation && stored && identity && input.url) {
+        let phase: "prepared" | "activated";
+        if (stored.phase === "activating") {
+          // A prior attempt (or process crash) left the external exact-
+          // location CAS ambiguous: resolve it against the authoritative
+          // DuckDB current location before deciding anything.
+          phase = await this.resolveActivatingRefresh(stored, input.name);
+        } else {
+          phase = stored.phase;
         }
-        await store.assertLease(input.accountId, input.sourceId, input.generation, input.leaseToken);
+        if (phase === "prepared") {
+          if (!(await refresh.claimActivation(identity))) throw new ConnectorRefreshActivatedError();
+          activationClaimed = true;
+          const activated = await data.activateDatasetRefresh(
+            input.accountId,
+            input.name,
+            identity.refreshVersion,
+            input.url,
+            input.displayName,
+            expectedFormat,
+            stored.activationPreviousLocation
+          );
+          if (activated.version !== identity.refreshVersion || activated.location !== candidateLocation) {
+            throw new Error("connector refresh activation mismatch");
+          }
+          await store.assertLease(input.accountId, input.sourceId, input.generation, input.leaseToken);
+          if (!(await refresh.confirmActivation(identity))) throw new ConnectorRefreshActivatedError();
+        }
+        // Only an `activated` row proceeds to vector/SQLite promotion.
       }
 
       await lifecycle.promote({
@@ -290,24 +302,66 @@ export class IngestionExecutor {
         generation: input.generation,
         leaseToken: input.leaseToken,
         sizeBytes,
-        ...(refreshVersion ? { promotedFilePath: artifact } : {}),
+        ...(isRefresh ? { promotedFilePath: artifact } : {}),
+        ...(identity ? { refresh: identity } : {}),
       });
 
-      const current = await store.getSource(input.accountId, input.sourceId);
-      const previous = current?.meta.connector_previous_location;
-      if (input.connector && typeof previous === "string" && previous && previous !== current.filePath) {
+      const promoted = await refresh.getState(input.accountId, input.sourceId);
+      if (promoted && promoted.phase === "cleanup_pending" && promoted.refreshVersion === identity?.refreshVersion) {
         const cleanupJob = Object.freeze({
           accountId: input.accountId,
           name: input.name,
-          location: previous,
+          location: promoted.cleanupPreviousLocation,
           attempts: 0,
         });
-        await processDurableDatasetCleanupJob(store, data, cleanupJob);
+        const cleaned = await processDurableDatasetCleanupJob(store, data, cleanupJob);
+        if (cleaned) {
+          await refresh.completeExactCleanup({ identity, cleanupLocation: promoted.cleanupPreviousLocation });
+        }
       }
     } catch (error) {
-      if (refreshVersion && activationStarted) throw new ConnectorRefreshActivatedError();
+      // The claim is durable: if activation was claimed, never convert the
+      // failure into a generic failed generation or abort the candidate.
+      if (identity && activationClaimed) throw new ConnectorRefreshActivatedError();
       throw error;
     }
+  }
+
+  /**
+   * Resolve a durable `activating` row against the authoritative exact
+   * current location: candidate ⇒ activated, expected previous (including
+   * the explicit no-current-location case) ⇒ prepared; any third location is
+   * an invariant failure that leaves the row durable and fail-closed.
+   */
+  private async resolveActivatingRefresh(
+    row: ActivatingConnectorRefresh,
+    name: string
+  ): Promise<"prepared" | "activated"> {
+    const { data, refresh } = this.dependencies;
+    const identity: ConnectorRefreshIdentity = Object.freeze({
+      accountId: row.accountId,
+      sourceId: row.sourceId,
+      connectorId: row.connectorId,
+      generation: row.generation,
+      refreshVersion: row.refreshVersion,
+    });
+    const current = await data.currentDatasetLocation(row.accountId, name);
+    if (current !== null && current === row.candidateLocation) {
+      if (!(await refresh.confirmActivation(identity))) {
+        throw new Error("connector refresh state superseded");
+      }
+      return "activated";
+    }
+    const unactivated =
+      (current === null && row.activationPreviousLocation === null) ||
+      (current !== null && current === row.activationPreviousLocation);
+    if (unactivated) {
+      if (!(await refresh.returnActivatingToPrepared(identity))) {
+        throw new Error("connector refresh state superseded");
+      }
+      return "prepared";
+    }
+    throw new Error("connector refresh activation location invariant failure");
   }
 
   private normalizeEmbeddings(embeddings: number[][], expected: number): number[][] {
@@ -326,6 +380,7 @@ export interface IngestionWorkerDependencies {
   readonly store: SqliteIngestionStore;
   readonly sources: SourceStore;
   readonly lifecycle: IngestionVectorLifecycle;
+  readonly refresh: ConnectorRefreshStore;
   readonly ingest: (input: IngestionExecutionInput) => Promise<void>;
   readonly now?: () => Date;
   readonly heartbeatIntervalMs?: number;
@@ -349,9 +404,16 @@ export class IngestionWorker {
     const job = await this.dependencies.store.claimNext("pending", this.now());
     if (!job) return false;
     const source = await this.dependencies.sources.getSource(job.accountId, job.sourceId);
-    const meta = recordMeta(source?.meta);
+    const refresh = source?.connectorId
+      ? await this.dependencies.refresh.getState(job.accountId, job.sourceId)
+      : undefined;
     const candidate =
-      typeof meta.connector_candidate_location === "string" ? meta.connector_candidate_location : undefined;
+      refresh &&
+      refresh.generation === job.generation &&
+      refresh.phase !== "preparing" &&
+      refresh.phase !== "cleanup_pending"
+        ? refresh.candidateLocation
+        : undefined;
     const filePath = source?.filePath ?? candidate;
     if (!source || !filePath || !job.leaseToken) {
       await this.dependencies.lifecycle.failGeneration({
@@ -394,7 +456,6 @@ export class IngestionWorker {
         connector: source.connectorId ?? undefined,
         generation: job.generation,
         leaseToken: job.leaseToken,
-        meta: source.meta,
         signal: jobController.signal,
       });
     } catch (error) {
@@ -422,19 +483,6 @@ export class IngestionWorker {
     }
     return true;
   }
-}
-
-function recordMeta(value: unknown): Record<string, unknown> {
-  if (value && typeof value === "object" && !Array.isArray(value)) return value as Record<string, unknown>;
-  if (typeof value === "string") {
-    try {
-      const parsed = JSON.parse(value);
-      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed as Record<string, unknown>;
-    } catch {
-      // Optional corrupt metadata is ignored; durable columns remain authoritative.
-    }
-  }
-  return {};
 }
 
 export function ingestionFailureCode(error: unknown): IngestionFailureCode {

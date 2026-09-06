@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildCitations } from "../citations.js";
 import { SqliteIngestionStore } from "../db/stores/ingestionStore.js";
 import { SourceStore } from "../db/stores/sourceStore.js";
+import { ConnectorRefreshStore } from "../db/stores/connectorRefreshStore.js";
 import { openSqliteLedger } from "../db/sqlite.js";
 import type { SqliteLedger } from "../db/types.js";
 import { IngestionExecutor, IngestionWorker, type IngestionDataOperations } from "../ingestionEngine.js";
@@ -76,10 +77,12 @@ describe("OCR ingestion composition", () => {
       activateDatasetRefresh: vi.fn(async () => ({})),
       deactivateDatasetLocation: vi.fn(async () => undefined),
       cleanupDatasetCache: vi.fn(async () => undefined),
+      currentDatasetLocation: vi.fn(async () => null),
     };
     const executor = new IngestionExecutor({
       store: ingestion,
       lifecycle,
+      refresh: new ConnectorRefreshStore(ledger),
       data,
       embeddingDimension: 3,
       createEmbeddingSession: async () => async (texts) => texts.map(() => [1, 0, 0]),
@@ -95,6 +98,7 @@ describe("OCR ingestion composition", () => {
       store: ingestion,
       sources,
       lifecycle,
+      refresh: new ConnectorRefreshStore(ledger),
       ingest: (input) => executor.ingest(input),
     });
     await ingestion.reserveJob(accountId, sourceId);

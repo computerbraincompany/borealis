@@ -2,6 +2,11 @@ import { randomUUID } from "node:crypto";
 
 import { decodeJson, decodeSafeInteger, encodeIsoTimestamp, encodeJson } from "../codecs.js";
 import type { SqliteLedger, SqliteTransaction } from "../types.js";
+import {
+  finalizePromotionTx,
+  requireActivatedForPromotionTx,
+  type ConnectorRefreshIdentity,
+} from "./connectorRefreshStore.js";
 
 const MAX_STAGED_CHUNKS = 10_000;
 const MAX_LOOKUP_IDS = 10_000;
@@ -83,6 +88,13 @@ export interface PromoteGenerationInput {
   readonly leaseToken: string;
   readonly sizeBytes: number;
   readonly promotedFilePath?: string;
+  /**
+   * Exact connector-refresh identity. When present, both promotion
+   * transactions require the durable `activated` row and the committing
+   * transaction moves it to `cleanup_pending` (an exact distinct previous
+   * location remains) or deletes it (no cleanup is needed).
+   */
+  readonly refresh?: ConnectorRefreshIdentity;
   readonly verifyVectors: (chunkIds: readonly string[]) => Promise<boolean>;
 }
 
@@ -399,27 +411,6 @@ export class SqliteIngestionStore {
     });
   }
 
-  async rememberConnectorPreviousLocation(input: {
-    accountId: string;
-    sourceId: string;
-    generation: number;
-    leaseToken: string;
-    location: string;
-  }): Promise<void> {
-    await this.ledger.withImmediateTransaction((tx) => {
-      this.assertLeaseTx(tx, input.accountId, input.sourceId, positiveGeneration(input.generation), input.leaseToken);
-      const source = sourceRowInTransaction(tx, input.accountId, input.sourceId);
-      if (!source) throw new IngestionStoreError("INGESTION_SUPERSEDED", "source ingestion superseded");
-      const meta = decodeJson<Record<string, unknown>>(source.meta, "source meta");
-      meta.connector_previous_location = requiredId(input.location, "connector previous location", 32_768);
-      tx.run("UPDATE sources SET meta=? WHERE id=? AND account_id=?", [
-        encodeJson(meta, "source meta"),
-        input.sourceId,
-        input.accountId,
-      ]);
-    });
-  }
-
   async clearSourceMetaValue(input: {
     accountId: string;
     sourceId: string;
@@ -564,24 +555,24 @@ export class SqliteIngestionStore {
   /**
    * Revalidate reconciliation's stale registry observation against the current
    * source transition state and reserve exact cleanup authority atomically.
-   * A current source file or prepared candidate always wins over reconciliation.
+   * A current source file or the exact typed prepared/activating/activated
+   * candidate always wins over reconciliation.
    */
   async reserveReconciliationDatasetCleanup(accountIdInput: string, nameInput: string, locationInput: string) {
     const accountId = requiredId(accountIdInput, "account id");
     const name = requiredId(nameInput, "dataset name", 256);
     const location = requiredId(locationInput, "dataset location", 32_768);
     return this.ledger.withImmediateTransaction((tx) => {
-      const sources = tx.all<SourceRow>(
-        `SELECT id, account_id, name, kind, connector, display_name, file_path, url, mime,
-                size_bytes, status, meta, ready_generation
-           FROM sources WHERE account_id=? AND name=?`,
-        [accountId, name]
+      const protectedLocation = tx.get(
+        `SELECT 1 FROM sources s
+         WHERE s.account_id=? AND s.name=? AND s.file_path=?
+           UNION ALL
+         SELECT 1 FROM connector_refresh_states r
+         JOIN sources s ON s.id=r.source_id AND s.account_id=r.account_id
+         WHERE s.account_id=? AND s.name=? AND r.candidate_location=? LIMIT 1`,
+        [accountId, name, location, accountId, name, location]
       );
-      for (const row of sources) {
-        const source = sourceFromRow(row);
-        const candidate = source.meta.connector_candidate_location;
-        if (source.filePath === location || candidate === location) return false;
-      }
+      if (protectedLocation) return false;
       enqueueDatasetCleanupTx(tx, accountId, name, location, nowIso());
       return true;
     });
@@ -590,9 +581,10 @@ export class SqliteIngestionStore {
   /**
    * Bounded dataset-cache cleanup page. The attempts-first ordering keeps
    * untouched work ahead of retried work when timestamps tie or move
-   * backward. Returned rows and downstream work are bounded; the selection
-   * scan itself remains backlog-dependent until Plan 020 adds the exact v16
-   * index on `(attempts, updated_at, account_id, name, location)`.
+   * backward. Returned rows and downstream work are bounded; the v16
+   * `dataset_cache_cleanup_jobs_periodic_idx` index on
+   * `(attempts, updated_at, account_id, name, location)` supplies this exact
+   * order without a temporary sort.
    */
   async listDatasetCleanupJobs(
     input: {
@@ -648,27 +640,14 @@ export class SqliteIngestionStore {
 
   async resolveDatasetCleanupJob(job: DatasetCleanupJob, outcome: "complete" | "failed"): Promise<void> {
     if (outcome === "complete") {
-      await this.ledger.withImmediateTransaction((tx) => {
-        tx.run("DELETE FROM dataset_cache_cleanup_jobs WHERE account_id=? AND name=? AND location=?", [
-          job.accountId,
-          job.name,
-          job.location,
-        ]);
-        const rows = tx.all<{ id: string; meta: string }>("SELECT id,meta FROM sources WHERE account_id=? AND name=?", [
-          job.accountId,
-          job.name,
-        ]);
-        for (const row of rows) {
-          const meta = decodeJson<Record<string, unknown>>(row.meta, "source meta");
-          if (meta.connector_previous_location !== job.location) continue;
-          delete meta.connector_previous_location;
-          tx.run("UPDATE sources SET meta=? WHERE id=? AND account_id=?", [
-            encodeJson(meta, "source meta"),
-            row.id,
-            job.accountId,
-          ]);
-        }
-      });
+      // Typed protocol state never mirrors a cleanup location into
+      // `sources.meta`; resolving the durable queue row is the whole
+      // completion record for this authority.
+      await this.ledger.run("DELETE FROM dataset_cache_cleanup_jobs WHERE account_id=? AND name=? AND location=?", [
+        job.accountId,
+        job.name,
+        job.location,
+      ]);
       return;
     }
     await this.ledger.run(
@@ -762,6 +741,9 @@ export class SqliteIngestionStore {
       const source = sourceRowInTransaction(tx, input.accountId, input.sourceId);
       if (!source) throw new IngestionStoreError("INGESTION_SUPERSEDED", "source ingestion superseded");
       this.assertPromotableArtifactTx(tx, input, source);
+      if (input.refresh && !requireActivatedForPromotionTx(tx, input.refresh)) {
+        throw new IngestionStoreError("INGESTION_SUPERSEDED", "connector refresh activation superseded");
+      }
       const staged = tx.all<StagingRow>(STAGING_SNAPSHOT_SQL, [input.sourceId, generation]);
       if (!staged.length) throw new IngestionStoreError("INGESTION_EMPTY", "ingestion has no staged chunks");
       return Object.freeze(staged.map((row) => Object.freeze(row)));
@@ -780,6 +762,23 @@ export class SqliteIngestionStore {
       if (!stagedSnapshotsEqual(staged, snapshot)) {
         throw new IngestionStoreError("INGESTION_SUPERSEDED", "source ingestion superseded");
       }
+      const promotedFilePath = input.promotedFilePath ?? source.file_path;
+      if (input.refresh) {
+        const activated = requireActivatedForPromotionTx(tx, input.refresh);
+        if (!activated) {
+          throw new IngestionStoreError("INGESTION_SUPERSEDED", "connector refresh activation superseded");
+        }
+        const cleanupLocation =
+          activated.cleanupPreviousLocation !== null && activated.cleanupPreviousLocation !== promotedFilePath
+            ? activated.cleanupPreviousLocation
+            : null;
+        if (cleanupLocation !== null) {
+          enqueueDatasetCleanupTx(tx, input.accountId, source.name, cleanupLocation, nowIso());
+        }
+        if (!finalizePromotionTx(tx, input.refresh, cleanupLocation, new Date())) {
+          throw new IngestionStoreError("INGESTION_SUPERSEDED", "connector refresh promotion lost ownership");
+        }
+      }
       tx.run("DELETE FROM chunks WHERE source_id=? AND account_id=?", [input.sourceId, input.accountId]);
       tx.run(
         `INSERT INTO chunks (id, account_id, source_id, generation, seq, source_name, content, meta)
@@ -790,26 +789,8 @@ export class SqliteIngestionStore {
       tx.run("DELETE FROM ingestion_chunk_staging WHERE source_id=? AND generation=?", [input.sourceId, generation]);
       const currentMeta = decodeJson<Record<string, unknown>>(source.meta, "source meta");
       const cleanedMeta = { ...currentMeta };
-      for (const key of [
-        "error",
-        "error_code",
-        "error_detail",
-        "error_stage",
-        "connector_refresh_version",
-        "connector_candidate_location",
-        "connector_activation_previous_location",
-      ]) {
+      for (const key of ["error", "error_code", "error_detail", "error_stage"]) {
         delete cleanedMeta[key];
-      }
-      const cleanupLocation = currentMeta.connector_previous_location;
-      const promotedFilePath = input.promotedFilePath ?? source.file_path;
-      if (
-        source.connector &&
-        typeof cleanupLocation === "string" &&
-        cleanupLocation &&
-        cleanupLocation !== promotedFilePath
-      ) {
-        enqueueDatasetCleanupTx(tx, input.accountId, source.name, cleanupLocation, nowIso());
       }
       tx.run(
         `UPDATE sources SET status='ready', ready_generation=?, size_bytes=?,
@@ -927,9 +908,10 @@ export class SqliteIngestionStore {
   /**
    * Bounded pending-vector-operation page. The attempts-first ordering keeps
    * untouched work ahead of retried work when timestamps tie or move
-   * backward. Returned rows and downstream work are bounded; the selection
-   * scan itself remains backlog-dependent until Plan 020 adds the exact v16
-   * index on `(attempts, updated_at, source_id, operation, generation)`.
+   * backward. Returned rows and downstream work are bounded; the v16
+   * `pending_vector_ops_periodic_idx` index on
+   * `(attempts, updated_at, source_id, operation, generation)` supplies this
+   * exact order without a temporary sort.
    */
   async listPendingVectorOperations(limit = 100): Promise<readonly PendingVectorOperation[]> {
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1_000) {

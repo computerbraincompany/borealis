@@ -411,6 +411,46 @@ describe("in-process data facade", () => {
     expect(String(error)).not.toContain("/private/path");
   });
 
+  it("narrows the current-location facade to exact account/name lookups for refresh recovery", async () => {
+    currentLocationMock.mockResolvedValueOnce("/safe/cache/active.csv");
+    await expect(dataService.currentDatasetLocation(ACCOUNT, "ledger")).resolves.toBe("/safe/cache/active.csv");
+    expect(currentLocationMock).toHaveBeenCalledWith(ACCOUNT, "ledger", expect.any(AbortSignal));
+    // It never widens into the catalog-listing operation.
+    expect(listMock).not.toHaveBeenCalled();
+    expect(catalogMock).not.toHaveBeenCalled();
+
+    currentLocationMock.mockResolvedValueOnce(null);
+    await expect(dataService.currentDatasetLocation(ACCOUNT, "ledger")).resolves.toBeNull();
+
+    const controller = new AbortController();
+    controller.abort(new DOMException("cancelled", "AbortError"));
+    currentLocationMock.mockImplementation(
+      (_account, _name, signal) =>
+        new Promise((_resolve, reject) => {
+          signal?.addEventListener("abort", () => reject(signal.reason ?? new DOMException("aborted", "AbortError")));
+          if (signal?.aborted) reject(signal.reason ?? new DOMException("aborted", "AbortError"));
+        })
+    );
+    await expect(dataService.currentDatasetLocation(ACCOUNT, "ledger", controller.signal)).rejects.toMatchObject({
+      name: "AbortError",
+    });
+
+    currentLocationMock.mockRejectedValueOnce(new WorkerDataServiceError(503, "worker down"));
+    const unavailable = await dataService.currentDatasetLocation(ACCOUNT, "ledger").catch((value) => value);
+    expect(unavailable).toMatchObject({
+      status: 503,
+      operation: "/datasets/location",
+      code: "DATA_SERVICE_ERROR",
+    });
+
+    currentLocationMock.mockRejectedValueOnce(new Error("internal /private/path detail"));
+    const opaque = await dataService.currentDatasetLocation(ACCOUNT, "ledger").catch((value) => value);
+    expect(opaque).toBeInstanceOf(DataServiceError);
+    expect(String(opaque)).not.toContain("/private/path");
+    expect(String(opaque)).not.toContain("internal");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it("renders normalized charts and reports in-process without HTTP", async () => {
     const chartSpec = {
       type: "bar",

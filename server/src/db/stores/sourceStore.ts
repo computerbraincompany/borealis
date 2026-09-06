@@ -16,6 +16,7 @@ import {
   type CatalogPageRequest,
   type CatalogStorePage,
 } from "../../catalogPagination.js";
+import { readRefreshLocationsForDeleteTx } from "./connectorRefreshStore.js";
 
 const DEFAULT_LIST_LIMIT = 200;
 const MAX_LIST_LIMIT = 1_000;
@@ -622,9 +623,10 @@ export class SourceStore {
    * every account. Untouched rows (lower `attempts`) always sort ahead of
    * retried work, so a repeatedly failing row cannot pin the first page even
    * when `updated_at` values tie or the wall clock moves backward. Returned
-   * rows and downstream work are bounded; the selection scan itself remains
-   * backlog-dependent until Plan 020 adds the exact v16 index on
-   * `(attempts, updated_at, account_id, source_id)`. It is not an
+   * rows and downstream work are bounded; the v16
+   * `pending_source_deletes_periodic_idx` index on
+   * `(attempts, updated_at, account_id, source_id)` supplies this exact order
+   * without a temporary sort. It is not an
    * account-facing API and must never accept an account identifier from a
    * request.
    */
@@ -938,7 +940,12 @@ function reservePendingDelete(
   source: SourceRecord,
   timestamp: string
 ): PendingSourceDelete {
-  const datasetLocations = cleanupLocations(source);
+  // The exact typed refresh locations are read *before* the source (and any
+  // connector) is deleted, so the durable Plan-011 pending intent becomes the
+  // sole cleanup authority before the typed row cascades away. The removed
+  // protocol keys are never re-read from `sources.meta`.
+  const refresh = readRefreshLocationsForDeleteTx(transaction, source.accountId, source.id);
+  const datasetLocations = cleanupLocations(source, refresh);
   transaction.run(
     `INSERT INTO pending_source_deletes
        (source_id,account_id,name,file_path,connector_id,dataset_locations,attempts,last_error,created_at,updated_at)
@@ -958,13 +965,19 @@ function reservePendingDelete(
   return requiredPendingDelete(transaction, source.accountId, source.id);
 }
 
-function cleanupLocations(source: SourceRecord): string[] {
-  const meta = isRecord(source.meta) ? source.meta : {};
-  const candidates = [
+function cleanupLocations(
+  source: SourceRecord,
+  refresh: {
+    candidateLocation: string | null;
+    activationPreviousLocation: string | null;
+    cleanupPreviousLocation: string | null;
+  }
+): string[] {
+  const candidates: (string | null)[] = [
     source.filePath,
-    meta.connector_previous_location,
-    meta.connector_candidate_location,
-    meta.connector_activation_previous_location,
+    refresh.candidateLocation,
+    refresh.activationPreviousLocation,
+    refresh.cleanupPreviousLocation,
   ];
   const locations: string[] = [];
   for (const candidate of candidates) {

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { encodeJson } from "../db/codecs.js";
 import { openSqliteLedger } from "../db/sqlite.js";
 import {
@@ -188,13 +188,17 @@ describe("SQLite SourceStore", () => {
     const { resource, ledger, store, owner, foreign } = await fixture();
     const connector = connectorInput("guarded_source", "idle", {
       filePath: "/cache/current.csv",
-      meta: {
-        connector_previous_location: "/cache/previous.csv",
-        connector_candidate_location: "/cache/candidate.csv",
-        connector_activation_previous_location: "/cache/activation.csv",
-      },
+      meta: {},
     });
     await store.createConnector(owner, connector);
+    // The exact refresh locations are typed protocol state.
+    await ledger.run(
+      `INSERT INTO connector_refresh_states
+         (source_id,account_id,connector_id,generation,refresh_version,phase,
+          candidate_location,activation_previous_location,cleanup_previous_location)
+       VALUES (?,?,?,1,'typed-refresh','activating',?,?,?)`,
+      [connector.source.id, owner, connector.id, "/cache/candidate.csv", "/cache/activation.csv", "/cache/previous.csv"]
+    );
     const chatId = await selectedChat(ledger, owner, connector.source.id);
     const runId = await runSnapshot(ledger, owner, chatId, connector.source.id, "running");
 
@@ -226,12 +230,16 @@ describe("SQLite SourceStore", () => {
     });
     expect(deleted.intent.datasetLocations).toEqual([
       "/cache/current.csv",
-      "/cache/previous.csv",
       "/cache/candidate.csv",
       "/cache/activation.csv",
+      "/cache/previous.csv",
     ]);
     await expect(store.getSource(owner, connector.source.id)).resolves.toBeUndefined();
     await expect(store.getConnector(owner, connector.id)).resolves.toBeUndefined();
+    // The typed refresh row cascaded away only after the intent captured it.
+    await expect(
+      ledger.get(`SELECT 1 FROM connector_refresh_states WHERE source_id=?`, [connector.source.id])
+    ).resolves.toBeUndefined();
     await expect(ledger.get("SELECT 1 FROM chat_sources WHERE chat_id=?", [chatId])).resolves.toBeUndefined();
     await expect(ledger.get("SELECT 1 FROM chat_run_sources WHERE run_id=?", [runId])).resolves.toBeUndefined();
     await expect(ledger.get("SELECT source_mode FROM chats WHERE id=?", [chatId])).resolves.toEqual({
@@ -252,7 +260,7 @@ describe("SQLite SourceStore", () => {
     const { store, owner, foreign } = await fixture();
     const input = sourceInput("retry_delete", {
       filePath: "/uploads/retry-delete.csv",
-      meta: { connector_candidate_location: "/cache/retry-candidate.csv" },
+      meta: {},
     });
     await store.createSource(owner, input);
 
@@ -303,8 +311,15 @@ describe("SQLite SourceStore", () => {
         "Auxiliary feed",
         "/cache/connector-delete-aux.csv",
         "ready",
-        encodeJson({ connector_previous_location: "/cache/connector-delete-aux-old.csv" }),
+        encodeJson({}),
       ]
+    );
+    await ledger.run(
+      `INSERT INTO connector_refresh_states
+         (source_id,account_id,connector_id,generation,refresh_version,phase,
+          candidate_location,cleanup_previous_location)
+       VALUES (?,?,?,1,'aux-cleanup','cleanup_pending',?,?)`,
+      [secondSource, owner, input.id, "/cache/connector-delete-aux.csv", "/cache/connector-delete-aux-old.csv"]
     );
 
     await expect(
@@ -318,11 +333,157 @@ describe("SQLite SourceStore", () => {
     expect(deleted.intents.map((intent) => intent.sourceId).sort()).toEqual([input.source.id, secondSource].sort());
     await expect(store.getConnector(owner, input.id)).resolves.toBeUndefined();
     await expect(store.listSources(owner)).resolves.toEqual({ items: [], next: null });
+    await expect(
+      ledger.get(`SELECT 1 FROM connector_refresh_states WHERE source_id=?`, [secondSource])
+    ).resolves.toBeUndefined();
     await expect(store.deleteConnector(owner, input.id)).resolves.toMatchObject({
       connectorId: input.id,
       alreadyPending: true,
       intents: expect.arrayContaining([...deleted.intents]),
     });
+  });
+
+  it("snapshots every legal typed refresh phase into the durable intent before cascade", async () => {
+    const { ledger, store, owner } = await fixture();
+    const cases: Array<{
+      table: string;
+      filePath: string;
+      phase: "preparing" | "prepared" | "activating" | "cleanup_pending";
+      candidate: string | null;
+      activation: string | null;
+      cleanup: string | null;
+      expected: string[];
+    }> = [
+      {
+        table: "phase_preparing",
+        filePath: "/cache/p-live.csv",
+        phase: "preparing",
+        candidate: null,
+        activation: null,
+        cleanup: null,
+        expected: ["/cache/p-live.csv"],
+      },
+      {
+        table: "phase_prepared",
+        filePath: "/cache/q-live.csv",
+        phase: "prepared",
+        candidate: "/cache/q-candidate.csv",
+        activation: "/cache/q-activation.csv",
+        cleanup: null,
+        expected: ["/cache/q-live.csv", "/cache/q-candidate.csv", "/cache/q-activation.csv"],
+      },
+      {
+        table: "phase_activating",
+        filePath: "/cache/r-live.csv",
+        phase: "activating",
+        candidate: "/cache/r-candidate.csv",
+        activation: "/cache/r-activation.csv",
+        cleanup: "/cache/r-cleanup.csv",
+        expected: ["/cache/r-live.csv", "/cache/r-candidate.csv", "/cache/r-activation.csv", "/cache/r-cleanup.csv"],
+      },
+      {
+        table: "phase_cleanup",
+        filePath: "/cache/s-live.csv",
+        phase: "cleanup_pending",
+        // The candidate equals the live path: the union must de-duplicate it.
+        candidate: "/cache/s-live.csv",
+        activation: null,
+        cleanup: "/cache/s-retired.csv",
+        expected: ["/cache/s-live.csv", "/cache/s-retired.csv"],
+      },
+    ];
+    const created: Array<(typeof cases)[number] & { sourceId: string; connectorId: string }> = [];
+    for (const testCase of cases) {
+      const connector = connectorInput(testCase.table, "idle", { filePath: testCase.filePath, status: "ready" });
+      await store.createConnector(owner, connector);
+      await ledger.run(
+        `INSERT INTO connector_refresh_states
+           (source_id,account_id,connector_id,generation,refresh_version,phase,
+            candidate_location,activation_previous_location,cleanup_previous_location)
+         VALUES (?,?,?,1,?,?,?,?,?)`,
+        [
+          connector.source.id,
+          owner,
+          connector.id,
+          `v-${testCase.table}`,
+          testCase.phase,
+          testCase.candidate,
+          testCase.activation,
+          testCase.cleanup,
+        ]
+      );
+      await ledger.run(`UPDATE sources SET ready_generation=1 WHERE id=?`, [connector.source.id]);
+      created.push({ ...testCase, sourceId: connector.source.id, connectorId: connector.id });
+    }
+
+    for (const item of created) {
+      const deleted = await store.deleteSource(owner, item.sourceId);
+      expect(deleted.intent.datasetLocations, item.table).toEqual(item.expected);
+      await expect(
+        ledger.get(`SELECT 1 FROM connector_refresh_states WHERE source_id=?`, [item.sourceId])
+      ).resolves.toBeUndefined();
+    }
+    // The durable Plan-011 intents are the surviving cleanup authority.
+    const pending = await store.listPendingSourceDeletes(owner);
+    expect(pending).toHaveLength(created.length);
+
+    // A connector-level bulk delete snapshots its source's activating row.
+    const bulk = connectorInput("phase_bulk", "idle", { filePath: "/cache/b-live.csv", status: "ready" });
+    await store.createConnector(owner, bulk);
+    await ledger.run(
+      `INSERT INTO connector_refresh_states
+         (source_id,account_id,connector_id,generation,refresh_version,phase,
+          candidate_location,activation_previous_location,cleanup_previous_location)
+       VALUES (?,?,?,1,'v-bulk','activating',?,?,?)`,
+      [bulk.source.id, owner, bulk.id, "/cache/b-candidate.csv", "/cache/b-activation.csv", "/cache/b-cleanup.csv"]
+    );
+    const bulkDelete = await store.deleteConnector(owner, bulk.id);
+    expect(bulkDelete.intents[0]!.datasetLocations).toEqual([
+      "/cache/b-live.csv",
+      "/cache/b-candidate.csv",
+      "/cache/b-activation.csv",
+      "/cache/b-cleanup.csv",
+    ]);
+    await expect(
+      ledger.get(`SELECT 1 FROM connector_refresh_states WHERE source_id=?`, [bulk.source.id])
+    ).resolves.toBeUndefined();
+  });
+
+  it("rolls back a deletion transaction after reservation, changing neither source, typed state, nor intent", async () => {
+    const { ledger, store, owner } = await fixture();
+    const connector = connectorInput("rollback_delete", "idle", {
+      filePath: "/cache/rollback-live.csv",
+      status: "ready",
+    });
+    await store.createConnector(owner, connector);
+    await ledger.run(
+      `INSERT INTO connector_refresh_states
+         (source_id,account_id,connector_id,generation,refresh_version,phase,candidate_location)
+       VALUES (?,?,?,1,'v-rollback','prepared',?)`,
+      [connector.source.id, owner, connector.id, "/cache/rollback-candidate.csv"]
+    );
+
+    const original = ledger.withImmediateTransaction.bind(ledger);
+    const spy = vi.spyOn(ledger, "withImmediateTransaction").mockImplementation(async (callback) =>
+      original(async (transaction) => {
+        await callback(transaction);
+        // Fail after the reservation ran so the whole BEGIN IMMEDIATE rolls back.
+        throw new Error("injected post-reservation failure");
+      })
+    );
+
+    await expect(store.deleteSource(owner, connector.source.id)).rejects.toThrow("injected post-reservation failure");
+    spy.mockRestore();
+
+    await expect(store.getSource(owner, connector.source.id)).resolves.toBeDefined();
+    await expect(
+      ledger.get(`SELECT phase FROM connector_refresh_states WHERE source_id=?`, [connector.source.id])
+    ).resolves.toEqual({ phase: "prepared" });
+    await expect(store.listPendingSourceDeletes(owner)).resolves.toEqual([]);
+
+    // The un-injected path still reserves exactly the typed locations.
+    const deleted = await store.deleteSource(owner, connector.source.id);
+    expect(deleted.intent.datasetLocations).toEqual(["/cache/rollback-live.csv", "/cache/rollback-candidate.csv"]);
   });
 
   it("linearizes active-run acceptance before source mutation through the shared writer gate", async () => {

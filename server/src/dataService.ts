@@ -382,6 +382,19 @@ export const dataService = {
     );
   },
 
+  /**
+   * Narrow, internal-only exact current DuckDB location for one dataset name,
+   * or null when the table has no current location. It exists solely so
+   * connector-refresh recovery can resolve an ambiguous `activating` row
+   * against the authoritative catalog; it is never exposed through HTTP, never
+   * returns a catalog row, and never widens into an unbounded catalog listing.
+   */
+  currentDatasetLocation(accountId: string, name: string, caller?: AbortSignal): Promise<string | null> {
+    return inProcess("/datasets/location", caller, DEFAULT_TIMEOUT_MS, (signal) =>
+      currentDatasetLocation(accountId, name, signal)
+    );
+  },
+
   deactivateDatasetLocation(
     accountId: string,
     name: string,

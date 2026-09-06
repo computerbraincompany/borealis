@@ -1,3 +1,4 @@
+import type { ConnectorRefreshIdentity } from "../db/stores/connectorRefreshStore.js";
 import type {
   PendingVectorOperation,
   SqliteIngestionStore,
@@ -107,6 +108,8 @@ export class IngestionVectorLifecycle {
       leaseToken: string;
       sizeBytes: number;
       promotedFilePath?: string;
+      /** Exact connector-refresh identity required in both promotion transactions. */
+      refresh?: ConnectorRefreshIdentity;
     },
     hooks: PromoteHooks = {}
   ): Promise<{ readonly chunkCount: number }> {

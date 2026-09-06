@@ -971,6 +971,436 @@ describe("SQLite ledger foundation", () => {
     await second.close();
   });
 
+  describe("schema v16 connector-refresh protocol state", () => {
+    const ts = "2026-09-01T00:00:00.000Z";
+
+    interface LegacySource {
+      id: string;
+      connectorId: string;
+      table: string;
+      status: "ready" | "index" | "error";
+      filePath?: string | null;
+      readyGeneration?: number | null;
+      meta: Record<string, unknown>;
+      job?: { generation: number; status: string };
+    }
+
+    function seedLegacy(
+      database: Database.Database,
+      account: string,
+      sources: readonly LegacySource[],
+      extraConnectors: readonly { id: string; table: string }[] = []
+    ): void {
+      const connector = database.prepare(
+        `INSERT INTO connectors (id,account_id,name,type,config,target_table,sync_status)
+         VALUES (?,?,?,'url_csv','{}',?,'idle')`
+      );
+      for (const spec of extraConnectors) connector.run(spec.id, account, `Feed ${spec.table}`, spec.table);
+      for (const spec of sources) {
+        connector.run(spec.connectorId, account, `Feed ${spec.table}`, spec.table);
+        database
+          .prepare(
+            `INSERT INTO sources (id,account_id,name,kind,connector,display_name,file_path,status,meta,ready_generation)
+             VALUES (?,?,?,'tabular',?,?,?,?,?,?)`
+          )
+          .run(
+            spec.id,
+            account,
+            spec.table,
+            spec.connectorId,
+            `Feed ${spec.table}`,
+            spec.filePath ?? null,
+            spec.status,
+            JSON.stringify(spec.meta),
+            spec.readyGeneration ?? null
+          );
+        if (spec.job) {
+          database
+            .prepare(
+              `INSERT INTO ingestion_jobs
+                 (source_id,account_id,generation,status,attempts,available_at,created_at,updated_at)
+               VALUES (?,?,?,?,1,?,?,?)`
+            )
+            .run(spec.id, account, spec.job.generation, spec.job.status, ts, ts, ts);
+        }
+      }
+    }
+
+    it("migrates valid v15 protocol metadata into typed rows and strips only the protocol keys", async () => {
+      const fixture = await createHistoricalSqliteFixture(15);
+      try {
+        const account = fixture.seed.accountId;
+        const onDisk = new Database(fixture.filename);
+        try {
+          onDisk.pragma("foreign_keys = ON");
+          onDisk.exec("BEGIN IMMEDIATE");
+          seedLegacy(onDisk, account, [
+            {
+              id: "a1000000-0000-4000-8000-000000000001",
+              connectorId: "b1000000-0000-4000-8000-000000000001",
+              table: "feed_a",
+              status: "index",
+              meta: {
+                connector_refresh_version: "ver-a",
+                error: "boom",
+                error_code: "X",
+                error_detail: "detail",
+                error_stage: "prepare",
+                display: { label: "keep me" },
+              },
+              job: { generation: 1, status: "preparing" },
+            },
+            {
+              id: "a1000000-0000-4000-8000-000000000002",
+              connectorId: "b1000000-0000-4000-8000-000000000002",
+              table: "feed_b",
+              status: "index",
+              filePath: "/cache/live.csv",
+              readyGeneration: 1,
+              meta: {
+                connector_refresh_version: "ver-b",
+                connector_candidate_location: "/cache/candidate.csv",
+                // An explicit JSON null activation-previous is the
+                // "no current location" case and migrates as SQL NULL.
+                connector_activation_previous_location: null,
+                connector_previous_location: "/cache/old.csv",
+                note: "keep",
+              },
+              job: { generation: 2, status: "pending" },
+            },
+            {
+              id: "a1000000-0000-4000-8000-000000000003",
+              connectorId: "b1000000-0000-4000-8000-000000000003",
+              table: "feed_c",
+              status: "ready",
+              filePath: "/cache/active.csv",
+              readyGeneration: 3,
+              meta: { connector_previous_location: "/cache/retired.csv" },
+              job: { generation: 3, status: "done" },
+            },
+            {
+              id: "a1000000-0000-4000-8000-000000000004",
+              connectorId: "b1000000-0000-4000-8000-000000000004",
+              table: "feed_d",
+              status: "ready",
+              filePath: "/cache/plain.csv",
+              readyGeneration: 1,
+              meta: { keep: true },
+              job: { generation: 1, status: "done" },
+            },
+          ]);
+          onDisk.exec("COMMIT");
+        } finally {
+          onDisk.close();
+        }
+
+        const ledger = await openSqliteLedger({ path: fixture.filename });
+        try {
+          await expect(ledger.get<{ user_version: bigint }>("PRAGMA user_version")).resolves.toEqual({
+            user_version: BigInt(LATEST_SQLITE_SCHEMA_VERSION),
+          });
+          expect(LATEST_SQLITE_SCHEMA_VERSION).toBe(16);
+
+          const rows = await ledger.all<Record<string, unknown>>(
+            `SELECT source_id,phase,generation,refresh_version,candidate_location,
+                    activation_previous_location,cleanup_previous_location,attempts,repair_ordinal
+             FROM connector_refresh_states ORDER BY repair_ordinal`
+          );
+          expect(rows).toEqual([
+            {
+              source_id: "a1000000-0000-4000-8000-000000000001",
+              phase: "preparing",
+              generation: 1n,
+              refresh_version: "ver-a",
+              candidate_location: null,
+              activation_previous_location: null,
+              cleanup_previous_location: null,
+              attempts: 0n,
+              repair_ordinal: 1n,
+            },
+            {
+              source_id: "a1000000-0000-4000-8000-000000000002",
+              // A version plus candidate migrates to the ambiguous
+              // `activating` phase, never `prepared`.
+              phase: "activating",
+              generation: 2n,
+              refresh_version: "ver-b",
+              candidate_location: "/cache/candidate.csv",
+              activation_previous_location: null,
+              cleanup_previous_location: "/cache/old.csv",
+              attempts: 0n,
+              repair_ordinal: 2n,
+            },
+            {
+              source_id: "a1000000-0000-4000-8000-000000000003",
+              phase: "cleanup_pending",
+              generation: 3n,
+              // The cleanup-only identity is deterministic and cleanup-only.
+              refresh_version: "legacy:a1000000-0000-4000-8000-000000000003",
+              candidate_location: "/cache/active.csv",
+              activation_previous_location: null,
+              cleanup_previous_location: "/cache/retired.csv",
+              attempts: 0n,
+              repair_ordinal: 3n,
+            },
+          ]);
+
+          // Only the four protocol keys are stripped; every other key —
+          // especially the error/display metadata — survives at the decoded
+          // object level.
+          await expect(
+            ledger.get<{ meta: string }>(`SELECT meta FROM sources WHERE id='a1000000-0000-4000-8000-000000000001'`)
+          ).resolves.toEqual({
+            meta: JSON.stringify({
+              error: "boom",
+              error_code: "X",
+              error_detail: "detail",
+              error_stage: "prepare",
+              display: { label: "keep me" },
+            }),
+          });
+          await expect(
+            ledger.get<{ meta: string }>(`SELECT meta FROM sources WHERE id='a1000000-0000-4000-8000-000000000002'`)
+          ).resolves.toEqual({ meta: '{"note":"keep"}' });
+          await expect(
+            ledger.get<{ meta: string }>(`SELECT meta FROM sources WHERE id='a1000000-0000-4000-8000-000000000004'`)
+          ).resolves.toEqual({ meta: '{"keep":true}' });
+
+          await expect(ledger.all("PRAGMA foreign_key_check")).resolves.toEqual([]);
+
+          // Migration is idempotent: reopening never re-backfills or rewrites.
+          await ledger.close();
+          const reopened = await openSqliteLedger({ path: fixture.filename });
+          try {
+            await expect(
+              reopened.all<{ count: bigint }>(`SELECT COUNT(*) AS count FROM connector_refresh_states`)
+            ).resolves.toEqual([{ count: 3n }]);
+            await expect(
+              reopened.all<{ source_id: string }>(`SELECT source_id FROM connector_refresh_states ORDER BY source_id`)
+            ).resolves.toEqual([
+              { source_id: "a1000000-0000-4000-8000-000000000001" },
+              { source_id: "a1000000-0000-4000-8000-000000000002" },
+              { source_id: "a1000000-0000-4000-8000-000000000003" },
+            ]);
+          } finally {
+            await reopened.close();
+          }
+        } catch (error) {
+          await ledger.close().catch(() => undefined);
+          throw error;
+        }
+      } finally {
+        await fixture.cleanup();
+      }
+    });
+
+    for (const [label, meta, jobStatus] of [
+      ["a candidate without a version", { connector_candidate_location: "/c.csv" }, "preparing"],
+      ["a version with no preparing job", { connector_refresh_version: "v" }, "done"],
+      ["a non-text version", { connector_refresh_version: 42 }, "preparing"],
+      [
+        "a version with a cleanup key but no candidate",
+        { connector_refresh_version: "v", connector_previous_location: "/x.csv" },
+        "preparing",
+      ],
+      ["a cleanup-only marker on a non-ready source", { connector_previous_location: "/x.csv" }, "done"],
+      ["a cleanup marker equal to the live file", { connector_previous_location: "/live.csv" }, "done"],
+      [
+        "a candidate equal to the cleanup location",
+        {
+          connector_refresh_version: "v",
+          connector_candidate_location: "/same.csv",
+          connector_previous_location: "/same.csv",
+        },
+        "pending",
+      ],
+    ] as const) {
+      it(`rolls the v16 migration back to v15 for malformed legacy state: ${label}`, async () => {
+        const fixture = await createHistoricalSqliteFixture(15);
+        try {
+          const onDisk = new Database(fixture.filename);
+          try {
+            onDisk.pragma("foreign_keys = ON");
+            seedLegacy(onDisk, fixture.seed.accountId, [
+              {
+                id: "a2000000-0000-4000-8000-000000000001",
+                connectorId: "b2000000-0000-4000-8000-000000000001",
+                table: "malformed",
+                status: label.includes("non-ready") ? "index" : "ready",
+                filePath: "/live.csv",
+                readyGeneration: 2,
+                meta: { ...meta },
+                job: { generation: 2, status: jobStatus },
+              },
+            ]);
+          } finally {
+            onDisk.close();
+          }
+          await expect(openSqliteLedger({ path: fixture.filename })).rejects.toBeInstanceOf(SqliteMigrationError);
+
+          const after = new Database(fixture.filename);
+          try {
+            expect(after.pragma("user_version", { simple: true })).toBe(15);
+            expect(
+              (
+                after
+                  .prepare(`SELECT COUNT(*) AS c FROM sqlite_master WHERE name='connector_refresh_states'`)
+                  .get() as {
+                  c: number;
+                }
+              ).c
+            ).toBe(0);
+            expect(
+              (
+                after
+                  .prepare(`SELECT COUNT(*) AS c FROM sqlite_master WHERE name='sources_id_connector_account_uidx'`)
+                  .get() as {
+                  c: number;
+                }
+              ).c
+            ).toBe(0);
+            expect(
+              after.prepare(`SELECT meta FROM sources WHERE id='a2000000-0000-4000-8000-000000000001'`).get()
+            ).toEqual({ meta: JSON.stringify({ ...meta }) });
+          } finally {
+            after.close();
+          }
+        } finally {
+          await fixture.cleanup();
+        }
+      });
+    }
+
+    it("enforces three-column pairing and proves the four v16 repair indexes serve their selectors", async () => {
+      const fixture = await createHistoricalSqliteFixture(15);
+      try {
+        const onDisk = new Database(fixture.filename);
+        try {
+          onDisk.pragma("foreign_keys = ON");
+          seedLegacy(
+            onDisk,
+            fixture.seed.accountId,
+            [
+              {
+                id: "a3000000-0000-4000-8000-000000000001",
+                connectorId: "b3000000-0000-4000-8000-000000000001",
+                table: "pair_a",
+                status: "ready",
+                filePath: "/cache/a.csv",
+                readyGeneration: 1,
+                meta: {},
+                job: { generation: 1, status: "done" },
+              },
+              {
+                id: "a3000000-0000-4000-8000-000000000002",
+                connectorId: "b3000000-0000-4000-8000-000000000002",
+                table: "pair_b",
+                status: "ready",
+                filePath: "/cache/b.csv",
+                readyGeneration: 1,
+                meta: {},
+                job: { generation: 1, status: "done" },
+              },
+            ],
+            []
+          );
+        } finally {
+          onDisk.close();
+        }
+        const ledger = await openSqliteLedger({ path: fixture.filename });
+        try {
+          // Direct SQL may never pair a source with another connector of the
+          // same account — in either direction.
+          await expect(
+            ledger.run(
+              `INSERT INTO connector_refresh_states
+                 (source_id,account_id,connector_id,generation,refresh_version,phase,candidate_location)
+               VALUES (?,?,?,1,'x','activating','/c')`,
+              ["a3000000-0000-4000-8000-000000000001", fixture.seed.accountId, "b3000000-0000-4000-8000-000000000002"]
+            )
+          ).rejects.toMatchObject({ kind: "foreign_key" });
+          await expect(
+            ledger.run(
+              `INSERT INTO connector_refresh_states
+                 (source_id,account_id,connector_id,generation,refresh_version,phase,candidate_location)
+               VALUES (?,?,?,1,'x','activating','/c')`,
+              ["a3000000-0000-4000-8000-000000000002", fixture.seed.accountId, "b3000000-0000-4000-8000-000000000001"]
+            )
+          ).rejects.toMatchObject({ kind: "foreign_key" });
+          // The matching pairing succeeds.
+          await expect(
+            ledger.run(
+              `INSERT INTO connector_refresh_states
+                 (source_id,account_id,connector_id,generation,refresh_version,phase,candidate_location)
+               VALUES (?,?,?,1,'x','activating','/c')`,
+              ["a3000000-0000-4000-8000-000000000002", fixture.seed.accountId, "b3000000-0000-4000-8000-000000000002"]
+            )
+          ).resolves.toMatchObject({ changes: 1 });
+
+          const indexes = new Set(
+            (
+              await ledger.all<{ name: string }>(
+                "SELECT name FROM sqlite_master WHERE type='index' AND name NOT LIKE 'sqlite_%'"
+              )
+            ).map((row) => row.name)
+          );
+          expect([...indexes]).toEqual(
+            expect.arrayContaining([
+              "sources_id_connector_account_uidx",
+              "connector_refresh_states_repair_idx",
+              "pending_source_deletes_periodic_idx",
+              "pending_vector_ops_periodic_idx",
+              "dataset_cache_cleanup_jobs_periodic_idx",
+            ])
+          );
+
+          const plans: Array<[string, string, string, readonly (string | number | null)[]]> = [
+            [
+              "connector refresh",
+              "connector_refresh_states_repair_idx",
+              `SELECT * FROM connector_refresh_states ORDER BY attempts, updated_at, source_id LIMIT ?`,
+              [20],
+            ],
+            [
+              "pending source deletes",
+              "pending_source_deletes_periodic_idx",
+              `SELECT source_id, account_id, name, file_path, connector_id, dataset_locations,
+                      attempts, last_error, created_at, updated_at
+               FROM pending_source_deletes ORDER BY attempts, updated_at, account_id, source_id LIMIT ?`,
+              [100],
+            ],
+            [
+              "pending vector operations",
+              "pending_vector_ops_periodic_idx",
+              `SELECT source_id, account_id, operation, generation, attempts
+               FROM pending_vector_ops ORDER BY attempts, updated_at, source_id, operation, generation LIMIT ?`,
+              [100],
+            ],
+            [
+              "dataset cache cleanup",
+              "dataset_cache_cleanup_jobs_periodic_idx",
+              `SELECT account_id,name,location,attempts FROM dataset_cache_cleanup_jobs
+               WHERE (? IS NULL OR account_id=?) AND (? IS NULL OR name=?)
+               ORDER BY attempts, updated_at, account_id, name, location LIMIT ?`,
+              [null, null, null, null, 20],
+            ],
+          ];
+          for (const [label, indexName, sql, params] of plans) {
+            const plan = await ledger.all<{ detail: string }>(`EXPLAIN QUERY PLAN ${sql}`, params);
+            const text = plan.map((row) => row.detail).join(" | ");
+            expect(text, label).toContain(indexName);
+            expect(text, label).not.toContain("TEMP B-TREE");
+          }
+          await expect(ledger.all("PRAGMA foreign_key_check")).resolves.toEqual([]);
+        } finally {
+          await ledger.close();
+        }
+      } finally {
+        await fixture.cleanup();
+      }
+    });
+  });
+
   it("normalizes JSON, booleans, timestamps, safe integers, and invalid bind values", () => {
     expect(encodeBoolean(true)).toBe(1);
     expect(decodeBoolean(0n)).toBe(false);

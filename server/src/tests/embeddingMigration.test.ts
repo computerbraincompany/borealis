@@ -278,10 +278,12 @@ describe("durable embedding migration coordinator", () => {
       activateDatasetRefresh: vi.fn(async () => ({})),
       deactivateDatasetLocation: vi.fn(async () => undefined),
       cleanupDatasetCache: vi.fn(async () => undefined),
+      currentDatasetLocation: vi.fn(async () => null),
     };
     const executor = new IngestionExecutor({
       store: harness.runtime.ingestion,
       lifecycle: harness.runtime.vectorLifecycle,
+      refresh: harness.runtime.connectorRefresh,
       data,
       embeddingDimension: harness.runtime.vectors.dimension,
       createEmbeddingSession: async () => async (texts) => texts.map(() => unitVector(5, 0)),

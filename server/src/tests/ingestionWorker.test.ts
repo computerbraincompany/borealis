@@ -34,6 +34,7 @@ vi.mock("../dataService.js", () => ({
     activateDatasetRefresh: vi.fn(),
     deactivateDatasetLocation: vi.fn(),
     cleanupDatasetCache: vi.fn(),
+    currentDatasetLocation: vi.fn(async () => null),
   },
 }));
 
@@ -349,7 +350,15 @@ describe("durable connector prepare worker", () => {
       status: "ready",
       filePath: candidateLocation,
       readyGeneration: 2,
-      meta: { connector_previous_location: oldLocation },
+      // Protocol locations are typed state; `sources.meta` carries none.
+      meta: {},
+    });
+    await expect(storageRuntime().connectorRefresh.getState(ACCOUNT, sourceId)).resolves.toMatchObject({
+      phase: "cleanup_pending",
+      generation: 2,
+      refreshVersion,
+      candidateLocation,
+      cleanupPreviousLocation: oldLocation,
     });
     await vi.waitFor(async () => {
       await expect(
@@ -357,6 +366,8 @@ describe("durable connector prepare worker", () => {
       ).resolves.toEqual([{ accountId: ACCOUNT, name: "ledger", location: oldLocation, attempts: 1 }]);
     });
 
+    // The superseded-cleanup begin succeeds because the exact old location
+    // is still durably queued (Plan 011 retains sole cleanup authority).
     await storageRuntime().sourceIngestion.beginConnectorRefresh({
       accountId: ACCOUNT,
       connectorId,
@@ -366,7 +377,11 @@ describe("durable connector prepare worker", () => {
     await expect(storageRuntime().sources.getSource(ACCOUNT, sourceId)).resolves.toMatchObject({
       status: "index",
       filePath: candidateLocation,
-      meta: expect.not.objectContaining({ connector_previous_location: oldLocation }),
+      meta: {},
+    });
+    await expect(storageRuntime().connectorRefresh.getState(ACCOUNT, sourceId)).resolves.toMatchObject({
+      phase: "preparing",
+      generation: 3,
     });
 
     await stopIngestionWorkers();
@@ -383,10 +398,35 @@ describe("durable connector prepare worker", () => {
     await expect(storageRuntime().sources.getSource(ACCOUNT, sourceId)).resolves.toMatchObject({
       status: "index",
       filePath: candidateLocation,
-      meta: expect.not.objectContaining({ connector_previous_location: oldLocation }),
+      meta: {},
     });
     expect(deactivateMock).toHaveBeenCalledTimes(2);
     expect(cleanupMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps protocol state typed and absent from metadata through a full first-sync refresh", async () => {
+    const reserved = await createPreparingConnector();
+    await recoverPreparingConnectorLeases(true);
+    prepareMock.mockImplementation(async (_account, _name, version) => {
+      const location = path.join(directory, `${version}.csv`);
+      await fs.writeFile(location, "amount\n42\n");
+      return { version, location, previous_location: null, rows: 1, size_bytes: 20 };
+    });
+
+    await expect(processOnePreparingConnectorRefresh()).resolves.toBe(true);
+    await vi.waitFor(async () => {
+      await expect(storageRuntime().ingestion.getJob(ACCOUNT, reserved.source.id)).resolves.toMatchObject({
+        status: "done",
+      });
+    });
+    const source = await storageRuntime().sources.getSource(ACCOUNT, reserved.source.id);
+    expect(source).toMatchObject({ status: "ready", readyGeneration: 1, meta: {} });
+    expect(source!.meta).not.toMatchObject({
+      connector_refresh_version: expect.anything(),
+      connector_candidate_location: expect.anything(),
+    });
+    // A first sync has no previous location: promotion deletes the typed row.
+    await expect(storageRuntime().connectorRefresh.getState(ACCOUNT, reserved.source.id)).resolves.toBeUndefined();
   });
 });
 

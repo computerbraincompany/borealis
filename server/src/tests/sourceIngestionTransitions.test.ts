@@ -151,7 +151,8 @@ describe("source/ingestion SQLite transitions", () => {
         id: input.sourceId,
         connectorId: input.connectorId,
         status: "index",
-        meta: { connector_refresh_version: input.refreshVersion },
+        // Protocol state is typed; `sources.meta` carries none of it.
+        meta: {},
       },
     });
     await expect(
@@ -164,6 +165,21 @@ describe("source/ingestion SQLite transitions", () => {
       attempts: 1n,
       lease_token: input.leaseToken,
       leased_at: NOW.toISOString(),
+    });
+    // The `preparing` protocol row is reserved in the same transaction.
+    await expect(
+      ledger.get(
+        `SELECT account_id,connector_id,generation,refresh_version,phase,candidate_location
+         FROM connector_refresh_states WHERE source_id=?`,
+        [input.sourceId]
+      )
+    ).resolves.toEqual({
+      account_id: accountId,
+      connector_id: input.connectorId,
+      generation: 1n,
+      refresh_version: input.refreshVersion,
+      phase: "preparing",
+      candidate_location: null,
     });
 
     await sources.createSource(accountId, {
@@ -178,6 +194,9 @@ describe("source/ingestion SQLite transitions", () => {
     });
     await expect(sources.getConnector(accountId, collision.connectorId)).resolves.toBeUndefined();
     await expect(sources.getSource(accountId, collision.sourceId)).resolves.toBeUndefined();
+    await expect(
+      ledger.get(`SELECT 1 FROM connector_refresh_states WHERE source_id=?`, [collision.sourceId])
+    ).resolves.toBeUndefined();
   });
 
   it("guards connector refresh and reserves its exact next preparing generation", async () => {
@@ -191,7 +210,7 @@ describe("source/ingestion SQLite transitions", () => {
     await sources.updateSourceStatus(accountId, input.sourceId, {
       status: "ready",
       readyGeneration: 1,
-      meta: { error: "old", connector_previous_location: "/old.csv", keep: true },
+      meta: { error: "old", keep: true },
     });
     await ledger.run(`UPDATE ingestion_jobs SET status='done',leased_at=NULL,lease_token=NULL WHERE source_id=?`, [
       input.sourceId,
@@ -234,7 +253,9 @@ describe("source/ingestion SQLite transitions", () => {
       source: {
         status: "index",
         readyGeneration: 1,
-        meta: { keep: true, connector_refresh_version: refresh.refreshVersion },
+        // Error metadata is cleared; the refresh identity lives only in the
+        // typed protocol row.
+        meta: { keep: true },
       },
     });
     await expect(
@@ -246,6 +267,70 @@ describe("source/ingestion SQLite transitions", () => {
       status: "preparing",
       attempts: 1n,
       lease_token: refresh.leaseToken,
+    });
+    // The superseded first-generation preparing row was replaced, not stacked.
+    await expect(
+      ledger.get(
+        `SELECT connector_id,generation,refresh_version,phase FROM connector_refresh_states WHERE source_id=?`,
+        [input.sourceId]
+      )
+    ).resolves.toEqual({
+      connector_id: input.connectorId,
+      generation: 2n,
+      refresh_version: refresh.refreshVersion,
+      phase: "preparing",
+    });
+    await expect(ledger.get(`SELECT COUNT(*) AS rows FROM connector_refresh_states`)).resolves.toEqual({ rows: 1n });
+  });
+
+  it("refuses a begin that would discard ambiguous durable activation state", async () => {
+    const { ledger, transitions, sources, accountId } = await fixture();
+    const input = connectorInput("ambiguous_begin");
+    const first = await transitions.createConnectorPrepare(accountId, input);
+    // Simulate a terminal prepare-failure that never happened: instead leave
+    // an `activating` row (the CAS-in-flight uncertainty state) with the
+    // connector reset so only the typed row can refuse the begin.
+    await transitions.activatePreparedConnector({
+      accountId,
+      connectorId: input.connectorId,
+      sourceId: input.sourceId,
+      generation: first.generation,
+      leaseToken: input.leaseToken,
+      refreshVersion: input.refreshVersion,
+      url: input.url,
+      displayName: "Ambiguous feed",
+      mime: "text/csv",
+      candidateLocation: "/cache/ambiguous-candidate.csv",
+      activationPreviousLocation: "/cache/ambiguous-previous.csv",
+      cleanupPreviousLocation: null,
+    });
+    await ledger.run(`UPDATE connector_refresh_states SET phase='activating' WHERE source_id=?`, [input.sourceId]);
+    await sources.updateConnectorSyncState(accountId, input.connectorId, {
+      status: "idle",
+      expectedStatuses: ["indexing"],
+    });
+    await ledger.run(`UPDATE ingestion_jobs SET status='error',leased_at=NULL,lease_token=NULL WHERE source_id=?`, [
+      input.sourceId,
+    ]);
+
+    await expect(
+      transitions.beginConnectorRefresh({
+        accountId,
+        connectorId: input.connectorId,
+        refreshVersion: randomUUID(),
+        leaseToken: randomUUID(),
+      })
+    ).rejects.toMatchObject({ code: "SOURCE_TRANSITION_CONNECTOR_SYNC_ACTIVE" });
+    // The ambiguous row and its candidate identities are untouched.
+    await expect(
+      ledger.get(
+        `SELECT phase,candidate_location,activation_previous_location FROM connector_refresh_states WHERE source_id=?`,
+        [input.sourceId]
+      )
+    ).resolves.toEqual({
+      phase: "activating",
+      candidate_location: "/cache/ambiguous-candidate.csv",
+      activation_previous_location: "/cache/ambiguous-previous.csv",
     });
   });
 
@@ -299,17 +384,42 @@ describe("source/ingestion SQLite transitions", () => {
       source: {
         status: "index",
         url: activation.url,
-        meta: {
-          connector_refresh_version: input.refreshVersion,
-          connector_candidate_location: activation.candidateLocation,
-          connector_activation_previous_location: activation.activationPreviousLocation,
-          connector_previous_location: activation.cleanupPreviousLocation,
-        },
+        // Adoption writes the typed protocol row, never `sources.meta`.
+        meta: {},
       },
     });
     await expect(
       ledger.get(`SELECT status,lease_token,leased_at FROM ingestion_jobs WHERE source_id=?`, [input.sourceId])
     ).resolves.toEqual({ status: "pending", lease_token: null, leased_at: null });
+    await expect(
+      ledger.get(
+        `SELECT phase,generation,refresh_version,candidate_location,activation_previous_location,cleanup_previous_location
+         FROM connector_refresh_states WHERE source_id=?`,
+        [input.sourceId]
+      )
+    ).resolves.toEqual({
+      phase: "prepared",
+      generation: 1n,
+      refresh_version: input.refreshVersion,
+      candidate_location: activation.candidateLocation,
+      activation_previous_location: activation.activationPreviousLocation,
+      cleanup_previous_location: activation.cleanupPreviousLocation,
+    });
+
+    // A second adoption of a different version against the same exact
+    // prepared row loses its CAS and must not mutate the adopted state.
+    await expect(
+      transitions.activatePreparedConnector({ ...activation, refreshVersion: randomUUID() })
+    ).rejects.toMatchObject({ code: "SOURCE_TRANSITION_PREPARE_SUPERSEDED" });
+    await expect(
+      ledger.get(`SELECT phase,refresh_version,candidate_location FROM connector_refresh_states WHERE source_id=?`, [
+        input.sourceId,
+      ])
+    ).resolves.toEqual({
+      phase: "prepared",
+      refresh_version: input.refreshVersion,
+      candidate_location: activation.candidateLocation,
+    });
   });
 
   it("defers only an exactly-owned preparing lease and exposes bounded ingestion summaries", async () => {
@@ -407,7 +517,7 @@ describe("source/ingestion SQLite transitions", () => {
     await transitions.createConnectorPrepare(accountId, later);
     await ledger.run(`UPDATE sources SET status='ready',file_path=?,ready_generation=1,meta=? WHERE id=?`, [
       "/cache/live.csv",
-      encodeJson({ connector_refresh_version: later.refreshVersion, keep: true }),
+      encodeJson({ keep: true }),
       later.sourceId,
     ]);
     await ledger.run(
