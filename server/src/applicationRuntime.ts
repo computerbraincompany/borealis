@@ -24,6 +24,7 @@ import {
   type StorageRuntimeOptions,
 } from "./storageRuntime.js";
 import { downloadManager, engineManager } from "./contained/runtime.js";
+import { quiesceMcpConnections } from "./mcp/client.js";
 
 /**
  * One owned application runtime per process.
@@ -32,8 +33,9 @@ import { downloadManager, engineManager } from "./contained/runtime.js";
  * services a Borealis server needs: the paired SQLite/LanceDB storage
  * runtime, exactly one automation runner built over that storage's own
  * `automations` store, the managed embedding-migration coordinator
- * lifecycle, the contained download-manager lifecycle, and the contained
- * engine stop path. Settings and storage closure are gated behind positive
+ * lifecycle, the contained download-manager lifecycle, the MCP connection
+ * child drain, and the contained engine stop path. Settings and storage
+ * closure are gated behind positive
  * drain proofs so a stale or partially built owner can never tear down a
  * newer runtime, and a runtime whose closure cannot be positively proven
  * poisons the process-wide ownership lease instead of risking an overlap
@@ -84,6 +86,13 @@ export interface EmbeddingMigrationPhase {
 export interface ApplicationRuntimeLifecycle {
   beginDownloadLifecycle(): Promise<void>;
   quiesceAndDrainDownloads(): Promise<void>;
+  /**
+   * Drains every still-live MCP connection session (owned stdio children
+   * included) and resolves only after each release is proven. Optional so
+   * existing lifecycle seams keep compiling; production defaults to the
+   * `mcp/client` module drain.
+   */
+  quiesceAndDrainConnections?(): Promise<void>;
   initializeSettings(): Promise<unknown>;
   closeSettings(): void;
   readSettings(): Promise<RuntimeSettingsSnapshot>;
@@ -137,6 +146,7 @@ let lease: RuntimeLease | undefined;
 interface OwnedResources {
   downloadBegun: boolean;
   downloadReleased: boolean;
+  connectionsReleased: boolean;
   settingsAcquired: boolean;
   settingsReleased: boolean;
   migration: EmbeddingMigrationPhase | undefined;
@@ -152,6 +162,7 @@ function newOwned(): OwnedResources {
   return {
     downloadBegun: false,
     downloadReleased: false,
+    connectionsReleased: false,
     settingsAcquired: false,
     settingsReleased: false,
     migration: undefined,
@@ -168,6 +179,7 @@ interface ResolvedLifecycle extends ApplicationRuntimeLifecycle {
   readonly syncConnector: (accountId: string, connectorId: string) => Promise<unknown>;
   readonly sqlitePath: string;
   readonly lanceDirectory: string;
+  quiesceAndDrainConnections(): Promise<void>;
 }
 
 function productionMigrationPhase(): EmbeddingMigrationPhase {
@@ -187,6 +199,7 @@ function resolveLifecycle(options: ApplicationRuntimeOptions): ResolvedLifecycle
   return {
     beginDownloadLifecycle: lifecycle.beginDownloadLifecycle ?? (() => downloadManager.beginLifecycle()),
     quiesceAndDrainDownloads: lifecycle.quiesceAndDrainDownloads ?? (() => downloadManager.quiesceAndDrain()),
+    quiesceAndDrainConnections: lifecycle.quiesceAndDrainConnections ?? (() => quiesceMcpConnections()),
     initializeSettings: lifecycle.initializeSettings ?? (() => initializeRuntimeSettings()),
     closeSettings: lifecycle.closeSettings ?? (() => closeRuntimeSettings()),
     readSettings: lifecycle.readSettings ?? (() => getRuntimeSettings()),
@@ -271,15 +284,19 @@ async function unwindConstruction(
   owned: OwnedResources,
   uncertainAcquisition: boolean
 ): Promise<boolean> {
-  // Independent owned drains first: the begun download lifecycle and the
-  // migration coordinator. No scheduler ever started and no HTTP surface was
-  // built, so settings/storage consumers are limited to these phases.
-  const [downloadResult, migrationResult] = await Promise.allSettled([
+  // Independent owned drains first: the begun download lifecycle, the
+  // migration coordinator, and the MCP connection registry (empty unless a
+  // construction-time seam itself opened a connection). No scheduler ever
+  // started and no HTTP surface was built, so settings/storage consumers are
+  // limited to these phases.
+  const [downloadResult, migrationResult, connectionsResult] = await Promise.allSettled([
     owned.downloadBegun && !owned.downloadReleased ? lifecycle.quiesceAndDrainDownloads() : Promise.resolve(),
     owned.migration && !owned.migrationReleased ? owned.migration.close() : Promise.resolve(),
+    lifecycle.quiesceAndDrainConnections(),
   ]);
   if (owned.downloadBegun && downloadResult.status === "fulfilled") owned.downloadReleased = true;
   if (owned.migration && migrationResult.status === "fulfilled") owned.migrationReleased = true;
+  if (connectionsResult.status === "fulfilled") owned.connectionsReleased = true;
 
   // Storage close: attempted best-effort when the acquisition boundary was
   // uncertain (the initializer can reject after native open work); attempted
@@ -302,7 +319,8 @@ async function unwindConstruction(
     (owned.downloadBegun && !owned.downloadReleased) ||
     (owned.migration !== undefined && !owned.migrationReleased) ||
     (owned.storage !== undefined && !owned.storageReleased) ||
-    (owned.settingsAcquired && !owned.settingsReleased);
+    (owned.settingsAcquired && !owned.settingsReleased) ||
+    connectionsResult.status === "rejected";
   return !uncertain;
 }
 
@@ -431,16 +449,19 @@ export async function createApplicationRuntime(options: ApplicationRuntimeOption
     current.phase = "closing";
 
     return (async () => {
-      // Owned cleanup dependency graph: scheduler, download, migration, and
-      // engine are independent phases with attempt-all/all-settled semantics.
-      // Calling the already-started scheduler/download drains again simply
-      // joins their retained promises.
-      const [runnerResult, downloadResult, migrationResult, engineResult] = await Promise.allSettled([
-        runner.stop(),
-        lifecycle.quiesceAndDrainDownloads(),
-        owned.migration?.close() ?? Promise.resolve(),
-        lifecycle.stopEngine(),
-      ]);
+      // Owned cleanup dependency graph: scheduler, download, migration,
+      // connections, and engine are independent phases with attempt-all/
+      // all-settled semantics. Calling the already-started scheduler/download
+      // drains again simply joins their retained promises.
+      const [runnerResult, downloadResult, migrationResult, engineResult, connectionsResult] = await Promise.allSettled(
+        [
+          runner.stop(),
+          lifecycle.quiesceAndDrainDownloads(),
+          owned.migration?.close() ?? Promise.resolve(),
+          lifecycle.stopEngine(),
+          lifecycle.quiesceAndDrainConnections(),
+        ]
+      );
       const failed: string[] = [];
       if (runnerResult.status === "fulfilled") owned.runnerReleased = true;
       else failed.push("scheduler");
@@ -450,6 +471,8 @@ export async function createApplicationRuntime(options: ApplicationRuntimeOption
       else failed.push("migration");
       if (engineResult.status === "fulfilled") owned.engineReleased = true;
       else failed.push("engine");
+      if (connectionsResult.status === "fulfilled") owned.connectionsReleased = true;
+      else failed.push("connections");
 
       const externalDrained = proof?.externalStorageConsumersDrained === true;
       if (failed.length > 0 || !externalDrained) {
