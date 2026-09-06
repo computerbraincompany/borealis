@@ -11,10 +11,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { ResearchStore } from "../db/stores/researchStore.js";
 import type { SqliteLedger } from "../db/types.js";
-import {
-  RESEARCH_TABLE_SERIALIZED_MAX_BYTES,
-  ResearchValidationError,
-} from "../researchSchemas.js";
+import { RESEARCH_TABLE_SERIALIZED_MAX_BYTES, ResearchValidationError } from "../researchSchemas.js";
 import {
   RESEARCH_CSV_HEADER,
   RESEARCH_EXCERPT_SHORTEN_LABEL,
@@ -98,7 +95,11 @@ async function seedFinishedComparisonRun(
   sources: readonly string[];
   evidenceId: string;
 }> {
-  const sources = [await insertSource(ledger, account), await insertSource(ledger, account), await insertSource(ledger, account)];
+  const sources = [
+    await insertSource(ledger, account),
+    await insertSource(ledger, account),
+    await insertSource(ledger, account),
+  ];
   const definition = await store.createResearchDefinition(account, {
     title: "Supplier table",
     question: "Compare supplier pricing tables",
@@ -153,7 +154,7 @@ async function seedFinishedComparisonRun(
   await store.recordResearchMachineCell(account, run.id, {
     columnId: termsColumn.id,
     rowSourceId: sources[2],
-    rawValue: "a,b \"c\"",
+    rawValue: 'a,b "c"',
   });
   await store.finishResearchRun(account, run.id, "completed");
   return { definitionId: definition.id, runId: run.id, sources, evidenceId: evidence.id };
@@ -303,14 +304,14 @@ describe("researchComparison — overlay and diff semantics", () => {
     const r1 = randomUUID();
     const r2 = randomUUID();
     const r3 = randomUUID();
-    const before = view("aaa", [row(r1, [cell(1, "supported", "machine")]), row(r2, [cell(1, "supported", "machine")])]);
-    const after = view(
-      "bbb",
-      [
-        row(r2, [cell(1, "supported", "machine"), cell(9, "supported", "correction")]),
-        row(r3, [cell(3, "supported", "machine")]),
-      ]
-    );
+    const before = view("aaa", [
+      row(r1, [cell(1, "supported", "machine")]),
+      row(r2, [cell(1, "supported", "machine")]),
+    ]);
+    const after = view("bbb", [
+      row(r2, [cell(1, "supported", "machine"), cell(9, "supported", "correction")]),
+      row(r3, [cell(3, "supported", "machine")]),
+    ]);
     const diff = diffResearchRunTables(before, after);
     expect(diff.rows_added).toEqual([r3]);
     expect(diff.rows_removed).toEqual([r1]);
@@ -330,7 +331,9 @@ describe("researchComparison — overlay and diff semantics", () => {
     // Over 200 changed cells: totals are honest, payload is capped.
     const manyBefore = view(
       "aaa",
-      Array.from({ length: 201 }, (_, index) => row(`r${String(index).padStart(4, "0")}`, [cell(1, "supported", "machine")]))
+      Array.from({ length: 201 }, (_, index) =>
+        row(`r${String(index).padStart(4, "0")}`, [cell(1, "supported", "machine")])
+      )
     );
     const manyAfter = view(
       "bbb",
@@ -364,9 +367,9 @@ describe("researchComparison — overlay and diff semantics", () => {
     const view = await loadResearchRunTable(store, account, seed.runId);
     const columns = view!.columns;
 
-    expect(() =>
-      applyResearchTablePageView(view!.rows, columns, { sortColumnId: randomUUID() })
-    ).toThrow(ResearchValidationError);
+    expect(() => applyResearchTablePageView(view!.rows, columns, { sortColumnId: randomUUID() })).toThrow(
+      ResearchValidationError
+    );
     expect(() =>
       applyResearchTablePageView(view!.rows, columns, {
         filterText: "x".repeat(RESEARCH_TABLE_FILTER_TEXT_MAX_CHARS + 1),
@@ -392,16 +395,8 @@ describe("researchComparison — overlay and diff semantics", () => {
     });
     // Nulls stay last in BOTH directions: corrected 5, then 4.5, then the
     // not_found (null) row.
-    expect(desc.items.map((row) => row.row_source_id)).toEqual([
-      seed.sources[1],
-      seed.sources[0],
-      seed.sources[2],
-    ]);
-    expect(asc.items.map((row) => row.row_source_id)).toEqual([
-      seed.sources[0],
-      seed.sources[1],
-      seed.sources[2],
-    ]);
+    expect(desc.items.map((row) => row.row_source_id)).toEqual([seed.sources[1], seed.sources[0], seed.sources[2]]);
+    expect(asc.items.map((row) => row.row_source_id)).toEqual([seed.sources[0], seed.sources[1], seed.sources[2]]);
 
     const corrected = applyResearchTablePageView(view!.rows, columns, {
       sortColumnId: priceColumn.id,
@@ -503,7 +498,7 @@ describe("researchComparison — CSV export bytes", () => {
     expect(manifest.artifact).toBe("research_run_export_manifest");
     expect(manifest.run.id).toBe(seed.runId);
     expect(manifest.run.status).toBe("completed");
-    expect((manifest.run.sources as readonly { source_id: string }[])).toHaveLength(3);
+    expect(manifest.run.sources as readonly { source_id: string }[]).toHaveLength(3);
     expect(manifest.limits).toMatchObject({
       table: { limit_bytes: RESEARCH_TABLE_SERIALIZED_MAX_BYTES, at_limit: false, truncated: false },
       export_truncated: false,
@@ -512,9 +507,7 @@ describe("researchComparison — CSV export bytes", () => {
 
     const entry = manifest.evidence.find((item) => item.id === seed.evidenceId)!;
     expect(entry.content_hash).toMatch(/^[0-9a-f]{64}$/);
-    expect(entry.locators).toEqual([
-      { kind: "pdf_page", page: 3, ocr: false, char_start: 12, char_len: 80 },
-    ]);
+    expect(entry.locators).toEqual([{ kind: "pdf_page", page: 3, ocr: false, char_start: 12, char_len: 80 }]);
     expect(entry.label).toBe("proposal-a.md");
 
     const cells = manifest.cells as ReadonlyArray<Record<string, unknown>>;
@@ -540,7 +533,10 @@ describe("researchComparison — CSV export bytes", () => {
     });
     const memoRun = await memoStore.startResearchRun(memoAccount, memoDefinition.id, { authorization: AUTHORIZATION });
     const memoView = await loadResearchRunTable(memoStore, memoAccount, memoRun.id);
-    const memoManifest = buildResearchRunManifest(memoView!, await loadResearchRunEvidence(memoStore, memoAccount, memoRun.id));
+    const memoManifest = buildResearchRunManifest(
+      memoView!,
+      await loadResearchRunEvidence(memoStore, memoAccount, memoRun.id)
+    );
     expect(memoManifest.cells).toEqual([]);
     expect(memoManifest.evidence).toEqual([]);
     expect(memoManifest.rows).toHaveLength(1); // sources are rows even with zero cells

@@ -56,6 +56,7 @@ import {
   type DocumentTreeInput,
 } from "./documentTypes.js";
 import type {
+  ResearchTablePage,
   ResearchTableRowPageItem,
   StoredResearchCell,
   StoredResearchClaim,
@@ -186,20 +187,19 @@ export async function loadResearchRunTable(
   if (!run) return undefined;
   let after: { timestamp: string; id: string } | null = null;
   const rows: ResearchTableRowPageItem[] = [];
-  let columns: readonly ResearchColumnDeclaration[] = [];
-  let serializedBytes = 0;
+  let last: ResearchTablePage | undefined;
   for (;;) {
     const table = await store.getResearchTable(accountId, runId, { limit: 100, after });
     if (!table) throw new ResearchValidationError("research run table vanished mid-read");
-    columns = table.columns;
-    serializedBytes = table.serializedBytes;
+    last = table;
     rows.push(...table.page.items);
     after = table.page.next;
     if (!after) break;
   }
+  const serializedBytes = last!.serializedBytes;
   return Object.freeze({
     run,
-    columns,
+    columns: last!.columns,
     rows: Object.freeze(rows),
     serializedBytes,
     limitState: researchTableLimitState(serializedBytes),
@@ -300,8 +300,7 @@ export function applyResearchTablePageView(
       const rightValue = valueAt(right);
       const leftMissing = leftValue === undefined || leftValue === null;
       const rightMissing = rightValue === undefined || rightValue === null;
-      const tie =
-        left.row_source_id < right.row_source_id ? 1 : left.row_source_id > right.row_source_id ? -1 : 0;
+      const tie = left.row_source_id < right.row_source_id ? 1 : left.row_source_id > right.row_source_id ? -1 : 0;
       if (leftMissing && rightMissing) return tie;
       // Nulls sort last in BOTH directions (never a direction-dependent
       // silent reordering of "no value").
@@ -348,7 +347,8 @@ function rowMatchesFilter(
     const effective = triple.effective;
     if (status !== null && effective?.status !== status) continue;
     if (text !== null) {
-      const haystack = `${effective === null ? "" : researchDisplayValue(effective.value)}\n${effective?.explanation ?? ""}`.toLowerCase();
+      const haystack =
+        `${effective === null ? "" : researchDisplayValue(effective.value)}\n${effective?.explanation ?? ""}`.toLowerCase();
       if (!haystack.includes(text.toLowerCase())) continue;
     }
     return true;
@@ -357,10 +357,7 @@ function rowMatchesFilter(
 }
 
 /** Nulls sort last in both directions; types never coerce. */
-function compareSortValue(
-  left: ResearchTypedValue | undefined,
-  right: ResearchTypedValue | undefined
-): number {
+function compareSortValue(left: ResearchTypedValue | undefined, right: ResearchTypedValue | undefined): number {
   const leftNull = left === undefined || left === null;
   const rightNull = right === undefined || right === null;
   if (leftNull && rightNull) return 0;
@@ -454,8 +451,14 @@ export function diffResearchRunTables(from: ResearchRunTableView, to: ResearchRu
 
   const columnIds = [...new Set([...from.columns.map((c) => c.id), ...to.columns.map((c) => c.id)])].sort();
 
-  const rowsAdded = [...toRows.keys()].filter((id) => !fromRows.has(id)).sort().reverse();
-  const rowsRemoved = [...fromRows.keys()].filter((id) => !toRows.has(id)).sort().reverse();
+  const rowsAdded = [...toRows.keys()]
+    .filter((id) => !fromRows.has(id))
+    .sort()
+    .reverse();
+  const rowsRemoved = [...fromRows.keys()]
+    .filter((id) => !toRows.has(id))
+    .sort()
+    .reverse();
 
   const changed: ResearchCellChange[] = [];
   let changedTotal = 0;
@@ -466,8 +469,12 @@ export function diffResearchRunTables(from: ResearchRunTableView, to: ResearchRu
     const beforeRow = fromRows.get(rowSourceId);
     const afterRow = toRows.get(rowSourceId);
     for (const columnId of columnIds) {
-      const before = beforeRow ? researchCellTriple(beforeRow.cells.filter((cell) => cell.columnId === columnId)) : EMPTY_TRIPLE;
-      const after = afterRow ? researchCellTriple(afterRow.cells.filter((cell) => cell.columnId === columnId)) : EMPTY_TRIPLE;
+      const before = beforeRow
+        ? researchCellTriple(beforeRow.cells.filter((cell) => cell.columnId === columnId))
+        : EMPTY_TRIPLE;
+      const after = afterRow
+        ? researchCellTriple(afterRow.cells.filter((cell) => cell.columnId === columnId))
+        : EMPTY_TRIPLE;
       if (after.correction?.correctedFromRunId === from.run.id) {
         carried.push(
           Object.freeze({
@@ -749,7 +756,12 @@ interface ProjectionTier {
  * silent mutation of it.
  */
 const PROJECTION_TIERS: readonly ProjectionTier[] = Object.freeze([
-  { rows: DOCUMENT_TABLE_ROWS_MAX, cellChars: DOCUMENT_TABLE_CELL_MAX_CHARS, excerptChars: DOCUMENT_EVIDENCE_EXCERPT_MAX_CHARS, claimMarkdown: 150_000 },
+  {
+    rows: DOCUMENT_TABLE_ROWS_MAX,
+    cellChars: DOCUMENT_TABLE_CELL_MAX_CHARS,
+    excerptChars: DOCUMENT_EVIDENCE_EXCERPT_MAX_CHARS,
+    claimMarkdown: 150_000,
+  },
   { rows: DOCUMENT_TABLE_ROWS_MAX, cellChars: 300, excerptChars: 600, claimMarkdown: 150_000 },
   { rows: 50, cellChars: 200, excerptChars: 400, claimMarkdown: 120_000 },
   { rows: 40, cellChars: 120, excerptChars: 240, claimMarkdown: 100_000 },
@@ -882,9 +894,7 @@ export function researchCellDisplayText(
         break;
       case "conflicting":
         text =
-          triple.machine.value === null
-            ? "conflicting"
-            : `${researchDisplayValue(triple.machine.value)} (conflicting)`;
+          triple.machine.value === null ? "conflicting" : `${researchDisplayValue(triple.machine.value)} (conflicting)`;
         break;
       case "invalid":
         text = `${researchDisplayValue(triple.machine.value)} (invalid machine output)`;
@@ -1145,7 +1155,7 @@ function buildAtTier(input: ResearchArtifactProjectionInput, tier: ProjectionTie
         lines.push(line);
       }
       if (lines.length === 0 && group.items.length > 0) {
-        groupOmitted = group.items.length;
+        claimsOmitted += group.items.length;
         continue;
       }
       if (groupOmitted > 0) {
@@ -1159,7 +1169,9 @@ function buildAtTier(input: ResearchArtifactProjectionInput, tier: ProjectionTie
 
   let gapsOmitted = 0;
   {
-    const gapLines = gapClaims.map((claim) => `- ${claim.text}${claim.correctedText === null ? "" : " *(user correction)*"}`);
+    const gapLines = gapClaims.map(
+      (claim) => `- ${claim.text}${claim.correctedText === null ? "" : " *(user correction)*"}`
+    );
     const kept: string[] = [];
     const usedSoFar = sections.reduce((total, section) => total + section.markdown.length, 0);
     const gapBudget = Math.max(
@@ -1269,9 +1281,7 @@ function buildAtTier(input: ResearchArtifactProjectionInput, tier: ProjectionTie
  * Deterministic analysis-envelope column kind. Research `date`/`enum`/`text`
  * all project as string cells; `number`/`boolean` keep their kinds.
  */
-function analysisColumnKind(
-  type: ResearchColumnDeclaration["type"]
-): DocumentTableAnalysis["columns"][number]["type"] {
+function analysisColumnKind(type: ResearchColumnDeclaration["type"]): DocumentTableAnalysis["columns"][number]["type"] {
   if (type === "number") return "number";
   if (type === "boolean") return "boolean";
   return "string";
@@ -1299,11 +1309,7 @@ function rowLabels(
 }
 
 /** Appends one bounded Markdown section, chunking over the 50k section cap. */
-function pushSections(
-  sections: { heading: string; markdown: string }[],
-  heading: string,
-  markdown: string
-): void {
+function pushSections(sections: { heading: string; markdown: string }[], heading: string, markdown: string): void {
   if (markdown.length === 0) return;
   if (markdown.length <= SECTION_CHUNK_MAX_CHARS) {
     sections.push({ heading, markdown });

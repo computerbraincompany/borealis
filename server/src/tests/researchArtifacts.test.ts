@@ -210,7 +210,10 @@ describe("research artifacts — reviewed M13 drafts", () => {
     expect(rowA).toBeDefined();
     // correction overlay labeled, invalid verbatim labeled under the
     // correction, not-found rendered, evidence excerpt rendered.
-    const allCells = table.rows.flat().slice(1).filter((cell): cell is string => typeof cell === "string");
+    const allCells = table.rows
+      .flat()
+      .slice(1)
+      .filter((cell): cell is string => typeof cell === "string");
     expect(allCells.some((cell) => cell === "4.5")).toBe(true);
     expect(allCells.some((cell) => cell === "5 (corrected)")).toBe(true);
     expect(allCells.some((cell) => cell === "not found")).toBe(true);
@@ -251,11 +254,7 @@ describe("research artifacts — reviewed M13 drafts", () => {
     const payload = await headPayload(needsReview.json().document_id, needsReview.json().document_revision_id);
     expect(payload.subtitle).toContain("needs_review");
     expect(payload.sections[0].markdown).toContain("needs_review");
-    expect(
-      payload.sections.some((section) =>
-        section.markdown.includes("not labeled exhaustive")
-      )
-    ).toBe(true);
+    expect(payload.sections.some((section) => section.markdown.includes("not labeled exhaustive"))).toBe(true);
 
     const failed = await seedComparisonRun({ status: "failed" });
     const failedResponse = await createArtifact(app, failed.runId);
@@ -519,8 +518,11 @@ describe("research exports and rerun lineage over the wire", () => {
     });
     const carried = rerunTable
       .json()
-      .items.flatMap((item: { row_source_id: string; cells: { origin: string; value: unknown; corrected_from_run_id: string | null }[] }) =>
-        item.cells.map((cell) => ({ ...cell, row: item.row_source_id }))
+      .items.flatMap(
+        (item: {
+          row_source_id: string;
+          cells: { origin: string; value: unknown; corrected_from_run_id: string | null }[];
+        }) => item.cells.map((cell) => ({ ...cell, row: item.row_source_id }))
       )
       .filter((cell: { origin: string }) => cell.origin === "correction");
     expect(carried).toHaveLength(1);
