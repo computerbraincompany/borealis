@@ -7,6 +7,8 @@ import { ChatStore } from "./db/stores/chatStore.js";
 import { AgentStore } from "./db/stores/agentStore.js";
 import { ConnectionStore } from "./connections/store.js";
 import { AnalysisStore } from "./db/stores/analysisStore.js";
+import { BriefRecipeStore } from "./db/stores/briefRecipeStore.js";
+import { BriefRunStore } from "./db/stores/briefRunStore.js";
 import { DocumentStore } from "./db/stores/documentStore.js";
 import { DocumentTemplateStore } from "./db/stores/documentTemplateStore.js";
 import { AutomationStore } from "./automationStore.js";
@@ -50,6 +52,19 @@ export interface StorageRuntime {
    * constants in `documentTemplates.ts` and never appear here.
    */
   readonly documentTemplates: DocumentTemplateStore;
+  /**
+   * Reviewed brief recipe ledger (schema v26, M16 stage 1). The optimistic
+   * head over immutable revision snapshots; the civil calendar cursor lives
+   * here and is only ever moved by the recipe store or the run claim.
+   */
+  readonly briefRecipes: BriefRecipeStore;
+  /**
+   * Reviewed brief run stage machine (schema v26). Claim/coalesce atomics,
+   * conditional stage transitions, outcome accounting, and deduplicated
+   * notifications; run history survives recipe deletion through its frozen
+   * recipe snapshots.
+   */
+  readonly briefRuns: BriefRunStore;
   readonly sources: SourceStore;
   readonly libraries: LibraryStore;
   readonly agents: AgentStore;
@@ -152,6 +167,8 @@ export async function initializeStorageRuntime(optionsValue: StorageRuntimeOptio
         chats: new ChatStore(ledger),
         runs: new RunStore(ledger),
         analyses: new AnalysisStore(ledger),
+        briefRecipes: new BriefRecipeStore(ledger),
+        briefRuns: new BriefRunStore(ledger),
         documents: new DocumentStore(ledger),
         documentTemplates: new DocumentTemplateStore(ledger),
         libraries: new LibraryStore(ledger),

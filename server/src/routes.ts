@@ -10,6 +10,7 @@ import { chatRoutes } from "./routes/chats.js";
 import { agentRoutes } from "./routes/agents.js";
 import { auditRoutes } from "./routes/audit.js";
 import { automationRoutes, type AutomationSchedulerStatus } from "./routes/automations.js";
+import { briefRoutes } from "./routes/briefs.js";
 import { containedRoutes } from "./routes/contained.js";
 import { consentRoutes } from "./routes/consent.js";
 import { connectionRoutes } from "./routes/connections.js";
@@ -85,6 +86,7 @@ export async function routes(app: FastifyInstance, options: RoutesOptions = {}):
   await app.register(automationRoutes, {
     automationScheduler: options.automationScheduler ?? STOPPED_AUTOMATION_SCHEDULER,
   });
+  await app.register(briefRoutes);
   await app.register(chatRoutes);
   await app.register(analysisRoutes);
   await app.register(sourceRoutes);

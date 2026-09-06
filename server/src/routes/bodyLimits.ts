@@ -194,6 +194,20 @@ export const ANALYSIS_RUN_JSON_BODY_LIMIT_BYTES =
   (ANALYSIS_PARAMETER_MAX_COUNT * ANALYSIS_PARAMETER_STRING_MAX_CHARS + 64) * MAX_JSON_BYTES_PER_CODE_POINT +
   OBJECT_KEYS_AND_SYNTAX_HEADROOM_BYTES;
 
+/**
+ * Reviewed-brief recipe create/edit contract (M16): 80-character name,
+ * 200-character report title, 8,000-character instruction, 100 source UUIDs,
+ * up to 100 refresh bindings, up to 20 typed parameter values (string values
+ * at the durable ceiling), the bounded civil schedule, and one analysis UUID,
+ * all escaped astrally. The durable semantic bounds live in
+ * `db/stores/briefRecipeStore.ts` and the schema v26 CHECKs; this is the
+ * transport ceiling derived from them.
+ */
+export const BRIEF_RECIPE_JSON_BODY_LIMIT_BYTES =
+  (80 + 200 + 8_000 + 36 + 20 * (64 + 2_000) + 100 * 36 + 100 * (36 + 9 + 2 * 36) + (64 + 64 + 64)) *
+    MAX_JSON_BYTES_PER_CODE_POINT +
+  OBJECT_KEYS_AND_SYNTAX_HEADROOM_BYTES;
+
 /** Query-capture promotion contract: bounded title/description plus the key. */
 export const ANALYSIS_PROMOTION_JSON_BODY_LIMIT_BYTES =
   (ANALYSIS_TITLE_MAX_CHARS + ANALYSIS_DESCRIPTION_MAX_CHARS + 36 + 600) * MAX_JSON_BYTES_PER_CODE_POINT +

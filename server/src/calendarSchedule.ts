@@ -160,7 +160,10 @@ export function normalizeCalendarSchedule(value: unknown): CalendarSchedule {
 }
 
 function fieldAbsent(record: Record<string, unknown>, field: "weekday" | "day_of_month"): null {
-  if (record[field] === undefined) return null;
+  // Persisted schedule snapshots carry explicit nulls; an absent companion
+  // field may arrive as either `undefined` (API input) or `null` (decoded
+  // durable JSON). Anything else is a kind/companion mismatch.
+  if (record[field] === undefined || record[field] === null) return null;
   return rejectScheduleField();
 }
 
