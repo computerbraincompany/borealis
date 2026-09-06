@@ -296,10 +296,21 @@ export function applyResearchTablePageView(
       return cell ? cell.value : undefined;
     };
     sorted = [...filtered].sort((left, right) => {
-      const order = compareSortValue(valueAt(left), valueAt(right));
+      const leftValue = valueAt(left);
+      const rightValue = valueAt(right);
+      const leftMissing = leftValue === undefined || leftValue === null;
+      const rightMissing = rightValue === undefined || rightValue === null;
+      const tie =
+        left.row_source_id < right.row_source_id ? 1 : left.row_source_id > right.row_source_id ? -1 : 0;
+      if (leftMissing && rightMissing) return tie;
+      // Nulls sort last in BOTH directions (never a direction-dependent
+      // silent reordering of "no value").
+      if (leftMissing) return 1;
+      if (rightMissing) return -1;
+      const order = compareSortValue(leftValue, rightValue);
       if (order !== 0) return order * dir;
       // Deterministic tie-break on the row identity (matches keyset order).
-      return left.row_source_id < right.row_source_id ? 1 : left.row_source_id > right.row_source_id ? -1 : 0;
+      return tie;
     });
   }
 
