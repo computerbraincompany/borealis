@@ -170,7 +170,7 @@ function scanEntries(entries: readonly PreviewScanEntryInput[]) {
 
 describe("knowledge store", () => {
   it("ships a byte-identical v019 fixture that upgrades a seeded v18 installation", async () => {
-    expect(LATEST_SQLITE_SCHEMA_VERSION).toBe(21); // v20 documents and v21 MCP run-snapshot merged after this slot
+    expect(LATEST_SQLITE_SCHEMA_VERSION).toBe(22); // merged later slots: v20 documents, v21 MCP run snapshot, v22 templates
     await expect(listHistoricalFixtureVersions()).resolves.toEqual(expectedFixtureVersions());
     const fixtureSql = await fs.readFile(fileURLToPath(new URL("./fixtures/sqlite/v019.sql", import.meta.url)), "utf8");
     expect(fixtureSql).toBe(SCHEMA_V19);
