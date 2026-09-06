@@ -1,8 +1,10 @@
 import {
   agentConfiguration,
   decodeAgentConfiguration,
+  resolveAgentMcpToolBindings,
   resolveAgentSkills,
   type AgentConfiguration,
+  type AgentJobSetup,
 } from "../../agentConfiguration.js";
 import { randomUUID } from "node:crypto";
 import {
@@ -160,6 +162,10 @@ export class AgentStore {
     try {
       await this.ledger.withImmediateTransaction((transaction) => {
         resolveAgentSkills(transaction, accountId, configuration, instructions);
+        // Selection-time connected-tool validation (existence, enabled,
+        // current snapshot presence, supported schema, write policy). The
+        // per-run freeze happens at turn acceptance, not here.
+        resolveAgentMcpToolBindings(transaction, accountId, configuration);
         transaction.run(
           "INSERT INTO agents (id,account_id,name,current_version,created_at,updated_at,configuration) VALUES (?,?,?,1,?,?,?)",
           [id, accountId, name, timestamp, timestamp, JSON.stringify(configuration)]
@@ -258,6 +264,11 @@ export class AgentStore {
         const instructions = agentInstructions(patch.instructions ?? String(row.instructions));
         const configuration = agentConfiguration({ ...decodeAgentConfiguration(row.configuration), ...patch });
         resolveAgentSkills(transaction, accountId, configuration, instructions);
+        // Editing the connected tools validates them against the current
+        // published snapshots inside this same transaction; revision
+        // semantics are unchanged — the new revision only affects the NEXT
+        // accepted turn, never a running one.
+        resolveAgentMcpToolBindings(transaction, accountId, configuration);
         const version = Number(row.current_version) + 1;
         const now = new Date().toISOString();
         transaction.run(
@@ -275,6 +286,22 @@ export class AgentStore {
       if (error instanceof SqliteConstraintError && error.kind === "unique") throw new DuplicateAgentError();
       throw error;
     }
+  }
+
+  /**
+   * The current revision's job-setup block for a chat-creation-from-job
+   * response (starter prompts / output template / suggested libraries).
+   * Undefined when the agent does not exist for this account.
+   */
+  async getAgentJobSetup(accountIdValue: string, agentIdValue: string): Promise<AgentJobSetup | undefined> {
+    const accountId = requiredId(accountIdValue, "account id");
+    const agentId = requiredId(agentIdValue, "agent id");
+    const row = await this.ledger.get<{ configuration?: unknown }>(
+      "SELECT configuration FROM agents WHERE id=? AND account_id=?",
+      [agentId, accountId]
+    );
+    if (!row) return undefined;
+    return decodeAgentConfiguration(row.configuration).job_setup;
   }
 
   async deleteAgent(accountIdValue: string, agentIdValue: string): Promise<boolean> {

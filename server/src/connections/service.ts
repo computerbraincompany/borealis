@@ -1,9 +1,22 @@
 import path from "node:path";
 import { config } from "../config.js";
-import { CONNECTION_TRANSPORT_TIMEOUT_MS, mcpTransportProvider } from "../mcp/client.js";
-import type { McpToolDescriptor, McpTransportProvider, McpTransportTarget } from "../mcp/client.js";
+import {
+  callMcpTool,
+  CONNECTION_TRANSPORT_TIMEOUT_MS,
+  MCP_TOOL_CALL_TIMEOUT_MS,
+  mcpTransportProvider,
+  McpTransportAuthError,
+} from "../mcp/client.js";
+import type {
+  McpToolCallRequest,
+  McpToolDescriptor,
+  McpToolCallOutcome,
+  McpTransportProvider,
+  McpTransportTarget,
+} from "../mcp/client.js";
 import {
   CONNECTION_AUTH_REFRESH_FAILED,
+  ConnectionAuthRefreshFailedError,
   ConnectionAuthUnsupportedError,
   createConnectionOAuthManager,
   type ConnectionAuthorization,
@@ -22,6 +35,7 @@ import {
   type UpdateConnectionPatch,
 } from "./store.js";
 import {
+  connectionAuthorizationReference,
   connectionSecrets,
   ConnectionCustodyUnavailableError,
   FileConnectionSecretStore,
@@ -306,6 +320,136 @@ export class ConnectionService {
     }
     await this.store.recordStatus(accountId, connectionId, "disconnected", null);
     return this.toDto(accountId, await this.store.requireConnection(accountId, connectionId));
+  }
+
+  /**
+   * The non-secret custody authorization reference for one connection
+   * (`absent` / `unavailable:*` / `oauth:<digest>` / `secret:<digest>`).
+   * Turn acceptance records this value — never a token — and every MCP tool
+   * dispatch re-derives it from live custody and refuses the call on drift.
+   * A custody read failure reports the actionable unavailable reference
+   * rather than throwing out of the acceptance path.
+   */
+  async authorizationReference(accountId: string, connectionId: string): Promise<string> {
+    try {
+      return connectionAuthorizationReference(await this.secrets.read(accountId, connectionId));
+    } catch {
+      return "unavailable:custody";
+    }
+  }
+
+  /**
+   * One durable-turn MCP tool dispatch (Connected agents stage 4). The
+   * caller passes the frozen descriptor and the authorization reference
+   * captured at acceptance; this is the enforcement point re-checked before
+   * every call: the connection must still exist and be enabled, and live
+   * custody must still yield the same non-secret grant identity. Revocation,
+   * removal, or credential replacement therefore blocks the next call while
+   * a serialized token refresh (volatile entries excluded from the
+   * reference) keeps the same authorized grant working. Credential
+   * attachment mirrors the probe exactly: static custody material plus a
+   * fresh-or-renewed bearer for sign-in targets, bound to the validated
+   * endpoint and never retargeted. Execution uses the frozen schema with the
+   * 30-second deadline tightened to the caller's remaining run budget.
+   */
+  async callToolForTurn(
+    call: {
+      readonly accountId: string;
+      readonly connectionId: string;
+      readonly expectedAuthorizationReference: string;
+      readonly toolName: string;
+      readonly inputSchema: unknown;
+      readonly arguments: Record<string, unknown>;
+    },
+    options: { readonly signal?: AbortSignal; readonly deadlineMs?: number } = {}
+  ): Promise<McpToolCallOutcome> {
+    const connection = await this.store.getConnection(call.accountId, call.connectionId);
+    if (!connection) throw new ConnectionNotFoundError();
+    if (!connection.enabled) throw new ConnectionDisabledError();
+    let staticSecrets: ConnectionSecrets | undefined;
+    try {
+      const read = await this.secrets.read(call.accountId, call.connectionId);
+      const current = connectionAuthorizationReference(read);
+      if (current !== call.expectedAuthorizationReference) {
+        // Any custody drift blocks this call fail-closed; the recorded code
+        // names the actionable state for the connection panel.
+        const driftCode = current.startsWith("unavailable:")
+          ? "CONNECTION_CUSTODY_UNAVAILABLE"
+          : current === "absent"
+            ? "CONNECTION_AUTH_REQUIRED"
+            : CONNECTION_AUTH_REFRESH_FAILED;
+        await this.recordDisconnected(call.accountId, call.connectionId, driftCode).catch(() => undefined);
+        if (driftCode === "CONNECTION_CUSTODY_UNAVAILABLE") throw new ConnectionCustodyUnavailableError();
+        if (driftCode === "CONNECTION_AUTH_REQUIRED") throw new McpTransportAuthError();
+        throw new ConnectionAuthRefreshFailedError();
+      }
+      if (read.state === "available") staticSecrets = read.secrets;
+    } catch (error) {
+      // A custody store that throws outright is an unavailable custody state.
+      if (
+        !(
+          error instanceof ConnectionCustodyUnavailableError ||
+          error instanceof McpTransportAuthError ||
+          error instanceof ConnectionAuthRefreshFailedError
+        )
+      ) {
+        await this.recordDisconnected(call.accountId, call.connectionId, "CONNECTION_CUSTODY_UNAVAILABLE").catch(
+          () => undefined
+        );
+        throw new ConnectionCustodyUnavailableError();
+      }
+      throw error;
+    }
+    const request: McpToolCallRequest = {
+      name: call.toolName,
+      input_schema: call.inputSchema,
+      arguments: call.arguments,
+    };
+    const signal = options.signal ?? new AbortController().signal;
+    try {
+      // Same rule as the probe: resolve a fresh-or-renewed bearer bound to
+      // this exact endpoint before attaching it to the transport target.
+      let secretsForTarget = staticSecrets;
+      const bearer = await this.authorization().accessTokenFor?.({
+        accountId: call.accountId,
+        connection,
+        secrets: secretsForTarget,
+        signal,
+      });
+      if (bearer !== undefined) {
+        secretsForTarget = Object.freeze({
+          headers: Object.freeze({ ...(secretsForTarget?.headers ?? {}), authorization: `Bearer ${bearer}` }),
+          env: Object.freeze({ ...(secretsForTarget?.env ?? {}) }),
+        });
+      }
+      const target: McpTransportTarget = {
+        accountId: call.accountId,
+        connectionId: call.connectionId,
+        kind: connection.kind,
+        config: connection.config,
+        secrets: secretsForTarget,
+      };
+      return await callMcpTool(target, request, {
+        signal,
+        deadlineMs: Math.max(1, Math.min(options.deadlineMs ?? MCP_TOOL_CALL_TIMEOUT_MS, MCP_TOOL_CALL_TIMEOUT_MS)),
+      });
+    } catch (error) {
+      const code = error instanceof Error ? (error as { code?: unknown }).code : undefined;
+      // A live 401 or an un-renewable sign-in is an actionable disconnected
+      // state recorded exactly like the probe's evidence.
+      if (code === "CONNECTION_AUTH_REQUIRED" || code === CONNECTION_AUTH_REFRESH_FAILED) {
+        await this.recordDisconnected(call.accountId, call.connectionId, code).catch(() => undefined);
+      }
+      throw error;
+    }
+  }
+
+  private async recordDisconnected(
+    accountId: string,
+    connectionId: string,
+    code: "CONNECTION_AUTH_REQUIRED" | "CONNECTION_AUTH_REFRESH_FAILED" | "CONNECTION_CUSTODY_UNAVAILABLE"
+  ): Promise<void> {
+    await this.store.recordStatus(accountId, connectionId, "disconnected", code);
   }
 
   /**

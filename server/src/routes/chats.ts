@@ -312,6 +312,8 @@ export async function chatRoutes(app: FastifyInstance): Promise<void> {
           ...turn,
           agentInstructions: turn.agent?.instructions ?? null,
           agentTools: turn.agent?.tools ?? null,
+          // The accepted turn's frozen MCP mapping; null for built-in turns.
+          agentMcp: turn.agent?.mcp ?? null,
           content: turn.userMessage.content,
           emit,
           signal: controller.signal,

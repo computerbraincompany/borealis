@@ -162,6 +162,11 @@ export async function createHistoricalSqliteFixture(startVersion: number): Promi
     try {
       database.pragma("foreign_keys = ON");
       for (let version = 1; version <= startVersion; version += 1) {
+        // A historical installation never sits on a pending-merge version, so
+        // the fixture chain walks exactly the contiguous history the shipped
+        // migrations actually applied: pending slots are stepped over, never
+        // faked.
+        if (PENDING_MERGE_SCHEMA_VERSIONS.includes(version)) continue;
         const sql = await fs.readFile(path.join(fixtureDirectory, fixtureFilename(version)), "utf8");
         applyFixtureDelta(database, version, sql);
       }

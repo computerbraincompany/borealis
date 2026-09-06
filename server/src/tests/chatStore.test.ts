@@ -785,6 +785,8 @@ describe("ChatStore", () => {
           "create_report",
           "fetch_url",
         ],
+        // A built-in-only agent freezes an empty MCP mapping.
+        mcp: [],
       });
       const runRow = await ledger.get<{ agent_instructions: string | null }>(
         "SELECT agent_instructions FROM chat_runs WHERE id=?",

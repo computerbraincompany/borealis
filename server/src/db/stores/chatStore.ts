@@ -1,4 +1,10 @@
-import { decodeAgentConfiguration, resolveAgentSkills } from "../../agentConfiguration.js";
+import {
+  decodeAgentConfiguration,
+  encodeRunMcpSnapshot,
+  resolveAgentMcpToolBindings,
+  resolveAgentSkills,
+  type AgentMcpToolBinding,
+} from "../../agentConfiguration.js";
 import { randomUUID } from "node:crypto";
 
 import {
@@ -224,6 +230,13 @@ export interface AcceptedChatTurn {
     version: number;
     instructions: string;
     tools: readonly string[];
+    /**
+     * Frozen MCP binding set for this run (empty when the agent selects no
+     * connected tools). The same descriptors are persisted durably on the
+     * run row (`chat_runs.agent_mcp_tools`), so later agent edits or
+     * discovery refreshes can never change a running turn's mapping.
+     */
+    mcp: readonly AgentMcpToolBinding[];
   }> | null;
   readonly userMessage: AcceptedUserMessage;
   readonly runId: string;
@@ -232,6 +245,17 @@ export interface AcceptedChatTurn {
 export interface AcceptChatTurnTestHooks {
   /** Transaction barrier for behavior tests. Production callers must omit it. */
   readonly afterSnapshot?: (turn: Omit<AcceptedChatTurn, "userMessage">) => Promise<void>;
+}
+
+export interface AcceptChatTurnOptions {
+  /**
+   * Non-secret custody authorization references (per connection id) captured
+   * from secret custody before this transaction opened. Required exactly when
+   * the bound agent selects connected tools; a binding without a reference
+   * fails the acceptance closed rather than freezing an unverifiable grant.
+   * Production callers own this through `turnContext.acceptChatTurn`.
+   */
+  readonly mcpAuthorizationReferences?: Readonly<Record<string, string>>;
 }
 
 export interface ReplaceSourceScopeTestHooks {
@@ -886,11 +910,35 @@ export class ChatStore {
     });
   }
 
+  /**
+   * Connection ids referenced by the chat's bound agent (current revision)
+   * MCP selections. Read-only ledger accessor so the turn facade can capture
+   * non-secret custody authorization references before the acceptance
+   * transaction opens; a later concurrent agent edit that introduces a new
+   * connection fails closed inside the transaction instead.
+   */
+  async getChatAgentMcpConnectionIds(accountIdValue: string, chatIdValue: string): Promise<readonly string[]> {
+    const accountId = identity(accountIdValue, "account id");
+    const chatId = identity(chatIdValue, "chat id");
+    const row = await this.ledger.get<{ configuration?: unknown }>(
+      `SELECT a.configuration
+       FROM chats c
+       JOIN agents a ON a.id=c.agent_id AND a.account_id=c.account_id
+       WHERE c.id=? AND c.account_id=?`,
+      [chatId, accountId]
+    );
+    if (!row) return Object.freeze([]);
+    const configuration = decodeAgentConfiguration(row.configuration);
+    const ids = [...new Set(configuration.mcp_tools.map((binding) => binding.connection_id))];
+    return Object.freeze(ids);
+  }
+
   async acceptChatTurn(
     accountIdValue: string,
     chatIdValue: string,
     contentValue: string,
-    hooks: AcceptChatTurnTestHooks = {}
+    hooks: AcceptChatTurnTestHooks = {},
+    options: AcceptChatTurnOptions = {}
   ): Promise<AcceptedChatTurn> {
     const accountId = identity(accountIdValue, "account id");
     const chatId = identity(chatIdValue, "chat id");
@@ -926,6 +974,18 @@ export class ChatStore {
             [requiredString(chat.agent_id, "chat agent id"), accountId]
           );
           if (bound) {
+            const agentConfiguration = decodeAgentConfiguration(bound.configuration);
+            const mcp = agentConfiguration.mcp_tools.length
+              ? resolveAgentMcpToolBindings(
+                  transaction,
+                  accountId,
+                  agentConfiguration,
+                  options.mcpAuthorizationReferences ??
+                    // A selected connected tool without a pre-captured custody
+                    // reference cannot be frozen verifiably: fail closed.
+                    Object.freeze({})
+                )
+              : Object.freeze([]);
             agent = Object.freeze({
               id: requiredString(bound.id, "agent id"),
               name: requiredString(bound.name, "agent name"),
@@ -933,10 +993,11 @@ export class ChatStore {
               instructions: resolveAgentSkills(
                 transaction,
                 accountId,
-                decodeAgentConfiguration(bound.configuration),
+                agentConfiguration,
                 requiredString(bound.instructions, "agent instructions")
               ),
-              tools: Object.freeze(decodeAgentConfiguration(bound.configuration).tools),
+              tools: Object.freeze(agentConfiguration.tools),
+              mcp,
             });
           }
         }
@@ -948,6 +1009,9 @@ export class ChatStore {
           source_ids: Object.freeze([...sourceScope.readySourceIds]),
           ...(agent ? { agent: Object.freeze({ id: agent.id, name: agent.name, version: agent.version }) } : {}),
         });
+        // The frozen MCP mapping is encoded before any write so an over-budget
+        // snapshot aborts the acceptance transaction without side effects.
+        const agentMcpTools = agent ? encodeRunMcpSnapshot(agent.mcp) : null;
         const hadMessages = Boolean(transaction.get("SELECT 1 FROM messages WHERE chat_id=? LIMIT 1", [chatId]));
         const messageResult = transaction.run(
           `INSERT INTO messages (chat_id,role,content,meta,created_at)
@@ -956,8 +1020,8 @@ export class ChatStore {
         );
         transaction.run(
           `INSERT INTO chat_runs
-             (id,account_id,chat_id,user_message_id,status,agent_instructions,agent_tools,created_at,started_at)
-           VALUES (?,?,?,?,'running',?,?,?,?)`,
+             (id,account_id,chat_id,user_message_id,status,agent_instructions,agent_tools,agent_mcp_tools,created_at,started_at)
+           VALUES (?,?,?,?,'running',?,?,?,?,?)`,
           [
             runId,
             accountId,
@@ -965,6 +1029,7 @@ export class ChatStore {
             messageResult.lastInsertRowid,
             agent ? agent.instructions : null,
             agent ? JSON.stringify(agent.tools) : null,
+            agentMcpTools,
             createdAt,
             createdAt,
           ]

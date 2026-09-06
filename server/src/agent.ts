@@ -1,5 +1,6 @@
 import { ChatMessage, streamingChat } from "./llm.js";
-import { TOOL_DEFS, executeTool, type ToolRunContext } from "./tools.js";
+import { TOOL_DEFS, executeTool, type ToolDef, type ToolRunContext } from "./tools.js";
+import type { AgentMcpToolBinding } from "./agentConfiguration.js";
 import { buildCitations, type CitationRef } from "./citations.js";
 import { dataService, DataServiceError } from "./dataService.js";
 import type { ResolvedSourceScope } from "./sourceScope.js";
@@ -215,12 +216,19 @@ export async function runAgent(opts: {
   sourceScope: ResolvedSourceScope;
   agentInstructions?: string | null;
   agentTools?: readonly string[] | null;
+  /**
+   * The run's frozen MCP binding set from turn acceptance (null/undefined
+   * when the agent selects no connected tools). Aliases never change during
+   * the run; live connection state is re-checked at every dispatch.
+   */
+  agentMcp?: readonly AgentMcpToolBinding[] | null;
   userMessage?: { id: number | string };
   runId: string;
   signal?: AbortSignal;
   emit: (event: AgentEvent) => Promise<void> | void;
 }): Promise<AgentCompletion> {
-  const { accountId, chatId, content, model, sourceScope, agentInstructions, runId, emit, signal } = opts; // The durable run owns the accepted user-message boundary. Loading through
+  const { accountId, chatId, content, model, sourceScope, agentInstructions, agentMcp, runId, emit, signal } =
+    opts; // The durable run owns the accepted user-message boundary. Loading through
   // that exact account/chat/run tuple prevents mutable chat state or a caller-
   // supplied cursor from widening the prompt history.
   const prior = await storageRuntime().chats.listAgentHistoryForRun(accountId, chatId, runId, {
@@ -239,8 +247,24 @@ export async function runAgent(opts: {
     role: "system",
     content: await buildSystemPrompt(accountId, sourceScope, signal, agentInstructions),
   };
+  // Frozen run mapping: alias → (connection/tool). The model only ever sees
+  // the opaque aliases; every dispatch resolves through this immutable map,
+  // so later agent edits or discovery refreshes cannot retarget the run.
+  const mcpBindings = new Map<string, AgentMcpToolBinding>();
+  for (const binding of agentMcp ?? []) mcpBindings.set(binding.alias, binding);
+  const mcpToolDefs: ToolDef[] = [...mcpBindings.values()].map((binding) => ({
+    type: "function",
+    function: {
+      name: binding.alias,
+      description: binding.description,
+      // The frozen captured schema is what the provider advertises and what
+      // dispatch validates against — never a live re-read.
+      parameters: binding.input_schema as Record<string, any>,
+    },
+  }));
   const context: ToolRunContext = {
     allowedTools: opts.agentTools,
+    mcpBindings,
     chartIds: [],
     evidence: [],
     queryResults: [],
@@ -292,9 +316,12 @@ export async function runAgent(opts: {
           maxTokens: 8192,
           tools: finalizing
             ? []
-            : opts.agentTools == null
-              ? TOOL_DEFS
-              : TOOL_DEFS.filter((tool) => opts.agentTools!.includes(tool.function.name)),
+            : [
+                ...(opts.agentTools == null
+                  ? TOOL_DEFS
+                  : TOOL_DEFS.filter((tool) => opts.agentTools!.includes(tool.function.name))),
+                ...mcpToolDefs,
+              ],
           signal,
         },
         (text) => buffered.push(text)
@@ -339,13 +366,29 @@ export async function runAgent(opts: {
     }
     for (const toolCall of toolCalls) {
       assertValidToolCall(toolCall);
+      // A frozen MCP alias is authorized for this run even though it is not
+      // one of the built-in tool names; anything else must be an enabled
+      // built-in.
+      if (mcpBindings.has(toolCall.function.name)) continue;
       if (opts.agentTools != null && !opts.agentTools.includes(toolCall.function.name))
         throw new Error("agent tool is disabled");
     }
     totalToolCalls += toolCalls.length;
     messages.push(msg as any);
     for (const tc of toolCalls) {
-      await runToolRound(accountId, chatId, tc, messages, context, emit, 120000, signal);
+      // Connected tools carry their own 30-second tool deadline inside the
+      // run budget; the small headroom lets the transport surface its own
+      // stable timeout evidence before the round timer.
+      await runToolRound(
+        accountId,
+        chatId,
+        tc,
+        messages,
+        context,
+        emit,
+        mcpBindings.has(tc.function.name) ? 32_000 : 120_000,
+        signal
+      );
     }
   }
   // The final model call is included in the iteration budget.
@@ -458,6 +501,7 @@ export async function runToolRound(
   signal?: AbortSignal
 ): Promise<void> {
   const name = tc.function.name;
+  const isMcpTool = Boolean(context.mcpBindings?.has(name));
   let parsedArgs: any;
   try {
     parsedArgs = JSON.parse(tc.function.arguments || "{}");
@@ -465,7 +509,7 @@ export async function runToolRound(
   } catch {
     parsedArgs = {};
   }
-  emit({ type: "step-start", name, summary: toolSummary(name, false) });
+  emit({ type: "step-start", name, summary: toolSummary(name, false, isMcpTool) });
   let result: any;
   let failureSummary: string | undefined;
   // Trusted display artifacts are side effects of successful data tools.
@@ -509,7 +553,7 @@ export async function runToolRound(
     }
   } catch (e: any) {
     if (signal?.aborted) throw abortError();
-    failureSummary = safeToolFailure(name, e);
+    failureSummary = safeToolFailure(name, e, isMcpTool);
     result = { error: failureSummary };
   } finally {
     if (timeout) clearTimeout(timeout);
@@ -518,7 +562,13 @@ export async function runToolRound(
   emit({
     type: "step-end",
     name,
-    summary: failureSummary ?? (isToolErrorResult(result) ? safeToolFailure(name, undefined) : toolSummary(name, true)),
+    summary:
+      failureSummary ??
+      (isToolErrorResult(result)
+        ? isMcpTool && typeof (result as any).error === "string"
+          ? connectedToolFailureSummary((result as any).error)
+          : safeToolFailure(name, undefined, isMcpTool)
+        : toolSummary(name, true, isMcpTool)),
     status: isToolErrorResult(result) ? "error" : "ok",
   });
   messages.push({
@@ -555,7 +605,43 @@ export function selectRecentHistory<T extends { content?: unknown }>(rows: reado
   return accepted.reverse();
 }
 
-export function safeToolFailure(name: string, error: unknown): string {
+/**
+ * Fixed, content-free summaries for connected-tool failures (stage 4). The
+ * stable server-defined `CONNECTION_*` code selects the message; provider
+ * bodies, endpoints, and payloads never reach the UI.
+ */
+export function connectedToolFailureSummary(code: string): string {
+  switch (code) {
+    case "CONNECTION_DISABLED":
+    case "CONNECTION_NOT_FOUND":
+      return "The connected tool is currently unavailable and the call was not made. The operator can re-check the connection in Settings.";
+    case "CONNECTION_AUTH_REQUIRED":
+    case "CONNECTION_AUTH_REFRESH_FAILED":
+    case "CONNECTION_CUSTODY_UNAVAILABLE":
+      return "The connected tool's sign-in or stored credentials are no longer usable, so the call was not made. The operator can reconnect the connection in Settings.";
+    case "CONNECTION_TOOL_TIMEOUT":
+      return "The connected tool took too long. Try a smaller or simpler request.";
+    case "CONNECTION_TOOL_ARGS_INVALID":
+      return "The tool arguments did not match the connected tool's captured schema. Retry with arguments that fit the tool schema.";
+    case "CONNECTION_TOOL_ARGS_OVER_LIMIT":
+      return "The connected tool arguments were too large. Retry with a smaller argument set.";
+    case "CONNECTION_TOOL_RESULT_OVER_LIMIT":
+      return "The connected tool result was too large to use. Try a narrower request.";
+    case "CONNECTION_TOOL_SCHEMA_UNSUPPORTED":
+      return "The connected tool's captured schema is not supported by this workspace.";
+    default:
+      return "The connected tool call failed. Retry this step; if it keeps failing, check the connection in Settings.";
+  }
+}
+
+export function safeToolFailure(name: string, error: unknown, isMcpTool = false): string {
+  if (isMcpTool && error instanceof Error && typeof (error as { code?: unknown }).code === "string") {
+    const code = (error as unknown as { code: string }).code;
+    if (code.startsWith("CONNECTION_")) return connectedToolFailureSummary(code);
+  }
+  if (isMcpTool && error instanceof Error && error.message === "tool timed out") {
+    return "The connected tool took too long. Try a smaller or simpler request.";
+  }
   if (error instanceof Error && error.message === "tool timed out") {
     return "This operation took too long. Try a smaller query or a simpler operation.";
   }
@@ -580,7 +666,10 @@ export function safeToolFailure(name: string, error: unknown): string {
   return `${labels[name] ?? "The operation failed"}. Retry this step; if it keeps failing, check System settings.`;
 }
 
-function toolSummary(name: string, completed: boolean): string {
+function toolSummary(name: string, completed: boolean, isMcpTool = false): string {
+  if (isMcpTool) {
+    return completed ? "Completed the connected tool action." : "Running a connected tool action.";
+  }
   const summaries: Record<string, [string, string]> = {
     retrieve: ["Searching selected sources.", "Searched selected sources."],
     list_sources: ["Checking selected sources.", "Checked selected sources."],
