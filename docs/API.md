@@ -1287,9 +1287,13 @@ protocol version `2025-11-25`). The stage-4 backend is now shipped on top of
 this foundation: agent connected-tool bindings, the frozen per-turn snapshot
 in `chat_runs.agent_mcp_tools` (schema v21), MCP tool dispatch inside durable
 chat turns, and the versioned job-setup contracts documented below and under
-"Agent tools". The Connections/agent-editor UI and the packaged desktop
-main-process callback/key custody variant remain the stage-5 seam. This
-section documents the shipped contract; later stages extend it in place.
+"Agent tools". The stage-5 surface is shipped as well: the Settings →
+Connections panel, the agent-editor Connected and Job tabs, the
+chat-creation-from-job confirmation, and the packaged-desktop custody variant
+where Electron main owns the `safeStorage`-sealed key and verifies one-time
+system-browser open intents (the loopback callback listener stays
+backend-owned on both platforms). This section documents the shipped contract;
+later stages extend it in place.
 
 Transport behavior: HTTP connections accept a full endpoint path, require HTTPS
 except explicitly configured loopback/`.local` development targets, pin the
@@ -1394,9 +1398,11 @@ stores AES-256-GCM records under `<data dir>/secrets/<account>/<connection>.json
 to its account/connection scope) sealed by an operator-managed private key at
 `<data dir>/connections.key` (mode `0600`, generated once); the
 `CONNECTION_SECRETS_DIR` and `CONNECTIONS_KEY_FILE` overrides relocate them. Packaged
-desktop replaces this file custody with OS-protected storage owned by the main process
-through the same injectable custody interface. Missing or unreadable custody never
-crashes a request and never yields plaintext: reads report
+desktop keeps the identical encrypted record layout but replaces the key provider: the
+main process owns a `safeStorage`-sealed data key and answers only schema-checked
+`read`/`ensure` custody requests over the utility-process port, and opens a sign-in
+link only after verifying the one-time open intent minted for that exact URL. Missing
+or unreadable custody never crashes a request and never yields plaintext: reads report
 `credential_state: "unavailable"`, and a test/discover attempt records a `disconnected`
 status with `CONNECTION_CUSTODY_UNAVAILABLE` until credentials are replaced or removed.
 These durable paths are machine-bound and never archived: workspace archives
