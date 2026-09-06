@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 
@@ -15,6 +16,16 @@ const mocks = vi.hoisted(() => ({
   restoreDatasets: vi.fn(),
   shutdownDatasetWorker: vi.fn(),
   createDesktopBootstrapSession: vi.fn(),
+  initializeRuntimeSettings: vi.fn(),
+  closeRuntimeSettings: vi.fn(),
+}));
+
+// Stable module-cached runner seam; plan 014 will replace this ownership model.
+const runner = vi.hoisted(() => ({
+  start: vi.fn<() => void>(),
+  stop: vi.fn<() => Promise<void>>(),
+  tick: vi.fn<() => Promise<void>>(),
+  isRunning: vi.fn<() => boolean>(),
 }));
 
 vi.mock("../db.js", () => ({ initDb: mocks.initDb, closeDb: mocks.closeDb }));
@@ -28,6 +39,11 @@ vi.mock("../ingest.js", () => ({
   restoreDatasets: mocks.restoreDatasets,
 }));
 vi.mock("../data/datasets.js", () => ({ shutdownDatasetWorker: mocks.shutdownDatasetWorker }));
+vi.mock("../runtimeSettings.js", () => ({
+  initializeRuntimeSettings: mocks.initializeRuntimeSettings,
+  closeRuntimeSettings: mocks.closeRuntimeSettings,
+}));
+vi.mock("../automationRuntime.js", () => ({ automationRunner: () => runner }));
 vi.mock("../desktopBootstrap.js", () => ({
   createDesktopBootstrapSession: mocks.createDesktopBootstrapSession,
 }));
@@ -113,10 +129,20 @@ beforeEach(() => {
   mocks.stopIngestionWorkers.mockResolvedValue(undefined);
   mocks.restoreDatasets.mockResolvedValue({ restored: 0, failed: 0 });
   mocks.shutdownDatasetWorker.mockResolvedValue(undefined);
+  mocks.initializeRuntimeSettings.mockResolvedValue(undefined);
+  mocks.closeRuntimeSettings.mockReturnValue(undefined);
   mocks.createDesktopBootstrapSession.mockResolvedValue({
     token: "bootstrap-token",
     user: { id: "00000000-0000-4000-8000-000000000001", email: "local@borealis.app" },
   });
+  runner.start.mockReset();
+  runner.stop.mockReset();
+  runner.tick.mockReset();
+  runner.isRunning.mockReset();
+  runner.start.mockReturnValue(undefined);
+  runner.stop.mockResolvedValue(undefined);
+  runner.tick.mockResolvedValue(undefined);
+  runner.isRunning.mockReturnValue(false);
 });
 
 afterEach(async () => {
@@ -350,4 +376,169 @@ describe("workspace instance ownership", () => {
       await lock.release();
     }
   });
+});
+
+function deferred<T = void>(): { promise: Promise<T>; resolve: (value: T | PromiseLike<T>) => void } {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
+}
+
+/** Runs the lifecycle against a private storage directory, never operator state. */
+async function withTempWorkspace(run: () => Promise<void>): Promise<void> {
+  const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "borealis-server-lifecycle-"));
+  directories.push(workspace);
+  const previousStorageDirectory = config.storageDir;
+  config.storageDir = workspace;
+  try {
+    await run();
+  } finally {
+    config.storageDir = previousStorageDirectory;
+  }
+}
+
+describe("automation scheduler drain on server shutdown", () => {
+  it("stops the scheduler when close begins and defers closeDb until the drain settles", async () => {
+    const drain = deferred();
+    const closeDbSnapshotCounts: number[] = [];
+    runner.stop.mockImplementation(() => drain.promise);
+    mocks.closeDb.mockImplementation(async () => {
+      closeDbSnapshotCounts.push(mocks.shutdownActiveRuns.mock.calls.length);
+    });
+
+    await withTempWorkspace(async () => {
+      const server = await startBorealisServer({ host: "127.0.0.1", port: 0, logger: false });
+      expect(runner.start).toHaveBeenCalledOnce();
+      expect(mocks.shutdownActiveRuns).not.toHaveBeenCalled();
+      expect(mocks.closeDb).not.toHaveBeenCalled();
+
+      const closePromise = server.close();
+      // The scheduler is quiesced synchronously as close begins, before the
+      // first HTTP drain snapshot, and storage is untouched.
+      expect(runner.stop).toHaveBeenCalledOnce();
+      expect(mocks.shutdownActiveRuns).toHaveBeenCalledTimes(1);
+      expect(mocks.closeDb).not.toHaveBeenCalled();
+
+      // Active-run cancellation repeats while the scheduler drain is held.
+      await vi.waitFor(() => expect(mocks.shutdownActiveRuns.mock.calls.length).toBeGreaterThanOrEqual(3), {
+        timeout: 10_000,
+      });
+      expect(mocks.closeDb).not.toHaveBeenCalled();
+      const snapshotsDuringHold = mocks.shutdownActiveRuns.mock.calls.length;
+
+      drain.resolve();
+      await closePromise;
+
+      expect(mocks.closeDb).toHaveBeenCalledOnce();
+      // Storage closed only after the drain settled and one final snapshot ran.
+      expect(closeDbSnapshotCounts[0]).toBeGreaterThanOrEqual(snapshotsDuringHold + 1);
+
+      // close() stays idempotent through its cached promise.
+      await server.close();
+      expect(runner.stop).toHaveBeenCalledOnce();
+      expect(mocks.closeDb).toHaveBeenCalledOnce();
+    });
+  }, 20_000);
+
+  it("cancels a scheduler-owned controller registered after the first cancellation snapshot", async () => {
+    const events: string[] = [];
+    const controller = new AbortController();
+    const claimPausedBeforeBeginRun = deferred();
+    const runHeld = deferred();
+    let registered = false;
+
+    // The drain models a claim already inside acceptChatTurn that was paused
+    // immediately before beginRun when shutdown quiesced the scheduler.
+    runner.stop.mockImplementation(() => {
+      events.push("scheduler-stop");
+      return claimPausedBeforeBeginRun.promise.then(() => {
+        events.push("begin-run");
+        registered = true;
+        // The agent turn keeps running until a later snapshot aborts it.
+        return runHeld.promise;
+      });
+    });
+    mocks.shutdownActiveRuns.mockImplementation(async () => {
+      events.push("snapshot");
+      if (registered) {
+        controller.abort();
+        events.push("abort");
+        runHeld.resolve();
+      }
+      return registered ? 1 : 0;
+    });
+    mocks.closeDb.mockImplementation(async () => {
+      events.push("closeDb");
+    });
+
+    await withTempWorkspace(async () => {
+      const server = await startBorealisServer({ host: "127.0.0.1", port: 0, logger: false });
+      const closePromise = server.close();
+      expect(events[0]).toBe("scheduler-stop");
+
+      // Let the first cancellation snapshot complete with nothing registered.
+      await vi.waitFor(() => expect(events).toContain("snapshot"), { timeout: 10_000 });
+      expect(registered).toBe(false);
+      expect(controller.signal.aborted).toBe(false);
+      expect(mocks.closeDb).not.toHaveBeenCalled();
+
+      // beginRun registers only after that snapshot: the registration gap.
+      claimPausedBeforeBeginRun.resolve();
+      await vi.waitFor(() => expect(events).toContain("begin-run"), { timeout: 10_000 });
+      // A later snapshot must abort the newly registered controller.
+      await vi.waitFor(() => expect(events).toContain("abort"), { timeout: 10_000 });
+      expect(controller.signal.aborted).toBe(true);
+
+      await closePromise;
+      expect(mocks.closeDb).toHaveBeenCalledOnce();
+      const beginRunIndex = events.indexOf("begin-run");
+      const abortIndex = events.indexOf("abort");
+      const closeDbIndex = events.indexOf("closeDb");
+      const lastSnapshotIndex = events.lastIndexOf("snapshot");
+      expect(beginRunIndex).toBeLessThan(abortIndex);
+      // The final cancellation snapshot runs after the late abort and before
+      // storage close, leaving no controller behind.
+      expect(lastSnapshotIndex).toBeGreaterThan(abortIndex);
+      expect(lastSnapshotIndex).toBeLessThan(closeDbIndex);
+    });
+  }, 20_000);
+
+  it("drains the scheduler when startup fails after the scheduler started", async () => {
+    const occupied = net.createServer();
+    await new Promise<void>((resolve, reject) => {
+      occupied.once("error", reject);
+      occupied.listen(0, "127.0.0.1", () => resolve());
+    });
+    const address = occupied.address();
+    if (!address || typeof address === "string") throw new Error("occupied listener did not bind a TCP socket");
+    const drain = deferred();
+    runner.stop.mockImplementation(() => drain.promise);
+
+    try {
+      await withTempWorkspace(async () => {
+        const startup = startBorealisServer({ host: "127.0.0.1", port: address.port, logger: false });
+        await vi.waitFor(
+          () => {
+            expect(runner.stop).toHaveBeenCalledOnce();
+            expect(mocks.shutdownActiveRuns.mock.calls.length).toBeGreaterThanOrEqual(2);
+          },
+          { timeout: 10_000 }
+        );
+        expect(mocks.closeDb).not.toHaveBeenCalled();
+        expect(mocks.closeRuntimeSettings).not.toHaveBeenCalled();
+        const snapshotsDuringHold = mocks.shutdownActiveRuns.mock.calls.length;
+
+        drain.resolve();
+        await expect(startup).rejects.toThrow(/EADDRINUSE/);
+        expect(mocks.closeDb).toHaveBeenCalledOnce();
+        expect(mocks.closeRuntimeSettings).toHaveBeenCalledOnce();
+        // The post-drain final snapshot ran before storage close.
+        expect(mocks.shutdownActiveRuns.mock.calls.length).toBeGreaterThanOrEqual(snapshotsDuringHold + 1);
+      });
+    } finally {
+      await new Promise<void>((resolve) => occupied.close(() => resolve()));
+    }
+  }, 20_000);
 });

@@ -10,6 +10,7 @@ vi.mock("../agent.js", () => ({ runAgent: vi.fn() }));
 import { runAgent, type AgentCompletion } from "../agent.js";
 import { signToken } from "../auth.js";
 import { createAutomationRunner } from "../automationRunner.js";
+import type { AutomationStore } from "../automationStore.js";
 import { listEgressEvents } from "../egressAudit.js";
 import { installHttpBoundary } from "../httpErrors.js";
 import { automationRoutes } from "../routes/automations.js";
@@ -101,6 +102,27 @@ function agentCompletion(): AgentCompletion {
       query_results: [],
     },
   };
+}
+
+function deferred<T = void>(): { promise: Promise<T>; resolve: (value: T | PromiseLike<T>) => void } {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
+}
+
+/** Yields a macrotask so any already-resolvable microtask chain must have settled. */
+function flushMacrotask(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
+interface FakeClaim {
+  readonly id: string;
+  readonly accountId: string;
+  readonly kind: "connector_sync" | "agent_turn";
+  readonly targetId: string;
+  readonly prompt: string | null;
 }
 
 async function acknowledgeRemoteEgress(accountId: string): Promise<void> {
@@ -606,6 +628,112 @@ describe("automation runner", () => {
       consecutive_failures: 3,
     });
     expect(runAgentMock).toHaveBeenCalledOnce();
+  });
+});
+
+describe("automation runner shutdown drain", () => {
+  it("stop() quiesces immediately, drains a held claim batch, and re-arms on start()", async () => {
+    const heldBatch: FakeClaim[] = [
+      { id: randomUUID(), accountId: OWNER, kind: "connector_sync", targetId: randomUUID(), prompt: null },
+      { id: randomUUID(), accountId: OWNER, kind: "connector_sync", targetId: randomUUID(), prompt: null },
+    ];
+    const claimEntered = deferred();
+    const releaseClaims = deferred();
+    let claimCalls = 0;
+    const claimDue = vi.fn(async () => {
+      claimCalls += 1;
+      claimEntered.resolve();
+      await releaseClaims.promise;
+      // Only the first (shutdown-held) batch carries claims.
+      return claimCalls === 1 ? heldBatch : [];
+    });
+    const recordRun = vi.fn(async () => {});
+    const syncConnector = vi.fn(async () => ({}));
+    const store = { claimDue, recordRun } as unknown as AutomationStore;
+    const runner = createAutomationRunner({ store, syncConnector, tickIntervalMs: 60 * 60_000 });
+
+    const tickPromise = runner.tick();
+    await claimEntered.promise;
+    expect(claimDue).toHaveBeenCalledTimes(1);
+
+    const stopPromise = runner.stop();
+    expect(runner.isRunning()).toBe(false);
+
+    // The drain stays unsettled while the claim lookup is held.
+    let stopSettled = false;
+    void stopPromise.then(() => {
+      stopSettled = true;
+    });
+    await flushMacrotask();
+    expect(stopSettled).toBe(false);
+
+    // A tick requested after stop is a no-op until an explicit restart.
+    await runner.tick();
+    expect(claimDue).toHaveBeenCalledTimes(1);
+
+    releaseClaims.resolve();
+    await expect(tickPromise).resolves.toBeUndefined();
+    await expect(stopPromise).resolves.toBeUndefined();
+    // Releasing the held claim settles both without invoking either returned claim.
+    expect(syncConnector).not.toHaveBeenCalled();
+    expect(recordRun).not.toHaveBeenCalled();
+
+    // A subsequent start() permits scheduled and manual work again and never
+    // installs a second interval.
+    const setIntervalSpy = vi.spyOn(globalThis, "setInterval");
+    runner.start();
+    runner.start();
+    expect(runner.isRunning()).toBe(true);
+    expect(setIntervalSpy).toHaveBeenCalledTimes(1);
+    await runner.tick();
+    expect(claimDue).toHaveBeenCalledTimes(2);
+    await expect(runner.stop()).resolves.toBeUndefined();
+    expect(runner.isRunning()).toBe(false);
+    setIntervalSpy.mockRestore();
+  });
+
+  it("finishes the entered executor but never dispatches later claims after stop", async () => {
+    const connectorId = await insertConnector(OWNER);
+    const batch: FakeClaim[] = [
+      { id: randomUUID(), accountId: OWNER, kind: "connector_sync", targetId: connectorId, prompt: null },
+      { id: randomUUID(), accountId: OWNER, kind: "agent_turn", targetId: randomUUID(), prompt: "never dispatched" },
+    ];
+    const executorEntered = deferred();
+    const releaseExecutor = deferred();
+    const syncConnector = vi.fn(async () => {
+      executorEntered.resolve();
+      await releaseExecutor.promise;
+      return {};
+    });
+    const recordRun = vi.fn(async () => {});
+    const store = { claimDue: vi.fn(async () => batch), recordRun } as unknown as AutomationStore;
+    const runner = createAutomationRunner({ store, syncConnector, tickIntervalMs: 60 * 60_000 });
+
+    const tickPromise = runner.tick();
+    await executorEntered.promise;
+    // The first claim's executor is entered; the agent claim behind it has not started.
+    expect(runAgentMock).not.toHaveBeenCalled();
+
+    const stopPromise = runner.stop();
+    expect(runner.isRunning()).toBe(false);
+
+    let stopSettled = false;
+    void stopPromise.then(() => {
+      stopSettled = true;
+    });
+    await flushMacrotask();
+    expect(stopSettled).toBe(false);
+    expect(runAgentMock).not.toHaveBeenCalled();
+
+    releaseExecutor.resolve();
+    await expect(tickPromise).resolves.toBeUndefined();
+    await expect(stopPromise).resolves.toBeUndefined();
+    // Only the already-entered connector executor ran; the second claim was
+    // never dispatched and carries no synthesized history.
+    expect(syncConnector).toHaveBeenCalledOnce();
+    expect(runAgentMock).not.toHaveBeenCalled();
+    expect(recordRun).toHaveBeenCalledTimes(1);
+    expect(recordRun.mock.calls[0]?.slice(0, 3)).toEqual([batch[0]!.id, OWNER, "succeeded"]);
   });
 });
 
