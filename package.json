@@ -8,17 +8,19 @@
     "pnpm": ">=10 <11"
   },
   "scripts": {
-    "preinstall": "node -e \"if (!/pnpm/.test(process.env.npm_execpath || '')) { console.error('This repository uses pnpm. Run: corepack enable && pnpm install'); process.exit(1); }\"",
+    "build": "turbo run build",
     "dev": "turbo run dev --filter=borealis-server --filter=borealis-web",
     "dev:desktop": "turbo run dev --filter=borealis-desktop",
-    "build": "turbo run build",
-    "typecheck": "turbo run typecheck",
     "lint": "turbo run lint",
-    "test": "turbo run test",
+    "package:unsigned": "turbo run package:unsigned --filter=borealis-desktop",
     "policy": "node scripts/policy-check.mjs",
-    "workspace:archive": "pnpm --filter borealis-server workspace:archive",
+    "preinstall": "node -e \"if (!/pnpm/.test(process.env.npm_execpath || '')) { console.error('This repository uses pnpm. Run: corepack enable && pnpm install'); process.exit(1); }\"",
+    "test": "turbo run test",
+    "test:e2e:product": "node scripts/e2e/run-product.mjs --journey=all",
+    "test:e2e:product:desktop": "node scripts/e2e/run-product-desktop.mjs --journey=all",
+    "typecheck": "turbo run typecheck",
     "verify": "node scripts/policy-check.mjs && turbo run typecheck lint format:check test test:integration build native:smoke && node -e \"process.stdout.write('ALL GATES GREEN\\n')\"",
-    "package:unsigned": "turbo run package:unsigned --filter=borealis-desktop"
+    "workspace:archive": "pnpm --filter borealis-server workspace:archive"
   },
   "pnpm": {
     "overrides": {
