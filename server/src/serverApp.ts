@@ -269,6 +269,12 @@ async function drainExternalAndClose(context: ExternalDrainContext): Promise<voi
   // cancelled when a cancellation was requested) before storage closure.
   const analysisDrain = runtime ? runtime.stopAnalysisRunner() : Promise.resolve();
   void analysisDrain.catch(() => undefined);
+  // Document-rewrite transports are interrupted synchronously while the
+  // stores are alive; the owned runtime close below joins the same drain, and
+  // every interrupted rewrite finalizes its durable row (failed, never
+  // replayed; cancelled when a cancellation was requested) before closure.
+  const rewriteDrain = runtime ? runtime.stopDocumentRewriteRunner() : Promise.resolve();
+  void rewriteDrain.catch(() => undefined);
 
   // Step 2: attempt-all independent external drains with positive records.
   const [ingress, workers, reconciliation] = await Promise.allSettled([
@@ -353,6 +359,9 @@ export async function startBorealisServer(options: StartBorealisServerOptions = 
     // M12 stage 2: recover interrupted analysis runs, then resume undispatched
     // queued runs through the owned durable executor.
     runtime.startAnalysisRunner();
+    // M13 stage 3: recover interrupted rewrites as durable failures (never
+    // replayed), then resume undispatched queued requests.
+    runtime.startDocumentRewriteRunner();
     const bootstrap = desktop ? await createDesktopBootstrapSession() : undefined;
     await app.listen({ port, host });
     const actualPort = listeningPort(app);

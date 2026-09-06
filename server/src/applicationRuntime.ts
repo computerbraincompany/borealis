@@ -10,6 +10,13 @@ import {
   type AnalysisRunner,
   type AnalysisRunnerDependencies,
 } from "./analysisRunner.js";
+import {
+  bindDefaultDocumentRewriteRunner,
+  createDocumentRewriteRunner,
+  defaultDocumentRewriteRunner,
+  type DocumentRewriteRunner,
+  type DocumentRewriteRunnerDependencies,
+} from "./documentRewriteRunner.js";
 import { config } from "./config.js";
 import { syncConnector as syncConnectorRoute } from "./routes/connectors.js";
 import {
@@ -71,6 +78,8 @@ export interface ApplicationRuntime {
   readonly runner: AutomationRunner;
   /** The single saved-analysis executor over `storage.analyses`. */
   readonly analysisRunner: AnalysisRunner;
+  /** The single document-rewrite executor over `storage.documents`. */
+  readonly documentRewriteRunner: DocumentRewriteRunner;
   startAutomationScheduler(): void;
   /** Synchronously quiesces the scheduler; the promise drains in-flight claims. */
   stopAutomationScheduler(): Promise<void>;
@@ -82,6 +91,14 @@ export interface ApplicationRuntime {
   startAnalysisRunner(): void;
   /** Synchronous quiescence plus statement interrupt; the promise drains every run row. */
   stopAnalysisRunner(): Promise<void>;
+  /**
+   * Startup resume for document rewrites: interrupted provider calls recover
+   * as durable failed rows (never replayed), then undispatched queued
+   * requests are claimed and the dispatch surface becomes available.
+   */
+  startDocumentRewriteRunner(): void;
+  /** Synchronous quiescence plus transport interrupt; the promise drains every rewrite row. */
+  stopDocumentRewriteRunner(): Promise<void>;
   /** Synchronously closes contained-download admission; the promise drains it. */
   quiesceDownloads(): Promise<void>;
   /** Idempotent, proof-bearing close. The same promise is returned on repeat. */
@@ -120,6 +137,11 @@ export interface ApplicationRuntimeLifecycle {
   stopEngine(): Promise<unknown>;
   createRunner(dependencies: AutomationRunnerDependencies): AutomationRunner;
   createAnalysisRunner(dependencies: AnalysisRunnerDependencies): AnalysisRunner;
+  /**
+   * Optional so pre-M13 lifecycle seams keep compiling; production defaults
+   * to the real document-rewrite executor.
+   */
+  createRewriteRunner?(dependencies: DocumentRewriteRunnerDependencies): DocumentRewriteRunner;
 }
 
 export interface ApplicationRuntimeOptions {
@@ -176,6 +198,8 @@ interface OwnedResources {
   runnerReleased: boolean;
   analysisRunner: AnalysisRunner | undefined;
   analysisRunnerReleased: boolean;
+  rewriteRunner: DocumentRewriteRunner | undefined;
+  rewriteRunnerReleased: boolean;
   engineReleased: boolean;
 }
 
@@ -194,6 +218,8 @@ function newOwned(): OwnedResources {
     runnerReleased: false,
     analysisRunner: undefined,
     analysisRunnerReleased: false,
+    rewriteRunner: undefined,
+    rewriteRunnerReleased: false,
     engineReleased: false,
   };
 }
@@ -203,6 +229,7 @@ interface ResolvedLifecycle extends ApplicationRuntimeLifecycle {
   readonly sqlitePath: string;
   readonly lanceDirectory: string;
   quiesceAndDrainConnections(): Promise<void>;
+  createRewriteRunner(dependencies: DocumentRewriteRunnerDependencies): DocumentRewriteRunner;
 }
 
 function productionMigrationPhase(): EmbeddingMigrationPhase {
@@ -243,6 +270,7 @@ function resolveLifecycle(options: ApplicationRuntimeOptions): ResolvedLifecycle
       }),
     createRunner: lifecycle.createRunner ?? ((deps) => createAutomationRunner(deps)),
     createAnalysisRunner: lifecycle.createAnalysisRunner ?? ((deps) => createAnalysisRunner(deps)),
+    createRewriteRunner: lifecycle.createRewriteRunner ?? ((deps) => createDocumentRewriteRunner(deps)),
     syncConnector:
       options.syncConnector ?? ((accountId, connectorId) => syncConnectorRoute(accountId, undefined, connectorId)),
     sqlitePath: options.sqlitePath ?? config.sqlitePath,
@@ -320,11 +348,13 @@ async function unwindConstruction(
   // construction-time seam itself opened a connection). No scheduler ever
   // started and no HTTP surface was built, so settings/storage consumers are
   // limited to these phases.
-  const [downloadResult, migrationResult, connectionsResult] = await Promise.allSettled([
+  const [downloadResult, migrationResult, connectionsResult, rewriteResult] = await Promise.allSettled([
     owned.downloadBegun && !owned.downloadReleased ? lifecycle.quiesceAndDrainDownloads() : Promise.resolve(),
     owned.migration && !owned.migrationReleased ? owned.migration.close() : Promise.resolve(),
     lifecycle.quiesceAndDrainConnections(),
+    owned.rewriteRunner && !owned.rewriteRunnerReleased ? owned.rewriteRunner.stop() : Promise.resolve(),
   ]);
+  if (owned.rewriteRunner && rewriteResult.status === "fulfilled") owned.rewriteRunnerReleased = true;
   if (owned.downloadBegun && downloadResult.status === "fulfilled") owned.downloadReleased = true;
   if (owned.migration && migrationResult.status === "fulfilled") owned.migrationReleased = true;
   if (connectionsResult.status === "fulfilled") owned.connectionsReleased = true;
@@ -418,6 +448,10 @@ export async function createApplicationRuntime(options: ApplicationRuntimeOption
       store: owned.storage.analyses,
       sources: owned.storage.sources,
     });
+    owned.rewriteRunner = lifecycle.createRewriteRunner({
+      store: owned.storage.documents,
+      chats: owned.storage.chats,
+    });
   } catch (error) {
     const cleanUnwind = await unwindConstruction(lifecycle, owned, uncertainAcquisition);
     if (cleanUnwind) {
@@ -442,12 +476,14 @@ export async function createApplicationRuntime(options: ApplicationRuntimeOption
   const storage = owned.storage as StorageRuntime;
   const runner = owned.runner as AutomationRunner;
   const analysisRunner = owned.analysisRunner as AnalysisRunner;
+  const rewriteRunner = owned.rewriteRunner as DocumentRewriteRunner;
 
   let closePromise: Promise<void> | undefined;
   const runtime: ApplicationRuntime = Object.freeze({
     storage,
     runner,
     analysisRunner,
+    documentRewriteRunner: rewriteRunner,
     startAutomationScheduler(): void {
       if (current.phase !== "active") {
         throw new ApplicationRuntimeLifecycleError("application runtime is not active", true, ["phase"]);
@@ -470,6 +506,19 @@ export async function createApplicationRuntime(options: ApplicationRuntimeOption
       // Synchronous quiescence plus statement interrupt; the promise settles
       // only after every execution has finalized its durable run row.
       return analysisRunner.stop();
+    },
+    startDocumentRewriteRunner(): void {
+      if (current.phase !== "active") {
+        throw new ApplicationRuntimeLifecycleError("application runtime is not active", true, ["phase"]);
+      }
+      bindDefaultDocumentRewriteRunner(rewriteRunner);
+      rewriteRunner.start();
+    },
+    stopDocumentRewriteRunner(): Promise<void> {
+      // Synchronous quiescence plus provider-transport interrupt; the promise
+      // settles only after every rewrite finalized its durable row (failed,
+      // never replayed; cancelled when a cancellation was requested).
+      return rewriteRunner.stop();
     },
     quiesceDownloads(): Promise<void> {
       // Plan 008 contract: synchronous admission closure; the promise joins
@@ -503,15 +552,23 @@ export async function createApplicationRuntime(options: ApplicationRuntimeOption
       // attempt-all/all-settled semantics. Calling the already-started
       // scheduler/download/connections drains again simply joins their
       // retained promises.
-      const [runnerResult, analysisRunnerResult, downloadResult, migrationResult, engineResult, connectionsResult] =
-        await Promise.allSettled([
-          runner.stop(),
-          analysisRunner.stop(),
-          lifecycle.quiesceAndDrainDownloads(),
-          owned.migration?.close() ?? Promise.resolve(),
-          lifecycle.stopEngine(),
-          lifecycle.quiesceAndDrainConnections(),
-        ]);
+      const [
+        runnerResult,
+        analysisRunnerResult,
+        rewriteRunnerResult,
+        downloadResult,
+        migrationResult,
+        engineResult,
+        connectionsResult,
+      ] = await Promise.allSettled([
+        runner.stop(),
+        analysisRunner.stop(),
+        rewriteRunner.stop(),
+        lifecycle.quiesceAndDrainDownloads(),
+        owned.migration?.close() ?? Promise.resolve(),
+        lifecycle.stopEngine(),
+        lifecycle.quiesceAndDrainConnections(),
+      ]);
       const failed: string[] = [];
       if (runnerResult.status === "fulfilled") owned.runnerReleased = true;
       else failed.push("scheduler");
@@ -521,6 +578,13 @@ export async function createApplicationRuntime(options: ApplicationRuntimeOption
         // unavailable again and any queued run survives for the next resume.
         if (defaultAnalysisRunner() === analysisRunner) bindDefaultAnalysisRunner(undefined);
       } else failed.push("analysis-runner");
+      if (rewriteRunnerResult.status === "fulfilled") {
+        owned.rewriteRunnerReleased = true;
+        // The rewrite executor drained its final durable rows; interrupted
+        // transports are durable failures and queued rows survive for the
+        // next resume.
+        if (defaultDocumentRewriteRunner() === rewriteRunner) bindDefaultDocumentRewriteRunner(undefined);
+      } else failed.push("rewrite-runner");
       if (downloadResult.status === "fulfilled") owned.downloadReleased = true;
       else failed.push("download");
       if (migrationResult.status === "fulfilled") owned.migrationReleased = true;

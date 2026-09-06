@@ -27,6 +27,7 @@ export type CatalogEndpoint =
   | "documents"
   | "document_revisions"
   | "document_publications"
+  | "document_rewrites"
   | "document_templates";
 export interface CatalogPosition {
   readonly timestamp: string;

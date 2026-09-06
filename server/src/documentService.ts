@@ -13,13 +13,16 @@
 
 import {
   DocumentStoreError,
+  type AcceptDocumentRewriteRequestInput,
   type BeginPublicationResult,
   type CreateDocumentResult,
   type DocumentRevisionSummary,
   type StoredDocument,
   type StoredDocumentPublication,
   type StoredDocumentRevision,
+  type StoredDocumentRewrite,
 } from "./db/stores/documentStore.js";
+import { defaultDocumentRewriteRunner } from "./documentRewriteRunner.js";
 import type { CatalogPageRequest, CatalogStorePage } from "./catalogPagination.js";
 import { diffDocumentTrees, type DocumentRevisionDiff } from "./documentDiff.js";
 import { completeDocumentArtifactCleanup, type DocumentCleanupSummary } from "./documentCleanup.js";
@@ -241,6 +244,74 @@ export async function deleteDocumentTemplate(
   expectedRevision: number
 ): Promise<boolean> {
   return storageRuntime().documentTemplates.deleteTemplate(accountId, templateId, expectedRevision);
+}
+
+// ---------------------------------------------------------------------------
+// Model-assisted rewrites (M13 stage 3)
+// ---------------------------------------------------------------------------
+
+/**
+ * Durably accepts one rewrite request against an exact base revision and
+ * selection, then dispatches it to the registered rewrite executor when one
+ * is live. The durable `queued` row is the contract: without a live executor
+ * the request simply waits for the next startup resume. This function itself
+ * performs no model call; the consent gate lives on the route (before any
+ * payload persistence) and is rechecked by the runner before its single
+ * bounded transport.
+ */
+export async function requestDocumentRewrite(
+  accountId: string,
+  documentId: string,
+  input: AcceptDocumentRewriteRequestInput
+): Promise<StoredDocumentRewrite> {
+  const rewrite = await storageRuntime().documents.acceptDocumentRewriteRequest(accountId, documentId, input);
+  defaultDocumentRewriteRunner()?.dispatch(rewrite);
+  return rewrite;
+}
+
+export async function listDocumentRewrites(
+  accountId: string,
+  documentId: string,
+  page: CatalogPageRequest
+): Promise<CatalogStorePage<StoredDocumentRewrite>> {
+  return storageRuntime().documents.listDocumentRewrites(accountId, documentId, page);
+}
+
+export async function getDocumentRewrite(
+  accountId: string,
+  documentId: string,
+  rewriteId: string
+): Promise<StoredDocumentRewrite | undefined> {
+  return storageRuntime().documents.getDocumentRewrite(accountId, documentId, rewriteId);
+}
+
+export async function requestDocumentRewriteCancel(
+  accountId: string,
+  documentId: string,
+  rewriteId: string
+): Promise<{ rewrite: StoredDocumentRewrite; outcome: "cancelled" | "cancelling" | "terminal" }> {
+  return storageRuntime().documents.requestDocumentRewriteCancel(accountId, documentId, rewriteId);
+}
+
+export async function deleteDocumentRewrite(
+  accountId: string,
+  documentId: string,
+  rewriteId: string
+): Promise<boolean> {
+  return storageRuntime().documents.deleteDocumentRewrite(accountId, documentId, rewriteId);
+}
+
+/**
+ * Revision-CAS acceptance of a completed proposal into a new model-authored
+ * draft revision. Stale proposals reject with the current head metadata and
+ * are durably marked inspectable-only; applied proposals apply exactly once.
+ */
+export async function acceptDocumentRewrite(
+  accountId: string,
+  documentId: string,
+  rewriteId: string
+): Promise<{ rewrite: StoredDocumentRewrite; result: CreateDocumentResult }> {
+  return storageRuntime().documents.applyDocumentRewriteProposal(accountId, documentId, rewriteId);
 }
 
 // Re-exported so callers (and the reserved publication routes) can name the

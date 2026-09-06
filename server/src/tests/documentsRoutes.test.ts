@@ -1,7 +1,8 @@
 import fs from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
-import { randomUUID } from "node:crypto";
 import Fastify, { type FastifyInstance } from "fastify";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
@@ -714,5 +715,397 @@ describe("document routes", () => {
       body: { name: "Template 0", document_id: document.id },
     });
     expect(foreign.statusCode).toBe(404);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Stage 3: rewrite routes
+// ---------------------------------------------------------------------------
+
+function sha256(text: string): string {
+  return createHash("sha256").update(text, "utf8").digest("hex");
+}
+
+const REWRITE_SECTION_ID = "b1111111-1111-4111-8111-111111111111";
+
+function rewriteTree(markdown = "Spend rose 12% last quarter.") {
+  return {
+    title: "Rewrite doc",
+    sections: [{ id: REWRITE_SECTION_ID, heading: "Findings", markdown }],
+  };
+}
+
+async function seedRetainedRewrite(rewriteId: string, documentId: string, baseRevisionId: string): Promise<void> {
+  await storageRuntime().ledger.run(
+    `INSERT INTO document_rewrites
+       (id,account_id,document_id,base_revision_id,section_id,selection_sha256,selection_chars,instruction,
+        status,replacement,evidence_refs,finished_at)
+     VALUES (?,?,?,?,?,?,?,?,'completed','proposal',?,?)`,
+    [
+      rewriteId,
+      OWNER,
+      documentId,
+      baseRevisionId,
+      REWRITE_SECTION_ID,
+      sha256("x"),
+      1,
+      "done",
+      JSON.stringify([]),
+      "2026-09-06T00:00:00.000Z",
+    ]
+  );
+}
+
+describe("document rewrite routes", () => {
+  it("requires authentication on every rewrite route", async () => {
+    const app = await buildApp();
+    const cases: Array<[string, string, unknown?]> = [
+      ["POST", `/api/documents/${randomUUID()}/rewrites`, {}],
+      ["GET", `/api/documents/${randomUUID()}/rewrites`],
+      ["GET", `/api/documents/${randomUUID()}/rewrites/${randomUUID()}`],
+      ["DELETE", `/api/documents/${randomUUID()}/rewrites/${randomUUID()}`],
+      ["POST", `/api/documents/${randomUUID()}/rewrites/${randomUUID()}/accept`],
+    ];
+    for (const [method, url, body] of cases) {
+      const response = await app.inject({ method: method as any, url, ...(body ? { body } : {}) });
+      expect(response.statusCode, `${method} ${url}`).toBe(401);
+    }
+  });
+
+  it("accepts queued rewrites with server-side selection verification and one-active enforcement", async () => {
+    const app = await buildApp();
+    const { document, revision } = await createDocument(app, { title: "Rewrite doc", tree: rewriteTree() });
+    const markdown = "Spend rose 12% last quarter.";
+
+    const created = await app.inject({
+      method: "POST",
+      url: `/api/documents/${document.id}/rewrites`,
+      headers: ownerAuth,
+      body: {
+        base_revision_id: revision.id,
+        section_id: REWRITE_SECTION_ID,
+        selection_sha256: sha256(markdown),
+        instruction: "Make it more concise.",
+      },
+    });
+    expect(created.statusCode).toBe(202);
+    const rewrite = created.json();
+    expect(rewrite).toMatchObject({
+      document_id: document.id,
+      base_revision_id: revision.id,
+      section_id: REWRITE_SECTION_ID,
+      range_start: null,
+      range_end: null,
+      selection_chars: markdown.length,
+      status: "queued",
+      replacement: null,
+      evidence_refs: [],
+      applied_revision_id: null,
+      instruction: "Make it more concise.",
+    });
+
+    const detail = await app.inject({
+      method: "GET",
+      url: `/api/documents/${document.id}/rewrites/${rewrite.id}`,
+      headers: ownerAuth,
+    });
+    expect(detail.statusCode).toBe(200);
+    expect(detail.json().id).toBe(rewrite.id);
+
+    const list = await app.inject({
+      method: "GET",
+      url: `/api/documents/${document.id}/rewrites`,
+      headers: ownerAuth,
+    });
+    expect(list.json().items).toHaveLength(1);
+
+    // One active rewrite per document.
+    const second = await app.inject({
+      method: "POST",
+      url: `/api/documents/${document.id}/rewrites`,
+      headers: ownerAuth,
+      body: {
+        base_revision_id: revision.id,
+        section_id: REWRITE_SECTION_ID,
+        selection_sha256: sha256(markdown),
+        instruction: "Another pass.",
+      },
+    });
+    expect(second.statusCode).toBe(409);
+    expect(second.json().code).toBe("DOCUMENT_REWRITE_ACTIVE");
+
+    // Acceptance before completion is a typed state conflict.
+    const earlyAccept = await app.inject({
+      method: "POST",
+      url: `/api/documents/${document.id}/rewrites/${rewrite.id}/accept`,
+      headers: ownerAuth,
+    });
+    expect(earlyAccept.statusCode).toBe(409);
+    expect(earlyAccept.json().code).toBe("DOCUMENT_REWRITE_STATE");
+
+    // Active rows cancel instead of delete; terminal rows delete.
+    const cancelled = await app.inject({
+      method: "DELETE",
+      url: `/api/documents/${document.id}/rewrites/${rewrite.id}`,
+      headers: ownerAuth,
+    });
+    expect(cancelled.statusCode).toBe(200);
+    expect(cancelled.json().action).toBe("cancelled");
+    expect(cancelled.json().rewrite.status).toBe("cancelled");
+
+    const removed = await app.inject({
+      method: "DELETE",
+      url: `/api/documents/${document.id}/rewrites/${rewrite.id}`,
+      headers: ownerAuth,
+    });
+    expect(removed.json()).toMatchObject({ ok: true, action: "deleted" });
+    const gone = await app.inject({
+      method: "GET",
+      url: `/api/documents/${document.id}/rewrites/${rewrite.id}`,
+      headers: ownerAuth,
+    });
+    expect(gone.statusCode).toBe(404);
+
+    // A partial range is stored verbatim.
+    const ranged = await app.inject({
+      method: "POST",
+      url: `/api/documents/${document.id}/rewrites`,
+      headers: ownerAuth,
+      body: {
+        base_revision_id: revision.id,
+        section_id: REWRITE_SECTION_ID,
+        range_start: 0,
+        range_end: "Spend rose".length,
+        selection_sha256: sha256("Spend rose"),
+        instruction: "Rewrite just the opening words.",
+      },
+    });
+    expect(ranged.statusCode).toBe(202);
+    expect(ranged.json()).toMatchObject({ range_start: 0, range_end: 10, selection_chars: 10 });
+  });
+
+  it("rejects mismatching, invalid, and oversize selections with stable codes", async () => {
+    const app = await buildApp();
+    const { document, revision } = await createDocument(app, { title: "Rewrite doc", tree: rewriteTree() });
+    const markdown = "Spend rose 12% last quarter.";
+    const post = (body: Record<string, unknown>) =>
+      app.inject({
+        method: "POST",
+        url: `/api/documents/${document.id}/rewrites`,
+        headers: ownerAuth,
+        body: {
+          base_revision_id: revision.id,
+          section_id: REWRITE_SECTION_ID,
+          selection_sha256: sha256(markdown),
+          instruction: "Tighten it.",
+          ...body,
+        },
+      });
+
+    const hashMismatch = await post({ selection_sha256: sha256("something else entirely") });
+    expect(hashMismatch.statusCode).toBe(409);
+    expect(hashMismatch.json().code).toBe("DOCUMENT_REWRITE_SELECTION_MISMATCH");
+
+    const badRange = await post({
+      range_start: 5,
+      range_end: 2,
+      selection_sha256: sha256(""),
+    });
+    expect(badRange.statusCode).toBe(400);
+    expect(badRange.json().code).toBe("DOCUMENT_REWRITE_SELECTION_INVALID");
+
+    const halfRange = await post({ range_start: 0, selection_sha256: sha256(markdown) });
+    expect(halfRange.statusCode).toBe(400);
+    expect(halfRange.json().code).toBe("DOCUMENT_REWRITE_SELECTION_INVALID");
+
+    const emoji = "ab🦊cd";
+    const emojiDoc = await createDocument(app, { title: "Surrogate", tree: rewriteTree(emoji) });
+    const splitSurrogate = await app.inject({
+      method: "POST",
+      url: `/api/documents/${emojiDoc.document.id}/rewrites`,
+      headers: ownerAuth,
+      body: {
+        base_revision_id: emojiDoc.revision.id,
+        section_id: REWRITE_SECTION_ID,
+        range_start: 0,
+        // Index 3 is the low surrogate of the astral fox: a split pair.
+        range_end: 3,
+        selection_sha256: sha256(emoji.slice(0, 3)),
+        instruction: "Split the fox.",
+      },
+    });
+    expect(splitSurrogate.statusCode).toBe(400);
+    expect(splitSurrogate.json().code).toBe("DOCUMENT_REWRITE_SELECTION_INVALID");
+
+    const oversizeMarkdown = "x".repeat(8_001);
+    const oversizeDoc = await createDocument(app, { title: "Oversize", tree: rewriteTree(oversizeMarkdown) });
+    const oversizeWhole = await app.inject({
+      method: "POST",
+      url: `/api/documents/${oversizeDoc.document.id}/rewrites`,
+      headers: ownerAuth,
+      body: {
+        base_revision_id: oversizeDoc.revision.id,
+        section_id: REWRITE_SECTION_ID,
+        selection_sha256: sha256(oversizeMarkdown),
+        instruction: "Shorten this enormous section.",
+      },
+    });
+    expect(oversizeWhole.statusCode).toBe(400);
+    expect(oversizeWhole.json().code).toBe("DOCUMENT_REWRITE_SELECTION_OVERSIZE");
+    const oversizeRanged = await app.inject({
+      method: "POST",
+      url: `/api/documents/${oversizeDoc.document.id}/rewrites`,
+      headers: ownerAuth,
+      body: {
+        base_revision_id: oversizeDoc.revision.id,
+        section_id: REWRITE_SECTION_ID,
+        range_start: 0,
+        range_end: 8_001,
+        selection_sha256: sha256(oversizeMarkdown),
+        instruction: "Shorten this enormous section.",
+      },
+    });
+    expect(oversizeRanged.statusCode).toBe(400);
+    expect(oversizeRanged.json().code).toBe("DOCUMENT_REWRITE_SELECTION_OVERSIZE");
+
+    const longInstruction = await post({ instruction: "i".repeat(2_001) });
+    expect(longInstruction.statusCode).toBe(400);
+
+    const blankInstruction = await post({ instruction: "   " });
+    expect(blankInstruction.statusCode).toBe(400);
+
+    const badHashShape = await post({ selection_sha256: "DEADBEEF" });
+    expect(badHashShape.statusCode).toBe(400);
+
+    // Nothing persisted through any rejection.
+    const list = await app.inject({
+      method: "GET",
+      url: `/api/documents/${document.id}/rewrites`,
+      headers: ownerAuth,
+    });
+    expect(list.json().items).toHaveLength(0);
+  });
+
+  it("enforces the retained-proposal quota with explicit deletion", async () => {
+    const app = await buildApp();
+    const { document, revision } = await createDocument(app, { title: "Rewrite doc", tree: rewriteTree() });
+    for (let index = 0; index < 100; index += 1) {
+      await seedRetainedRewrite(randomUUID(), document.id, revision.id);
+    }
+    // The quota check needs a valid selection hash; use the whole-section hash.
+    const atQuota = await app.inject({
+      method: "POST",
+      url: `/api/documents/${document.id}/rewrites`,
+      headers: ownerAuth,
+      body: {
+        base_revision_id: revision.id,
+        section_id: REWRITE_SECTION_ID,
+        selection_sha256: sha256("Spend rose 12% last quarter."),
+        instruction: "One more pass.",
+      },
+    });
+    expect(atQuota.statusCode).toBe(409);
+    expect(atQuota.json().code).toBe("DOCUMENT_REWRITE_QUOTA_REACHED");
+
+    const list = await app.inject({
+      method: "GET",
+      url: `/api/documents/${document.id}/rewrites?limit=100`,
+      headers: ownerAuth,
+    });
+    expect(list.json().items).toHaveLength(100);
+    const victim = list.json().items[0];
+    const deleted = await app.inject({
+      method: "DELETE",
+      url: `/api/documents/${document.id}/rewrites/${victim.id}`,
+      headers: ownerAuth,
+    });
+    expect(deleted.json()).toMatchObject({ ok: true, action: "deleted" });
+
+    const accepted = await app.inject({
+      method: "POST",
+      url: `/api/documents/${document.id}/rewrites`,
+      headers: ownerAuth,
+      body: {
+        base_revision_id: revision.id,
+        section_id: REWRITE_SECTION_ID,
+        selection_sha256: sha256("Spend rose 12% last quarter."),
+        instruction: "One more pass.",
+      },
+    });
+    expect(accepted.statusCode).toBe(202);
+  });
+
+  it("hides every rewrite surface from foreign accounts", async () => {
+    const app = await buildApp();
+    const { document, revision } = await createDocument(app, { title: "Rewrite doc", tree: rewriteTree() });
+    const markdown = "Spend rose 12% last quarter.";
+    const created = await app.inject({
+      method: "POST",
+      url: `/api/documents/${document.id}/rewrites`,
+      headers: ownerAuth,
+      body: {
+        base_revision_id: revision.id,
+        section_id: REWRITE_SECTION_ID,
+        selection_sha256: sha256(markdown),
+        instruction: "Tighten it.",
+      },
+    });
+    expect(created.statusCode).toBe(202);
+
+    const foreignList = await app.inject({
+      method: "GET",
+      url: `/api/documents/${document.id}/rewrites`,
+      headers: foreignAuth,
+    });
+    expect(foreignList.statusCode).toBe(404);
+    const foreignDetail = await app.inject({
+      method: "GET",
+      url: `/api/documents/${document.id}/rewrites/${created.json().id}`,
+      headers: foreignAuth,
+    });
+    expect(foreignDetail.statusCode).toBe(404);
+    const foreignCreate = await app.inject({
+      method: "POST",
+      url: `/api/documents/${document.id}/rewrites`,
+      headers: foreignAuth,
+      body: {
+        base_revision_id: revision.id,
+        section_id: REWRITE_SECTION_ID,
+        selection_sha256: sha256(markdown),
+        instruction: "Intrude.",
+      },
+    });
+    expect(foreignCreate.statusCode).toBe(404);
+    const foreignCancel = await app.inject({
+      method: "DELETE",
+      url: `/api/documents/${document.id}/rewrites/${created.json().id}`,
+      headers: foreignAuth,
+    });
+    expect(foreignCancel.statusCode).toBe(404);
+    const foreignAccept = await app.inject({
+      method: "POST",
+      url: `/api/documents/${document.id}/rewrites/${created.json().id}/accept`,
+      headers: foreignAuth,
+    });
+    expect(foreignAccept.statusCode).toBe(404);
+  });
+
+  it("copies the base revision evidence references onto the proposal", async () => {
+    const app = await buildApp();
+    const { document, revision } = await createDocument(app, { title: "Sourced", tree: richTree() });
+    const markdown = "Net positive [1].";
+    const created = await app.inject({
+      method: "POST",
+      url: `/api/documents/${document.id}/rewrites`,
+      headers: ownerAuth,
+      body: {
+        base_revision_id: revision.id,
+        section_id: revision.payload.sections[0].id,
+        selection_sha256: sha256(markdown),
+        instruction: "Restate the finding.",
+      },
+    });
+    expect(created.statusCode).toBe(202);
+    expect(created.json().evidence_refs).toEqual(revision.payload.evidence.map((entry: { id: string }) => entry.id));
   });
 });

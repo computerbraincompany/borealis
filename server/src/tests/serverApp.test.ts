@@ -77,6 +77,8 @@ interface MockRuntime {
     stopAutomationScheduler: ReturnType<typeof vi.fn>;
     startAnalysisRunner: ReturnType<typeof vi.fn>;
     stopAnalysisRunner: ReturnType<typeof vi.fn>;
+    startDocumentRewriteRunner: ReturnType<typeof vi.fn>;
+    stopDocumentRewriteRunner: ReturnType<typeof vi.fn>;
     quiesceDownloads: ReturnType<typeof vi.fn>;
     close: ReturnType<typeof vi.fn>;
   };
@@ -114,6 +116,13 @@ function newMockRuntime(spec: MockRuntimeSpec): MockRuntime {
       }),
       stopAnalysisRunner: vi.fn(() => {
         events.push(`${label}:analysis-stop`);
+        return Promise.resolve();
+      }),
+      startDocumentRewriteRunner: vi.fn(() => {
+        events.push(`${label}:rewrite-start`);
+      }),
+      stopDocumentRewriteRunner: vi.fn(() => {
+        events.push(`${label}:rewrite-stop`);
         return Promise.resolve();
       }),
       quiesceDownloads: vi.fn(() => {
@@ -704,17 +713,21 @@ describe("owned application runtime orchestration", () => {
         "A:factory",
         "A:scheduler-start",
         "A:analysis-start",
+        "A:rewrite-start",
         "A:scheduler-stop",
         "A:download-quiesce",
         "A:analysis-stop",
+        "A:rewrite-stop",
         "A:runtime-close:proved",
         "A:storage-closed",
         "B:factory",
         "B:scheduler-start",
         "B:analysis-start",
+        "B:rewrite-start",
         "B:scheduler-stop",
         "B:download-quiesce",
         "B:analysis-stop",
+        "B:rewrite-stop",
         "B:runtime-close:proved",
         "B:storage-closed",
       ]);

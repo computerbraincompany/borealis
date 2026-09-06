@@ -6,6 +6,8 @@ import {
   DocumentPublicationActiveError,
   DocumentPublicationStateError,
   DocumentRevisionConflictError,
+  DocumentRewriteNotFoundError,
+  DocumentRewriteStaleError,
   DocumentRevisionNotFoundError,
   DocumentStoreError,
   DocumentUnavailableError,
@@ -13,7 +15,14 @@ import {
   type StoredDocument,
   type StoredDocumentPublication,
   type StoredDocumentRevision,
+  type StoredDocumentRewrite,
 } from "../db/stores/documentStore.js";
+import {
+  DocumentRewriteSelectionInvalidError,
+  DocumentRewriteSelectionOversizeError,
+  DOCUMENT_REWRITE_INSTRUCTION_MAX_CHARS,
+} from "../documentRewriteTypes.js";
+import { enforceRemoteEgressConsent } from "../egressPolicy.js";
 import {
   DocumentTemplateConflictError,
   DocumentTemplateDuplicateNameError,
@@ -22,19 +31,25 @@ import {
   type StoredDocumentTemplate,
 } from "../db/stores/documentTemplateStore.js";
 import {
+  acceptDocumentRewrite,
   createDocumentDraft,
   appendDocumentRevision,
   createTemplateFromDocument,
+  deleteDocumentRewrite,
   deleteDocumentTemplate,
   deleteDocumentWithCleanup,
   getCustomDocumentTemplate,
   getDocument,
   getDocumentDiff,
   getDocumentRevision,
+  getDocumentRewrite,
   listDocumentCatalog,
   listDocumentPublications,
+  listDocumentRewrites,
   listDocumentRevisionHistory,
   listTemplateCatalog,
+  requestDocumentRewrite,
+  requestDocumentRewriteCancel,
   updateDocumentTemplate,
   DocumentCleanupDeferredError,
 } from "../documentService.js";
@@ -90,6 +105,32 @@ const documentDiffQuerySchema = {
   properties: {
     base: { type: "string", pattern: UUID_PATTERN },
     target: { type: "string", pattern: UUID_PATTERN },
+  },
+} as const;
+
+const rewriteIdParamsSchema = {
+  type: "object",
+  required: ["id", "rewriteId"],
+  additionalProperties: false,
+  properties: {
+    id: { type: "string", pattern: UUID_PATTERN },
+    rewriteId: { type: "string", pattern: UUID_PATTERN },
+  },
+} as const;
+
+const rewriteCreateBodySchema = {
+  type: "object",
+  required: ["base_revision_id", "section_id", "selection_sha256", "instruction"],
+  additionalProperties: false,
+  properties: {
+    base_revision_id: { type: "string", pattern: UUID_PATTERN },
+    section_id: { type: "string", pattern: UUID_PATTERN },
+    // Optional UTF-16 half-open range inside the section; both fields must
+    // appear together. Omitting both selects the whole section.
+    range_start: { type: "integer", minimum: 0, maximum: 50_000 },
+    range_end: { type: "integer", minimum: 1, maximum: 50_000 },
+    selection_sha256: { type: "string", pattern: "^[0-9a-f]{64}$" },
+    instruction: { type: "string", minLength: 1, maxLength: DOCUMENT_REWRITE_INSTRUCTION_MAX_CHARS, pattern: "\\S" },
   },
 } as const;
 
@@ -199,6 +240,32 @@ function publicCustomTemplate(template: StoredDocumentTemplate) {
   };
 }
 
+function publicRewrite(rewrite: StoredDocumentRewrite) {
+  return {
+    id: rewrite.id,
+    document_id: rewrite.documentId,
+    base_revision_id: rewrite.baseRevisionId,
+    section_id: rewrite.sectionId,
+    range_start: rewrite.rangeStart,
+    range_end: rewrite.rangeEnd,
+    selection_sha256: rewrite.selectionSha256,
+    selection_chars: rewrite.selectionChars,
+    instruction: rewrite.instruction,
+    status: rewrite.status,
+    replacement: rewrite.replacement,
+    evidence_refs: rewrite.evidenceRefs,
+    model: rewrite.model,
+    error_code: rewrite.errorCode,
+    error_reason: rewrite.errorReason,
+    cancel_requested: rewrite.cancelRequested,
+    applied_revision_id: rewrite.appliedRevisionId,
+    created_at: rewrite.createdAt,
+    started_at: rewrite.startedAt,
+    finished_at: rewrite.finishedAt,
+    updated_at: rewrite.updatedAt,
+  };
+}
+
 function publicBuiltinTemplate(id: string) {
   const template = getBuiltinDocumentTemplate(id)!;
   return {
@@ -274,6 +341,49 @@ function sendDocumentError(reply: FastifyReply, error: unknown): boolean {
   }
   if (error instanceof DocumentTemplateDuplicateNameError) {
     reply.code(409).send({ error: "a template with this name already exists", code: error.code });
+    return true;
+  }
+  if (error instanceof DocumentRewriteSelectionInvalidError) {
+    reply.code(400).send({
+      error: "the rewrite selection range is invalid (it may split a surrogate pair)",
+      code: error.code,
+    });
+    return true;
+  }
+  if (error instanceof DocumentRewriteSelectionOversizeError) {
+    reply.code(400).send({
+      error: "the selected text exceeds the rewrite bound; select a smaller range",
+      code: error.code,
+    });
+    return true;
+  }
+  if (error instanceof DocumentStoreError && error.code.startsWith("DOCUMENT_REWRITE")) {
+    if (error.code === "DOCUMENT_REWRITE_NOT_FOUND") {
+      reply.code(404).send({ error: "document rewrite not found", code: error.code });
+      return true;
+    }
+    if (error instanceof DocumentRewriteStaleError) {
+      reply.code(409).send({
+        error: "this proposal is stale against the current document head; it stays inspectable and is never applied",
+        code: error.code,
+        current_head: {
+          revision_id: error.currentHead.revisionId,
+          revision: error.currentHead.revision,
+          title: error.currentHead.title,
+          author_kind: error.currentHead.authorKind,
+          updated_at: error.currentHead.updatedAt,
+        },
+      });
+      return true;
+    }
+    const messages: Record<string, string> = {
+      DOCUMENT_REWRITE_ACTIVE: "this document already has an active rewrite",
+      DOCUMENT_REWRITE_QUOTA_REACHED: "document rewrite proposal quota reached; delete a retained proposal first",
+      DOCUMENT_REWRITE_SELECTION_MISMATCH: "the selected text no longer matches this revision",
+      DOCUMENT_REWRITE_STATE: "document rewrite state does not allow this transition",
+      DOCUMENT_REWRITE_ALREADY_APPLIED: "this proposal was already applied",
+    };
+    reply.code(409).send({ error: messages[error.code] ?? "document rewrite conflict", code: error.code });
     return true;
   }
   if (error instanceof DocumentCleanupDeferredError) {
@@ -494,6 +604,121 @@ export async function documentRoutes(app: FastifyInstance): Promise<void> {
         error: "document publication is not available yet",
         code: "PUBLICATION_NOT_READY",
       })
+  );
+
+  // -- Model-assisted rewrites ---------------------------------------------------
+
+  app.post(
+    "/api/documents/:id/rewrites",
+    {
+      onRequest: requireAuth,
+      bodyLimit: COMPACT_JSON_BODY_LIMIT_BYTES,
+      schema: { params: idParamsSchema, body: rewriteCreateBodySchema },
+    },
+    async (req, reply) => {
+      const accountId = getAccountId(req);
+      // Remote-egress consent is enforced before any payload persistence,
+      // mirroring the chat-message gate; the runner rechecks before its
+      // single bounded transport.
+      if (!(await enforceRemoteEgressConsent(reply, accountId))) return;
+      const body = req.body as {
+        base_revision_id: string;
+        section_id: string;
+        range_start?: number;
+        range_end?: number;
+        selection_sha256: string;
+        instruction: string;
+      };
+      const rewrite = await guarded(reply, () =>
+        requestDocumentRewrite(accountId, (req.params as any).id, {
+          baseRevisionId: body.base_revision_id,
+          sectionId: body.section_id,
+          rangeStart: body.range_start ?? null,
+          rangeEnd: body.range_end ?? null,
+          selectionSha256: body.selection_sha256,
+          instruction: body.instruction,
+        })
+      );
+      if (!rewrite) return;
+      return reply.code(202).send(publicRewrite(rewrite));
+    }
+  );
+
+  app.get(
+    "/api/documents/:id/rewrites",
+    { onRequest: requireAuth, schema: { params: idParamsSchema, querystring: catalogPageQuerySchema } },
+    async (req, reply) => {
+      const accountId = getAccountId(req);
+      const page = await guarded(reply, async () =>
+        listDocumentRewrites(accountId, (req.params as any).id, parseCatalogPageQuery("document_rewrites", req.query))
+      );
+      if (!page) return;
+      return reply.send(
+        catalogResponse("document_rewrites", { items: page.items.map(publicRewrite), next: page.next })
+      );
+    }
+  );
+
+  app.get(
+    "/api/documents/:id/rewrites/:rewriteId",
+    { onRequest: requireAuth, schema: { params: rewriteIdParamsSchema } },
+    async (req, reply) => {
+      const accountId = getAccountId(req);
+      const rewrite = await guarded(reply, async () => {
+        const found = await getDocumentRewrite(accountId, (req.params as any).id, (req.params as any).rewriteId);
+        if (!found) throw new DocumentRewriteNotFoundError();
+        return found;
+      });
+      if (!rewrite) return;
+      return reply.send(publicRewrite(rewrite));
+    }
+  );
+
+  // Active operations cancel; terminal proposals delete (frees one quota slot).
+  app.delete(
+    "/api/documents/:id/rewrites/:rewriteId",
+    { onRequest: requireAuth, bodyLimit: COMPACT_JSON_BODY_LIMIT_BYTES, schema: { params: rewriteIdParamsSchema } },
+    async (req, reply) => {
+      const accountId = getAccountId(req);
+      const outcome = await guarded(reply, async () => {
+        const documentId = (req.params as any).id;
+        const rewriteId = (req.params as any).rewriteId;
+        const current = await getDocumentRewrite(accountId, documentId, rewriteId);
+        if (!current) throw new DocumentRewriteNotFoundError();
+        if (current.status === "queued" || current.status === "running") {
+          const cancel = await requestDocumentRewriteCancel(accountId, documentId, rewriteId);
+          return Object.freeze({ action: cancel.outcome, rewrite: cancel.rewrite });
+        }
+        const deleted = await deleteDocumentRewrite(accountId, documentId, rewriteId);
+        if (!deleted) throw new DocumentRewriteNotFoundError();
+        return Object.freeze({ action: "deleted" as const, rewrite: null });
+      });
+      if (!outcome) return;
+      return reply.send({
+        ok: true,
+        action: outcome.action,
+        ...(outcome.rewrite ? { rewrite: publicRewrite(outcome.rewrite) } : {}),
+      });
+    }
+  );
+
+  // Revision-CAS acceptance; stale/conflicting proposals reject with the
+  // current head metadata and the durable `stale` mark.
+  app.post(
+    "/api/documents/:id/rewrites/:rewriteId/accept",
+    { onRequest: requireAuth, bodyLimit: COMPACT_JSON_BODY_LIMIT_BYTES, schema: { params: rewriteIdParamsSchema } },
+    async (req, reply) => {
+      const accountId = getAccountId(req);
+      const result = await guarded(reply, () =>
+        acceptDocumentRewrite(accountId, (req.params as any).id, (req.params as any).rewriteId)
+      );
+      if (!result) return;
+      return reply.code(201).send({
+        document: publicDocument(result.result.document),
+        revision: publicRevision(result.result.revision),
+        rewrite: publicRewrite(result.rewrite),
+      });
+    }
   );
 
   // -- Document templates ---------------------------------------------------------
