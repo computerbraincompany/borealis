@@ -1083,16 +1083,18 @@ contain aggregate counts, never connector IDs, paths, or raw filesystem errors.
 ### Connections (Connected agents — implemented in this wave)
 
 The connection ledger (schema v17), server-side secret custody, the management
-endpoints below, and the real Streamable HTTP and stdio transports
-(`server/src/mcp/client.ts`, official TypeScript SDK `@modelcontextprotocol/sdk`
-pinned at 1.30.0; negotiated MCP protocol version `2025-11-25` against the
-workspace protocol fixtures) are implemented and green-tested in this wave of
-`docs/MCP_CONNECTIONS.md`. `test` and `discover` now run real bounded
-initialize/list-tools probes over those transports. The remaining stages are not
-yet current API: OAuth sign-in replaces the authorization seam (until stage 3,
-`authorize` returns `501 CONNECTION_AUTH_UNSUPPORTED`; local revocation is
-already real), and agent tool bindings, tool dispatch in chat turns, and the
-Connections UI arrive in later stages. This section documents the shipped
+endpoints below, the real Streamable HTTP and stdio transports, and the OAuth
+sign-in lifecycle (`server/src/mcp/oauth.ts` plus the backend-owned loopback
+callback listener in `server/src/mcp/oauthCallback.ts`) are implemented and
+green-tested in this wave of `docs/MCP_CONNECTIONS.md` (`test`/`discover` run
+real bounded initialize/list-tools probes; `authorize`/`authorization` run the
+real authorization-code flow with PKCE against the committed issuer fixture).
+All OAuth calls use the pinned SDK's supported client auth layer
+(`@modelcontextprotocol/sdk` 1.30.0 `client/auth.js` primitives; negotiated MCP
+protocol version `2025-11-25`). The remaining stages are not yet current API:
+agent tool bindings, tool dispatch in chat turns, and the Connections UI arrive
+in later stages, and the packaged desktop keeps the main-process callback/key
+custody variant as its stage-5 seam. This section documents the shipped
 contract; later stages extend it in place.
 
 Transport behavior: HTTP connections accept a full endpoint path, require HTTPS
@@ -1109,6 +1111,38 @@ operation; no long-lived pooled child exists, and the application runtime's
 shutdown drains any still-live connection session alongside the other owned
 drains. A `401` from the endpoint is the actionable
 `409 CONNECTION_AUTH_REQUIRED` disconnected state, never a raw provider error.
+When an HTTP connection holds sign-in material, each probe attaches a
+fresh-or-refreshed `Authorization: Bearer` token bound to the exact authorized
+target: refresh is serialized per connection (one rotation in flight), the
+stored material must name the connection's current endpoint (a config edit can
+never inherit the old endpoint's grant), the refresh token rotates per the
+issuer's policy, expired token material is cleared rather than persisted, and a
+failed renewal is the actionable `409 CONNECTION_AUTH_REFRESH_FAILED`
+disconnected state. OAuth custody material (the reserved `MCP_OAUTH_*`
+environment namespace inside the same encrypted record) is never passed into a
+stdio child environment.
+
+Sign-in is authorization-code flow with PKCE (S256), one-use state, a
+five-minute session window, and RFC 8707 resource binding to the exact MCP
+endpoint. `authorize` performs RFC 9728/8414 discovery (a protected-resource
+document names the issuer; otherwise the endpoint origin is probed as a
+co-located issuer), honors a configured client id/secret from custody first,
+and otherwise uses RFC 7591 dynamic registration when advertised. Issuer
+metadata is fetched through the same connection-boundary resolver as the
+transport (DNS-pinned, no redirects, byte- and time-bounded). The browser is
+sent to the returned `authorize_url` only after the sign-in click; the issuer
+redirects to a backend-owned loopback listener (`127.0.0.1`, OS-assigned port,
+`GET /callback` only, static notices, no reflected data, no session
+credentials, replay-refusing) that performs the code+PKCE exchange and stores
+tokens in custody. Durable observable sign-in states recorded on the
+connection's bounded status are: session expired (`disconnected`,
+`CONNECTION_AUTH_SESSION_EXPIRED`), user denial (`disconnected`,
+`CONNECTION_AUTH_DENIED`), callback replay (`disconnected`,
+`CONNECTION_AUTH_REPLAY_DETECTED`), exchange failure (`disconnected`,
+`CONNECTION_AUTH_FAILED`), successful sign-in (`untested`, null — run `test`
+or `discover` to confirm the endpoint), and failed renewal/provider logout
+(`disconnected`, `CONNECTION_AUTH_REFRESH_FAILED`, with dead token material
+cleared and the client registration retained for reconnect).
 
 | Endpoint | Contract |
 | --- | --- |
@@ -1119,8 +1153,8 @@ drains. A `401` from the endpoint is the actionable
 | `DELETE /api/connections/:id` | Disconnects (removes the credential record), deletes the connection, cascades its tool snapshots, and runs the agent-binding cascade hook so agent bindings become visibly unavailable in later stages. |
 | `POST /api/connections/:id/test` | One bounded initialize/list-tools probe; no content-bearing tool call. Returns the refreshed detail with `status: "ready"` on success. |
 | `POST /api/connections/:id/discover` | Same bounded probe, then publishes the validated tool snapshot and returns the detail with the new `discovery_revision` and `tools`. |
-| `POST /api/connections/:id/authorize` | Starts a one-use expiring sign-in session. Seam only in this wave: returns `501 CONNECTION_AUTH_UNSUPPORTED` until the OAuth provider lands. |
-| `DELETE /api/connections/:id/authorization` | Revokes local credentials, marks the connection `disconnected`, and returns the detail; provider-side revocation is added with the OAuth stage as best effort. |
+| `POST /api/connections/:id/authorize` | Starts one expiring (`expires_at`, five minutes) one-use PKCE sign-in session and returns `{authorize_url,expires_at}` for the validated sign-in action. `mcp_http` connections with OAuth-capable issuers only; others get the actionable `501 CONNECTION_AUTH_UNSUPPORTED`, and an unreachable issuer metadata endpoint is `502 CONNECTION_AUTH_DISCOVERY_FAILED` — never a fake success. A pending session is replaced (silently) by a newer `authorize`. |
+| `DELETE /api/connections/:id/authorization` | Revokes local credentials (removes the custody record, cancels any pending sign-in session), marks the connection `disconnected`, and returns the detail; provider-side revocation of the stored access/refresh tokens at the issuer's RFC 7009 endpoint is best effort. |
 
 All routes authenticate in `onRequest` before body parsing and are strictly
 account-scoped (a foreign or unknown ID is `404`). `kind` is `mcp_http` or
@@ -1139,11 +1173,15 @@ Stable `CONNECTION_*` codes carry fixed generic public messages:
 `CONNECTION_NAME_TAKEN` `409`, `CONNECTION_REVISION_CONFLICT` `409`,
 `CONNECTION_LIMIT_REACHED` `409`, `CONNECTION_DISABLED` `409`,
 `CONNECTION_INVALID_STATE` `409`, `CONNECTION_AUTH_REQUIRED` `409`,
-`CONNECTION_AUTH_UNSUPPORTED` `501`, `CONNECTION_CUSTODY_UNAVAILABLE` `503`,
+`CONNECTION_AUTH_UNSUPPORTED` `501`, `CONNECTION_AUTH_DISCOVERY_FAILED` `502`,
+`CONNECTION_AUTH_REFRESH_FAILED` `409`, `CONNECTION_CUSTODY_UNAVAILABLE` `503`,
 `CONNECTION_TRANSPORT_UNAVAILABLE` `503`, `CONNECTION_HANDSHAKE_FAILED` `502`,
 `CONNECTION_DISCOVERY_OVER_LIMIT` `502`, `CONNECTION_DISCOVERY_INVALID` `502`,
 `CONNECTION_TIMEOUT` `504`. Provider error bodies, endpoint failures, and credential
-material never reach the client.
+material never reach the client. The durable-only sign-in status codes
+(`CONNECTION_AUTH_SESSION_EXPIRED`, `CONNECTION_AUTH_DENIED`,
+`CONNECTION_AUTH_REPLAY_DETECTED`, `CONNECTION_AUTH_FAILED`) surface as
+`status_code` evidence on the detail DTO.
 
 Discovery snapshots are budgeted at 200 tools, 16 KiB per descriptor, and 512 KiB per
 catalog; an over-budget or malformed catalog is an explicit
@@ -1152,8 +1190,11 @@ previously published snapshot intact. Tool identities are stable per connection 
 rediscoveries, and `connections.discovery_revision` advances only on a published
 snapshot.
 
-Credential material is separated from every ledger row and DTO: it crosses only from a
-request body into secret custody or from custody into a transport. Browser development
+Credential material — including every OAuth token, client id/secret, issuer,
+resource, and callback binding produced by sign-in — is separated from every
+ledger row and DTO: it crosses only from a request body into secret custody or
+from custody into a transport, and tokens never enter agent revisions or run
+metadata. Browser development
 stores AES-256-GCM records under `<data dir>/secrets/<account>/<connection>.json`
 (mode `0600`, atomic rename, no symlink following, each record cryptographically bound
 to its account/connection scope) sealed by an operator-managed private key at
