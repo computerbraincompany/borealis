@@ -289,10 +289,10 @@ describe("durable embedding migration coordinator", () => {
       createEmbeddingSession: async () => async (texts) => texts.map(() => unitVector(5, 0)),
       resolveArtifact: async () => artifact,
       isTabular: () => false,
-      extractText: async () => "post-migration passage",
-      chunkText: (text) => [text],
+      extractDocument: async () => ({ text: "post-migration passage", segments: [], separator: "" }),
+      chunkTextWithLocators: (text: string) => [{ content: text, locators: [] }],
       datasetRegistration: () => ({}),
-      datasetPreviewText: () => "preview",
+      datasetPreviewSegments: () => ({ text: "preview", segments: [], separator: "" }),
     });
     await executor.ingest({
       accountId: ACCOUNT,

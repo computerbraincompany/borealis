@@ -12,7 +12,8 @@ import { ConnectorRefreshStore } from "../db/stores/connectorRefreshStore.js";
 import { openSqliteLedger } from "../db/sqlite.js";
 import type { SqliteLedger } from "../db/types.js";
 import { IngestionExecutor, IngestionWorker, type IngestionDataOperations } from "../ingestionEngine.js";
-import { chunkText, extractPdfText } from "../ingestSupport.js";
+import { extractPdfDocument } from "../ingestSupport.js";
+import { chunkTextWithLocators } from "../sourceLocations.js";
 import { recognizeLocalPdfPages, type PdfOcrPage } from "../localPdfOcr.js";
 import { buildRasterOnlyOcrSmokePdf } from "../ocrSmokePdf.js";
 import { sanitizeRetrievedEvidence } from "../tools.js";
@@ -88,11 +89,11 @@ describe("OCR ingestion composition", () => {
       createEmbeddingSession: async () => async (texts) => texts.map(() => [1, 0, 0]),
       resolveArtifact: async ({ filePath }) => (filePath === artifact ? artifact : undefined),
       isTabular: () => false,
-      extractText: async (filePath, _mime, signal) =>
-        extractPdfText(filePath, await fs.readFile(filePath), recognize, signal),
-      chunkText,
+      extractDocument: async (filePath, _mime, signal) =>
+        extractPdfDocument(filePath, await fs.readFile(filePath), recognize, signal),
+      chunkTextWithLocators,
       datasetRegistration: () => ({}),
-      datasetPreviewText: () => "preview",
+      datasetPreviewSegments: () => ({ text: "preview", segments: [], separator: "" }),
     });
     const worker = new IngestionWorker({
       store: ingestion,

@@ -7,6 +7,7 @@ import { getDocument, GlobalWorkerOptions } from "pdfjs-dist/legacy/build/pdf.mj
 import mammoth from "mammoth";
 import { config } from "./config.js";
 import { LocalOcrError, LocalOcrUnavailableError, recognizeLocalPdfPages, type PdfOcrPage } from "./localPdfOcr.js";
+import { MAX_LOCATOR_HEADING_CHARS, MAX_LOCATOR_SHEET_CHARS, type ExtractedSegment } from "./sourceLocations.js";
 const require = createRequire(import.meta.url);
 GlobalWorkerOptions.workerSrc = pathToFileURL(require.resolve("pdfjs-dist/legacy/build/pdf.worker.mjs")).href;
 
@@ -147,6 +148,58 @@ export function chunkText(text: string, size = 900, overlap = 120): string[] {
   return chunks;
 }
 
+const EXT_MARKDOWN = new Set([".md", ".markdown"]);
+
+/** ATX heading: up to three leading spaces, 1–6 `#`, then space/tab or EOL. */
+const ATX_HEADING_PATTERN = /^ {0,3}#{1,6}(?:[ \t].*)?$/;
+
+function atxHeadingText(line: string): string | null {
+  if (!ATX_HEADING_PATTERN.test(line)) return null;
+  const text = line
+    .replace(/^ {0,3}#{1,6}[ \t]*/, "")
+    .replace(/[ \t]+#+[ \t]*$/, "")
+    .trim();
+  if (!text) return null;
+  return text.length > MAX_LOCATOR_HEADING_CHARS ? text.slice(0, MAX_LOCATOR_HEADING_CHARS) : text;
+}
+
+/**
+ * Split Markdown raw text into heading-delimited spans. Segments join with
+ * the empty separator, so the raw concatenation reproduces the input exactly;
+ * the heading is recorded only when an ATX heading line was actually seen.
+ */
+export function splitMarkdownSegments(text: string): ExtractedSegment[] {
+  const segments: ExtractedSegment[] = [];
+  let current = "";
+  let currentHeading: string | undefined;
+  let offset = 0;
+  const flush = () => {
+    if (!current) return;
+    segments.push({
+      text: current,
+      anchor: { kind: "text_span", ...(currentHeading ? { heading: currentHeading } : {}) },
+    });
+    current = "";
+    currentHeading = undefined;
+  };
+  while (offset < text.length) {
+    const newline = text.indexOf("\n", offset);
+    const lineEnd = newline === -1 ? text.length : newline + 1;
+    const line = text.slice(offset, lineEnd);
+    const heading = atxHeadingText(line.replace(/\r?\n?$/, ""));
+    if (heading !== null) {
+      flush();
+      current = line;
+      currentHeading = heading;
+    } else {
+      current += line;
+    }
+    offset = lineEnd;
+  }
+  flush();
+  return segments;
+}
+
 /** Extract embedded text first and OCR only bounded pages without meaningful text. */
 export async function extractPdfText(
   filePath: string,
@@ -154,10 +207,21 @@ export async function extractPdfText(
   recognize: PdfOcrOperation = recognizeLocalPdfPages,
   signal?: AbortSignal
 ): Promise<string> {
+  return (await extractPdfDocument(filePath, buffer, recognize, signal)).text;
+}
+
+/** Structured PDF extraction: per-page segments with real 1-based pages. */
+export async function extractPdfDocument(
+  filePath: string,
+  buffer: Buffer,
+  recognize: PdfOcrOperation = recognizeLocalPdfPages,
+  signal?: AbortSignal
+): Promise<DocumentExtraction> {
   signal?.throwIfAborted();
   const doc = await getDocument({ data: new Uint8Array(buffer), useSystemFonts: true }).promise;
   try {
     const pageTexts: string[] = [];
+    const ocrPages = new Set<number>();
     const meaningfulPages: boolean[] = [];
     const emptyPages: number[] = [];
     let extractedCharacters = 0;
@@ -212,7 +276,10 @@ export async function extractPdfText(
         const byPage = new Map(recognized.map((entry) => [entry.page, entry.text]));
         for (const pageNumber of emptyPages) {
           const text = byPage.get(pageNumber);
-          if (text) pageTexts[pageNumber - 1] = `[Page ${pageNumber} — OCR]\n${text}`;
+          if (text) {
+            pageTexts[pageNumber - 1] = `[Page ${pageNumber} — OCR]\n${text}`;
+            ocrPages.add(pageNumber);
+          }
         }
       } catch (error) {
         signal?.throwIfAborted();
@@ -227,7 +294,21 @@ export async function extractPdfText(
       }
     }
     signal?.throwIfAborted();
-    return pageTexts.join("\n\n").slice(0, config.maxExtractedChars);
+    const segments: ExtractedSegment[] = pageTexts.map((text, index) =>
+      Object.freeze({
+        text,
+        anchor: Object.freeze({
+          kind: "pdf_page" as const,
+          page: index + 1,
+          ocr: ocrPages.has(index + 1),
+        }),
+      })
+    );
+    return Object.freeze({
+      text: pageTexts.join("\n\n").slice(0, config.maxExtractedChars),
+      segments: Object.freeze(segments),
+      separator: "\n\n",
+    });
   } finally {
     await doc.destroy();
   }
@@ -410,39 +491,86 @@ export function preflightDocxArchive(buffer: Buffer): void {
   }
 }
 
-export async function extractText(filePath: string, mime: string, signal?: AbortSignal): Promise<string> {
+/**
+ * One document extraction: the compatible flat text plus the ordered segments
+ * that make the text locatable. `separator` is the raw string joining adjacent
+ * segments, so `segments.map(s => s.text).join(separator) === text` before the
+ * caller-side slice; mappers rely on that exact reconstruction. `segments`
+ * is empty when the extraction honestly knows no finer structure.
+ */
+export interface DocumentExtraction {
+  readonly text: string;
+  readonly segments: readonly ExtractedSegment[];
+  readonly separator: string;
+}
+
+/**
+ * Structured extraction for ingestion (M14 stage 3). The returned `text` is
+ * byte-identical to what the text-only adapters produce for the same input;
+ * segments carry per-page/heading/row anchors when the extraction sees them.
+ */
+export async function extractDocument(
+  filePath: string,
+  mime: string,
+  signal?: AbortSignal,
+  recognize: PdfOcrOperation = recognizeLocalPdfPages
+): Promise<DocumentExtraction> {
   signal?.throwIfAborted();
   const ext = path.extname(filePath).toLowerCase();
   if (ext === ".doc") {
     throw new Error("legacy .doc files are not supported; upload .docx instead");
   }
   if (EXT_TEXT.has(ext)) {
-    const text = await fs.readFile(filePath, "utf8");
+    const raw = await fs.readFile(filePath, "utf8");
     signal?.throwIfAborted();
-    return text.slice(0, config.maxExtractedChars);
+    const text = raw.slice(0, config.maxExtractedChars);
+    const segments = EXT_MARKDOWN.has(ext)
+      ? splitMarkdownSegments(text)
+      : [{ text, anchor: { kind: "text_span" as const } }];
+    return Object.freeze({ text, segments: Object.freeze(segments), separator: "" });
   }
   if (ext === ".pdf" || mime.includes("pdf")) {
     const buffer = await fs.readFile(filePath);
     signal?.throwIfAborted();
-    return extractPdfText(filePath, buffer, recognizeLocalPdfPages, signal);
+    return extractPdfDocument(filePath, buffer, recognize, signal);
   }
   if (ext === ".docx" || mime.includes("officedocument.wordprocessingml")) {
     const buffer = await fs.readFile(filePath);
     signal?.throwIfAborted();
     const text = await extractDocx(buffer);
     signal?.throwIfAborted();
-    return text;
+    // Mammoth's raw-text pass does not preserve heading structure; DOCX
+    // locators are honest document spans with no heading claim.
+    return Object.freeze({
+      text,
+      segments: Object.freeze(Object.freeze([{ text, anchor: Object.freeze({ kind: "text_span" as const }) }])),
+      separator: "",
+    });
   }
   throw new Error("file format is not supported");
 }
 
-export function datasetPreviewText(preview: {
+/** Text compatibility adapter: the exact bytes the agent prompts always saw. */
+export async function extractText(filePath: string, mime: string, signal?: AbortSignal): Promise<string> {
+  return (await extractDocument(filePath, mime, signal)).text;
+}
+
+export interface DatasetPreviewInput {
   columns?: unknown;
   rows?: unknown;
   total_row_count?: unknown;
   returned_row_count?: unknown;
   truncated?: unknown;
-}): string {
+}
+
+/**
+ * Structured tabular preview extraction. The header line is one sheet-level
+ * segment (no asserted row range) and every returned preview line is its own
+ * segment anchored to its 1-based data-row index — the only row ranges tabular
+ * extraction actually knows. Segments join with "\n", so the flat text is
+ * byte-identical to `datasetPreviewText`.
+ */
+export function datasetPreviewSegments(preview: DatasetPreviewInput, sheet?: string): DocumentExtraction {
   const columns = Array.isArray(preview.columns) ? preview.columns.map((value) => String(value).slice(0, 200)) : [];
   const rows = Array.isArray(preview.rows) ? preview.rows.slice(0, 40) : [];
   const lines = rows.map((row) =>
@@ -456,5 +584,33 @@ export function datasetPreviewText(preview: {
   const rowCount = Number.isFinite(Number(preview.total_row_count))
     ? Math.max(0, Math.trunc(Number(preview.total_row_count)))
     : rows.length;
-  return `Columns: ${columns.join(", ")}\nRows: ${rowCount}${preview.truncated ? " (preview truncated)" : ""}\n${lines.join("\n")}`;
+  const header = `Columns: ${columns.join(", ")}\nRows: ${rowCount}${preview.truncated ? " (preview truncated)" : ""}`;
+  const boundedSheet = typeof sheet === "string" && sheet ? sheet.slice(0, MAX_LOCATOR_SHEET_CHARS) : undefined;
+  const segments: ExtractedSegment[] = [
+    Object.freeze({
+      text: header,
+      anchor: Object.freeze({ kind: "tabular_rows" as const, ...(boundedSheet ? { sheet: boundedSheet } : {}) }),
+    }),
+    ...lines.map((line, index) =>
+      Object.freeze({
+        text: line,
+        anchor: Object.freeze({
+          kind: "tabular_rows" as const,
+          ...(boundedSheet ? { sheet: boundedSheet } : {}),
+          row_start: index + 1,
+          row_end: index + 1,
+        }),
+      })
+    ),
+  ];
+  return Object.freeze({
+    text: `${header}\n${lines.join("\n")}`,
+    segments: Object.freeze(segments),
+    separator: "\n",
+  });
+}
+
+/** Text compatibility adapter: the exact preview bytes ingestion always chunked. */
+export function datasetPreviewText(preview: DatasetPreviewInput): string {
+  return datasetPreviewSegments(preview).text;
 }

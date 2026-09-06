@@ -21,12 +21,12 @@ import {
 import { publicIngestionFailure } from "./ingestionFailures.js";
 import { createAuthorizedIngestionEmbeddingSession } from "./ingestionEmbedding.js";
 import {
-  chunkText,
-  datasetPreviewText,
+  datasetPreviewSegments,
   datasetRegistrationForSource,
-  extractText,
+  extractDocument,
   isTabularSource,
 } from "./ingestSupport.js";
+import { chunkTextWithLocators } from "./sourceLocations.js";
 import { runWithRequestContext } from "./requestContext.js";
 import { completeSourceDeleteIntents } from "./sourceCleanup.js";
 import { resolveSourceArtifact } from "./storageArtifacts.js";
@@ -120,10 +120,10 @@ function engine(): CachedEngine {
     createEmbeddingSession: createAuthorizedIngestionEmbeddingSession,
     resolveArtifact: resolveSourceArtifact,
     isTabular: isTabularSource,
-    extractText,
-    chunkText,
+    extractDocument,
+    chunkTextWithLocators,
     datasetRegistration: datasetRegistrationForSource,
-    datasetPreviewText,
+    datasetPreviewSegments,
   });
   cachedEngine = Object.freeze({
     runtime,

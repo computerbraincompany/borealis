@@ -71,10 +71,10 @@ async function setup(
     createEmbeddingSession,
     resolveArtifact: vi.fn(async ({ filePath }) => (filePath === artifact ? artifact : undefined)),
     isTabular: () => false,
-    extractText: vi.fn(async () => "alpha beta gamma"),
-    chunkText: (text) => [text],
+    extractDocument: vi.fn(async () => ({ text: "alpha beta gamma", segments: [], separator: "" })),
+    chunkTextWithLocators: (text) => [{ content: text, locators: [] }],
     datasetRegistration: () => ({}),
-    datasetPreviewText: () => "preview",
+    datasetPreviewSegments: () => ({ text: "preview", segments: [], separator: "" }),
   });
   const worker = new IngestionWorker({
     store: ingestionStore,

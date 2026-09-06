@@ -13,6 +13,8 @@ import type { IngestionEmbeddingSession } from "./ingestionEmbedding.js";
 import { normalizeEmbeddingVector } from "./embeddingVector.js";
 import { IngestionStageError, publicIngestionFailure, type IngestionFailureCode } from "./ingestionFailures.js";
 import { LocalOcrError, LocalOcrUnavailableError } from "./localPdfOcr.js";
+import type { DatasetPreviewInput, DocumentExtraction } from "./ingestSupport.js";
+import type { ExtractedSegment, LocatedChunk } from "./sourceLocations.js";
 import type { IngestionVectorLifecycle } from "./vector/lifecycle.js";
 
 const EMBED_BATCH_SIZE = 16;
@@ -119,8 +121,19 @@ export interface IngestionExecutorDependencies {
     connector?: string;
   }) => Promise<string | undefined>;
   readonly isTabular: (filePath: string, mime: string) => boolean;
-  readonly extractText: (filePath: string, mime: string, signal?: AbortSignal) => Promise<string>;
-  readonly chunkText: (text: string, size: number, overlap: number) => string[];
+  /**
+   * Structured extraction. The `text` half must stay byte-identical to the
+   * historical text-only extractor; `segments` add locators, never content.
+   */
+  readonly extractDocument: (filePath: string, mime: string, signal?: AbortSignal) => Promise<DocumentExtraction>;
+  /** Chunker compatibility contract: byte-identical slices to `chunkText`. */
+  readonly chunkTextWithLocators: (
+    text: string,
+    segments: readonly ExtractedSegment[] | null,
+    separator: string,
+    size: number,
+    overlap: number
+  ) => readonly LocatedChunk[];
   readonly datasetRegistration: (input: {
     sourceId: string;
     filePath: string;
@@ -129,7 +142,8 @@ export interface IngestionExecutorDependencies {
     connector?: string;
     expectedFormat?: "csv" | "json";
   }) => Record<string, unknown>;
-  readonly datasetPreviewText: (preview: Record<string, unknown>) => string;
+  /** Structured tabular preview; `text` matches the historical preview text. */
+  readonly datasetPreviewSegments: (preview: DatasetPreviewInput, sheet?: string) => DocumentExtraction;
 }
 
 export class ConnectorRefreshActivatedError extends Error {
@@ -189,10 +203,14 @@ export class IngestionExecutor {
       if (!artifact) throw new Error("source artifact is unavailable");
       throwIfAborted(input.signal);
 
-      let text: string;
+      // Structured extraction keeps the flat text byte-compatible with the
+      // historical pipeline (agent prompts unchanged) while adding per-chunk
+      // locators whenever the extractor actually knows a finer structure.
+      let extraction: DocumentExtraction;
       if (isRefresh && candidateLocation && stored) {
-        text = this.dependencies.datasetPreviewText(
-          await data.extractPreparedDataset(input.accountId, input.name, stored.refreshVersion, expectedFormat, 40)
+        extraction = this.dependencies.datasetPreviewSegments(
+          await data.extractPreparedDataset(input.accountId, input.name, stored.refreshVersion, expectedFormat, 40),
+          input.name
         );
       } else if (this.dependencies.isTabular(artifact, input.mime)) {
         await data.registerDataset(
@@ -209,15 +227,25 @@ export class IngestionExecutor {
         );
         // The previous exact location a connector refresh must clean up lives
         // on the typed protocol row, never in `sources.meta`.
-        text = this.dependencies.datasetPreviewText(await data.extractDataset(input.accountId, input.name, 40));
+        extraction = this.dependencies.datasetPreviewSegments(
+          await data.extractDataset(input.accountId, input.name, 40),
+          input.name
+        );
       } else {
-        text = await this.dependencies.extractText(artifact, input.mime, input.signal);
+        extraction = await this.dependencies.extractDocument(artifact, input.mime, input.signal);
       }
+      const text = extraction.text;
       throwIfAborted(input.signal);
       if (!text.trim()) throw new Error("no readable text extracted");
-      const contents = this.dependencies.chunkText(text, 800, 110);
+      const contents = this.dependencies.chunkTextWithLocators(
+        text,
+        extraction.segments.length ? extraction.segments : null,
+        extraction.separator,
+        800,
+        110
+      );
       if (!contents.length) throw new Error("no readable text extracted");
-      const chunkMeta: Record<string, string> = { source: input.displayName, kind: input.kind };
+      const chunkMeta: Record<string, unknown> = { source: input.displayName, kind: input.kind };
       if (input.url) chunkMeta.url = input.url;
       if (input.connector) chunkMeta.connector = input.connector;
 
@@ -227,7 +255,10 @@ export class IngestionExecutor {
         generation: input.generation,
         leaseToken: input.leaseToken,
         sourceName: input.displayName,
-        chunks: contents.map((content) => ({ content, meta: chunkMeta })),
+        chunks: contents.map((chunk) => ({
+          content: chunk.content,
+          meta: chunk.locators.length ? { ...chunkMeta, loc: chunk.locators } : chunkMeta,
+        })),
       });
       let embed: IngestionEmbeddingSession;
       try {
