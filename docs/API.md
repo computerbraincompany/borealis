@@ -207,7 +207,7 @@ array. `PUT /api/contained/config` returns the same projection.
 | `GET /api/contained`                        | `{config,engine,downloads}` — redacted config projection, engine state, and in-process download states.                     |
 | `PUT /api/contained/config`                 | Body `{enabled,binary_path?,model_path?,binary_sha256?,extra_args?}`; returns the redacted projection. Desktop operator.     |
 | `POST /api/contained/downloads`             | Body `{url,filename,sha256}`; `202` with the download state. Desktop operator.                                              |
-| `DELETE /api/contained/downloads/:filename` | `{"ok":true}`; cancels a tracked download and removes its `.part` artifact; an untracked filename returns `404`. Desktop operator. |
+| `DELETE /api/contained/downloads/:filename` | `{"ok":true}`; cancels the active download for that filename (matched under ASCII case folding) and removes only the internal partial it owns; a filename with no active reservation — including a completed or failed terminal row, and a cancel that arrives after publication began (which returns `false` internally) — returns `404`. Desktop operator. |
 | `POST /api/contained/engine/start`          | `202` with the engine state; health is polled in the background. Desktop operator.                                          |
 | `POST /api/contained/engine/stop`           | Engine state after an orderly SIGTERM with bounded SIGKILL escalation. Desktop operator.                                    |
 
@@ -236,15 +236,49 @@ state in `off|starting|healthy|crashed|stopped`; download rows contain
 `downloading|verifying|complete|failed|canceled`.
 
 Download contract: `filename` is 1–180 characters of `[A-Za-z0-9._-]`, cannot
-contain `..`, and contains no path separators. `sha256` is mandatory and
-verified before the file is atomically renamed into place — a mismatch deletes
-the artifact and records a failed state. Downloads live under `CONTAINED_DIR`
-(default `<BOREALIS_DATA_DIR>/models`), resume from an existing `.part` byte
-range, and default to a 64 GiB ceiling configurable with the positive safe
-integer `CONTAINED_MAX_DOWNLOAD_BYTES`. The URL may contain a path but must use
-HTTPS or loopback HTTP and cannot contain credentials, a query, or a fragment.
-Redirects are refused. Download snapshots are process-local bookkeeping;
-canceling never deletes an already verified final model file.
+contain `..`, and contains no path separators; dot-only names, the reserved
+`.borealis-partials` basename, and any name ending in `.part` under ASCII case
+folding are rejected through the shared reserved-artifact predicate. Filenames
+are owned under a synchronous ASCII-case-folded reservation, so concurrent
+`Model.gguf` and `model.gguf` starts are mutually exclusive before any
+filesystem or network work, and cancel/retry address that exact owner.
+`sha256` is mandatory and verified before the file is atomically renamed into
+place — a mismatch removes only the still-owned internal partial and records a
+failed state. Downloads live under `CONTAINED_DIR` (default
+`<BOREALIS_DATA_DIR>/models`); resumable partials live only below the real,
+non-symlink `.borealis-partials` directory beneath it, opened once with
+`O_NOFOLLOW`: resume size, writes, `fsync`, SHA-256, and the publication
+identity check all use that single verified handle, the pathnames reject
+symlinks and non-regular or multiply-linked entries, and ambiguous legacy
+root-level `*.part` entries are left byte-for-byte untouched. A resume is
+issued only after that proof and is honored only by a `200` (restart,
+truncating through the same handle) or a single terminal-tail `206` whose
+`Content-Range` starts exactly at the opened partial's size, ends at
+`TOTAL - 1`, and stays within the maximum; declared `Content-Length` must be
+consistent, and premature EOF fails rather than resuming. The size default is
+64 GiB, configurable with the positive safe integer
+`CONTAINED_MAX_DOWNLOAD_BYTES`. Transport is DNS-pinned, never global fetch:
+`https:` requires every resolved address to pass the public-destination policy
+and the socket is pinned to that validated result (DNS address pinning — TLS
+hostname verification remains in force; this is not certificate pinning), and
+`http:` is accepted only for exact loopback IP literals or `localhost`
+resolving solely to loopback. The URL may contain a path but cannot contain
+credentials, a query, or a fragment; redirects and non-`identity` encoded
+responses are refused. One bounded operation signal covers DNS through the
+final body byte, configured by `CONTAINED_DOWNLOAD_TIMEOUT_MS` — milliseconds,
+default 86400000 (24 hours), accepted only as a safe integer in the closed
+range 60000 (1 minute) to 604800000 (7 days), falling back to the default
+otherwise. Publication is the atomic rename after fsync plus SHA-256; a cancel
+accepted before the synchronous publication point prevents the rename entirely
+and leaves no owned partial, while a cancel arriving after the rename begins
+cannot relabel or delete the publication. Orderly application shutdown
+quiesces admission and joins every download run — transport, hashing,
+publication, and both directory fsyncs — before reporting stopped, and a later
+lifecycle may resume admission only after that drain settles. Download
+snapshots are process-local observability, never ownership; canceling never
+deletes an already verified final model file. These proofs close application
+races and symlink attacks; they do not protect against another local user who
+can mutate the model directory.
 
 Engine contract: Borealis spawns the configured binary as
 `<binary> -m <model_path> --host 127.0.0.1 --port <os-assigned>

@@ -191,6 +191,33 @@ controls — configuration, verified downloads, and engine start/stop with live
 state. When the endpoint is managed by an environment override, Borealis
 reports the stand-down instead of overriding it.
 
+Contained downloads use a dedicated pinned transport rather than global fetch:
+public HTTPS names must resolve entirely to public addresses and the socket is
+pinned to the validated result (DNS address pinning — normal TLS hostname
+verification still applies; this is not certificate pinning), while `http:`
+is accepted only for exact loopback hosts whose literal or DNS proof shows
+nothing but loopback addresses. Redirects and encoded responses are refused,
+requests demand identity encoding, and one bounded deadline
+(`CONTAINED_DOWNLOAD_TIMEOUT_MS`: 24-hour default, accepted closed range
+1 minute to 7 days) covers DNS, connection, headers, and body streaming.
+Resumable partials live only below the real, non-symlink `.borealis-partials`
+directory under the model directory; ambiguous legacy root-level `*.part`
+entries are never read, migrated, or deleted. A resume is honored only by a
+single terminal-tail `Content-Range` that starts exactly at the opened
+partial's own size, and resume, fsync, SHA-256, and publication identity all
+come from one opened no-follow file handle, so a pathname replacement can
+never be published. Download filenames are reserved with an ASCII-case-folded
+key before any filesystem work, and dot-only names, the reserved partials
+directory name, and any final name ending in `.part` in any ASCII case are
+rejected. The verified file is SHA-256-checked, fsynced, and only then
+published by atomic rename; a cancel accepted before that point prevents the
+rename entirely, while a cancel arriving once the rename has begun is too
+late — it joins the run and never deletes the publication. Orderly application
+shutdown quiesces admission and joins every download, including publication
+and directory fsync, before reporting stopped. These guarantees close
+deterministic application races and symlink attacks; they are not an OS
+sandbox against another local user who can mutate the model directory.
+
 These model names are aliases defined in
 [server/src/llmAliases.ts](server/src/llmAliases.ts):
 

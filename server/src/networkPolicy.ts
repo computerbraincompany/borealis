@@ -121,6 +121,69 @@ export interface PublicFetchTransport {
   request(url: URL, addresses: ResolvedAddress[], signal: AbortSignal): Promise<IncomingMessage>;
 }
 
+/**
+ * Exact loopback address forms only: IPv4 127.0.0.0/8 and IPv6 `::1`.
+ * Deliberately separate from the public-destination policy — connectors and
+ * `fetch_url` must keep rejecting everything this accepts.
+ */
+export function isLoopbackAddress(address: string): boolean {
+  const family = isIP(address);
+  if (family === 4) return address.startsWith("127.");
+  if (family === 6) return address.toLowerCase() === "::1";
+  return false;
+}
+
+async function lookupAllAbortAware(
+  hostname: string,
+  signal: AbortSignal
+): Promise<{ address: string; family: number }[]> {
+  return Promise.race([
+    lookup(hostname, { all: true, verbatim: true }).catch(() => []),
+    new Promise<never>((_, reject) => {
+      if (signal.aborted) reject(signal.reason);
+      else signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+    }),
+  ]);
+}
+
+/**
+ * Resolve a host only when it is an exact loopback IP literal or exactly
+ * `localhost`, and only when every resolved address is loopback. Lookalike or
+ * suffixed names (`localhost.evil.test`, `notlocalhost`) never reach DNS.
+ * This is the separately validated contained-download path; it must never be
+ * merged into `resolvePublicDestination`.
+ */
+export async function resolveLoopbackDestination(url: URL, signal: AbortSignal): Promise<ResolvedAddress[]> {
+  const hostname = url.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  const literalFamily = isIP(hostname);
+  if (literalFamily) {
+    if (!isLoopbackAddress(hostname)) throw new UrlPolicyError();
+    return [{ address: hostname, family: literalFamily as 4 | 6 }];
+  }
+  if (hostname !== "localhost") throw new UrlPolicyError();
+  const addresses = await lookupAllAbortAware(hostname, signal);
+  if (!addresses.length || addresses.some(({ address }) => !isLoopbackAddress(address))) {
+    throw new UrlPolicyError();
+  }
+  return addresses.map(({ address, family }) => ({ address, family: family as 4 | 6 }));
+}
+
+/**
+ * Contained-model download resolver. `https:` keeps the untouched
+ * public-only policy (every answer must be public; private, loopback,
+ * link-local, or mixed answers fail before any request). `http:` is routed to
+ * the loopback-only resolver, which proves the literal or every `localhost`
+ * DNS answer is loopback. Every other scheme/host combination is rejected.
+ * The returned addresses are socket-pinned via `requestPinned`, which keeps
+ * normal TLS hostname verification through SNI — this is DNS address pinning,
+ * not certificate pinning.
+ */
+export async function resolveContainedDownloadDestination(url: URL, signal: AbortSignal): Promise<ResolvedAddress[]> {
+  if (url.protocol === "https:") return resolvePublicDestination(url, signal);
+  if (url.protocol === "http:") return resolveLoopbackDestination(url, signal);
+  throw new UrlPolicyError();
+}
+
 export async function resolvePublicDestination(url: URL, signal: AbortSignal): Promise<ResolvedAddress[]> {
   const hostname = url.hostname.toLowerCase().replace(/^\[|\]$/g, "");
   if (hostname === "localhost" || hostname.endsWith(".localhost") || hostname.endsWith(".local")) {

@@ -1,13 +1,20 @@
 import { createServer, type Server } from "node:http";
 import { AddressInfo } from "node:net";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const { lookupMock } = vi.hoisted(() => ({ lookupMock: vi.fn() }));
+vi.mock("node:dns/promises", () => ({ lookup: lookupMock }));
+
 import {
   explicitHttpUrls,
   fetchPublicText,
   fetchPublicTextWithTransport,
+  isLoopbackAddress,
   isUnsafeIp,
   normalizeHttpUrl,
   requestPinned,
+  resolveContainedDownloadDestination,
+  resolveLoopbackDestination,
   resolveRedirectTarget,
 } from "../networkPolicy.js";
 
@@ -165,5 +172,129 @@ describe("outbound URL policy", () => {
     ).rejects.toBeDefined();
     expect(requests).toBe(2);
     expect(signals[0]).toBe(signals[1]);
+  });
+});
+
+describe("contained download destination resolution", () => {
+  beforeEach(() => {
+    lookupMock.mockReset();
+  });
+
+  it("classifies exact loopback addresses only", () => {
+    expect(isLoopbackAddress("127.0.0.1")).toBe(true);
+    expect(isLoopbackAddress("127.5.6.7")).toBe(true);
+    expect(isLoopbackAddress("::1")).toBe(true);
+    expect(isLoopbackAddress("8.8.8.8")).toBe(false);
+    expect(isLoopbackAddress("10.0.0.1")).toBe(false);
+    expect(isLoopbackAddress("::2")).toBe(false);
+    expect(isLoopbackAddress("::ffff:127.0.0.1")).toBe(false);
+    expect(isLoopbackAddress("localhost")).toBe(false);
+  });
+
+  it("routes public HTTPS through the untouched public-only resolver", async () => {
+    lookupMock.mockResolvedValue([{ address: "93.184.216.34", family: 4 }]);
+    await expect(
+      resolveContainedDownloadDestination(new URL("https://models.example.test/x.gguf"), AbortSignal.timeout(2_000))
+    ).resolves.toEqual([{ address: "93.184.216.34", family: 4 }]);
+    expect(lookupMock).toHaveBeenCalledWith("models.example.test", { all: true, verbatim: true });
+  });
+
+  it.each(["10.1.2.3", "169.254.169.254", "192.168.1.5", "::1", "fc00::1", "fe80::1"])(
+    "rejects public HTTPS whose DNS answers private/loopback space %s",
+    async (address) => {
+      lookupMock.mockResolvedValue([{ address, family: address.includes(":") ? 6 : 4 }]);
+      await expect(
+        resolveContainedDownloadDestination(new URL("https://models.example.test/x.gguf"), AbortSignal.timeout(2_000))
+      ).rejects.toThrow("URL is not permitted");
+    }
+  );
+
+  it("rejects mixed public/private HTTPS answers", async () => {
+    lookupMock.mockResolvedValue([
+      { address: "93.184.216.34", family: 4 },
+      { address: "10.0.0.1", family: 4 },
+    ]);
+    await expect(
+      resolveContainedDownloadDestination(new URL("https://models.example.test/x.gguf"), AbortSignal.timeout(2_000))
+    ).rejects.toThrow("URL is not permitted");
+  });
+
+  it("accepts exact loopback IP literal HTTP hosts with zero DNS", async () => {
+    await expect(
+      resolveContainedDownloadDestination(new URL("http://127.0.0.1:4567/x"), AbortSignal.timeout(2_000))
+    ).resolves.toEqual([{ address: "127.0.0.1", family: 4 }]);
+    await expect(
+      resolveContainedDownloadDestination(new URL("http://[::1]:4567/x"), AbortSignal.timeout(2_000))
+    ).resolves.toEqual([{ address: "::1", family: 6 }]);
+    expect(lookupMock).not.toHaveBeenCalled();
+  });
+
+  it("accepts localhost HTTP only when every DNS answer is loopback", async () => {
+    lookupMock.mockResolvedValue([
+      { address: "127.0.0.1", family: 4 },
+      { address: "::1", family: 6 },
+    ]);
+    await expect(
+      resolveLoopbackDestination(new URL("http://localhost:4567/x"), AbortSignal.timeout(2_000))
+    ).resolves.toEqual([
+      { address: "127.0.0.1", family: 4 },
+      { address: "::1", family: 6 },
+    ]);
+  });
+
+  it.each([
+    [{ address: "8.8.8.8", family: 4 }],
+    [{ address: "10.0.0.1", family: 4 }],
+    [
+      { address: "127.0.0.1", family: 4 },
+      { address: "10.0.0.2", family: 4 },
+    ],
+  ])("rejects poisoned localhost answers %j", async (...answers) => {
+    lookupMock.mockResolvedValue(answers);
+    await expect(
+      resolveContainedDownloadDestination(new URL("http://localhost:4567/x"), AbortSignal.timeout(2_000))
+    ).rejects.toThrow("URL is not permitted");
+  });
+
+  it("rejects an empty localhost answer", async () => {
+    lookupMock.mockResolvedValue([]);
+    await expect(
+      resolveLoopbackDestination(new URL("http://localhost:4567/x"), AbortSignal.timeout(2_000))
+    ).rejects.toThrow("URL is not permitted");
+  });
+
+  it.each([
+    "http://localhost.evil.test/x",
+    "http://notlocalhost/x",
+    "http://127.0.0.1.evil.test/x",
+    "http://models.example.test/x",
+    "http://10.0.0.1/x",
+  ])("rejects lookalike and non-loopback HTTP hosts %s without touching DNS", async (rawUrl) => {
+    await expect(resolveContainedDownloadDestination(new URL(rawUrl), AbortSignal.timeout(2_000))).rejects.toThrow(
+      "URL is not permitted"
+    );
+    expect(lookupMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects other schemes and HTTPS to loopback-spelled names", async () => {
+    await expect(
+      resolveContainedDownloadDestination(new URL("ftp://models.example.test/x"), AbortSignal.timeout(2_000))
+    ).rejects.toBeInstanceOf(Error);
+    lookupMock.mockClear();
+    await expect(
+      resolveContainedDownloadDestination(new URL("https://localhost/x"), AbortSignal.timeout(2_000))
+    ).rejects.toThrow("URL is not permitted");
+    expect(lookupMock).not.toHaveBeenCalled();
+  });
+
+  it("fails a DNS race without leaking into a request path", async () => {
+    // A poisoned/late answer after abort never yields addresses.
+    const controller = new AbortController();
+    lookupMock.mockImplementation(
+      () => new Promise((resolve) => setTimeout(() => resolve([{ address: "127.0.0.1", family: 4 }]), 50))
+    );
+    const pending = resolveLoopbackDestination(new URL("http://localhost/x"), controller.signal);
+    controller.abort();
+    await expect(pending).rejects.toBeDefined();
   });
 });

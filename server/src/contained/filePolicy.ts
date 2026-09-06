@@ -46,6 +46,61 @@ export function isReservedArtifactBasename(basename: string): boolean {
   return folded.endsWith(".part");
 }
 
+/**
+ * Prove or create the contained-model root for download work (Plan 008).
+ * The root must end up a real, non-symlink directory; symlinked ancestors
+ * are tolerated exactly as `proveModel` tolerates them, and the real path is
+ * returned so callers can prove containment below it.
+ */
+export async function ensureContainedModelRoot(): Promise<{ root: string; rootReal: string }> {
+  const root = path.resolve(config.containedDir);
+  await fs.mkdir(root, { mode: 0o700, recursive: true });
+  let stat: Awaited<ReturnType<typeof fs.lstat>>;
+  try {
+    stat = await fs.lstat(root);
+  } catch {
+    throw new ContainedConfigError("contained model root is unavailable");
+  }
+  if (stat.isSymbolicLink()) throw new ContainedConfigError("contained model root must not be a symlink");
+  if (!stat.isDirectory()) throw new ContainedConfigError("contained model root must be a directory");
+  const rootReal = await fs.realpath(root);
+  return { root, rootReal };
+}
+
+/**
+ * Create or open exactly one reserved `.borealis-partials` direct child of a
+ * proven root at mode `0700` and prove it is a real non-symlink directory
+ * below the canonical root. A pre-existing symlink or non-directory at that
+ * name fails closed. Download partials live only below this directory.
+ */
+export async function ensureContainedPartialsDirectory(
+  root: string,
+  rootReal: string
+): Promise<{ directory: string; directoryReal: string }> {
+  const directory = path.join(root, RESERVED_PARTIALS_BASENAME);
+  try {
+    await fs.mkdir(directory, { mode: 0o700 });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+      throw new ContainedConfigError("contained partials directory is unavailable");
+    }
+  }
+  let stat: Awaited<ReturnType<typeof fs.lstat>>;
+  try {
+    stat = await fs.lstat(directory);
+  } catch {
+    throw new ContainedConfigError("contained partials directory is unavailable");
+  }
+  if (stat.isSymbolicLink()) throw new ContainedConfigError("contained partials directory must not be a symlink");
+  if (!stat.isDirectory()) throw new ContainedConfigError("contained partials directory must be a directory");
+  await fs.chmod(directory, 0o700);
+  const directoryReal = await fs.realpath(directory);
+  if (directoryReal !== path.join(rootReal, RESERVED_PARTIALS_BASENAME)) {
+    throw new ContainedConfigError("contained partials directory must not traverse symlinked directories");
+  }
+  return { directory, directoryReal };
+}
+
 /** High-resolution identity fields from a bigint stat. */
 interface BigIntStatsLike {
   dev: bigint;
