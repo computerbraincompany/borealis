@@ -37,6 +37,25 @@ export interface DatasetQueryResult {
   truncated: boolean;
 }
 
+/**
+ * One saved-analysis parameter binding crossing the worker RPC. Values are
+ * bound through DuckDB prepared-statement parameter binding in declaration
+ * order — never interpolated into SQL text.
+ */
+export type DatasetQueryParameterType = "string" | "number" | "integer" | "boolean" | "date";
+
+export interface DatasetQueryParameter {
+  readonly type: DatasetQueryParameterType;
+  readonly value: null | string | number | boolean;
+}
+
+/** Exact dataset location a saved-analysis run pinned; the worker refuses to
+ *  execute when the registry current location or file signature has drifted. */
+export interface DatasetPinnedInput {
+  readonly name: string;
+  readonly location: string;
+}
+
 export interface DatasetExtractResult extends DatasetQueryResult {
   total_row_count: number;
 }
@@ -345,9 +364,22 @@ export function queryDataset(
   accountId: string,
   sql: string,
   allowedTables: readonly string[],
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  analysis?: { parameters?: readonly DatasetQueryParameter[]; pinnedInputs?: readonly DatasetPinnedInput[] }
 ): Promise<DatasetQueryResult> {
-  return rpc("query", { accountId, sql, allowedTables: [...allowedTables] }, signal);
+  return rpc(
+    "query",
+    {
+      accountId,
+      sql,
+      allowedTables: [...allowedTables],
+      ...(analysis?.parameters
+        ? { parameters: analysis.parameters.map((p) => ({ type: p.type, value: p.value })) }
+        : {}),
+      ...(analysis?.pinnedInputs ? { pinnedInputs: analysis.pinnedInputs.map((p) => ({ ...p })) } : {}),
+    },
+    signal
+  );
 }
 
 export function describeDataset(
@@ -422,6 +454,7 @@ export interface DatasetWorkerDebugState {
   pendingPreparations: number;
   pendingActivations: number;
   cleanupReservations: number;
+  analysisPins: number;
   activeQueryPreflightTestDelays: number;
   activeQueryNativePrepares: number;
   openCatalogs: number;

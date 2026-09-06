@@ -7,6 +7,7 @@ import {
   DuckDBArrayValue,
   DuckDBBlobValue,
   DuckDBConnection,
+  DuckDBDateValue,
   DuckDBDecimalValue,
   DuckDBInstance,
   DuckDBListValue,
@@ -57,6 +58,9 @@ const MAX_PREVIEW_CELL_CHARS = 500;
 const MAX_PREVIEW_CHARS = 100_000;
 const MAX_CATALOG_CHARS = 256_000;
 const JS_MAX_SAFE_INTEGER = BigInt(Number.MAX_SAFE_INTEGER);
+const MAX_QUERY_PARAMETERS = 20;
+const MAX_QUERY_PARAMETER_STRING_CHARS = 2_000;
+const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 let queryTimeoutMs = 30_000;
 type QueryPreflightPhase = "scope_load" | "scope_install";
@@ -178,6 +182,11 @@ const accountMutexes = new Map<string, Mutex>();
 const pendingPreparations = new Map<string, number>();
 const pendingActivations = new Map<string, number>();
 const cleanupReservations = new Map<string, number>();
+// Immutable-input leases for saved-analysis execution (M12 stage 2). Keyed by
+// `locationKey(accountId, name, safeLocation)` — the same exact-location key as
+// the preparation/activation/cleanup reservations — and consulted by inactive
+// location cleanup so a pinned dataset file cannot be deleted mid-run.
+const analysisPins = new Map<string, number>();
 // Map insertion order is the global LRU order. Eviction counts and removes
 // scopes only within the account that just added a scope.
 const scopes = new Map<string, ScopedCatalog>();
@@ -979,11 +988,23 @@ async function buildScope(
   }
 }
 
+function assertPinnedLocations(snapshot: RegistrySnapshot, pinnedLocations: ReadonlyMap<string, string>): void {
+  if (pinnedLocations.size !== snapshot.entries.size || snapshot.tables.some((name) => !pinnedLocations.has(name))) {
+    throw operationError(400, "pinned inputs must exactly match the requested tables");
+  }
+  for (const [name, entry] of snapshot.entries) {
+    if (pinnedLocations.get(name) !== entry.meta.safe_location) {
+      throw operationError(409, `pinned input changed for dataset ${name}`);
+    }
+  }
+}
+
 async function acquireScopedConnection(
   accountId: string,
   allowedTables: unknown,
   context: RequestContext,
-  deadline?: QueryDeadline
+  deadline?: QueryDeadline,
+  pinnedLocations?: ReadonlyMap<string, string>
 ): Promise<{ key: string; scope: ScopedCatalog }> {
   // A concurrent registration can win while a catalog is loading. Retry from
   // a fresh registry snapshot; no registry/CAS mutex is held during file or
@@ -993,6 +1014,7 @@ async function acquireScopedConnection(
     else ensureActive(context);
     const admission = deadline ? { context, deadline } : undefined;
     const snapshot = await registrySnapshot(accountId, allowedTables, admission);
+    if (pinnedLocations) assertPinnedLocations(snapshot, pinnedLocations);
     if (deadline) assertQueryDeadline(context, deadline);
     const key = scopeId(accountId, snapshot.tables);
     const signatures = await scopeSignatures(snapshot);
@@ -1214,20 +1236,213 @@ async function runNativePrepareTestWorkload(connection: DuckDBConnection): Promi
   }
 }
 
-async function assertReadOnlySql(connection: DuckDBConnection, sql: string): Promise<void> {
+async function assertReadOnlySql(
+  connection: DuckDBConnection,
+  sql: string,
+  parameters?: readonly AnalysisParameterBinding[]
+): Promise<void> {
   await runNativePrepareTestWorkload(connection);
   const prepared = await trackedNativePrepare(connection, sql);
   try {
     if (prepared.statementType !== StatementType.SELECT) {
       throw operationError(400, "exactly one read-only query is allowed");
     }
+    if (parameters) {
+      // Positional `?` arity is inspected on the same prepared statement that
+      // executes the SQL; a mismatch is a rejection before any execution.
+      if (prepared.parameterCount !== parameters.length) {
+        throw operationError(400, "query parameter count does not match the SQL placeholder count");
+      }
+    } else if (prepared.parameterCount !== 0) {
+      // Unparameterized requests must not smuggle placeholders through.
+      throw operationError(400, "query parameters are not allowed for this request");
+    }
   } finally {
     prepared.destroySync();
   }
 }
 
+// ---------------------------------------------------------------------------
+// Saved-analysis parameter binding and immutable input pins (M12 stage 2)
+// ---------------------------------------------------------------------------
+
+type AnalysisParameterBinding =
+  | { readonly type: "string"; readonly value: null | string }
+  | { readonly type: "number"; readonly value: null | number }
+  | { readonly type: "integer"; readonly value: null | number }
+  | { readonly type: "boolean"; readonly value: null | boolean }
+  | { readonly type: "date"; readonly value: null | string };
+
+/**
+ * Strictly re-validates the ordered parameter bindings crossing the RPC
+ * boundary. Declaration order is binding order; values are never spliced into
+ * SQL text. `null` is valid for every type and binds SQL NULL.
+ */
+function parseAnalysisParameterBindings(parameters: unknown): AnalysisParameterBinding[] {
+  if (!Array.isArray(parameters)) throw operationError(400, "parameters must be a list");
+  if (parameters.length > MAX_QUERY_PARAMETERS) {
+    throw operationError(422, `at most ${MAX_QUERY_PARAMETERS} parameters are supported`);
+  }
+  return parameters.map((candidate): AnalysisParameterBinding => {
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
+      throw operationError(400, "parameter binding is malformed");
+    }
+    const record = candidate as Record<string, unknown>;
+    const type = record.type;
+    const value = record.value;
+    if (type !== "string" && type !== "number" && type !== "integer" && type !== "boolean" && type !== "date") {
+      throw operationError(400, "parameter binding has an unsupported type");
+    }
+    if (value === null) return { type, value: null };
+    switch (type) {
+      case "string":
+        if (typeof value !== "string" || value.includes("\0") || value.length > MAX_QUERY_PARAMETER_STRING_CHARS) {
+          throw operationError(400, "parameter string is invalid");
+        }
+        return { type, value };
+      case "number":
+        if (typeof value !== "number" || !Number.isFinite(value)) {
+          throw operationError(400, "parameter number is invalid");
+        }
+        return { type, value };
+      case "integer":
+        if (typeof value !== "number" || !Number.isSafeInteger(value)) {
+          throw operationError(400, "parameter integer is invalid");
+        }
+        return { type, value };
+      case "boolean":
+        if (typeof value !== "boolean") throw operationError(400, "parameter boolean is invalid");
+        return { type, value };
+      default: {
+        if (typeof value !== "string" || !ISO_DATE_RE.test(value)) {
+          throw operationError(400, "parameter date is invalid");
+        }
+        const [year, month, day] = value.split("-").map(Number);
+        const probe = new Date(Date.UTC(year, month - 1, day));
+        if (probe.getUTCFullYear() !== year || probe.getUTCMonth() !== month - 1 || probe.getUTCDate() !== day) {
+          throw operationError(400, "parameter date is invalid");
+        }
+        return { type, value };
+      }
+    }
+  });
+}
+
+/** Binds the validated bindings positionally (1-based) on a prepared statement. */
+function bindAnalysisParameters(prepared: DuckDBPreparedStatement, parameters: readonly AnalysisParameterBinding[]) {
+  parameters.forEach((parameter, index) => {
+    const parameterIndex = index + 1;
+    if (parameter.value === null) {
+      prepared.bindNull(parameterIndex);
+      return;
+    }
+    switch (parameter.type) {
+      case "string":
+        prepared.bindVarchar(parameterIndex, parameter.value);
+        break;
+      case "number":
+        prepared.bindDouble(parameterIndex, parameter.value);
+        break;
+      case "integer":
+        prepared.bindBigInt(parameterIndex, BigInt(parameter.value));
+        break;
+      case "boolean":
+        prepared.bindBoolean(parameterIndex, parameter.value);
+        break;
+      default: {
+        const [year, month, day] = parameter.value.split("-").map(Number);
+        prepared.bindDate(parameterIndex, DuckDBDateValue.fromParts({ year, month, day }));
+      }
+    }
+  });
+}
+
+interface PinnedDatasetInput {
+  readonly name: string;
+  readonly location: string;
+}
+
+function parsePinnedInputs(inputs: unknown): PinnedDatasetInput[] {
+  if (!Array.isArray(inputs)) throw operationError(400, "pinned_inputs must be a list");
+  if (inputs.length > MAX_ALLOWED_TABLES) {
+    throw operationError(422, `pinned_inputs supports at most ${MAX_ALLOWED_TABLES} entries`);
+  }
+  return inputs.map((candidate): PinnedDatasetInput => {
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
+      throw operationError(400, "pinned input is malformed");
+    }
+    const record = candidate as Record<string, unknown>;
+    const name = record.name;
+    const location = record.location;
+    if (typeof name !== "string" || !TABLE_RE.test(name)) throw operationError(400, "pinned input name is invalid");
+    if (typeof location !== "string" || location.length < 1 || location.includes("\0")) {
+      throw operationError(400, "pinned input location is invalid");
+    }
+    return { name, location };
+  });
+}
+
+interface PinnedLocation {
+  readonly name: string;
+  readonly location: string;
+  readonly safe_location: string;
+  readonly file_signature: string;
+}
+
+/**
+ * Acquires the immutable-input leases for one analysis query. The registry
+ * entry for each requested table must exist and its current `safe_location`
+ * must be exactly the pinned location — a connector refresh that activated a
+ * new version therefore fails closed (409) instead of silently substituting
+ * latest bytes. A vanished file fails with 404. Every acquired lease is
+ * released before surfacing a partial-acquisition failure; cleanup of a pinned
+ * location is refused while the lease is held.
+ */
+async function pinAnalysisLocations(
+  accountId: string,
+  inputs: readonly PinnedDatasetInput[],
+  context: RequestContext
+): Promise<PinnedLocation[]> {
+  ensureActive(context);
+  const pinned: PinnedLocation[] = [];
+  for (const input of inputs) {
+    const resolved = await safeLocation(input.location);
+    const signature = await fileSignature(resolved);
+    if (signature === "missing") throw operationError(404, "dataset file not found");
+    pinned.push({ name: input.name, location: input.location, safe_location: resolved, file_signature: signature });
+  }
+  const keys = pinned.map((entry) => locationKey(accountId, entry.name, entry.safe_location));
+  try {
+    await accountMutex(accountId).run(async () => {
+      ensureActive(context);
+      const accountRegistry = registry.get(accountId);
+      pinned.forEach((entry, index) => {
+        const meta = accountRegistry?.get(entry.name);
+        if (!meta) throw operationError(404, `dataset ${entry.name} not found`);
+        if (meta.safe_location !== entry.safe_location) {
+          throw operationError(409, `pinned input changed for dataset ${entry.name}`);
+        }
+        increment(analysisPins, keys[index]!);
+      });
+    });
+  } catch (error) {
+    await accountMutex(accountId).run(async () => {
+      pinned.forEach((_, index) => decrement(analysisPins, keys[index]!));
+    });
+    if (error instanceof DatasetOperationError) throw error;
+    throw operationError(409, "pinned analysis inputs could not be acquired");
+  }
+  return pinned;
+}
+
+async function unpinAnalysisLocations(accountId: string, pinned: readonly PinnedLocation[]): Promise<void> {
+  await accountMutex(accountId).run(async () => {
+    for (const entry of pinned) decrement(analysisPins, locationKey(accountId, entry.name, entry.safe_location));
+  });
+}
+
 async function queryDataset(
-  input: { accountId: string; sql: string; allowedTables: unknown },
+  input: { accountId: string; sql: string; allowedTables: unknown; parameters?: unknown; pinnedInputs?: unknown },
   context: RequestContext
 ): Promise<Record<string, unknown>> {
   if (typeof input.sql !== "string" || input.sql.length > MAX_QUERY_SQL_CHARS) {
@@ -1235,7 +1450,10 @@ async function queryDataset(
   }
   const sql = input.sql.trim();
   if (!sql) throw operationError(400, "empty SQL");
+  const parameters = input.parameters === undefined ? undefined : parseAnalysisParameterBindings(input.parameters);
+  const pinnedInputs = input.pinnedInputs === undefined ? undefined : parsePinnedInputs(input.pinnedInputs);
   let scoped: Awaited<ReturnType<typeof acquireScopedConnection>> | undefined;
+  let pinned: PinnedLocation[] | undefined;
   try {
     return await runWithQueryOperationDeadline(context, async (deadline) => {
       if (!["SELECT", "WITH", "VALUES"].includes(leadingSqlKeyword(sql))) {
@@ -1243,16 +1461,49 @@ async function queryDataset(
       }
       const executableSql = singleStatementSql(sql);
       assertQueryDeadline(context, deadline);
-      scoped = await acquireScopedConnection(input.accountId, input.allowedTables, context, deadline);
+      if (pinnedInputs) {
+        pinned = await pinAnalysisLocations(input.accountId, pinnedInputs, context);
+        assertQueryDeadline(context, deadline);
+      }
+      scoped = await acquireScopedConnection(
+        input.accountId,
+        input.allowedTables,
+        context,
+        deadline,
+        pinned ? new Map(pinned.map((entry) => [entry.name, entry.safe_location])) : undefined
+      );
       const lease = scoped;
       return lease.scope.ioMutex.run(
         () =>
           runWithinQueryDeadline(context, lease.scope.connection, deadline, async () => {
-            await assertReadOnlySql(lease.scope.connection, executableSql);
-            const schemaReader = await lease.scope.connection.runAndReadAll(
-              `DESCRIBE SELECT * FROM (${executableSql}\n) AS _q`
-            );
-            const schemaRows = schemaReader.getRows();
+            await assertReadOnlySql(lease.scope.connection, executableSql, parameters);
+            let schemaRows: DuckDBValue[][];
+            if (parameters && parameters.length > 0) {
+              // Typed values reach DuckDB only through prepared-statement
+              // parameter binding — never through string replacement. The
+              // schema comes from the same prepared path via a one-row probe;
+              // arity was already rejected before any execution.
+              const probeStatement = await trackedNativePrepare(
+                lease.scope.connection,
+                `SELECT * FROM (${executableSql}\n) AS _q LIMIT 1`
+              );
+              try {
+                bindAnalysisParameters(probeStatement, parameters);
+                const probeReader = await probeStatement.runAndReadUntil(1);
+                const columnNames = probeReader.columnNames();
+                const columnTypes = probeReader.columnTypes();
+                schemaRows = columnNames.map(
+                  (name, index) => [name, String(columnTypes[index] ?? "UNKNOWN")] satisfies DuckDBValue[]
+                );
+              } finally {
+                probeStatement.destroySync();
+              }
+            } else {
+              const schemaReader = await lease.scope.connection.runAndReadAll(
+                `DESCRIBE SELECT * FROM (${executableSql}\n) AS _q`
+              );
+              schemaRows = schemaReader.getRows();
+            }
             const selectedRows = schemaRows.slice(0, MAX_QUERY_COLUMNS);
             let rows: DuckDBValue[][] = [];
             if (selectedRows.length) {
@@ -1260,11 +1511,20 @@ async function queryDataset(
               const projection = selectedRows
                 .map((column) => boundedSqlExpression(String(column[0]), String(column[1]), MAX_QUERY_CELL_CHARS))
                 .join(", ");
-              const rowReader = await lease.scope.connection.runAndReadUntil(
-                `SELECT ${projection} FROM (${executableSql}\n) AS _q LIMIT ${rowLimit + 1}`,
-                rowLimit + 1
-              );
-              rows = rowReader.getRows().slice(0, rowLimit + 1);
+              const rowStatementText = `SELECT ${projection} FROM (${executableSql}\n) AS _q LIMIT ${rowLimit + 1}`;
+              if (parameters && parameters.length > 0) {
+                const rowStatement = await trackedNativePrepare(lease.scope.connection, rowStatementText);
+                try {
+                  bindAnalysisParameters(rowStatement, parameters);
+                  const rowReader = await rowStatement.runAndReadUntil(rowLimit + 1);
+                  rows = rowReader.getRows().slice(0, rowLimit + 1);
+                } finally {
+                  rowStatement.destroySync();
+                }
+              } else {
+                const rowReader = await lease.scope.connection.runAndReadUntil(rowStatementText, rowLimit + 1);
+                rows = rowReader.getRows().slice(0, rowLimit + 1);
+              }
             }
 
             const outputColumns: string[] = [];
@@ -1333,6 +1593,7 @@ async function queryDataset(
     throw operationError(422, "query could not be completed");
   } finally {
     if (scoped) releaseScopedConnection(scoped.scope);
+    if (pinned) await unpinAnalysisLocations(input.accountId, pinned);
   }
 }
 
@@ -1707,6 +1968,9 @@ async function beginInactiveCleanup(input: { accountId: string; name: string; lo
     if (pendingPreparations.has(key)) {
       throw operationError(409, "preparing dataset cache versions cannot be deleted");
     }
+    if (analysisPins.has(key)) {
+      throw operationError(409, "dataset cache versions pinned by a running analysis cannot be deleted");
+    }
     if (cleanupReservations.has(key)) throw operationError(409, "dataset cache version is already being deleted");
     increment(cleanupReservations, key);
   });
@@ -1868,6 +2132,7 @@ async function shutdown(): Promise<void> {
   pendingPreparations.clear();
   pendingActivations.clear();
   cleanupReservations.clear();
+  analysisPins.clear();
 }
 
 function objectPayload(payload: unknown): Record<string, unknown> {
@@ -1920,6 +2185,7 @@ async function dispatch(operation: string, rawPayload: unknown, context: Request
         pendingPreparations: pendingPreparations.size,
         pendingActivations: pendingActivations.size,
         cleanupReservations: cleanupReservations.size,
+        analysisPins: analysisPins.size,
         activeQueryPreflightTestDelays,
         activeQueryNativePrepares,
         openCatalogs,

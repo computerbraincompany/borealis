@@ -28,6 +28,9 @@ import {
   registerDataset as registerWorkerDataset,
   type DatasetFormat,
   type DatasetMetadata,
+  type DatasetPinnedInput,
+  type DatasetQueryParameter,
+  type DatasetQueryResult,
 } from "./data/datasets.js";
 import { ChartSpecError, echartsOption, normalize as normalizeChart } from "./data/charts.js";
 import { DataServiceError as WorkerDataServiceError } from "./data/errors.js";
@@ -440,6 +443,28 @@ export const dataService = {
   }> {
     return inProcess("/query", caller, DEFAULT_TIMEOUT_MS, (signal) =>
       queryDataset(accountId, sql, allowedTables, signal)
+    );
+  },
+
+  /**
+   * Saved-analysis execution (M12 stage 2). Typed parameters bind through the
+   * DuckDB prepared-statement path in declaration order, and the supplied
+   * exact dataset locations are leased for the duration: the worker refuses to
+   * run (and durable cleanup refuses to delete those files) if the registry
+   * current locations or file signatures drift. `409`/`404` outcomes are the
+   * explicit stale/unavailable-input signal — the caller must fail the run,
+   * never retry against latest.
+   */
+  queryAnalysis(
+    accountId: string,
+    sql: string,
+    allowedTables: readonly string[],
+    parameters: readonly DatasetQueryParameter[],
+    pinnedInputs: readonly DatasetPinnedInput[],
+    caller?: AbortSignal
+  ): Promise<DatasetQueryResult> {
+    return inProcess("/query?analysis", caller, DEFAULT_TIMEOUT_MS, (signal) =>
+      queryDataset(accountId, sql, allowedTables, signal, { parameters, pinnedInputs })
     );
   },
 
