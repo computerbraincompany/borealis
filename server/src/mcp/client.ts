@@ -25,7 +25,7 @@ import {
   type ConnectionConfig,
   type ConnectionKind,
 } from "../connections/store.js";
-import type { ConnectionSecrets } from "../connections/secrets.js";
+import { OAUTH_ENV_PREFIX, type ConnectionSecrets } from "../connections/secrets.js";
 
 /**
  * MCP transport provider (Connected agents stage 2).
@@ -371,7 +371,12 @@ export async function resolveConnectionDestination(url: URL, signal: AbortSignal
   throw new ConnectionConfigError("connection endpoint is invalid");
 }
 
-function pinnedNodeRequest(
+/**
+ * One pinned Node request against a validated destination. Exported for the
+ * OAuth module so issuer metadata/token endpoints reuse the exact same
+ * DNS-pinning, idle-timeout, and abort semantics as MCP transport sockets.
+ */
+export function pinnedNodeRequest(
   target: URL,
   address: ResolvedAddress,
   method: string,
@@ -438,7 +443,8 @@ function cappedBodyStream(response: import("node:http").IncomingMessage, capByte
   });
 }
 
-function toWebResponse(response: import("node:http").IncomingMessage): Response {
+/** Exported alongside `pinnedNodeRequest`: byte-bounded message → `Response`. */
+export function toWebResponse(response: import("node:http").IncomingMessage): Response {
   const rawStatus = response.statusCode ?? 502;
   const status = rawStatus >= 200 && rawStatus <= 599 ? rawStatus : 502;
   const headers = new Headers();
@@ -831,7 +837,10 @@ function stdioSpawnPlan(target: McpTransportTarget): {
   }
   const env: Record<string, string> = { ...getDefaultEnvironment() };
   for (const [name, value] of Object.entries(target.secrets?.env ?? {})) {
-    if (typeof value === "string") env[name] = value;
+    // Defense in depth: OAuth custody material belongs exclusively to the
+    // browser-dev sign-in lifecycle of an HTTP target and must never ride
+    // into an operator-owned stdio child, even if a record ever drifts.
+    if (typeof value === "string" && !name.startsWith(OAUTH_ENV_PREFIX)) env[name] = value;
   }
   return { command: validated.command, args: [...validated.args], cwd: validated.cwd ?? undefined, env };
 }

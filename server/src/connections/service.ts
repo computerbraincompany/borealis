@@ -2,6 +2,15 @@ import path from "node:path";
 import { config } from "../config.js";
 import { CONNECTION_TRANSPORT_TIMEOUT_MS, mcpTransportProvider } from "../mcp/client.js";
 import type { McpToolDescriptor, McpTransportProvider, McpTransportTarget } from "../mcp/client.js";
+import {
+  CONNECTION_AUTH_REFRESH_FAILED,
+  ConnectionAuthUnsupportedError,
+  createConnectionOAuthManager,
+  type ConnectionAuthorization,
+  type ConnectionAuthorizationProvider,
+  type ConnectionOAuthManager,
+} from "../mcp/oauth.js";
+import { closeOAuthCallbackListener } from "../mcp/oauthCallback.js";
 import type { CatalogPageRequest, CatalogStorePage } from "../catalogPagination.js";
 import { storageRuntime } from "../storageRuntime.js";
 import {
@@ -78,46 +87,21 @@ export class ConnectionOperationTimeoutError extends Error {
 }
 
 /**
- * Stage-3 OAuth seam. Until the authorization provider lands, `authorize`
- * reports an actionable unsupported state; it is never a fake success.
- * Revoke is fully local in stage 1 (remove custody material + disconnect)
- * and gains best-effort provider-side revocation when stage 3 injects the
- * optional `revoke` hook.
+ * Stage-3 authorization composition. The seam interface (owned here since
+ * stage 1) is now implemented by the real PKCE OAuth manager in
+ * `server/src/mcp/oauth.ts`. `registerConnectionAuthorizationProvider`
+ * remains the explicit override seam: tests register deterministic
+ * providers, and stage-5 desktop composition registers the main-process
+ * custody/callback variant. `undefined` restores the default: a
+ * per-service `ConnectionOAuthManager` bound to this service's custody and
+ * status stores.
  */
-export interface ConnectionAuthorization {
-  readonly authorize_url: string;
-  readonly expires_at: string;
-}
-
-export interface ConnectionAuthorizationProvider {
-  start(accountId: string, connection: Connection, signal: AbortSignal): Promise<ConnectionAuthorization>;
-  revoke?(
-    accountId: string,
-    connection: Connection,
-    secrets: ConnectionSecrets | undefined,
-    signal: AbortSignal
-  ): Promise<void>;
-}
-
-export class ConnectionAuthUnsupportedError extends Error {
-  readonly code = "CONNECTION_AUTH_UNSUPPORTED";
-  readonly statusCode = 501;
-
-  constructor() {
-    super("connection sign-in is not available for this connection");
-    this.name = "ConnectionAuthUnsupportedError";
-  }
-}
-
-const UNSUPPORTED_AUTHORIZATION: ConnectionAuthorizationProvider = Object.freeze({
-  start: async (): Promise<ConnectionAuthorization> => {
-    throw new ConnectionAuthUnsupportedError();
-  },
-});
+export type { ConnectionAuthorization, ConnectionAuthorizationProvider };
+export { ConnectionAuthUnsupportedError };
 
 let authorizationProvider: ConnectionAuthorizationProvider | undefined;
 
-/** Stage-3 composition seam; production wiring registers the OAuth provider. */
+/** Explicit override seam; `undefined` restores the default OAuth manager. */
 export function registerConnectionAuthorizationProvider(provider: ConnectionAuthorizationProvider | undefined): void {
   authorizationProvider = provider;
 }
@@ -130,6 +114,11 @@ export interface ConnectionServiceOptions {
   /** Resolves the transport provider; defaults to the `mcp/client` accessor. */
   readonly transport?: () => McpTransportProvider;
   readonly operationTimeoutMs?: number;
+  /**
+   * Test seam for the fixed one-use authorize session window; production
+   * uses the spec's 5-minute default.
+   */
+  readonly authorizationSessionTtlMs?: number;
 }
 
 export interface ConnectionCreateInput extends CreateConnectionInput {
@@ -153,6 +142,8 @@ function defaultSecretsStore(): ConnectionSecretStore {
 export class ConnectionService {
   constructor(private readonly options: ConnectionServiceOptions = {}) {}
 
+  #defaultOAuth: ConnectionOAuthManager | undefined;
+
   private get store(): ConnectionStore {
     return this.options.store ? this.options.store() : storageRuntime().connections;
   }
@@ -163,6 +154,27 @@ export class ConnectionService {
 
   private get transport(): McpTransportProvider {
     return this.options.transport ? this.options.transport() : mcpTransportProvider();
+  }
+
+  /**
+   * The active sign-in provider: an explicit registration always wins (test
+   * determinism, desktop custody); otherwise a lazily built manager bound
+   * to exactly this service's custody and durable-status stores.
+   */
+  private authorization(): ConnectionAuthorizationProvider {
+    if (authorizationProvider) return authorizationProvider;
+    this.#defaultOAuth ??= createConnectionOAuthManager({
+      secrets: () => this.secrets,
+      recordStatus: (accountId, connectionId, status, code) =>
+        this.store.recordStatus(accountId, connectionId, status, code),
+      sessionTtlMs: this.options.authorizationSessionTtlMs,
+    });
+    return this.#defaultOAuth;
+  }
+
+  /** Cancel pending sign-in sessions owned by this service (close path). */
+  shutdownAuthorizations(): void {
+    this.#defaultOAuth?.shutdown();
   }
 
   async list(accountId: string, page: CatalogPageRequest): Promise<CatalogStorePage<ConnectionDto>> {
@@ -261,10 +273,16 @@ export class ConnectionService {
     return this.get(accountId, connectionId);
   }
 
+  /**
+   * Starts one expiring one-use sign-in session and returns the validated
+   * sign-in URL. Discovery/registration failures surface as actionable
+   * `CONNECTION_AUTH_UNSUPPORTED`/`CONNECTION_AUTH_DISCOVERY_FAILED` codes;
+   * a fake success is impossible.
+   */
   async authorize(accountId: string, connectionId: string): Promise<ConnectionAuthorization> {
     const connection = await this.store.requireConnection(accountId, connectionId);
     if (!connection.enabled) throw new ConnectionDisabledError();
-    const provider = authorizationProvider ?? UNSUPPORTED_AUTHORIZATION;
+    const provider = this.authorization();
     return this.withTimeout((signal) => provider.start(accountId, connection, signal));
   }
 
@@ -278,11 +296,13 @@ export class ConnectionService {
     } catch {
       secretMaterial = undefined;
     }
+    // Local-first: custody is removed before any provider round-trip.
     await this.secrets.remove(accountId, connectionId).catch(() => undefined);
-    if (authorizationProvider?.revoke) {
-      await this.withTimeout((signal) =>
-        authorizationProvider!.revoke!(accountId, connection, secretMaterial, signal)
-      ).catch(() => undefined);
+    const provider = this.authorization();
+    if (provider.revoke) {
+      await this.withTimeout((signal) => provider.revoke!(accountId, connection, secretMaterial, signal)).catch(
+        () => undefined
+      );
     }
     await this.store.recordStatus(accountId, connectionId, "disconnected", null);
     return this.toDto(accountId, await this.store.requireConnection(accountId, connectionId));
@@ -302,15 +322,32 @@ export class ConnectionService {
       await this.store.recordStatus(accountId, connectionId, "disconnected", "CONNECTION_CUSTODY_UNAVAILABLE");
       throw new ConnectionCustodyUnavailableError();
     }
-    const target: McpTransportTarget = {
-      accountId,
-      connectionId,
-      kind: connection.kind,
-      config: connection.config,
-      secrets: read.state === "available" ? read.secrets : undefined,
-    };
+    const staticSecrets = read.state === "available" ? read.secrets : undefined;
     try {
       const tools = await this.withTimeout(async (signal) => {
+        // The sign-in provider (when this target carries sign-in material)
+        // resolves a fresh-or-refreshed bearer bound to this exact endpoint;
+        // it may renew the same authorized target but never retarget it.
+        let secretsForTarget = staticSecrets;
+        const bearer = await this.authorization().accessTokenFor?.({
+          accountId,
+          connection,
+          secrets: secretsForTarget,
+          signal,
+        });
+        if (bearer !== undefined) {
+          secretsForTarget = Object.freeze({
+            headers: Object.freeze({ ...(secretsForTarget?.headers ?? {}), authorization: `Bearer ${bearer}` }),
+            env: Object.freeze({ ...(secretsForTarget?.env ?? {}) }),
+          });
+        }
+        const target: McpTransportTarget = {
+          accountId,
+          connectionId,
+          kind: connection.kind,
+          config: connection.config,
+          secrets: secretsForTarget,
+        };
         const session = await this.transport.connect(target, signal);
         try {
           return await session.listTools(signal);
@@ -321,14 +358,16 @@ export class ConnectionService {
       await this.store.recordStatus(accountId, connectionId, "ready", null);
       return tools;
     } catch (error) {
+      const code = error instanceof Error ? (error as { code?: unknown }).code : undefined;
       if (error instanceof ConnectionOperationTimeoutError) {
         await this.store.recordStatus(accountId, connectionId, "error", "CONNECTION_TIMEOUT").catch(() => undefined);
-      } else if (error instanceof Error && (error as { code?: unknown }).code === "CONNECTION_TRANSPORT_UNAVAILABLE") {
+      } else if (code === "CONNECTION_TRANSPORT_UNAVAILABLE") {
         // Server-side wiring gap; it is not evidence about the endpoint.
-      } else if (error instanceof Error && (error as { code?: unknown }).code === "CONNECTION_AUTH_REQUIRED") {
-        await this.store
-          .recordStatus(accountId, connectionId, "disconnected", "CONNECTION_AUTH_REQUIRED")
-          .catch(() => undefined);
+      } else if (code === "CONNECTION_AUTH_REQUIRED" || code === CONNECTION_AUTH_REFRESH_FAILED) {
+        // Either the endpoint demands sign-in this connection lacks, or the
+        // stored sign-in could not be renewed (revocation, provider logout,
+        // expiry, rotation reuse). Both are actionable disconnected states.
+        await this.store.recordStatus(accountId, connectionId, "disconnected", String(code)).catch(() => undefined);
       } else {
         // Preserve the probe's own stable CONNECTION_* evidence (for example
         // an explicit over-limit discovery); anything anonymous remains a
@@ -403,8 +442,14 @@ export function connectionService(): ConnectionService {
   return active;
 }
 
-/** Drops the composed service; custody/transport singletons are restored by their own seams. */
+/**
+ * Drops the composed service, cancels its pending sign-in sessions, and
+ * releases the loopback callback listener. Custody/transport singletons are
+ * restored by their own seams.
+ */
 export function closeConnectionService(): void {
+  active?.shutdownAuthorizations();
   active = undefined;
   configured = {};
+  void closeOAuthCallbackListener().catch(() => undefined);
 }

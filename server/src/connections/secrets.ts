@@ -21,6 +21,14 @@ import { ConnectionConfigError } from "./store.js";
  * reaches disk under any path.
  */
 
+/**
+ * Reserved namespace for MCP OAuth custody material (`server/src/mcp/oauth.ts`).
+ * Entries under this prefix are credential material owned by the sign-in
+ * lifecycle: they are never passed into a stdio child environment, and route
+ * DTOs never serialize any of it (secrets never reach DTOs at all).
+ */
+export const OAUTH_ENV_PREFIX = "MCP_OAUTH_";
+
 export const MAX_SECRET_HEADER_ENTRIES = 8;
 export const MAX_SECRET_ENV_ENTRIES = 16;
 export const MAX_SECRET_NAME_CHARS = 128;

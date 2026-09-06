@@ -8,14 +8,15 @@ import { MAX_SECRET_VALUE_CHARS } from "../connections/secrets.js";
 import { idParamsSchema } from "./schemas.js";
 
 /**
- * Connection management routes (schema v17, Connected agents stage 1).
+ * Connection management routes (schema v17, Connected agents stages 1–3).
  *
  * Public failures are always a stable `CONNECTION_*` code with a fixed
  * generic message; provider detail, credentials, and endpoint errors never
  * reach the client. Test/discover are bounded at the service's fixed 15-second
- * deadline, and neither ever issues a content-bearing tool call. DTOs are
- * assembled by the service and carry `credential_state` but never credential
- * material.
+ * deadline, and neither ever issues a content-bearing tool call. Authorize
+ * starts the real expiring one-use PKCE sign-in session; revoke is local-first
+ * with best-effort provider-side revocation. DTOs are assembled by the service
+ * and carry `credential_state` but never credential material.
  */
 
 const CONNECTION_PUBLIC_MESSAGES: Readonly<Record<string, string>> = Object.freeze({
@@ -30,6 +31,8 @@ const CONNECTION_PUBLIC_MESSAGES: Readonly<Record<string, string>> = Object.free
   CONNECTION_TRANSPORT_UNAVAILABLE: "the connection transport is unavailable",
   CONNECTION_AUTH_REQUIRED: "the connection requires sign-in",
   CONNECTION_AUTH_UNSUPPORTED: "connection sign-in is not available for this connection",
+  CONNECTION_AUTH_DISCOVERY_FAILED: "the connection's authorization server could not be reached",
+  CONNECTION_AUTH_REFRESH_FAILED: "the connection's stored sign-in could not be renewed",
   CONNECTION_TIMEOUT: "the connection operation timed out",
   CONNECTION_HANDSHAKE_FAILED: "the connection handshake failed",
   CONNECTION_DISCOVERY_OVER_LIMIT: "the discovered tool catalog exceeds the supported limits",

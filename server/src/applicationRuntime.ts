@@ -32,6 +32,7 @@ import {
 } from "./storageRuntime.js";
 import { downloadManager, engineManager } from "./contained/runtime.js";
 import { quiesceMcpConnections } from "./mcp/client.js";
+import { closeOAuthCallbackListener } from "./mcp/oauthCallback.js";
 
 /**
  * One owned application runtime per process.
@@ -221,7 +222,14 @@ function resolveLifecycle(options: ApplicationRuntimeOptions): ResolvedLifecycle
   return {
     beginDownloadLifecycle: lifecycle.beginDownloadLifecycle ?? (() => downloadManager.beginLifecycle()),
     quiesceAndDrainDownloads: lifecycle.quiesceAndDrainDownloads ?? (() => downloadManager.quiesceAndDrain()),
-    quiesceAndDrainConnections: lifecycle.quiesceAndDrainConnections ?? (() => quiesceMcpConnections()),
+    quiesceAndDrainConnections:
+      lifecycle.quiesceAndDrainConnections ??
+      (async () => {
+        await quiesceMcpConnections();
+        // The backend-owned loopback OAuth callback listener is released as
+        // part of the same connection drain during orderly shutdown.
+        await closeOAuthCallbackListener();
+      }),
     initializeSettings: lifecycle.initializeSettings ?? (() => initializeRuntimeSettings()),
     closeSettings: lifecycle.closeSettings ?? (() => closeRuntimeSettings()),
     readSettings: lifecycle.readSettings ?? (() => getRuntimeSettings()),
