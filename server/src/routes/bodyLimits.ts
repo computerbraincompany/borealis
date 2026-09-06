@@ -35,6 +35,20 @@ import {
   MAX_PREVIEW_SCAN_ENTRIES,
 } from "../db/stores/knowledgeStore.js";
 import { MAX_DIRECTORY_IMPORT_ITEMS } from "../db/stores/directoryImportStore.js";
+import {
+  RESEARCH_COLUMN_MAX_COUNT,
+  RESEARCH_COLUMN_LABEL_MAX_CHARS,
+  RESEARCH_COLUMN_QUESTION_MAX_CHARS,
+  RESEARCH_COLUMN_UNIT_MAX_CHARS,
+  RESEARCH_ENUM_CHOICES_MAX,
+  RESEARCH_ENUM_CHOICE_MAX_CHARS,
+  RESEARCH_NOTE_MAX_CHARS,
+  RESEARCH_PLAN_SERIALIZED_MAX_CHARS,
+  RESEARCH_QUESTION_MAX_CHARS,
+  RESEARCH_REVIEW_OPS_MAX,
+  RESEARCH_SOURCE_MAX_COUNT,
+  RESEARCH_TITLE_MAX_CHARS,
+} from "../researchSchemas.js";
 
 import { DOCUMENT_REVISION_PAYLOAD_MAX_CHARS } from "../documentTypes.js";
 /**
@@ -183,4 +197,36 @@ export const ANALYSIS_RUN_JSON_BODY_LIMIT_BYTES =
 /** Query-capture promotion contract: bounded title/description plus the key. */
 export const ANALYSIS_PROMOTION_JSON_BODY_LIMIT_BYTES =
   (ANALYSIS_TITLE_MAX_CHARS + ANALYSIS_DESCRIPTION_MAX_CHARS + 36 + 600) * MAX_JSON_BYTES_PER_CODE_POINT +
+  OBJECT_KEYS_AND_SYNTAX_HEADROOM_BYTES;
+
+/**
+ * Research definition create/edit contract (M15): bounded title/question/model,
+ * 100 source ids, 20 provenance library ids, 20 column declarations (label,
+ * question, unit, and 20 enum choices each), and the serialized plan proposal,
+ * all escaped astrally. The durable semantic bounds live in
+ * `researchSchemas.ts`; this is the derived transport ceiling.
+ */
+export const RESEARCH_DEFINITION_JSON_BODY_LIMIT_BYTES =
+  (RESEARCH_TITLE_MAX_CHARS +
+    RESEARCH_QUESTION_MAX_CHARS +
+    256 +
+    RESEARCH_SOURCE_MAX_COUNT * 36 +
+    20 * 36 +
+    RESEARCH_COLUMN_MAX_COUNT *
+      (36 +
+        RESEARCH_COLUMN_LABEL_MAX_CHARS +
+        RESEARCH_COLUMN_QUESTION_MAX_CHARS +
+        RESEARCH_COLUMN_UNIT_MAX_CHARS +
+        RESEARCH_ENUM_CHOICES_MAX * (RESEARCH_ENUM_CHOICE_MAX_CHARS + 3)) +
+    RESEARCH_PLAN_SERIALIZED_MAX_CHARS) *
+    MAX_JSON_BYTES_PER_CODE_POINT +
+  OBJECT_KEYS_AND_SYNTAX_HEADROOM_BYTES;
+
+/**
+ * Research review batch: at most 100 operations, each carrying at worst a
+ * bounded note/claim-correction text plus target ids and a small typed cell
+ * value, escaped astrally.
+ */
+export const RESEARCH_REVIEW_JSON_BODY_LIMIT_BYTES =
+  RESEARCH_REVIEW_OPS_MAX * (RESEARCH_NOTE_MAX_CHARS + 36 * 3 + 512) * MAX_JSON_BYTES_PER_CODE_POINT +
   OBJECT_KEYS_AND_SYNTAX_HEADROOM_BYTES;

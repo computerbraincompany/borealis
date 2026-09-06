@@ -30,7 +30,11 @@ export type CatalogEndpoint =
   | "document_rewrites"
   | "document_templates"
   | "knowledge_connections"
-  | "knowledge_refreshes";
+  | "knowledge_refreshes"
+  | "research"
+  | "research_runs"
+  | "research_evidence"
+  | "research_table";
 export interface CatalogPosition {
   readonly timestamp: string;
   readonly id: string;

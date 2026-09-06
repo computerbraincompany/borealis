@@ -1361,8 +1361,9 @@ describe("SQLite ledger foundation", () => {
           // v16 protocol state is proven to survive upgrade into the exact
           // current latest schema (v17 connections, v18 analyses, v19 knowledge, the
           // v20 document tables, the v21 frozen MCP run-snapshot column, the v22
-          // template catalog, and the v23 document-rewrite ledger and the v24 chunk keyword-search index ride on top).
-          expect(LATEST_SQLITE_SCHEMA_VERSION).toBe(24);
+          // template catalog, the v23 document-rewrite ledger, the v24 chunk
+          // keyword-search index, and the v25 research ledger ride on top).
+          expect(LATEST_SQLITE_SCHEMA_VERSION).toBe(25);
 
           const rows = await ledger.all<Record<string, unknown>>(
             `SELECT source_id,phase,generation,refresh_version,candidate_location,

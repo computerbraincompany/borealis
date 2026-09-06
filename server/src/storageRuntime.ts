@@ -14,6 +14,7 @@ import { ConnectorRefreshStore } from "./db/stores/connectorRefreshStore.js";
 import { SqliteIngestionStore } from "./db/stores/ingestionStore.js";
 import { KnowledgeStore } from "./db/stores/knowledgeStore.js";
 import { LibraryStore } from "./db/stores/libraryStore.js";
+import { ResearchStore } from "./db/stores/researchStore.js";
 import { RunStore } from "./db/stores/runStore.js";
 import { SourceIngestionTransitions } from "./db/stores/sourceIngestionTransitions.js";
 import { SourceStore } from "./db/stores/sourceStore.js";
@@ -64,6 +65,13 @@ export interface StorageRuntime {
    * it under the same account/connection key. No chat state is referenced.
    */
   readonly knowledge: KnowledgeStore;
+  /**
+   * Account-scoped durable local research ledger (schema v25, M15 stage 1).
+   * Definition heads, frozen run provenance, dossiers, comparison overlays,
+   * and the review log; provider origin identity is internal and never
+   * reaches a public response.
+   */
+  readonly research: ResearchStore;
   readonly automations: AutomationStore;
   readonly sourceIngestion: SourceIngestionTransitions;
   readonly connectorRefresh: ConnectorRefreshStore;
@@ -150,6 +158,7 @@ export async function initializeStorageRuntime(optionsValue: StorageRuntimeOptio
         agents: new AgentStore(ledger),
         connections: new ConnectionStore(ledger),
         knowledge: new KnowledgeStore(ledger),
+        research: new ResearchStore(ledger),
         automations: new AutomationStore(ledger),
         sources: new SourceStore(ledger),
         sourceIngestion: new SourceIngestionTransitions(ledger),

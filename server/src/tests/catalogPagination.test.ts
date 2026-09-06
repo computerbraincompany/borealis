@@ -29,6 +29,10 @@ const ENDPOINTS: CatalogEndpoint[] = [
   "agents",
   "libraries",
   "automations",
+  "research",
+  "research_runs",
+  "research_evidence",
+  "research_table",
 ];
 
 const resources: TempSqliteLedger[] = [];
