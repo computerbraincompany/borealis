@@ -303,6 +303,10 @@ describe("SQLite ledger foundation", () => {
           expect(await columnNames(ledger, "chat_runs")).toEqual(
             expect.arrayContaining(["agent_instructions", "agent_tools"])
           );
+          // VIRTUAL generated columns stay invisible to table_info; the
+          // generated target_id itself is proven readable in the dedicated
+          // automation ownership tests below.
+          expect(await columnNames(ledger, "automations")).toEqual(expect.arrayContaining(["connector_id", "chat_id"]));
 
           const indexes = new Set(
             (
@@ -333,6 +337,398 @@ describe("SQLite ledger foundation", () => {
       }
     });
   }
+
+  it("rebuilds v14 automations onto owned kind-specific target columns", async () => {
+    const fixture = await createHistoricalSqliteFixture(14);
+    try {
+      const account = fixture.seed.accountId;
+      const foreignAccount = "99999999-9999-4999-8999-999999999999";
+      const ownedConnector = "c0000000-0000-4000-8000-0000000000c1";
+      const foreignConnector = "c0000000-0000-4000-8000-0000000000f1";
+
+      const onDisk = new Database(fixture.filename);
+      try {
+        onDisk.pragma("foreign_keys = ON");
+        onDisk.exec("BEGIN IMMEDIATE");
+        try {
+          onDisk
+            .prepare("INSERT INTO users (id,email,password_hash) VALUES (?,?,?)")
+            .run(foreignAccount, "foreign@fixture.test", "hash");
+          const connector = onDisk.prepare(
+            "INSERT INTO connectors (id,account_id,name,type,target_table) VALUES (?,?,?,'url_csv',?)"
+          );
+          connector.run(ownedConnector, account, "Owned feed", "v15_owned");
+          connector.run(foreignConnector, foreignAccount, "Foreign feed", "v15_foreign");
+          const automation = onDisk.prepare(
+            `INSERT INTO automations
+               (id,account_id,name,kind,target_id,prompt,schedule_minutes,state,
+                consecutive_failures,last_run_at,next_run_at,created_at,updated_at)
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`
+          );
+          const run = onDisk.prepare(
+            `INSERT INTO automation_runs (automation_id,account_id,outcome,detail,started_at,finished_at)
+             VALUES (?,?,?,?,?,?)`
+          );
+          // Legacy connector-schedule multiples for the same owned connector.
+          // Insertion order (old, new, tie-b, tie-a) ensures the survivor is
+          // decided by created_at DESC then id DESC alone — never by rowid:
+          // tie-b shares its created_at with tie-a yet wins despite the older
+          // rowid, and neither insertion end matches the winner.
+          automation.run(
+            "old",
+            account,
+            "legacy-old",
+            "connector_sync",
+            ownedConnector,
+            null,
+            30,
+            "active",
+            0,
+            null,
+            "2026-09-06T00:00:00.000Z",
+            "2026-08-30T00:00:00.000Z",
+            "2026-08-30T00:00:00.000Z"
+          );
+          run.run("old", account, "succeeded", "drop-old", "2026-08-30T01:00:00.000Z", "2026-08-30T01:01:00.000Z");
+          automation.run(
+            "new",
+            account,
+            "legacy-new",
+            "connector_sync",
+            ownedConnector,
+            null,
+            60,
+            "active",
+            0,
+            null,
+            "2026-09-06T00:00:00.000Z",
+            "2026-08-31T00:00:00.000Z",
+            "2026-08-31T00:00:00.000Z"
+          );
+          run.run("new", account, "succeeded", "drop-new", "2026-08-31T01:00:00.000Z", "2026-08-31T01:01:00.000Z");
+          automation.run(
+            "tie-b",
+            account,
+            "legacy-tie-b",
+            "connector_sync",
+            ownedConnector,
+            "Nightly refresh",
+            30,
+            "paused",
+            4,
+            "2026-09-01T01:00:00.000Z",
+            "2026-09-01T01:30:00.000Z",
+            "2026-09-01T00:00:00.000Z",
+            "2026-09-01T01:00:00.000Z"
+          );
+          run.run("tie-b", account, "failed", "kept-tie-b-1", "2026-09-01T01:00:00.000Z", "2026-09-01T01:01:00.000Z");
+          run.run(
+            "tie-b",
+            account,
+            "succeeded",
+            "kept-tie-b-2",
+            "2026-09-01T02:00:00.000Z",
+            "2026-09-01T02:01:00.000Z"
+          );
+          automation.run(
+            "tie-a",
+            account,
+            "legacy-tie-a",
+            "connector_sync",
+            ownedConnector,
+            null,
+            45,
+            "active",
+            0,
+            null,
+            "2026-09-06T00:00:00.000Z",
+            "2026-09-01T00:00:00.000Z",
+            "2026-09-01T00:00:00.000Z"
+          );
+          run.run("tie-a", account, "succeeded", "drop-tie-a", "2026-09-01T03:00:00.000Z", "2026-09-01T03:01:00.000Z");
+          // Valid agent-turn automation on the seeded fixture chat plus runs.
+          automation.run(
+            "agent-ok",
+            account,
+            "agent-ok",
+            "agent_turn",
+            fixture.seed.chatId,
+            "Summarize the week",
+            15,
+            "active",
+            1,
+            null,
+            "2026-09-06T00:00:00.000Z",
+            "2026-08-29T00:00:00.000Z",
+            "2026-08-29T00:00:00.000Z"
+          );
+          run.run("agent-ok", account, "skipped", "kept-agent", "2026-08-29T01:00:00.000Z", "2026-08-29T01:01:00.000Z");
+          // Discarded legacy rows and their history.
+          automation.run(
+            "dangling-conn",
+            account,
+            "legacy-dangling-conn",
+            "connector_sync",
+            "missing-connector",
+            null,
+            60,
+            "active",
+            0,
+            null,
+            "2026-09-06T00:00:00.000Z",
+            "2026-08-28T00:00:00.000Z",
+            "2026-08-28T00:00:00.000Z"
+          );
+          run.run("dangling-conn", account, "failed", "drop-dangling", "2026-08-28T01:00:00.000Z", null);
+          automation.run(
+            "xacct-conn",
+            account,
+            "legacy-xacct-conn",
+            "connector_sync",
+            foreignConnector,
+            null,
+            60,
+            "active",
+            0,
+            null,
+            "2026-09-06T00:00:00.000Z",
+            "2026-08-27T00:00:00.000Z",
+            "2026-08-27T00:00:00.000Z"
+          );
+          run.run("xacct-conn", account, "failed", "drop-xacct", "2026-08-27T01:00:00.000Z", null);
+          automation.run(
+            "dangling-agent",
+            account,
+            "legacy-dangling-agent",
+            "agent_turn",
+            "missing-chat",
+            "Prompt",
+            15,
+            "paused",
+            5,
+            null,
+            "2026-09-06T00:00:00.000Z",
+            "2026-08-26T00:00:00.000Z",
+            "2026-08-26T00:00:00.000Z"
+          );
+          run.run("dangling-agent", account, "failed", "drop-dangling-agent", "2026-08-26T01:00:00.000Z", null);
+          // A run recorded under an account other than its parent's account.
+          run.run("agent-ok", foreignAccount, "failed", "drop-run-account", "2026-08-29T02:00:00.000Z", null);
+          onDisk.exec("COMMIT");
+        } catch (error) {
+          onDisk.exec("ROLLBACK");
+          throw error;
+        }
+      } finally {
+        onDisk.close();
+      }
+
+      const ledger = await openSqliteLedger({ path: fixture.filename });
+      try {
+        await expect(ledger.get<{ user_version: bigint }>("PRAGMA user_version")).resolves.toEqual({
+          user_version: BigInt(LATEST_SQLITE_SCHEMA_VERSION),
+        });
+
+        await expect(
+          ledger.all<{ id: string; target_id: string; connector_id: string | null; chat_id: string | null }>(
+            "SELECT id,target_id,connector_id,chat_id FROM automations ORDER BY id"
+          )
+        ).resolves.toEqual([
+          { id: "agent-ok", target_id: fixture.seed.chatId, connector_id: null, chat_id: fixture.seed.chatId },
+          { id: "tie-b", target_id: ownedConnector, connector_id: ownedConnector, chat_id: null },
+        ]);
+
+        // The created_at DESC,id DESC survivor keeps every state field.
+        await expect(
+          ledger.get<Record<string, string | number | bigint | null>>(
+            `SELECT name,prompt,schedule_minutes,state,consecutive_failures,last_run_at,next_run_at,created_at,updated_at
+             FROM automations WHERE id='tie-b'`
+          )
+        ).resolves.toEqual({
+          name: "legacy-tie-b",
+          prompt: "Nightly refresh",
+          schedule_minutes: 30n,
+          state: "paused",
+          consecutive_failures: 4n,
+          last_run_at: "2026-09-01T01:00:00.000Z",
+          next_run_at: "2026-09-01T01:30:00.000Z",
+          created_at: "2026-09-01T00:00:00.000Z",
+          updated_at: "2026-09-01T01:00:00.000Z",
+        });
+
+        // Only the survivor's and the valid agent automation's history is
+        // retained; losing duplicates, dangling/cross-account parents, and the
+        // account-mismatched run are all dropped.
+        await expect(
+          ledger.all<{ detail: string }>("SELECT detail FROM automation_runs ORDER BY detail")
+        ).resolves.toEqual([{ detail: "kept-agent" }, { detail: "kept-tie-b-1" }, { detail: "kept-tie-b-2" }]);
+
+        const indexes = new Set(
+          (
+            await ledger.all<{ name: string }>(
+              "SELECT name FROM sqlite_master WHERE type='index' AND name NOT LIKE 'sqlite_%'"
+            )
+          ).map((row) => row.name)
+        );
+        expect([...indexes]).toEqual(
+          expect.arrayContaining([
+            "automations_account_catalog_idx",
+            "automations_connector_target_uidx",
+            "automation_runs_automation_idx",
+          ])
+        );
+        // The public target_id is the generated projection, not a stored copy.
+        const generatedColumns = (
+          await ledger.all<{ name: string; hidden: bigint }>("PRAGMA table_xinfo(automations)")
+        ).filter((column) => Number(column.hidden) !== 0);
+        expect(generatedColumns.map((column) => column.name)).toEqual(["target_id"]);
+        await expect(ledger.all("PRAGMA foreign_key_check")).resolves.toEqual([]);
+      } finally {
+        await ledger.close();
+      }
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
+  it("makes automation target ownership a database invariant", async () => {
+    const { ledger } = await temporaryLedger();
+    const owner = randomUUID();
+    const foreign = randomUUID();
+    await insertUser(ledger, owner, "automation-owner@example.test");
+    await insertUser(ledger, foreign, "automation-foreign@example.test");
+    const connectorOne = randomUUID();
+    const connectorTwo = randomUUID();
+    const foreignConnector = randomUUID();
+    for (const [id, account, table] of [
+      [connectorOne, owner, "own1"],
+      [connectorTwo, owner, "own2"],
+      [foreignConnector, foreign, "foreign1"],
+    ] as const) {
+      await ledger.run("INSERT INTO connectors (id,account_id,name,type,target_table) VALUES (?,?,?,'url_csv',?)", [
+        id,
+        account,
+        `Feed ${table}`,
+        table,
+      ]);
+    }
+    const chatOne = randomUUID();
+    const chatTwo = randomUUID();
+    const foreignChat = randomUUID();
+    for (const [id, account, title] of [
+      [chatOne, owner, "Chat one"],
+      [chatTwo, owner, "Chat two"],
+      [foreignChat, foreign, "Foreign chat"],
+    ] as const) {
+      await ledger.run("INSERT INTO chats (id,account_id,title,model) VALUES (?,?,?,'chat-model')", [
+        id,
+        account,
+        title,
+      ]);
+    }
+    const insertAutomation = (
+      id: string,
+      account: string,
+      name: string,
+      kind: string,
+      connectorId: string | null,
+      chatId: string | null
+    ) =>
+      ledger.run(
+        `INSERT INTO automations (id,account_id,name,kind,connector_id,chat_id,schedule_minutes,next_run_at)
+         VALUES (?,?,?,?,?,?,60,strftime('%Y-%m-%dT%H:%M:%fZ','now'))`,
+        [id, account, name, kind, connectorId, chatId]
+      );
+
+    await insertAutomation("auto-conn-1", owner, "Owned sync", "connector_sync", connectorOne, null);
+    await expect(
+      ledger.get<{ target_id: string | null }>("SELECT target_id FROM automations WHERE id='auto-conn-1'")
+    ).resolves.toEqual({ target_id: connectorOne });
+
+    // The generated public projection is never directly writable.
+    await expect(
+      ledger.run(
+        `INSERT INTO automations (id,account_id,name,kind,target_id,schedule_minutes,next_run_at)
+         VALUES (?,?,?,?,?,60,strftime('%Y-%m-%dT%H:%M:%fZ','now'))`,
+        ["auto-gen", owner, "Generated", "connector_sync", connectorTwo]
+      )
+    ).rejects.toThrow(/generated column/);
+
+    // A CHECK ties each kind to exactly one canonical target column.
+    await expect(insertAutomation("auto-bad-a", owner, "Bad a", "connector_sync", null, chatOne)).rejects.toMatchObject(
+      {
+        kind: "check",
+      }
+    );
+    await expect(
+      insertAutomation("auto-bad-b", owner, "Bad b", "agent_turn", connectorOne, null)
+    ).rejects.toMatchObject({
+      kind: "check",
+    });
+    await expect(
+      insertAutomation("auto-bad-c", owner, "Bad c", "connector_sync", connectorOne, chatOne)
+    ).rejects.toMatchObject({ kind: "check" });
+    await expect(insertAutomation("auto-bad-d", owner, "Bad d", "agent_turn", null, null)).rejects.toMatchObject({
+      kind: "check",
+    });
+
+    // Composite foreign keys demand a same-account target that exists.
+    await expect(
+      insertAutomation("auto-x-1", foreign, "Cross sync", "connector_sync", connectorOne, null)
+    ).rejects.toMatchObject({ kind: "foreign_key" });
+    await expect(
+      insertAutomation("auto-x-2", foreign, "Cross digest", "agent_turn", null, chatOne)
+    ).rejects.toMatchObject({
+      kind: "foreign_key",
+    });
+    await expect(
+      insertAutomation("auto-x-3", owner, "Cross digest", "agent_turn", null, foreignChat)
+    ).rejects.toMatchObject({ kind: "foreign_key" });
+    await expect(
+      insertAutomation("auto-x-4", owner, "Missing sync", "connector_sync", "missing-connector", null)
+    ).rejects.toMatchObject({ kind: "foreign_key" });
+
+    // The partial unique index keeps at most one schedule per connector...
+    await insertAutomation("auto-conn-2", owner, "Second name", "connector_sync", connectorTwo, null);
+    await expect(
+      insertAutomation("auto-conn-3", owner, "Third name", "connector_sync", connectorOne, null)
+    ).rejects.toMatchObject({ kind: "unique" });
+    // ...while multiple agent turns may target the same owned chat.
+    await insertAutomation("auto-agent-1", owner, "Digest one", "agent_turn", null, chatOne);
+    await insertAutomation("auto-agent-2", owner, "Digest two", "agent_turn", null, chatOne);
+    await insertAutomation("auto-agent-3", owner, "Digest three", "agent_turn", null, chatTwo);
+
+    // Run history cannot carry an account different from its parent's.
+    await ledger.run(
+      "INSERT INTO automation_runs (automation_id,account_id,outcome) VALUES ('auto-conn-1',?,'succeeded')",
+      [owner]
+    );
+    await expect(
+      ledger.run(
+        "INSERT INTO automation_runs (automation_id,account_id,outcome) VALUES ('auto-conn-1',?,'succeeded')",
+        [foreign]
+      )
+    ).rejects.toMatchObject({ kind: "foreign_key" });
+    await expect(
+      ledger.run("INSERT INTO automation_runs (automation_id,account_id,outcome) VALUES ('missing',?,'succeeded')", [
+        owner,
+      ])
+    ).rejects.toMatchObject({ kind: "foreign_key" });
+
+    // Connector deletion cascades exactly the bound automation and its runs.
+    await ledger.run("DELETE FROM connectors WHERE id=? AND account_id=?", [connectorOne, owner]);
+    await expect(ledger.get("SELECT 1 FROM automations WHERE id='auto-conn-1'")).resolves.toBeUndefined();
+    await expect(ledger.all("SELECT 1 FROM automation_runs WHERE automation_id='auto-conn-1'")).resolves.toEqual([]);
+    await expect(ledger.get("SELECT 1 FROM automations WHERE id='auto-conn-2'")).resolves.toEqual({ "1": 1n });
+    await expect(ledger.get("SELECT 1 FROM automations WHERE id='auto-agent-1'")).resolves.toEqual({ "1": 1n });
+
+    // Chat deletion cascades exactly its bound agent-turn automations.
+    await ledger.run("DELETE FROM chats WHERE id=? AND account_id=?", [chatOne, owner]);
+    await expect(ledger.get("SELECT 1 FROM automations WHERE id='auto-agent-1'")).resolves.toBeUndefined();
+    await expect(ledger.get("SELECT 1 FROM automations WHERE id='auto-agent-2'")).resolves.toBeUndefined();
+    await expect(ledger.get("SELECT 1 FROM automations WHERE id='auto-agent-3'")).resolves.toEqual({ "1": 1n });
+    await expect(ledger.all("PRAGMA foreign_key_check")).resolves.toEqual([]);
+  });
 
   it("enforces composite tenancy, active-run uniqueness, and connector delete reservations", async () => {
     const { ledger } = await temporaryLedger();

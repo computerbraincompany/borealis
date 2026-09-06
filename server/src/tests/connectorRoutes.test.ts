@@ -624,29 +624,36 @@ describe("connector schedule and sync history", () => {
     expect(allowed.json().schedule).toMatchObject({ schedule_minutes: 60 });
   });
 
-  it("refuses to guess when multiple connector_sync automations target the connector", async () => {
+  it("forbids a second connector schedule even through direct SQL", async () => {
     await storageRuntime().sources.createConnector(ACCOUNT, connectorStoreInput("ledger", "idle"));
-    for (const name of ["Connector: Feed", "Legacy sync"]) {
-      await storageRuntime().ledger.run(
-        `INSERT INTO automations (id,account_id,name,kind,target_id,schedule_minutes,next_run_at)
+    await storageRuntime().ledger.run(
+      `INSERT INTO automations (id,account_id,name,kind,connector_id,schedule_minutes,next_run_at)
+       VALUES (?,?,?,?,?,?,strftime('%Y-%m-%dT%H:%M:%fZ','now'))`,
+      [randomUUID(), ACCOUNT, "Legacy sync", "connector_sync", CONNECTOR, 60]
+    );
+    // The v15 partial unique index makes the legacy-multiple state impossible,
+    // so the schedule surface can never face an ambiguous row set.
+    await expect(
+      storageRuntime().ledger.run(
+        `INSERT INTO automations (id,account_id,name,kind,connector_id,schedule_minutes,next_run_at)
          VALUES (?,?,?,?,?,?,strftime('%Y-%m-%dT%H:%M:%fZ','now'))`,
-        [randomUUID(), ACCOUNT, name, "connector_sync", CONNECTOR, 60]
-      );
-    }
+        [randomUUID(), ACCOUNT, "Second legacy sync", "connector_sync", CONNECTOR, 30]
+      )
+    ).rejects.toMatchObject({ kind: "unique" });
     const app = await buildApp();
 
-    const response = await app.inject({
+    const listed = await app.inject({ method: "GET", url: "/api/connectors", headers: auth });
+    expect(listed.json().items[0].schedule).toMatchObject({ schedule_minutes: 60 });
+
+    const updated = await app.inject({
       method: "PUT",
       url: `/api/connectors/${CONNECTOR}/schedule`,
       headers: auth,
-      payload: { schedule_minutes: 60 },
+      payload: { schedule_minutes: 45 },
     });
-    expect(response.statusCode).toBe(409);
-    expect(response.json()).toEqual({
-      error: "multiple connector_sync automations target this connector; clean up in Automations",
-    });
-    const listed = await app.inject({ method: "GET", url: "/api/connectors", headers: auth });
-    expect(listed.json().items[0].schedule).toBeNull();
+    expect(updated.statusCode).toBe(200);
+    expect(updated.json().schedule).toMatchObject({ schedule_minutes: 45 });
+    await expect(connectorSyncAutomationRows()).resolves.toHaveLength(1);
   });
 
   it("suffixes the derived automation name when it collides with an unrelated automation", async () => {
@@ -659,7 +666,7 @@ describe("connector schedule and sync history", () => {
       "chat-model",
     ]);
     await storageRuntime().ledger.run(
-      `INSERT INTO automations (id,account_id,name,kind,target_id,prompt,schedule_minutes,next_run_at)
+      `INSERT INTO automations (id,account_id,name,kind,chat_id,prompt,schedule_minutes,next_run_at)
        VALUES (?,?,?,?,?,?,?,strftime('%Y-%m-%dT%H:%M:%fZ','now'))`,
       [randomUUID(), ACCOUNT, "Connector: Feed", "agent_turn", chatId, "Summarize", 30]
     );
@@ -677,20 +684,31 @@ describe("connector schedule and sync history", () => {
     expect(automationRows[0]).toMatchObject({ name: "Connector: Feed (2)", target_id: CONNECTOR });
   });
 
-  it("cascades schedule automations and history rows on connector deletion", async () => {
+  it("cascades schedule automations, run history, and sync history on connector deletion", async () => {
     await storageRuntime().sources.createConnector(ACCOUNT, connectorStoreInput("ledger", "idle"));
+    const automationId = randomUUID();
     await storageRuntime().ledger.run(
-      `INSERT INTO automations (id,account_id,name,kind,target_id,schedule_minutes,next_run_at)
+      `INSERT INTO automations (id,account_id,name,kind,connector_id,schedule_minutes,next_run_at)
        VALUES (?,?,?,?,?,?,strftime('%Y-%m-%dT%H:%M:%fZ','now'))`,
-      [randomUUID(), ACCOUNT, "Connector: Feed", "connector_sync", CONNECTOR, 60]
+      [automationId, ACCOUNT, "Connector: Feed", "connector_sync", CONNECTOR, 60]
+    );
+    await storageRuntime().ledger.run(
+      `INSERT INTO automation_runs (automation_id,account_id,outcome,started_at,finished_at)
+       VALUES (?,?,'succeeded',strftime('%Y-%m-%dT%H:%M:%fZ','now'),strftime('%Y-%m-%dT%H:%M:%fZ','now'))`,
+      [automationId, ACCOUNT]
     );
     await recordHistory(ACCOUNT, CONNECTOR, "manual", "succeeded");
     const app = await buildApp();
 
+    // The v15 composite foreign key performs the teardown inside the
+    // deletion transaction; no manual automation helper exists anymore.
     const response = await app.inject({ method: "DELETE", url: `/api/connectors/${CONNECTOR}`, headers: auth });
     expect(response.statusCode).toBe(200);
     await expect(
-      storageRuntime().ledger.all("SELECT 1 FROM automations WHERE target_id=?", [CONNECTOR])
+      storageRuntime().ledger.all("SELECT 1 FROM automations WHERE connector_id=?", [CONNECTOR])
+    ).resolves.toEqual([]);
+    await expect(
+      storageRuntime().ledger.all("SELECT 1 FROM automation_runs WHERE automation_id=?", [automationId])
     ).resolves.toEqual([]);
     await expect(historyRows()).resolves.toEqual([]);
   });

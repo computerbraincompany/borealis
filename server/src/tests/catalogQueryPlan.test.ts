@@ -177,7 +177,7 @@ async function seedLargeCatalogs(resource: TempSqliteLedger): Promise<void> {
       );
       transaction.run(
         `INSERT INTO automations
-           (id,account_id,name,kind,target_id,prompt,schedule_minutes,next_run_at,created_at,updated_at)
+           (id,account_id,name,kind,chat_id,prompt,schedule_minutes,next_run_at,created_at,updated_at)
          VALUES (?,?,?,'agent_turn',?,?,60,?,?,?)`,
         [id, OWNER, `Automation ${index}`, id, `Prompt ${index}`, timestamp, timestamp, timestamp]
       );

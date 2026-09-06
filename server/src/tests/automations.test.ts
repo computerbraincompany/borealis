@@ -13,6 +13,7 @@ import { createAutomationRunner } from "../automationRunner.js";
 import { listEgressEvents } from "../egressAudit.js";
 import { installHttpBoundary } from "../httpErrors.js";
 import { automationRoutes } from "../routes/automations.js";
+import { completeSourceDeleteIntents } from "../sourceCleanup.js";
 import { closeRuntimeSettings, initializeRuntimeSettings, runtimeSettingsStore } from "../runtimeSettings.js";
 import { closeStorageRuntime, initializeStorageRuntime, storageRuntime } from "../storageRuntime.js";
 import { LATEST_SQLITE_SCHEMA_VERSION } from "../db/migrations.js";
@@ -140,7 +141,7 @@ describe("automation store and schema", () => {
     expect(second.json()).toEqual({ error: "this connector already has a connector_sync automation" });
   });
 
-  it("removes only the bound connector's connector_sync automations", async () => {
+  it("cascades connector deletion through the real source store to only the bound automation and runs", async () => {
     const app = await buildApp();
     const connectorId = await insertConnector(OWNER);
     const otherConnectorId = await insertConnector(OWNER);
@@ -169,12 +170,28 @@ describe("automation store and schema", () => {
       prompt: "Summarize the attached sources for the team.",
       schedule_minutes: 60,
     });
+    await storageRuntime().automations.recordRun(boundSync, OWNER, "succeeded", "bound history");
+    await storageRuntime().automations.recordRun(otherSync, OWNER, "succeeded", "other history");
+    await storageRuntime().automations.recordRun(digest, OWNER, "succeeded", "digest history");
 
-    await expect(storageRuntime().automations.deleteConnectorAutomations(OWNER, connectorId)).resolves.toBe(1);
+    // Schema v15 owns the teardown: the composite foreign key removes the
+    // bound automation and its run history inside the connector deletion
+    // transaction — no manual helper is involved.
+    const deletion = await storageRuntime().sources.deleteConnector(OWNER, connectorId);
+    await completeSourceDeleteIntents(deletion.intents);
+
     await expect(storageRuntime().automations.get(OWNER, boundSync)).resolves.toBeUndefined();
+    await expect(
+      storageRuntime().ledger.all("SELECT 1 FROM automation_runs WHERE automation_id=?", [boundSync])
+    ).resolves.toEqual([]);
     await expect(storageRuntime().automations.get(OWNER, otherSync)).resolves.toBeDefined();
+    await expect(
+      storageRuntime().ledger.all("SELECT 1 FROM automation_runs WHERE automation_id=?", [otherSync])
+    ).resolves.toHaveLength(1);
     await expect(storageRuntime().automations.get(OWNER, digest)).resolves.toBeDefined();
-    await expect(storageRuntime().automations.deleteConnectorAutomations(OWNER, connectorId)).resolves.toBe(0);
+    await expect(
+      storageRuntime().ledger.all("SELECT 1 FROM automation_runs WHERE automation_id=?", [digest])
+    ).resolves.toHaveLength(1);
   });
 
   it("validates kind-specific targets and bounds", async () => {
@@ -398,31 +415,62 @@ describe("automation runner", () => {
     ]);
   });
 
-  it("keeps scheduled history best effort when the bound connector is gone", async () => {
+  it("cascades chat deletion to exactly the bound agent-turn automations and their runs", async () => {
     const app = await buildApp();
+    const chatId = await insertChat(OWNER);
+    const otherChatId = await insertChat(OWNER);
     const connectorId = await insertConnector(OWNER);
-    const created = await app.inject({
-      method: "POST",
-      url: "/api/automations",
-      headers: ownerAuth,
-      body: { name: "Dangling sync", kind: "connector_sync", target_id: connectorId, schedule_minutes: 15 },
+    async function createAutomation(body: Record<string, unknown>): Promise<string> {
+      const response = await app.inject({ method: "POST", url: "/api/automations", headers: ownerAuth, body });
+      expect(response.statusCode).toBe(201);
+      return response.json().id as string;
+    }
+    const digestOne = await createAutomation({
+      name: "Digest one",
+      kind: "agent_turn",
+      target_id: chatId,
+      prompt: "Summarize the attached sources for the team.",
+      schedule_minutes: 60,
     });
-    const automationId = created.json().id as string;
-    await storageRuntime().ledger.run("DELETE FROM connectors WHERE id=?", [connectorId]);
-
-    const runner = createAutomationRunner({
-      store: storageRuntime().automations,
-      syncConnector: vi.fn(),
-      tickIntervalMs: 10_000,
-      now: () => new Date(Date.now() + 60 * 60 * 1000),
+    const digestTwo = await createAutomation({
+      name: "Digest two",
+      kind: "agent_turn",
+      target_id: chatId,
+      prompt: "Summarize the week for leadership.",
+      schedule_minutes: 120,
     });
-    await expect(runner.tick()).resolves.toBeUndefined();
+    const otherDigest = await createAutomation({
+      name: "Other digest",
+      kind: "agent_turn",
+      target_id: otherChatId,
+      prompt: "Summarize the other chat.",
+      schedule_minutes: 60,
+    });
+    const connectorSync = await createAutomation({
+      name: "Connector sync",
+      kind: "connector_sync",
+      target_id: connectorId,
+      schedule_minutes: 60,
+    });
+    for (const automationId of [digestOne, digestTwo, otherDigest]) {
+      await storageRuntime().automations.recordRun(automationId, OWNER, "succeeded", "history");
+    }
 
-    const runs = await app.inject({ method: "GET", url: `/api/automations/${automationId}/runs`, headers: ownerAuth });
-    expect(runs.json()[0]).toMatchObject({ outcome: "failed", detail: "the bound connector no longer exists" });
-    // The history foreign key rejects rows for a deleted connector; the write
-    // is swallowed and records nothing.
-    await expect(storageRuntime().ledger.all("SELECT 1 FROM connector_syncs")).resolves.toEqual([]);
+    // Schema v15's composite chat foreign key makes the chat store's plain
+    // DELETE the authoritative automation teardown.
+    await storageRuntime().chats.deleteChat(OWNER, chatId);
+
+    await expect(storageRuntime().automations.get(OWNER, digestOne)).resolves.toBeUndefined();
+    await expect(storageRuntime().automations.get(OWNER, digestTwo)).resolves.toBeUndefined();
+    await expect(
+      storageRuntime().ledger.all("SELECT 1 FROM automation_runs WHERE automation_id IN (?,?)", [digestOne, digestTwo])
+    ).resolves.toEqual([]);
+    await expect(storageRuntime().automations.get(OWNER, otherDigest)).resolves.toBeDefined();
+    await expect(
+      storageRuntime().ledger.all("SELECT 1 FROM automation_runs WHERE automation_id=?", [otherDigest])
+    ).resolves.toHaveLength(1);
+    await expect(storageRuntime().automations.get(OWNER, connectorSync)).resolves.toBeDefined();
+    await expect(storageRuntime().ledger.all("PRAGMA foreign_key_check")).resolves.toEqual([]);
   });
 
   it("skips agent turns while the bound chat is busy and runs them when free", async () => {
