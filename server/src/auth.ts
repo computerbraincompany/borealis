@@ -8,6 +8,14 @@ import { storageRuntime } from "./storageRuntime.js";
 export interface AuthPayload {
   userId: string;
   email: string;
+  /**
+   * Literal desktop-operator capability authorizing contained-engine host
+   * process control. It is minted only by `createDesktopBootstrapSession`;
+   * registration and login never carry it, and no public response ever
+   * serializes it. Any value other than the exact literal `true` is omitted
+   * rather than trusted.
+   */
+  desktopOperator?: true;
 }
 
 export function signToken(payload: AuthPayload): string {
@@ -23,7 +31,10 @@ export function verifyToken(token: string): AuthPayload {
   ) {
     throw new Error("invalid token payload");
   }
-  return payload as AuthPayload;
+  if (payload.desktopOperator === true) {
+    return { userId: payload.userId, email: payload.email, desktopOperator: true };
+  }
+  return { userId: payload.userId, email: payload.email };
 }
 
 function initializedJwtSecret(): string {
@@ -99,9 +110,12 @@ export async function authRoutes(app: FastifyInstance) {
     }
   );
 
+  // Explicit public projection: the internal auth payload is never
+  // serialized whole, so the desktop-operator capability can never appear in
+  // this response even for a bootstrap-minted session.
   app.get("/api/me", { onRequest: requireAuth }, async (req, reply) => {
-    const user = (req as any).user;
-    return reply.send(user);
+    const user = getAuthPayload(req);
+    return reply.send({ userId: user.userId, email: user.email });
   });
 }
 
@@ -114,6 +128,20 @@ export async function requireAuth(req: FastifyRequest, reply: FastifyReply) {
     const requestId = String(reply.getHeader("X-Request-ID") || req.id);
     return reply.code(401).send({ error: "unauthorized", request_id: requestId });
   }
+}
+
+function getAuthPayload(req: FastifyRequest): AuthPayload {
+  return (req as any).user as AuthPayload;
+}
+
+/**
+ * Reads the verified desktop-operator capability from the authenticated
+ * request. Authority comes only from the signed literal claim — never from
+ * the account email or any other inferred property.
+ */
+export function hasDesktopOperatorCapability(req: FastifyRequest): boolean {
+  const user = (req as any).user as Partial<AuthPayload> | undefined;
+  return user?.desktopOperator === true;
 }
 
 export function getAccountId(req: FastifyRequest): string {

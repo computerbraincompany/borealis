@@ -23,8 +23,17 @@ import { systemRoutes } from "./routes/system.js";
 
 export { publicAgentFailureMessage } from "./routes/chats.js";
 
+export interface RoutesOptions {
+  /**
+   * Trusted server-composition mode from `buildBorealisApp`; the default is
+   * fail-closed browser mode, where no token may control contained-engine
+   * host processes.
+   */
+  readonly desktop?: boolean;
+}
+
 /** Compose resource plugins while keeping shared HTTP policy in one place. */
-export async function routes(app: FastifyInstance): Promise<void> {
+export async function routes(app: FastifyInstance, options: RoutesOptions = {}): Promise<void> {
   installHttpBoundary(app);
   installAccountSessionValidation(app);
   await app.register(swagger, {
@@ -57,7 +66,7 @@ export async function routes(app: FastifyInstance): Promise<void> {
   await app.register(libraryRoutes);
   await app.register(agentRoutes);
   await app.register(agentSkillRoutes);
-  await app.register(containedRoutes);
+  await app.register(containedRoutes, { desktop: options.desktop ?? false });
   await app.register(connectorRoutes);
   await app.register(reportRoutes);
   await app.register(chartRoutes);

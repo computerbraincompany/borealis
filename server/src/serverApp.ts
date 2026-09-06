@@ -24,12 +24,20 @@ import { acquireWorkspaceLock, type WorkspaceLock } from "./workspaceLock.js";
 export interface BuildBorealisAppOptions {
   readonly logger?: boolean;
   readonly staticWebDir?: string;
+  /**
+   * Trusted server-composition mode, derived only from startup options
+   * (never from request data). It gates contained-engine process control;
+   * Plan 014 will extend this same options object with an injected scheduler
+   * capability.
+   */
+  readonly desktop?: boolean;
 }
 
 export interface StartBorealisServerOptions extends BuildBorealisAppOptions {
   readonly host?: string;
   readonly port?: number;
-  readonly desktop?: boolean;
+  // `desktop` is inherited from BuildBorealisAppOptions: the same trusted
+  // composition value gates both the guards below and route composition.
 }
 
 export interface RunningBorealisServer {
@@ -123,7 +131,9 @@ export async function buildBorealisApp(options: BuildBorealisAppOptions = {}): P
   // CORS headers. Omitting them also denies every cross-origin browser. The
   // separate Vite dev server keeps the fixed credentialed allowlist.
   if (!options.staticWebDir) await app.register(cors, { origin: corsOrigin, credentials: true });
-  await routes(app);
+  // Plan 007: the trusted desktop composition mode is the only input to the
+  // contained-engine authority gate; the default is fail-closed browser mode.
+  await routes(app, { desktop: options.desktop ?? false });
   if (options.staticWebDir) await registerStaticUi(app, options.staticWebDir);
   return app;
 }
@@ -218,7 +228,7 @@ export async function startBorealisServer(options: StartBorealisServerOptions = 
     settingsStarted = true;
     await initDb();
     databaseStarted = true;
-    app = await buildBorealisApp({ logger: options.logger, staticWebDir });
+    app = await buildBorealisApp({ logger: options.logger, staticWebDir, desktop });
     const interruptedRuns = await recoverInterruptedRuns();
     if (interruptedRuns) app.log.warn({ interrupted_runs: interruptedRuns }, "recovered interrupted chat runs");
     await startIngestionWorkers();

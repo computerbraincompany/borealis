@@ -1,11 +1,13 @@
-import type { FastifyInstance, FastifyReply } from "fastify";
-import { requireAuth } from "../auth.js";
+import type { FastifyInstance, FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
+import path from "node:path";
+import { hasDesktopOperatorCapability, requireAuth } from "../auth.js";
 import {
   ContainedConfigError,
   readContainedConfig,
   writeContainedConfig,
   MAX_CONTAINED_ARG_CHARS,
   MAX_CONTAINED_EXTRA_ARGS,
+  type ContainedConfig,
 } from "../contained/configStore.js";
 import { ContainedDownloadError } from "../contained/downloadManager.js";
 import { downloadManager, engineManager } from "../contained/runtime.js";
@@ -14,6 +16,57 @@ import {
   CONTAINED_CONFIG_BODY_LIMIT_BYTES,
   CONTAINED_DOWNLOAD_BODY_LIMIT_BYTES,
 } from "./bodyLimits.js";
+
+export interface ContainedRoutesOptions {
+  /**
+   * Trusted desktop composition mode derived from server startup options,
+   * never from request data. Process-control mutations require this to be
+   * exactly `true` in addition to a valid signed desktop-operator claim.
+   */
+  readonly desktop?: boolean;
+}
+
+/**
+ * Redacted status projection of the stored contained configuration. It never
+ * carries an absolute path, the executable digest, or the raw argument array;
+ * every authenticated read sees the same projection.
+ */
+interface RedactedContainedConfig {
+  readonly enabled: boolean;
+  readonly binary: string | null;
+  readonly model: string | null;
+  readonly extra_arg_count: number;
+}
+
+function redactContainedConfig(config: ContainedConfig | null): RedactedContainedConfig | null {
+  if (!config) return null;
+  if (!config.enabled) {
+    return { enabled: false, binary: null, model: null, extra_arg_count: 0 };
+  }
+  return {
+    enabled: true,
+    binary: path.basename(config.binary_path) || null,
+    model: path.basename(config.model_path) || null,
+    extra_arg_count: config.extra_args.length,
+  };
+}
+
+/**
+ * Desktop-operator gate. Authentication (`requireAuth`) runs first as the
+ * preceding `onRequest` hook; this only adds the authority decision: the
+ * server instance must be composed with the trusted `desktop: true` option
+ * and the verified token must carry the literal capability. The rejection is
+ * a stable generic 403 with the request ID and no mode/account/path detail,
+ * and it returns before any handler touches config, files, downloads, or
+ * processes.
+ */
+function createDesktopOperatorGate(desktopMode: boolean) {
+  return async function requireDesktopOperator(req: FastifyRequest, reply: FastifyReply): Promise<unknown> {
+    if (desktopMode === true && hasDesktopOperatorCapability(req)) return undefined;
+    const requestId = String(reply.getHeader("X-Request-ID") || req.id);
+    return reply.code(403).send({ error: "desktop operator authority required", request_id: requestId });
+  };
+}
 
 const containedConfigSchema = {
   type: "object",
@@ -61,11 +114,16 @@ function sendContainedError(reply: FastifyReply, error: unknown): boolean {
   return false;
 }
 
-export async function containedRoutes(app: FastifyInstance): Promise<void> {
+export const containedRoutes: FastifyPluginAsync<ContainedRoutesOptions> = async (app, options) => {
+  const desktopMode = options.desktop === true;
+  // Mutating routes authenticate first and then require the desktop-operator
+  // capability in `onRequest`, before body parsing or any side effect.
+  const operatorOnRequest = [requireAuth, createDesktopOperatorGate(desktopMode)];
+
   app.get("/api/contained", { onRequest: requireAuth }, async (_req, reply) => {
     try {
       return reply.send({
-        config: await readContainedConfig(),
+        config: redactContainedConfig(await readContainedConfig()),
         engine: engineManager.snapshot(),
         downloads: downloadManager.snapshot(),
       });
@@ -78,20 +136,25 @@ export async function containedRoutes(app: FastifyInstance): Promise<void> {
   app.put(
     "/api/contained/config",
     {
-      onRequest: requireAuth,
+      onRequest: operatorOnRequest,
       bodyLimit: CONTAINED_CONFIG_BODY_LIMIT_BYTES,
       schema: { body: containedConfigSchema },
     },
     async (req, reply) => {
       try {
-        const body = req.body as { enabled: boolean; binary_path?: string; model_path?: string; extra_args?: string[] };
+        const body = req.body as {
+          enabled: boolean;
+          binary_path?: string;
+          model_path?: string;
+          extra_args?: string[];
+        };
         const saved = await writeContainedConfig({
           enabled: body.enabled,
           binaryPath: body.binary_path,
           modelPath: body.model_path,
           extraArgs: body.extra_args,
         });
-        return reply.send(saved);
+        return reply.send(redactContainedConfig(saved));
       } catch (error) {
         if (sendContainedError(reply, error)) return;
         throw error;
@@ -102,7 +165,7 @@ export async function containedRoutes(app: FastifyInstance): Promise<void> {
   app.post(
     "/api/contained/downloads",
     {
-      onRequest: requireAuth,
+      onRequest: operatorOnRequest,
       bodyLimit: CONTAINED_DOWNLOAD_BODY_LIMIT_BYTES,
       schema: { body: containedDownloadSchema },
     },
@@ -120,7 +183,7 @@ export async function containedRoutes(app: FastifyInstance): Promise<void> {
 
   app.post(
     "/api/contained/engine/start",
-    { onRequest: requireAuth, bodyLimit: BODYLESS_MUTATION_LIMIT_BYTES },
+    { onRequest: operatorOnRequest, bodyLimit: BODYLESS_MUTATION_LIMIT_BYTES },
     async (_req, reply) => {
       try {
         const state = await engineManager.start();
@@ -134,7 +197,7 @@ export async function containedRoutes(app: FastifyInstance): Promise<void> {
 
   app.post(
     "/api/contained/engine/stop",
-    { onRequest: requireAuth, bodyLimit: BODYLESS_MUTATION_LIMIT_BYTES },
+    { onRequest: operatorOnRequest, bodyLimit: BODYLESS_MUTATION_LIMIT_BYTES },
     async (_req, reply) => {
       try {
         return reply.send(await engineManager.stop());
@@ -148,7 +211,7 @@ export async function containedRoutes(app: FastifyInstance): Promise<void> {
   app.delete(
     "/api/contained/downloads/:filename",
     {
-      onRequest: requireAuth,
+      onRequest: operatorOnRequest,
       bodyLimit: BODYLESS_MUTATION_LIMIT_BYTES,
       schema: { params: containedFilenameParams },
     },
@@ -163,4 +226,4 @@ export async function containedRoutes(app: FastifyInstance): Promise<void> {
       }
     }
   );
-}
+};

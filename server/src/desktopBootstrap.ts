@@ -31,11 +31,16 @@ async function desktopUser(): Promise<StoredUser> {
   }
 }
 
-/** Ensure the single local profile exists and mint a fresh, short-lived handoff. */
+/**
+ * Ensure the single local profile exists and mint a fresh, short-lived
+ * handoff. This is the only path that signs the literal desktop-operator
+ * capability; registration and login never do, and the capability — not the
+ * stable desktop email — is what authorizes contained-engine process control.
+ */
 export async function createDesktopBootstrapSession(): Promise<DesktopBootstrapSession> {
   const user = await desktopUser();
   return Object.freeze({
-    token: signToken({ userId: user.id, email: user.email }),
+    token: signToken({ userId: user.id, email: user.email, desktopOperator: true }),
     user: Object.freeze({ id: user.id, email: user.email }),
   });
 }

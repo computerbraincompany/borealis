@@ -13,6 +13,7 @@ import {
   writeContainedConfig,
 } from "../contained/configStore.js";
 import { createContainedDownloadManager, ContainedDownloadError } from "../contained/downloadManager.js";
+import { downloadManager, engineManager } from "../contained/runtime.js";
 import { installHttpBoundary } from "../httpErrors.js";
 import { containedRoutes } from "../routes/contained.js";
 import { config } from "../config.js";
@@ -20,6 +21,16 @@ import { config } from "../config.js";
 const OWNER = "11111111-1111-4111-8111-111111111111";
 const ownerAuth = {
   authorization: `Bearer ${signToken({ userId: OWNER, email: "owner@example.test" })}`,
+};
+// A bootstrap-minted-equivalent claim: verifyToken only accepts the exact
+// literal `true`, which is what createDesktopBootstrapSession signs.
+const operatorAuth = {
+  authorization: `Bearer ${signToken({ userId: OWNER, email: "owner@example.test", desktopOperator: true })}`,
+};
+// The stable desktop email with no signed capability: identity is not
+// authority.
+const desktopEmailAuth = {
+  authorization: `Bearer ${signToken({ userId: OWNER, email: "local@borealis.app" })}`,
 };
 
 const apps: FastifyInstance[] = [];
@@ -263,11 +274,11 @@ describe("contained download manager", () => {
 });
 
 describe("contained routes", () => {
-  async function buildApp(): Promise<FastifyInstance> {
+  async function buildApp(options: { desktop?: boolean } = {}): Promise<FastifyInstance> {
     const app = Fastify();
     apps.push(app);
     installHttpBoundary(app);
-    await app.register(containedRoutes);
+    await app.register(containedRoutes, options);
     await app.ready();
     return app;
   }
@@ -278,15 +289,22 @@ describe("contained routes", () => {
     expect(response.statusCode).toBe(401);
   });
 
-  it("stores config and reports downloads with state", async () => {
-    const app = await buildApp();
+  it("keeps GET authenticated status chrome in browser mode", async () => {
+    const app = await buildApp({ desktop: false });
+    const response = await app.inject({ method: "GET", url: "/api/contained", headers: ownerAuth });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ config: null });
+  });
+
+  it("stores config and reports downloads with state under the desktop operator", async () => {
+    const app = await buildApp({ desktop: true });
     const url = await startFixtureServer();
     const payload = Buffer.from("contained-model-bytes-".repeat(400));
 
     const saved = await app.inject({
       method: "PUT",
       url: "/api/contained/config",
-      headers: ownerAuth,
+      headers: operatorAuth,
       body: { enabled: false },
     });
     expect(saved.statusCode).toBe(200);
@@ -295,7 +313,7 @@ describe("contained routes", () => {
     const invalid = await app.inject({
       method: "PUT",
       url: "/api/contained/config",
-      headers: ownerAuth,
+      headers: operatorAuth,
       body: { enabled: true, binary_path: "relative", model_path: "/tmp/model" },
     });
     expect(invalid.statusCode).toBe(400);
@@ -303,26 +321,202 @@ describe("contained routes", () => {
     const started = await app.inject({
       method: "POST",
       url: "/api/contained/downloads",
-      headers: ownerAuth,
+      headers: operatorAuth,
       body: { url, filename: "route.gguf", sha256: sha256Hex(payload) },
     });
     expect(started.statusCode).toBe(202);
 
     for (let attempt = 0; attempt < 100; attempt += 1) {
-      const state = await app.inject({ method: "GET", url: "/api/contained", headers: ownerAuth });
+      const state = await app.inject({ method: "GET", url: "/api/contained", headers: operatorAuth });
       const downloads = state.json().downloads as Array<{ filename: string; state: string }>;
       if (downloads.find((download) => download.filename === "route.gguf")?.state === "complete") break;
       await new Promise((resolve) => setTimeout(resolve, 25));
     }
-    const final = await app.inject({ method: "GET", url: "/api/contained", headers: ownerAuth });
+    const final = await app.inject({ method: "GET", url: "/api/contained", headers: operatorAuth });
     const downloads = final.json().downloads as Array<{ filename: string; state: string }>;
     expect(downloads.find((download) => download.filename === "route.gguf")?.state).toBe("complete");
 
     const cancelMissing = await app.inject({
       method: "DELETE",
       url: "/api/contained/downloads/missing.gguf",
-      headers: ownerAuth,
+      headers: operatorAuth,
     });
     expect(cancelMissing.statusCode).toBe(404);
+  });
+});
+
+describe("contained route authority matrix", () => {
+  const mutations = [
+    { label: "PUT config", method: "PUT" as const, url: "/api/contained/config", payload: { enabled: false } },
+    {
+      label: "POST download",
+      method: "POST" as const,
+      url: "/api/contained/downloads",
+      payload: { url: "http://127.0.0.1:9/model.gguf", filename: "x.gguf", sha256: "0".repeat(64) },
+    },
+    { label: "DELETE download", method: "DELETE" as const, url: "/api/contained/downloads/x.gguf" },
+    { label: "POST engine start", method: "POST" as const, url: "/api/contained/engine/start" },
+    { label: "POST engine stop", method: "POST" as const, url: "/api/contained/engine/stop" },
+  ];
+
+  function deniedScenarios(desktopMode: boolean) {
+    const scenarios: Array<{ label: string; headers: Record<string, string>; desktop: boolean; status: number }> = [
+      { label: "unauthenticated", headers: {}, desktop: desktopMode, status: 401 },
+      { label: "ordinary token", headers: ownerAuth, desktop: desktopMode, status: 403 },
+      { label: "claimed token in browser mode", headers: operatorAuth, desktop: false, status: 403 },
+      { label: "desktop email without the claim", headers: desktopEmailAuth, desktop: true, status: 403 },
+    ];
+    return scenarios;
+  }
+
+  for (const desktopMode of [false, true]) {
+    for (const scenario of deniedScenarios(desktopMode)) {
+      it(`denies every mutation for the ${scenario.label} (desktop mode ${String(desktopMode)}) with zero side effects`, async () => {
+        const spies = [
+          vi.spyOn(engineManager, "start"),
+          vi.spyOn(engineManager, "stop"),
+          vi.spyOn(downloadManager, "start"),
+          vi.spyOn(downloadManager, "cancel"),
+        ];
+        try {
+          const app = await buildAppSafe({ desktop: scenario.desktop });
+          for (const mutation of mutations) {
+            const response = await app.inject({
+              method: mutation.method,
+              url: mutation.url,
+              headers: scenario.headers,
+              ...(mutation.payload ? { payload: mutation.payload } : {}),
+            });
+            expect(`${mutation.label} -> ${response.statusCode}`).toBe(`${mutation.label} -> ${scenario.status}`);
+            if (scenario.status === 403) {
+              expect(response.json()).toMatchObject({
+                error: "desktop operator authority required",
+                request_id: expect.any(String),
+              });
+              // No mode/account/path detail leaks into the stable rejection.
+              expect(response.body).not.toContain(scenario.label);
+              expect(response.body).not.toContain("local@borealis.app");
+              expect(response.body).not.toContain(tempDataDir);
+            }
+          }
+          for (const spy of spies) expect(spy).not.toHaveBeenCalled();
+          const entries = await fs.readdir(config.storageDir);
+          expect(entries).not.toContain("contained.json");
+        } finally {
+          for (const spy of spies) spy.mockRestore();
+        }
+      });
+    }
+  }
+
+  async function buildAppSafe(options: { desktop?: boolean } = {}): Promise<FastifyInstance> {
+    const app = Fastify();
+    apps.push(app);
+    installHttpBoundary(app);
+    await app.register(containedRoutes, options);
+    await app.ready();
+    return app;
+  }
+
+  it("retains desktop-operator success for a real claimed token under desktop mode", async () => {
+    const app = await buildAppSafe({ desktop: true });
+    const saved = await app.inject({
+      method: "PUT",
+      url: "/api/contained/config",
+      headers: operatorAuth,
+      body: { enabled: false },
+    });
+    expect(saved.statusCode).toBe(200);
+    const stopped = await app.inject({ method: "POST", url: "/api/contained/engine/stop", headers: operatorAuth });
+    expect(stopped.statusCode).toBe(200);
+    // Reachable-but-inert proof for the other mutations: the operator passes
+    // the gate and the handler logic runs (no config → 400; unknown download
+    // → 404; invalid URL → 400), never a 403.
+    const start = await app.inject({ method: "POST", url: "/api/contained/engine/start", headers: operatorAuth });
+    expect(start.statusCode).toBe(400);
+    const cancel = await app.inject({
+      method: "DELETE",
+      url: "/api/contained/downloads/none.gguf",
+      headers: operatorAuth,
+    });
+    expect(cancel.statusCode).toBe(404);
+    const download = await app.inject({
+      method: "POST",
+      url: "/api/contained/downloads",
+      headers: operatorAuth,
+      payload: { url: "ftp://127.0.0.1/model", filename: "x.gguf", sha256: "0".repeat(64) },
+    });
+    expect(download.statusCode).toBe(400);
+  });
+});
+
+describe("contained config redaction", () => {
+  async function buildDesktopApp(): Promise<FastifyInstance> {
+    const app = Fastify();
+    apps.push(app);
+    installHttpBoundary(app);
+    await app.register(containedRoutes, { desktop: true });
+    await app.ready();
+    return app;
+  }
+
+  function expectRedacted(body: string, configJson: Record<string, unknown>): void {
+    expect(configJson).toEqual({
+      enabled: true,
+      binary: "llama-server",
+      model: "model.gguf",
+      extra_arg_count: 2,
+    });
+    for (const forbidden of [
+      "/opt/homebrew",
+      "binary_path",
+      "model_path",
+      "extra_args",
+      "-ngl",
+      tempDataDir,
+      "binary_sha256",
+    ]) {
+      expect(body).not.toContain(forbidden);
+    }
+  }
+
+  it("GET and PUT expose only the redacted config projection", async () => {
+    const app = await buildDesktopApp();
+    const put = await app.inject({
+      method: "PUT",
+      url: "/api/contained/config",
+      headers: operatorAuth,
+      body: {
+        enabled: true,
+        binary_path: "/opt/homebrew/bin/llama-server",
+        model_path: path.join(tempDataDir, "models", "model.gguf"),
+        extra_args: ["-ngl", "99"],
+      },
+    });
+    expect(put.statusCode).toBe(200);
+    expectRedacted(put.body, put.json().config ?? put.json());
+
+    const get = await app.inject({ method: "GET", url: "/api/contained", headers: ownerAuth });
+    expect(get.statusCode).toBe(200);
+    expectRedacted(get.body, get.json().config);
+
+    // The raw stored file still carries what the engine needs.
+    const stored = await readContainedConfig();
+    expect(stored).toMatchObject({
+      enabled: true,
+      binary_path: "/opt/homebrew/bin/llama-server",
+      extra_args: ["-ngl", "99"],
+    });
+  });
+
+  it("redacts a disabled config to inert status fields", async () => {
+    const app = await buildDesktopApp();
+    const put = await app.inject({
+      method: "PUT",
+      url: "/api/contained/config",
+      headers: operatorAuth,
+      body: { enabled: false },
+    });
+    expect(put.json()).toEqual({ enabled: false, binary: null, model: null, extra_arg_count: 0 });
   });
 });

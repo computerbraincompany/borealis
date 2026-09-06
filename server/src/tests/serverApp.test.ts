@@ -18,6 +18,8 @@ const mocks = vi.hoisted(() => ({
   createDesktopBootstrapSession: vi.fn(),
   initializeRuntimeSettings: vi.fn(),
   closeRuntimeSettings: vi.fn(),
+  /** Composition options the routes mock received, newest last. */
+  routesOptions: [] as Array<Record<string, unknown>>,
 }));
 
 // Stable module-cached runner seam; plan 014 will replace this ownership model.
@@ -48,7 +50,8 @@ vi.mock("../desktopBootstrap.js", () => ({
   createDesktopBootstrapSession: mocks.createDesktopBootstrapSession,
 }));
 vi.mock("../routes.js", () => ({
-  routes: async (app: FastifyInstance) => {
+  routes: async (app: FastifyInstance, options?: Record<string, unknown>) => {
+    mocks.routesOptions.push({ ...(options ?? {}) });
     app.post("/api/echo", async (request) => ({ body: request.body ?? null }));
   },
 }));
@@ -120,7 +123,10 @@ async function frameProbeFixture(): Promise<string> {
 }
 
 beforeEach(() => {
-  for (const mock of Object.values(mocks)) mock.mockReset();
+  for (const mock of Object.values(mocks)) {
+    if (Array.isArray(mock)) mock.length = 0;
+    else mock.mockReset();
+  }
   mocks.initDb.mockResolvedValue(undefined);
   mocks.closeDb.mockResolvedValue(undefined);
   mocks.recoverInterruptedRuns.mockResolvedValue(0);
@@ -279,6 +285,18 @@ describe("Fastify same-origin static host", () => {
       headers: { origin: "https://attacker.invalid", "access-control-request-method": "POST" },
     });
     expect(denied.headers["access-control-allow-origin"]).toBeUndefined();
+  });
+});
+
+describe("trusted desktop composition mode", () => {
+  it("forwards the composition desktop flag to route composition and defaults to browser mode", async () => {
+    const browserApp = await buildBorealisApp({ logger: false });
+    apps.push(browserApp);
+    expect(mocks.routesOptions.at(-1)).toEqual({ desktop: false });
+
+    const desktopApp = await buildBorealisApp({ logger: false, desktop: true });
+    apps.push(desktopApp);
+    expect(mocks.routesOptions.at(-1)).toEqual({ desktop: true });
   });
 });
 

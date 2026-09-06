@@ -1057,3 +1057,31 @@ describe("remote egress consent gate", () => {
     expect(consentState.json()).toEqual({ required: false, acknowledged_at: null, endpoint_host: null });
   });
 });
+
+describe("public session projection (/api/me)", () => {
+  it("returns the identical capability-free body for normal and desktop-bootstrap sessions", async () => {
+    const app = await buildApp();
+    const normalToken = signToken({ userId: accountId, email: "owner@example.test" });
+    const bootstrapToken = signToken({ userId: accountId, email: "owner@example.test", desktopOperator: true });
+
+    const normal = await app.inject({
+      method: "GET",
+      url: "/api/me",
+      headers: { authorization: `Bearer ${normalToken}` },
+    });
+    const bootstrap = await app.inject({
+      method: "GET",
+      url: "/api/me",
+      headers: { authorization: `Bearer ${bootstrapToken}` },
+    });
+
+    expect(normal.statusCode).toBe(200);
+    expect(bootstrap.statusCode).toBe(200);
+    expect(normal.json()).toEqual({ userId: accountId, email: "owner@example.test" });
+    expect(bootstrap.json()).toEqual(normal.json());
+    expect(bootstrap.body).not.toContain("desktopOperator");
+    // The signed claim itself exists on the token; the response must not
+    // serialize or echo it in any form.
+    expect(JSON.stringify(bootstrap.json())).not.toContain("desktopOperator");
+  });
+});

@@ -118,7 +118,11 @@ describe("vertical agent turn", () => {
 
       const app = Fastify();
       apps.push(app);
-      await routes(app);
+      // Composition-only update for the plan 007 authority gate: this vertical
+      // test runs in browser mode, so no token here can control contained
+      // processes. Provider, agent, tool, persistence, and SSE assertions and
+      // the operator claim stay exactly as plan 004 specified (never minted).
+      await routes(app, { desktop: false });
       await app.ready();
 
       // An explicit manual title keeps the automatic titling model call out of
