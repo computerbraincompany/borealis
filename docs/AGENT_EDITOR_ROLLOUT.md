@@ -10,34 +10,51 @@ prerequisite for agent identity, instruction editing, skills, or tool allowlists
 1. **Editor foundation (v13), complete in `0987170`:** shared create/edit modal; persisted description,
    icon and color; atomic prompt/capability revisions; account-owned Markdown
    skills; built-in tool selection and immutable accepted-turn snapshots.
-2. **Remediation migrations, pending:** provider-bound consent in v14, automation
-   target ownership in v15, typed connector refresh/repair in v16. Complete the
-   handoff's prerequisite closure before integrating new product migrations;
-   no placeholder migrations or changes to applied history.
-3. **MCP runtime and editor, pending:** official TypeScript client, Streamable HTTP and
-   stdio connections, discovery and explicit tool selection, isolated secret
-   storage, OAuth sign-in/refresh, cancellation and process cleanup. MCP access
-   remains absent until its entire execution path is implemented and verified.
+2. **Remediation migrations, complete:** provider-bound consent landed in v14,
+   automation target ownership in v15, and typed connector refresh/repair in
+   v16, so the handoff's prerequisite closure preceded the product migrations
+   (v17+) with no placeholder migrations and no changes to applied history.
+3. **MCP runtime and editor, implemented:** the official TypeScript client
+   (pinned `@modelcontextprotocol/sdk` 1.30.0, negotiated protocol
+   `2025-11-25`) runs both Streamable HTTP and stdio connections; discovery
+   publishes bounded tool snapshots (schema v17), credentials live only in
+   isolated secret custody, OAuth sign-in/refresh is authorization-code with
+   PKCE through the backend-owned loopback callback, accepted turns freeze the
+   per-run binding map in `chat_runs.agent_mcp_tools` (schema v21) with
+   per-call revocation/custody re-checks, and stdio children are owned through
+   disconnect/cancellation/shutdown. The shipped editor surface is the
+   Settings → Connections panel, the AgentEditor Connected and Job tabs, and
+   the job-confirmation card on chat creation. The current contracts are
+   documented in the API reference under "Connections (Connected agents)",
+   "Connected tools in durable chat turns", and "Jobs: versioned job setup and
+   chat creation from a job".
 
 MCP storage must be allocated only when its implementation is ready; do not
 silently claim one of the reserved remediation versions. Reconcile the sequence
 against the ledger before introducing the next migration.
 
 The [selected functional roadmap](../milestones/README.md#selected-functional-wave)
-keeps this pending MCP scope visible and includes reusable job setup. The full
+tracked the MCP scope together with reusable job setup; both are now
+implemented. The full
 [connected-agent specification](MCP_CONNECTIONS.md) and
 [development handoff](DEVELOPMENT_HANDOFF.md) supply implementation and acceptance
-details, including the prerequisite closure before new durable schema work.
-Suggested libraries and output templates are not part of the shipped v13
-editor. Suggested library members must become an explicit chat source
-selection, never a dynamic agent-to-library authorization path.
+details, including the prerequisite closure that preceded the new durable
+schema work. Job setup adds up to five starter prompts, one bounded
+instruction output template, and up to ten suggested library ids to an agent
+revision. A chat created from a job expands suggested libraries into the
+normal explicit source selection and stays selected-empty until the user
+confirms the expanded list — never a dynamic agent-to-library authorization
+path and never a fallback to `all`.
 
 ## Editor contract
 
 Old clients may still create an agent using only name and instructions. Existing
 agents retain their prompt, blue bot identity, all seven built-in tools, no
 skills, and no MCP access. Empty tool selections are meaningful and enforced at
-both model-definition and dispatch boundaries.
+both model-definition and dispatch boundaries. Connected-tool bindings live in
+a separate `mcp_tools` collection (at most 16 per agent, each pinned to a
+published discovery revision), so the `tools` array keeps its exact
+built-in-only meaning for old clients.
 
 Changes apply to the next accepted message. Selected skill text and the built-in
 tool allowlist are captured inside the message-acceptance transaction; running
@@ -60,6 +77,14 @@ narrow layouts, and a live message with zero built-in tools that follows its
 assigned skill. The final `pnpm verify` run passed all 16 tasks, including 897 server tests,
 web tests, integration checks, builds, and native smoke tests. Temporary browser
 test agents, skills, and chats were removed. Unsaved-dismissal confirmation was
-also exercised. MCP needs local HTTP, stdio,
-and OAuth fixtures plus desktop sign-in and process-lifecycle smoke checks before
-it is released; a UI-only integration does not satisfy this stage.
+also exercised. The connected-agent wave executes real durable turns against
+committed local protocol fixtures rather than mocks: the committed stdio/HTTP
+MCP servers and OAuth issuer under `scripts/e2e/fixtures` drive
+`mcpClient`, `mcpOAuth`, `connectionStore`/`connectionSecrets`/
+`connectionRoutes`, and `jobRoutes` tests, and `mcpAgentTurn` exercises
+accepted-turn dispatch, revocation, and frozen-mapping behavior. The web layer
+covers the Connections panel, the editor Connected/Job tabs, and chat
+job-confirmation races, and the desktop package covers the custody vault,
+utility-process contracts, and policies. Final packaged/browser acceptance
+evidence is tracked in [END_TO_END_ACCEPTANCE.md](END_TO_END_ACCEPTANCE.md)
+and the [execution ledger](../milestones/EXECUTION.md), not here.
