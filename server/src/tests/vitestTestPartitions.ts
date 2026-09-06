@@ -33,4 +33,5 @@ export const INTEGRATION_TEST_FILES = Object.freeze([
   "src/tests/mcpClient.test.ts",
   "src/tests/mcpOAuth.test.ts",
   "src/tests/agentVerticalIntegration.test.ts",
+  "src/tests/shutdownDrain.test.ts",
 ] as const);
