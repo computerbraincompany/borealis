@@ -6,6 +6,7 @@ import { DEFAULT_LLM_SETTINGS, type SettingsSnapshot } from "./settingsStore.js"
 import { ChatStore } from "./db/stores/chatStore.js";
 import { AgentStore } from "./db/stores/agentStore.js";
 import { ConnectionStore } from "./connections/store.js";
+import { AnalysisStore } from "./db/stores/analysisStore.js";
 import { AutomationStore } from "./automationStore.js";
 import { ConnectorRefreshStore } from "./db/stores/connectorRefreshStore.js";
 import { SqliteIngestionStore } from "./db/stores/ingestionStore.js";
@@ -32,6 +33,7 @@ export interface StorageRuntime {
   readonly ledger: SqliteLedger;
   readonly chats: ChatStore;
   readonly runs: RunStore;
+  readonly analyses: AnalysisStore;
   readonly sources: SourceStore;
   readonly libraries: LibraryStore;
   readonly agents: AgentStore;
@@ -120,6 +122,7 @@ export async function initializeStorageRuntime(optionsValue: StorageRuntimeOptio
         ledger,
         chats: new ChatStore(ledger),
         runs: new RunStore(ledger),
+        analyses: new AnalysisStore(ledger),
         libraries: new LibraryStore(ledger),
         agents: new AgentStore(ledger),
         connections: new ConnectionStore(ledger),
