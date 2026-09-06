@@ -11,6 +11,14 @@ const apiMocks = vi.hoisted(() => ({
   revision: vi.fn(),
   diff: vi.fn(),
   publications: vi.fn(),
+  publish: vi.fn(),
+  publicationExportPath: vi.fn(
+    (id: string, publicationId: string, format: string) =>
+      `/api/documents/${id}/publications/${publicationId}/export?format=${format}`,
+  ),
+  downloadBlob: vi.fn(async (): Promise<void> => undefined),
+  openProtected: vi.fn(async (): Promise<void> => undefined),
+  isPublicationError: vi.fn((_error: unknown, _code: string) => false),
   rewrites: vi.fn(),
   createRewrite: vi.fn(),
   acceptRewrite: vi.fn(),
@@ -34,16 +42,23 @@ vi.mock("@/lib/api", () => ({
     revision: apiMocks.revision,
     diff: apiMocks.diff,
     publications: apiMocks.publications,
+    publish: apiMocks.publish,
+    publicationExportPath: apiMocks.publicationExportPath,
     rewrites: apiMocks.rewrites,
     createRewrite: apiMocks.createRewrite,
     acceptRewrite: apiMocks.acceptRewrite,
     deleteRewrite: apiMocks.deleteRewrite,
   },
   documentTemplatesApi: { list: apiMocks.templatesList, create: apiMocks.templatesCreate },
+  downloadBlob: apiMocks.downloadBlob,
+  openProtected: apiMocks.openProtected,
+  isDocumentPublicationErrorCode: apiMocks.isPublicationError,
   formatApiError: apiMocks.formatApiError,
   parseDocumentRevisionConflict: apiMocks.parseConflict,
   parseDocumentRewriteStale: apiMocks.parseStale,
   isDocumentRewriteErrorCode: apiMocks.isRewriteError,
+  DOCUMENT_HEAD_MOVED_CODE: "DOCUMENT_HEAD_MOVED",
+  DOCUMENT_PUBLICATION_ACTIVE_CODE: "DOCUMENT_PUBLICATION_ACTIVE",
   DOCUMENT_REWRITE_ACTIVE_CODE: "DOCUMENT_REWRITE_ACTIVE",
   DOCUMENT_REWRITE_QUOTA_CODE: "DOCUMENT_REWRITE_QUOTA_REACHED",
 }));
@@ -167,6 +182,11 @@ beforeEach(() => {
     apiMocks.revision,
     apiMocks.diff,
     apiMocks.publications,
+    apiMocks.publish,
+    apiMocks.publicationExportPath,
+    apiMocks.downloadBlob,
+    apiMocks.openProtected,
+    apiMocks.isPublicationError,
     apiMocks.templatesList,
     apiMocks.templatesCreate,
     apiMocks.parseConflict,
@@ -179,6 +199,14 @@ beforeEach(() => {
   ].forEach((mock) => mock.mockReset());
   apiMocks.rewrites.mockResolvedValue({ items: [], next_cursor: null });
   apiMocks.isRewriteError.mockReturnValue(false);
+  apiMocks.isPublicationError.mockReturnValue(false);
+  apiMocks.publications.mockResolvedValue({ items: [], next_cursor: null });
+  apiMocks.downloadBlob.mockResolvedValue(undefined);
+  apiMocks.openProtected.mockResolvedValue(undefined);
+  apiMocks.publicationExportPath.mockImplementation(
+    (id: string, publicationId: string, format: string) =>
+      `/api/documents/${id}/publications/${publicationId}/export?format=${format}`,
+  );
   apiMocks.get.mockResolvedValue(SUMMARY);
   apiMocks.revision.mockResolvedValue(HEAD_REVISION);
   apiMocks.revisions.mockResolvedValue(HISTORY);
@@ -197,7 +225,7 @@ describe("DocumentWorkbench editor", () => {
 
     // Evidence inspector shows contract-versioned provenance labels.
     expect(await screen.findByText("verified origin")).toBeInTheDocument();
-    expect(screen.getByText("generation 2")).toBeInTheDocument();
+    expect(screen.getByText(/generation 2/)).toBeInTheDocument();
     expect(screen.getByText("unknown provenance")).toBeInTheDocument();
     expect(screen.getByText("January income 1200")).toBeInTheDocument();
     // [9] exceeds the two-entry evidence array and stays plain text.
@@ -584,4 +612,159 @@ describe("DocumentWorkbench rewrites", () => {
       ),
     );
   }, 20000);
+});
+
+describe("DocumentWorkbench publications", () => {
+  const PUBLICATION = {
+    id: "pub-1",
+    document_id: "doc-1",
+    revision_id: "rev-1",
+    revision: 1,
+    version: 1,
+    title: "Finance brief",
+    supersedes: null,
+    created_at: "2026-01-02T00:00:00.000Z",
+  };
+
+  it("publishes the head with the expected revision and lists the frozen exports", async () => {
+    apiMocks.publish.mockResolvedValue({ status: "published", replayed: false, publication: PUBLICATION });
+    apiMocks.publications
+      .mockResolvedValueOnce({ items: [], next_cursor: null })
+      .mockResolvedValue({ items: [PUBLICATION], next_cursor: null });
+    render(<DocumentWorkbench documentId="doc-1" />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Publish" }));
+    await waitFor(() => expect(apiMocks.publish).toHaveBeenCalledTimes(1));
+    const [documentId, revisionId, body] = apiMocks.publish.mock.calls[0];
+    expect(documentId).toBe("doc-1");
+    expect(revisionId).toBe("rev-1");
+    expect(typeof body.operation_id).toBe("string");
+    expect(body.expected_revision_id).toBe("rev-1");
+    expect(body.allow_non_head_revision).toBeUndefined();
+
+    expect(await screen.findByText("v1")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /PDF/ })).toBeEnabled();
+    expect(screen.getByRole("button", { name: /Markdown/ })).toBeEnabled();
+  });
+
+  it("refuses to publish a dirty head without saving first", async () => {
+    const user = userEvent.setup();
+    render(<DocumentWorkbench documentId="doc-1" />);
+    const markdown = await screen.findByDisplayValue("Income steady");
+    await user.type(markdown, " extra");
+
+    fireEvent.click(screen.getByRole("button", { name: "Publish" }));
+    expect(apiMocks.publish).not.toHaveBeenCalled();
+    expect(await screen.findByText(/Save the draft before publishing the head revision/)).toBeInTheDocument();
+  });
+
+  it("surfaces the stable active/head-moved publication conflicts", async () => {
+    apiMocks.isPublicationError.mockImplementation(
+      (error: unknown, code: string) => (error as { code?: string })?.code === code,
+    );
+    apiMocks.publish.mockRejectedValue({ code: "DOCUMENT_PUBLICATION_ACTIVE" });
+    render(<DocumentWorkbench documentId="doc-1" />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Publish" }));
+    expect(await screen.findByText(/Another publication is already active/)).toBeInTheDocument();
+
+    apiMocks.publish.mockRejectedValue({ code: "DOCUMENT_HEAD_MOVED" });
+    fireEvent.click(screen.getByRole("button", { name: "Publish" }));
+    await waitFor(() => expect(apiMocks.publish).toHaveBeenCalledTimes(2));
+    expect(await screen.findByText(/Review the newer head/)).toBeInTheDocument();
+  });
+
+  it("publishes an older history revision with the explicit non-head selection bit", async () => {
+    apiMocks.get.mockResolvedValue({ ...SUMMARY, current_revision: 2, current_revision_id: "rev-2" });
+    apiMocks.revision.mockResolvedValue({ ...HEAD_REVISION, id: "rev-2", revision: 2 });
+    apiMocks.revisions.mockResolvedValue({
+      items: [
+        {
+          id: "rev-2",
+          revision: 2,
+          title: "Finance brief",
+          author_kind: "user" as const,
+          base_revision_id: "rev-1",
+          payload_chars: 512,
+          published_version: null,
+          created_at: "2026-01-02T00:00:00.000Z",
+        },
+        {
+          id: "rev-1",
+          revision: 1,
+          title: "Finance brief",
+          author_kind: "user" as const,
+          base_revision_id: null,
+          payload_chars: 512,
+          published_version: null,
+          created_at: "2026-01-01T00:00:00.000Z",
+        },
+      ],
+      next_cursor: null,
+    });
+    apiMocks.publish.mockResolvedValue({ status: "published", replayed: false, publication: PUBLICATION });
+    render(<DocumentWorkbench documentId="doc-1" />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Publish revision 1" }));
+    await waitFor(() => expect(apiMocks.publish).toHaveBeenCalledTimes(1));
+    const [, revisionId, body] = apiMocks.publish.mock.calls[0];
+    expect(revisionId).toBe("rev-1");
+    expect(body.allow_non_head_revision).toBe(true);
+    expect(body.expected_revision_id).toBeUndefined();
+  });
+
+  it("reuses the operation UUID when retrying the same failed attempt", async () => {
+    apiMocks.publish.mockRejectedValueOnce(new Error("offline")).mockResolvedValue({
+      status: "published",
+      replayed: false,
+      publication: PUBLICATION,
+    });
+    apiMocks.publications
+      .mockResolvedValueOnce({ items: [], next_cursor: null })
+      .mockResolvedValue({ items: [PUBLICATION], next_cursor: null });
+    render(<DocumentWorkbench documentId="doc-1" />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Publish" }));
+    await waitFor(() => expect(apiMocks.publish).toHaveBeenCalledTimes(1));
+    expect(await screen.findByRole("alert")).toBeInTheDocument();
+    expect(screen.queryByText("v1")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Publish" }));
+    await waitFor(() => expect(apiMocks.publish).toHaveBeenCalledTimes(2));
+    expect(apiMocks.publish.mock.calls[1][2].operation_id).toBe(apiMocks.publish.mock.calls[0][2].operation_id);
+    expect(await screen.findByText("v1")).toBeInTheDocument();
+  });
+
+  it("downloads frozen exports and previews the publication through the sandboxed report preview", async () => {
+    const gate = deferred<void>();
+    apiMocks.publications.mockResolvedValue({ items: [PUBLICATION], next_cursor: null });
+    apiMocks.downloadBlob.mockReturnValue(gate.promise);
+    render(<DocumentWorkbench documentId="doc-1" />);
+
+    const pdfButton = await screen.findByRole("button", { name: /PDF/ });
+    fireEvent.click(pdfButton);
+    expect(apiMocks.downloadBlob).toHaveBeenCalledWith(
+      "/api/documents/doc-1/publications/pub-1/export?format=pdf",
+      "Finance brief-v1.pdf",
+    );
+    expect(pdfButton).toBeDisabled();
+    gate.resolve();
+    await waitFor(() => expect(pdfButton).toBeEnabled());
+
+    fireEvent.click(screen.getByRole("button", { name: /Markdown/ }));
+    expect(apiMocks.downloadBlob).toHaveBeenLastCalledWith(
+      "/api/documents/doc-1/publications/pub-1/export?format=markdown",
+      "Finance brief-v1.zip",
+    );
+    await waitFor(() => expect(screen.getByRole("button", { name: /Markdown/ })).toBeEnabled());
+
+    fireEvent.click(screen.getByRole("button", { name: /Preview/ }));
+    await waitFor(() =>
+      expect(apiMocks.openProtected).toHaveBeenCalledWith(
+        "html",
+        "/api/documents/doc-1/publications/pub-1/export?format=html",
+        "Finance brief-v1.html",
+      ),
+    );
+  });
 });

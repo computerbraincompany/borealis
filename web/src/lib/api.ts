@@ -177,6 +177,17 @@ export async function openProtected(kind: "html" | "pdf", path: string, filename
   }
 }
 
+/** Download an authenticated resource (e.g. a document publication export). */
+export async function downloadBlob(path: string, filename: string): Promise<void> {
+  const blob = await apiBlob(path);
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+}
+
 export async function api<T>(path: string, opts: RequestInit = {}): Promise<T> {
   const token = getToken();
   const headers: Record<string, string> = {
@@ -1966,6 +1977,11 @@ export interface DocumentSummary {
   updated_at: string;
 }
 
+/** Detail-only render status of the latest publication attempt. */
+export interface DocumentDetail extends DocumentSummary {
+  publication_status?: DocumentPublicationStatus | null;
+}
+
 export interface DocumentSectionPayload {
   id: string;
   heading: string;
@@ -2027,6 +2043,18 @@ export interface DocumentPublicationSummary {
   created_at: string;
 }
 
+/** Render-status of the latest publication attempt (never artifact paths). */
+export interface DocumentPublicationStatus {
+  operation_id: string;
+  revision_id: string;
+  revision: number;
+  status: "rendering" | "ready" | "completed" | "failed";
+  error_code: string | null;
+  updated_at: string;
+}
+
+export type DocumentExportFormat = "html" | "pdf" | "markdown" | "docx";
+
 export interface DocumentDiffOp {
   kind: "equal" | "insert" | "delete";
   old_line: number | null;
@@ -2079,7 +2107,19 @@ export interface DocumentTreeInput {
 
 export const DOCUMENT_REVISION_CONFLICT_CODE = "DOCUMENT_REVISION_CONFLICT";
 export const DOCUMENT_UNAVAILABLE_CODE = "DOCUMENT_UNAVAILABLE";
-export const PUBLICATION_NOT_READY_CODE = "PUBLICATION_NOT_READY";
+export const DOCUMENT_HEAD_MOVED_CODE = "DOCUMENT_HEAD_MOVED";
+export const DOCUMENT_REVISION_SELECTION_CODE = "DOCUMENT_REVISION_SELECTION";
+export const DOCUMENT_PUBLICATION_ACTIVE_CODE = "DOCUMENT_PUBLICATION_ACTIVE";
+
+/** Outcome of a publish request: the frozen publication or an in-flight status. */
+export type PublishDocumentResult =
+  | { status: "published"; replayed: boolean; publication: DocumentPublicationSummary }
+  | { status: "rendering"; publication_status: DocumentPublicationStatus };
+
+/** True for a stable publication 409 code (active/head-moved/selection). */
+export function isDocumentPublicationErrorCode(error: unknown, code: string): boolean {
+  return conflictData(error, code) !== null;
+}
 
 /** Head metadata carried on a lost base-revision compare-and-swap (409). */
 export interface DocumentConflictHead {
@@ -2193,7 +2233,7 @@ export const documentsApi = {
       body: JSON.stringify(body),
       signal,
     }),
-  get: (id: string, signal?: AbortSignal) => api<DocumentSummary>(`/api/documents/${id}`, { signal }),
+  get: (id: string, signal?: AbortSignal) => api<DocumentDetail>(`/api/documents/${id}`, { signal }),
   remove: (id: string, signal?: AbortSignal) => api<{ ok: true }>(`/api/documents/${id}`, { method: "DELETE", signal }),
   revisions: async (id: string, options: CatalogPageOptions = {}) =>
     parseTypedCatalogEnvelope<DocumentRevisionSummary>(
@@ -2213,6 +2253,20 @@ export const documentsApi = {
     parseTypedCatalogEnvelope<DocumentPublicationSummary>(
       await api<unknown>(catalogPath(`/api/documents/${id}/publications`, options), { signal: options.signal }),
     ),
+  /** Idempotent publication: the caller owns the operation UUID per attempt. */
+  publish: (
+    id: string,
+    revisionId: string,
+    body: { operation_id: string; expected_revision_id?: string; allow_non_head_revision?: boolean },
+    signal?: AbortSignal,
+  ) =>
+    api<PublishDocumentResult>(`/api/documents/${id}/revisions/${revisionId}/publish`, {
+      method: "POST",
+      body: JSON.stringify(body),
+      signal,
+    }),
+  publicationExportPath: (id: string, publicationId: string, format: DocumentExportFormat) =>
+    `/api/documents/${id}/publications/${publicationId}/export?format=${format}`,
   rewrites: async (id: string, options: CatalogPageOptions = {}) =>
     parseTypedCatalogEnvelope<DocumentRewrite>(
       await api<unknown>(catalogPath(`/api/documents/${id}/rewrites`, options), { signal: options.signal }),

@@ -3,6 +3,8 @@ import {
   ArrowDown,
   ArrowUp,
   BookTemplate,
+  Download,
+  Eye,
   FileEdit,
   FilePlus,
   Files,
@@ -10,6 +12,7 @@ import {
   History,
   Loader2,
   Plus,
+  Rocket,
   Save,
   Sparkles,
   Trash2,
@@ -17,13 +20,21 @@ import {
 import {
   documentTemplatesApi,
   documentsApi,
+  downloadBlob,
   formatApiError,
+  isDocumentPublicationErrorCode,
   isDocumentRewriteErrorCode,
+  openProtected,
   parseDocumentRevisionConflict,
   parseDocumentRewriteStale,
+  DOCUMENT_HEAD_MOVED_CODE,
+  DOCUMENT_PUBLICATION_ACTIVE_CODE,
   DOCUMENT_REWRITE_ACTIVE_CODE,
   DOCUMENT_REWRITE_QUOTA_CODE,
   type DocumentConflictHead,
+  type DocumentDetail,
+  type DocumentExportFormat,
+  type DocumentPublicationSummary,
   type DocumentRevisionDiff,
   type DocumentRevisionPayload,
   type DocumentRevisionSummary,
@@ -470,8 +481,8 @@ function EvidenceInspector({ revision }: { revision: DocumentRevisionPayload | n
               <div className="flex flex-wrap items-center gap-2">
                 <span className="font-mono text-xs text-muted-foreground">[{index + 1}]</span>
                 <span className="font-medium">{entry.source_name}</span>
-                {typeof entry.generation === "number" ? (
-                  <Badge variant="secondary">generation {entry.generation}</Badge>
+                {typeof entry.generation === "number" && entry.content_identity !== "unknown" ? (
+                  <Badge variant="secondary">provenance verified · generation {entry.generation}</Badge>
                 ) : (
                   <Badge variant="outline">unknown provenance</Badge>
                 )}
@@ -1040,8 +1051,95 @@ function RewritePanel({
   );
 }
 
+// ---------------------------------------------------------------------------
+// Publications
+// ---------------------------------------------------------------------------
+
+const EXPORT_FORMATS: Array<{ format: DocumentExportFormat; label: string; extension: string }> = [
+  { format: "html", label: "HTML", extension: "html" },
+  { format: "pdf", label: "PDF", extension: "pdf" },
+  { format: "markdown", label: "Markdown", extension: "zip" },
+  { format: "docx", label: "DOCX", extension: "docx" },
+];
+
+function PublicationPanel({
+  publications,
+  error,
+  busyKey,
+  onExport,
+  onPreview,
+}: {
+  publications: DocumentPublicationSummary[];
+  error: string | null;
+  busyKey: string | null;
+  onExport: (publication: DocumentPublicationSummary, format: DocumentExportFormat) => void;
+  onPreview: (publication: DocumentPublicationSummary) => void;
+}) {
+  return (
+    <section className="mt-10" aria-labelledby="publication-history-heading">
+      <h2 id="publication-history-heading" className="flex items-center gap-2 text-lg font-semibold tracking-tight">
+        <Rocket className="h-4 w-4" /> Publications
+      </h2>
+      <p className="mt-1 text-sm text-muted-foreground">
+        Each publication freezes one revision with its evidence appendix and validity state, and exports exactly those
+        frozen bytes as self-contained HTML, static PDF, a Markdown ZIP bundle, or DOCX.
+      </p>
+      {error && (
+        <p className="mt-2 text-sm text-destructive" role="alert">
+          {error}
+        </p>
+      )}
+      {publications.length === 0 ? (
+        <p className="mt-3 text-sm text-muted-foreground">Nothing published yet.</p>
+      ) : (
+        <ol className="mt-3 space-y-2 text-sm">
+          {publications.map((publication) => (
+            <li key={publication.id} className="flex flex-wrap items-center gap-3 rounded-md border px-3 py-2">
+              <span className="font-medium">v{publication.version}</span>
+              <span className="truncate">{publication.title}</span>
+              <Badge variant="outline">revision {publication.revision}</Badge>
+              <span className="text-xs text-muted-foreground">{formatDate(publication.created_at)}</span>
+              <span className="ml-auto flex items-center gap-1">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  disabled={busyKey === `${publication.id}:preview`}
+                  onClick={() => onPreview(publication)}
+                >
+                  {busyKey === `${publication.id}:preview` ? (
+                    <Loader2 className="animate-spin" />
+                  ) : (
+                    <Eye className="h-4 w-4" />
+                  )}
+                  Preview
+                </Button>
+                {EXPORT_FORMATS.map((entry) => (
+                  <Button
+                    key={entry.format}
+                    variant="ghost"
+                    size="sm"
+                    disabled={busyKey === `${publication.id}:${entry.format}`}
+                    onClick={() => onExport(publication, entry.format)}
+                  >
+                    {busyKey === `${publication.id}:${entry.format}` ? (
+                      <Loader2 className="animate-spin" />
+                    ) : (
+                      <Download className="h-4 w-4" />
+                    )}
+                    {entry.label}
+                  </Button>
+                ))}
+              </span>
+            </li>
+          ))}
+        </ol>
+      )}
+    </section>
+  );
+}
+
 function DocumentEditor({ documentId }: { documentId: string }) {
-  const [document, setDocument] = useState<DocumentSummary | null>(null);
+  const [document, setDocument] = useState<DocumentDetail | null>(null);
   const [head, setHead] = useState<DocumentRevisionPayload | null>(null);
   const [draft, setDraft] = useState<DraftState | null>(null);
   const [dirty, setDirty] = useState(false);
@@ -1051,6 +1149,10 @@ function DocumentEditor({ documentId }: { documentId: string }) {
   const [conflict, setConflict] = useState<DocumentConflictHead | null>(null);
   const [history, setHistory] = useState<DocumentRevisionSummary[]>([]);
   const [historyError, setHistoryError] = useState<string | null>(null);
+  const [publications, setPublications] = useState<DocumentPublicationSummary[]>([]);
+  const [publicationError, setPublicationError] = useState<string | null>(null);
+  const [publishBusyRevision, setPublishBusyRevision] = useState<string | null>(null);
+  const [exportBusyKey, setExportBusyKey] = useState<string | null>(null);
   const [diff, setDiff] = useState<DocumentRevisionDiff | null>(null);
   const [diffError, setDiffError] = useState<string | null>(null);
   const [baseChoice, setBaseChoice] = useState<string>("");
@@ -1071,6 +1173,13 @@ function DocumentEditor({ documentId }: { documentId: string }) {
   const diffAbortRef = useRef<AbortController | null>(null);
   const templateRequestRef = useRef(0);
   const templateAbortRef = useRef<AbortController | null>(null);
+  const publicationRequestRef = useRef(0);
+  const publishRequestRef = useRef(0);
+  const publishAbortRef = useRef<AbortController | null>(null);
+  const exportRequestRef = useRef(0);
+  // The operation UUID is reused across retries of the same attempt so a
+  // retry can never produce a second publication.
+  const publishOperationRef = useRef<{ revisionId: string; operationId: string } | null>(null);
   const mountedRef = useRef(false);
   const sectionTextareaRefs = useRef<Record<string, HTMLTextAreaElement | null>>({});
   // Bumping this re-renders so the rewrite panel can mirror the textarea's
@@ -1099,6 +1208,21 @@ function DocumentEditor({ documentId }: { documentId: string }) {
     }
   }, []);
 
+  const loadPublications = useCallback(async (documentIdValue: string, signal?: AbortSignal) => {
+    const requestId = ++publicationRequestRef.current;
+    try {
+      const page = await documentsApi.publications(documentIdValue, { signal });
+      if (requestId === publicationRequestRef.current && mountedRef.current && !signal?.aborted) {
+        setPublications(page.items);
+        setPublicationError(null);
+      }
+    } catch (error) {
+      if (requestId === publicationRequestRef.current && mountedRef.current && !signal?.aborted) {
+        setPublicationError(formatApiError(error, "Could not load publications"));
+      }
+    }
+  }, []);
+
   const load = useCallback(
     async (options: { discardDraft?: boolean } = {}) => {
       const requestId = ++loadRequestRef.current;
@@ -1121,6 +1245,7 @@ function DocumentEditor({ documentId }: { documentId: string }) {
         setDraft(draftFromRevision(revision));
         setDirty(false);
         void loadHistory(documentId, abort.signal);
+        void loadPublications(documentId, abort.signal);
       } catch (error) {
         if (requestId === loadRequestRef.current && !abort.signal.aborted && mountedRef.current) {
           setPageError(formatApiError(error, "Could not load the document"));
@@ -1129,7 +1254,7 @@ function DocumentEditor({ documentId }: { documentId: string }) {
         if (requestId === loadRequestRef.current && !abort.signal.aborted && mountedRef.current) setLoading(false);
       }
     },
-    [documentId, loadHistory],
+    [documentId, loadHistory, loadPublications],
   );
 
   useEffect(() => {
@@ -1146,6 +1271,10 @@ function DocumentEditor({ documentId }: { documentId: string }) {
       diffAbortRef.current?.abort();
       templateRequestRef.current += 1;
       templateAbortRef.current?.abort();
+      publicationRequestRef.current += 1;
+      publishRequestRef.current += 1;
+      publishAbortRef.current?.abort();
+      exportRequestRef.current += 1;
     };
   }, [load]);
 
@@ -1207,7 +1336,9 @@ function DocumentEditor({ documentId }: { documentId: string }) {
       setDraft(draftFromRevision(result.revision));
       setDirty(false);
       setConflict(null);
+      publishOperationRef.current = null;
       void loadHistory(document.id, abort.signal);
+      void loadPublications(document.id, abort.signal);
     } catch (error) {
       if (requestId !== saveRequestRef.current || abort.signal.aborted || !mountedRef.current) return;
       const headMetadata = parseDocumentRevisionConflict(error);
@@ -1282,6 +1413,122 @@ function DocumentEditor({ documentId }: { documentId: string }) {
     setSaveTemplateOpen(true);
   };
 
+  /** Refreshes metadata/publications without discarding the local draft. */
+  const refreshDocumentState = useCallback(
+    async (signal?: AbortSignal) => {
+      const summary = await documentsApi.get(documentId, signal);
+      if (signal?.aborted || !mountedRef.current) return;
+      setDocument(summary);
+      void loadPublications(documentId, signal);
+    },
+    [documentId, loadPublications],
+  );
+
+  const publicationErrorText = (error: unknown): string => {
+    if (isDocumentPublicationErrorCode(error, DOCUMENT_PUBLICATION_ACTIVE_CODE)) {
+      return "Another publication is already active for this document.";
+    }
+    if (isDocumentPublicationErrorCode(error, DOCUMENT_HEAD_MOVED_CODE)) {
+      return "The document head moved since this publication was requested. Review the newer head, or publish the older revision explicitly from its history row.";
+    }
+    return formatApiError(error, "Publication failed. The draft and the previous publication are unchanged.");
+  };
+
+  /**
+   * Busy rule: one publish request at a time per document; the head publish
+   * requires a saved draft and always carries the expected head; non-head
+   * publishes come from the history rows with the explicit selection bit. The
+   * operation UUID survives retries of the same attempt so a retry can never
+   * create a second publication.
+   */
+  const publishRevision = async (revisionId: string, explicitNonHead = false) => {
+    if (!document || publishBusyRevision) return;
+    if (!explicitNonHead && dirty) {
+      setPublicationError("Save the draft before publishing the head revision.");
+      return;
+    }
+    const requestId = ++publishRequestRef.current;
+    publishAbortRef.current?.abort();
+    const abort = new AbortController();
+    publishAbortRef.current = abort;
+    setPublishBusyRevision(revisionId);
+    setPublicationError(null);
+    const operation =
+      publishOperationRef.current?.revisionId === revisionId
+        ? publishOperationRef.current
+        : { revisionId, operationId: newSectionId() };
+    publishOperationRef.current = operation;
+    try {
+      const result = await documentsApi.publish(
+        document.id,
+        revisionId,
+        explicitNonHead
+          ? { operation_id: operation.operationId, allow_non_head_revision: true }
+          : { operation_id: operation.operationId, expected_revision_id: head?.id },
+        abort.signal,
+      );
+      if (requestId !== publishRequestRef.current || abort.signal.aborted || !mountedRef.current) return;
+      if (result.status === "published") {
+        publishOperationRef.current = null;
+        await refreshDocumentState(abort.signal);
+        void loadHistory(document.id, abort.signal);
+      } else {
+        setPublicationError("This publication is already rendering. Refresh to check its status.");
+        void refreshDocumentState(abort.signal);
+      }
+    } catch (error) {
+      if (requestId === publishRequestRef.current && !abort.signal.aborted && mountedRef.current) {
+        setPublicationError(publicationErrorText(error));
+      }
+    } finally {
+      if (requestId === publishRequestRef.current && !abort.signal.aborted && mountedRef.current) {
+        setPublishBusyRevision(null);
+      }
+    }
+  };
+
+  const exportPublication = async (publication: DocumentPublicationSummary, format: DocumentExportFormat) => {
+    if (!document || exportBusyKey) return;
+    const requestId = ++exportRequestRef.current;
+    const key = `${publication.id}:${format}`;
+    setExportBusyKey(key);
+    setPublicationError(null);
+    try {
+      const extension = EXPORT_FORMATS.find((entry) => entry.format === format)?.extension ?? "bin";
+      await downloadBlob(
+        documentsApi.publicationExportPath(document.id, publication.id, format),
+        `${publication.title || "document"}-v${publication.version}.${extension}`,
+      );
+    } catch (error) {
+      if (requestId === exportRequestRef.current && mountedRef.current) {
+        setPublicationError(formatApiError(error, "Could not download the export"));
+      }
+    } finally {
+      if (requestId === exportRequestRef.current && mountedRef.current) setExportBusyKey(null);
+    }
+  };
+
+  const previewPublication = async (publication: DocumentPublicationSummary) => {
+    if (!document || exportBusyKey) return;
+    const requestId = ++exportRequestRef.current;
+    const key = `${publication.id}:preview`;
+    setExportBusyKey(key);
+    setPublicationError(null);
+    try {
+      await openProtected(
+        "html",
+        documentsApi.publicationExportPath(document.id, publication.id, "html"),
+        `${publication.title || "document"}-v${publication.version}.html`,
+      );
+    } catch (error) {
+      if (requestId === exportRequestRef.current && mountedRef.current) {
+        setPublicationError(formatApiError(error, "Could not open the publication preview"));
+      }
+    } finally {
+      if (requestId === exportRequestRef.current && mountedRef.current) setExportBusyKey(null);
+    }
+  };
+
   if (loading && !document) {
     return (
       <div className="h-full overflow-y-auto">
@@ -1323,8 +1570,8 @@ function DocumentEditor({ documentId }: { documentId: string }) {
             <p className="mt-1 text-sm text-muted-foreground">
               Revision {head.revision} · {document.revision_count} revisions ·{" "}
               {document.latest_publication_version === null
-                ? "not published (publishing arrives with the next stage)"
-                : `published v${document.latest_publication_version}`}
+                ? "not published yet"
+                : `latest publication v${document.latest_publication_version}`}
             </p>
           </div>
           <div className="flex shrink-0 items-center gap-2">
@@ -1333,12 +1580,33 @@ function DocumentEditor({ documentId }: { documentId: string }) {
                 Unsaved changes
               </Badge>
             )}
+            {document.publication_status?.status === "rendering" && (
+              <Badge variant="outline" role="status">
+                Publication rendering…
+              </Badge>
+            )}
+            {document.publication_status?.status === "failed" && (
+              <Badge variant="destructive" role="status">
+                Last publication failed
+                {document.publication_status.error_code ? ` · ${document.publication_status.error_code}` : ""}
+              </Badge>
+            )}
             <Button variant="outline" size="sm" onClick={openSaveTemplate}>
               <BookTemplate className="h-4 w-4" /> Save as template
             </Button>
             <Button size="sm" onClick={() => void save(head.id)} disabled={saving || !dirty}>
               {saving ? <Loader2 className="animate-spin" /> : <Save className="h-4 w-4" />}
               {saving ? "Saving…" : "Save revision"}
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              title={dirty ? "Save the draft before publishing the head revision" : `Publish revision ${head.revision}`}
+              onClick={() => void publishRevision(head.id)}
+              disabled={saving || publishBusyRevision !== null}
+            >
+              {publishBusyRevision === head.id ? <Loader2 className="animate-spin" /> : <Rocket className="h-4 w-4" />}
+              {publishBusyRevision === head.id ? "Publishing…" : "Publish"}
             </Button>
           </div>
         </div>
@@ -1483,6 +1751,7 @@ function DocumentEditor({ documentId }: { documentId: string }) {
             setHead(result.revision);
             setDraft(draftFromRevision(result.revision));
             setDirty(false);
+            publishOperationRef.current = null;
             void loadHistory(document.id);
           }}
         />
@@ -1505,6 +1774,26 @@ function DocumentEditor({ documentId }: { documentId: string }) {
                 <Badge variant="outline">{entry.author_kind}</Badge>
                 {entry.published_version !== null && <Badge variant="secondary">v{entry.published_version}</Badge>}
                 <span className="text-xs text-muted-foreground">{formatDate(entry.created_at)}</span>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="ml-auto"
+                  aria-label={`Publish revision ${entry.revision}`}
+                  disabled={publishBusyRevision !== null || saving}
+                  title={
+                    entry.id === head.id
+                      ? "Publish the current head"
+                      : "Publish this exact reviewed revision (explicit non-head selection)"
+                  }
+                  onClick={() => void publishRevision(entry.id, entry.id !== head.id)}
+                >
+                  {publishBusyRevision === entry.id ? (
+                    <Loader2 className="animate-spin" />
+                  ) : (
+                    <Rocket className="h-4 w-4" />
+                  )}
+                  Publish
+                </Button>
               </li>
             ))}
           </ol>
@@ -1555,6 +1844,14 @@ function DocumentEditor({ documentId }: { documentId: string }) {
           )}
           {diff && <DiffPanel diff={diff} />}
         </section>
+
+        <PublicationPanel
+          publications={publications}
+          error={publicationError}
+          busyKey={exportBusyKey}
+          onExport={(publication, format) => void exportPublication(publication, format)}
+          onPreview={(publication) => void previewPublication(publication)}
+        />
 
         {/* conflict dialog: preserve the local draft; diff/reload/reapply only */}
         <Dialog open={!!conflict} onOpenChange={(open) => !open && setConflict(null)}>
