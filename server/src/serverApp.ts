@@ -13,6 +13,7 @@ import {
 import { setAppLogger } from "./appLogger.js";
 import { shutdownActiveRuns, recoverInterruptedRuns } from "./chatRuns.js";
 import { config, initializeConfigStorage } from "./config.js";
+import { repairDocumentArtifactCleanup, repairDocumentPublications } from "./documentCleanup.js";
 import { shutdownDatasetWorker } from "./data/datasets.js";
 import { createDesktopBootstrapSession, type DesktopBootstrapSession } from "./desktopBootstrap.js";
 import { corsOrigin } from "./corsPolicy.js";
@@ -353,6 +354,26 @@ export async function startBorealisServer(options: StartBorealisServerOptions = 
     });
     const interruptedRuns = await recoverInterruptedRuns();
     if (interruptedRuns) app.log.warn({ interrupted_runs: interruptedRuns }, "recovered interrupted chat runs");
+    // M13 stage 4: interrupted document renders become durable retryable
+    // failures with exact-directory artifact cleanup (never an auto-publish),
+    // and hidden-document cleanup intents complete. Startup repair never
+    // fails boot; failures stay durable for the next boot.
+    try {
+      const renderRepair = await repairDocumentPublications();
+      const deleteRepair = await repairDocumentArtifactCleanup();
+      if (renderRepair.attempted || deleteRepair.attempted) {
+        app.log.warn(
+          {
+            document_render_cleanup_completed: renderRepair.completed,
+            document_deletions_completed: deleteRepair.completed,
+            document_cleanup_failed: renderRepair.failed + deleteRepair.failed,
+          },
+          "repaired document publication state"
+        );
+      }
+    } catch {
+      app.log.warn("document publication repair deferred to the next startup");
+    }
     await startIngestionWorkers();
     workersStarted = true;
     runtime.startAutomationScheduler();

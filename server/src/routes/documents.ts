@@ -1,19 +1,24 @@
+import fs from "node:fs/promises";
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { getAccountId, requireAuth } from "../auth.js";
 import { catalogPageQuerySchema, catalogResponse, parseCatalogPageQuery } from "../catalogPagination.js";
+import { REPORT_CSP } from "../data/reports.js";
 import {
+  DocumentHeadMovedError,
   DocumentNotFoundError,
   DocumentPublicationActiveError,
   DocumentPublicationStateError,
   DocumentRevisionConflictError,
+  DocumentRevisionNotFoundError,
+  DocumentRevisionSelectionError,
   DocumentRewriteNotFoundError,
   DocumentRewriteStaleError,
-  DocumentRevisionNotFoundError,
   DocumentStoreError,
   DocumentUnavailableError,
   DocumentValidationError,
   type StoredDocument,
   type StoredDocumentPublication,
+  type StoredDocumentPublicationIntent,
   type StoredDocumentRevision,
   type StoredDocumentRewrite,
 } from "../db/stores/documentStore.js";
@@ -41,17 +46,21 @@ import {
   getCustomDocumentTemplate,
   getDocument,
   getDocumentDiff,
+  getDocumentPublicationExport,
   getDocumentRevision,
   getDocumentRewrite,
+  getLatestDocumentPublicationIntent,
   listDocumentCatalog,
   listDocumentPublications,
   listDocumentRewrites,
   listDocumentRevisionHistory,
   listTemplateCatalog,
+  publishDocumentRevision,
   requestDocumentRewrite,
   requestDocumentRewriteCancel,
   updateDocumentTemplate,
   DocumentCleanupDeferredError,
+  DocumentPublicationRenderError,
 } from "../documentService.js";
 import { getBuiltinDocumentTemplate, BUILTIN_DOCUMENT_TEMPLATES } from "../documentTemplates.js";
 import {
@@ -134,8 +143,10 @@ const rewriteCreateBodySchema = {
   },
 } as const;
 
-// Reserved shape for the stage-4 publication execution; the route returns
-// 501 PUBLICATION_NOT_READY before any store work.
+// Publication execution: the frozen revision is compiled to all four formats
+// under a client operation UUID. The default action publishes the head and
+// rejects a changed head; an explicitly selected non-head revision requires
+// the `allow_non_head_revision` bit.
 const publicationStartBodySchema = {
   type: "object",
   required: ["operation_id"],
@@ -143,6 +154,16 @@ const publicationStartBodySchema = {
   properties: {
     operation_id: { type: "string", pattern: UUID_PATTERN },
     expected_revision_id: { type: "string", pattern: UUID_PATTERN },
+    allow_non_head_revision: { type: "boolean" },
+  },
+} as const;
+
+const publicationExportQuerySchema = {
+  type: "object",
+  required: ["format"],
+  additionalProperties: false,
+  properties: {
+    format: { type: "string", enum: ["html", "pdf", "markdown", "docx"] },
   },
 } as const;
 
@@ -224,6 +245,18 @@ function publicPublication(publication: StoredDocumentPublication) {
     title: publication.title,
     supersedes: publication.supersedes,
     created_at: publication.createdAt,
+  };
+}
+
+/** Render-status view of the latest publication attempt; never artifact paths. */
+function publicPublicationStatus(intent: StoredDocumentPublicationIntent) {
+  return {
+    operation_id: intent.operationId,
+    revision_id: intent.revisionId,
+    revision: intent.revision,
+    status: intent.status,
+    error_code: intent.errorCode,
+    updated_at: intent.updatedAt,
   };
 }
 
@@ -325,6 +358,27 @@ function sendDocumentError(reply: FastifyReply, error: unknown): boolean {
   }
   if (error instanceof DocumentPublicationStateError) {
     reply.code(409).send({ error: "publication state does not allow this transition", code: error.code });
+    return true;
+  }
+  if (error instanceof DocumentHeadMovedError) {
+    reply.code(409).send({
+      error:
+        "the document head changed since this publication was requested; review the new head or select the revision explicitly",
+      code: error.code,
+    });
+    return true;
+  }
+  if (error instanceof DocumentRevisionSelectionError) {
+    reply.code(409).send({
+      error: "publishing a non-head revision requires an explicit revision selection",
+      code: error.code,
+    });
+    return true;
+  }
+  if (error instanceof DocumentPublicationRenderError) {
+    // The failed attempt is durable and retryable; the draft, head, and the
+    // previous publication are untouched.
+    reply.code(502).send({ error: "document publication render failed", code: error.code });
     return true;
   }
   if (error instanceof DocumentTemplateConflictError) {
@@ -464,7 +518,11 @@ export async function documentRoutes(app: FastifyInstance): Promise<void> {
       return found;
     });
     if (!document) return;
-    return reply.send(publicDocument(document));
+    const latestIntent = await getLatestDocumentPublicationIntent(accountId, documentId);
+    return reply.send({
+      ...publicDocument(document),
+      publication_status: latestIntent ? publicPublicationStatus(latestIntent) : null,
+    });
   });
 
   app.delete(
@@ -592,9 +650,9 @@ export async function documentRoutes(app: FastifyInstance): Promise<void> {
     }
   );
 
-  // Publication execution (render + immutable publish) lands in M13 stage 4.
-  // The route shape is reserved and documented; the service contract exists
-  // in `documentStore.ts`, and the execution wiring returns 501 until then.
+  // Publication execution: compile the frozen revision, verify artifacts,
+  // and transactionally assign the next version. The operation UUID is
+  // idempotent; the default action rejects a changed head.
   app.post(
     "/api/documents/:id/revisions/:revisionId/publish",
     {
@@ -602,11 +660,91 @@ export async function documentRoutes(app: FastifyInstance): Promise<void> {
       bodyLimit: COMPACT_JSON_BODY_LIMIT_BYTES,
       schema: { params: revisionIdParamsSchema, body: publicationStartBodySchema },
     },
-    async (_req, reply) =>
-      reply.code(501).send({
-        error: "document publication is not available yet",
-        code: "PUBLICATION_NOT_READY",
-      })
+    async (req, reply) => {
+      const body = req.body as {
+        operation_id: string;
+        expected_revision_id?: string;
+        allow_non_head_revision?: boolean;
+      };
+      const outcome = await guarded(reply, () =>
+        publishDocumentRevision({
+          accountId: getAccountId(req),
+          documentId: (req.params as any).id,
+          revisionId: (req.params as any).revisionId,
+          operationId: body.operation_id,
+          expectedRevisionId: body.expected_revision_id ?? null,
+          allowNonHeadRevision: body.allow_non_head_revision === true,
+        })
+      );
+      if (!outcome) return;
+      if (outcome.kind === "rendering") {
+        return reply
+          .code(202)
+          .send({ status: "rendering", publication_status: publicPublicationStatus(outcome.intent) });
+      }
+      return reply
+        .code(outcome.replayed ? 200 : 201)
+        .send({ status: "published", replayed: outcome.replayed, publication: publicPublication(outcome.publication) });
+    }
+  );
+
+  // Exact frozen-version export. Owner-only; serves the stored verified
+  // artifact bytes for one of the four compiled formats.
+  app.get(
+    "/api/documents/:id/publications/:publicationId/export",
+    {
+      onRequest: requireAuth,
+      schema: {
+        params: {
+          type: "object",
+          required: ["id", "publicationId"],
+          additionalProperties: false,
+          properties: {
+            id: { type: "string", pattern: UUID_PATTERN },
+            publicationId: { type: "string", pattern: UUID_PATTERN },
+          },
+        },
+        querystring: publicationExportQuerySchema,
+      },
+    },
+    async (req, reply) => {
+      const query = req.query as { format: "html" | "pdf" | "markdown" | "docx" };
+      const exportArtifact = await guarded(reply, () =>
+        getDocumentPublicationExport(
+          getAccountId(req),
+          (req.params as any).id,
+          (req.params as any).publicationId,
+          query.format
+        )
+      );
+      if (!exportArtifact) return reply.code(404).send({ error: "not found", code: "DOCUMENT_NOT_FOUND" });
+      const { publication, filePath } = exportArtifact;
+      const filename = `${publication.title.slice(0, 60).replace(/[^\w. -]+/g, "-") || "document"}-v${publication.version}`;
+      if (query.format === "html") {
+        return reply
+          .header("Content-Security-Policy", REPORT_CSP)
+          .header("X-Content-Type-Options", "nosniff")
+          .header("Content-Disposition", `attachment; filename="${filename}.html"`)
+          .type("text/html")
+          .send(await fs.readFile(filePath, "utf8"));
+      }
+      if (query.format === "pdf") {
+        return reply
+          .header("Content-Type", "application/pdf")
+          .header("Content-Disposition", `attachment; filename="${filename}.pdf"`)
+          .send(await fs.readFile(filePath));
+      }
+      if (query.format === "markdown") {
+        return reply
+          .header("Content-Type", "application/zip")
+          .header("Content-Disposition", `attachment; filename="${filename}-markdown.zip"`)
+          .send(await fs.readFile(filePath));
+      }
+      return reply
+        .header("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+        .header("Content-Disposition", `attachment; filename="${filename}.docx"`)
+        .send(await fs.readFile(filePath));
+    }
   );
 
   // -- Model-assisted rewrites ---------------------------------------------------

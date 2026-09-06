@@ -1221,6 +1221,38 @@ export class DocumentStore {
     return row ? decodeIntent(row) : undefined;
   }
 
+  /** One completed publication by id, or undefined (never another account's). */
+  async getDocumentPublication(
+    accountIdValue: string,
+    documentIdValue: string,
+    publicationIdValue: string
+  ): Promise<StoredDocumentPublication | undefined> {
+    const accountId = uuidIdentity(accountIdValue, "account id");
+    const documentId = uuidIdentity(documentIdValue, "document id");
+    const publicationId = uuidIdentity(publicationIdValue, "publication id");
+    const row = await this.ledger.get<PublicationRow>(
+      `SELECT ${PUBLICATION_COLUMNS} FROM document_publications WHERE id=? AND document_id=? AND account_id=?`,
+      [publicationId, documentId, accountId]
+    );
+    return row ? decodePublication(row) : undefined;
+  }
+
+  /** Most recent publication attempt for render-status display. */
+  async getLatestDocumentPublicationIntent(
+    accountIdValue: string,
+    documentIdValue: string
+  ): Promise<StoredDocumentPublicationIntent | undefined> {
+    const accountId = uuidIdentity(accountIdValue, "account id");
+    const documentId = uuidIdentity(documentIdValue, "document id");
+    const row = await this.ledger.get<IntentRow>(
+      `SELECT ${INTENT_COLUMNS} FROM document_publication_intents
+       WHERE account_id=? AND document_id=?
+       ORDER BY (status IN ('rendering','ready')) DESC, updated_at DESC, id DESC LIMIT 1`,
+      [accountId, documentId]
+    );
+    return row ? decodeIntent(row) : undefined;
+  }
+
   /**
    * Renderer-facing transition: only paths inside the intent's exact
    * UUID-scoped directory are accepted. The caller has verified the artifacts

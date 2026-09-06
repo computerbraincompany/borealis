@@ -2,16 +2,22 @@
  * Owner-authenticated document service layer (M13 stage 2).
  *
  * This is the single internal entry point for document drafts, revision
- * appends, reading, diffing, deletion cleanup, and the template catalog. M16
+ * appends, reading, diffing, deletion cleanup, publication, exports, and the
+ * template catalog. M16
  * recipe runs call `createDocumentDraft` / `appendDocumentRevision` here;
  * they never write document tables directly. Every operation is scoped to an
  * already-authenticated account ID, carries an immutable payload through the
  * `documentTypes.ts` normalizer, and uses the store's base-revision compare-
  * and-swap — there is no silent-merge path anywhere in this module, and no
- * operation here issues model or SQL calls.
+ * operation here issues model or SQL calls. Publication compiles one frozen
+ * revision through the existing bounded renderer pipeline only after the
+ * durable publication intent protocol in `documentStore.ts` is satisfied.
  */
 
+import fs from "node:fs/promises";
+
 import {
+  DocumentRevisionNotFoundError,
   DocumentStoreError,
   type AcceptDocumentRewriteRequestInput,
   type BeginPublicationResult,
@@ -19,6 +25,7 @@ import {
   type DocumentRevisionSummary,
   type StoredDocument,
   type StoredDocumentPublication,
+  type StoredDocumentPublicationIntent,
   type StoredDocumentRevision,
   type StoredDocumentRewrite,
 } from "./db/stores/documentStore.js";
@@ -34,6 +41,18 @@ import {
 } from "./documentTemplates.js";
 import type { StoredDocumentTemplate } from "./db/stores/documentTemplateStore.js";
 import { DocumentValidationError, type DocumentTreeInput } from "./documentTypes.js";
+import {
+  compileDocumentPublication,
+  DocumentFormatError,
+  DOCUMENT_ARTIFACT_FILENAMES,
+  type DocumentExportFormat,
+  type DocumentRenderers,
+} from "./data/documents.js";
+import {
+  createDocumentPublicationDirectory,
+  removeDocumentPublicationArtifacts,
+  resolveDocumentPublicationFile,
+} from "./storageArtifacts.js";
 import { storageRuntime } from "./storageRuntime.js";
 
 export class DocumentCleanupDeferredError extends Error {
@@ -134,6 +153,172 @@ export async function listDocumentPublications(
   page: CatalogPageRequest
 ): Promise<CatalogStorePage<StoredDocumentPublication>> {
   return storageRuntime().documents.listDocumentPublications(accountId, documentId, page);
+}
+
+export async function getLatestDocumentPublicationIntent(
+  accountId: string,
+  documentId: string
+): Promise<StoredDocumentPublicationIntent | undefined> {
+  return storageRuntime().documents.getLatestDocumentPublicationIntent(accountId, documentId);
+}
+
+// ---------------------------------------------------------------------------
+// Publication (M13 stage 4)
+// ---------------------------------------------------------------------------
+
+/**
+ * In-process render ownership map enforcing one active render/publication per
+ * document within this process. The durable one-active-intent guarantee is the
+ * store's partial unique index; this map is what makes a replay of the same
+ * operation UUID while the render is still running return status instead of
+ * starting a second render.
+ */
+const activeRenderings = new Set<string>();
+
+export interface PublishDocumentRevisionInput {
+  readonly accountId: string;
+  readonly documentId: string;
+  /** Explicit revision target (the route path). */
+  readonly revisionId: string;
+  readonly operationId: string;
+  readonly expectedRevisionId?: string | null;
+  readonly allowNonHeadRevision?: boolean;
+  readonly renderers?: DocumentRenderers;
+}
+
+export type PublishDocumentOutcome =
+  | { readonly kind: "published"; readonly publication: StoredDocumentPublication; readonly replayed: boolean }
+  | { readonly kind: "rendering"; readonly intent: StoredDocumentPublicationIntent };
+
+export class DocumentPublicationRenderError extends Error {
+  readonly code: string;
+
+  constructor(code: string, options: ErrorOptions = {}) {
+    super("document publication render failed", options);
+    this.name = "DocumentPublicationRenderError";
+    this.code = code;
+  }
+}
+
+function publicationTimestamp(value = new Date()): string {
+  return value
+    .toISOString()
+    .replace("T", " ")
+    .replace(/\.\d{3}Z$/, " UTC");
+}
+
+/**
+ * Publishes one frozen revision: begin (or idempotently replay) the durable
+ * intent, compile the SAME revision into all four artifacts through the
+ * existing bounded renderer pipeline into the exact
+ * account/document/publication UUID-scoped directory, verify every magic
+ * byte, then transactionally assign the next publication version only after
+ * all required artifacts exist. Any per-format failure records a durable
+ * retryable failure, removes the exact partial directory best-effort, and
+ * leaves the draft, the head, and the previous publication untouched.
+ * Startup `repairDocumentPublications()` recovers interrupted renders.
+ */
+export async function publishDocumentRevision(input: PublishDocumentRevisionInput): Promise<PublishDocumentOutcome> {
+  const { accountId, documentId } = input;
+  const documents = storageRuntime().documents;
+  const begin = await documents.beginDocumentPublication(accountId, documentId, {
+    operationId: input.operationId,
+    revisionId: input.revisionId,
+    expectedRevisionId: input.expectedRevisionId ?? null,
+    allowNonHeadRevision: input.allowNonHeadRevision === true,
+  });
+  const intent = begin.intent;
+  if (intent.status === "completed") {
+    const publication = await documents.getDocumentPublication(accountId, documentId, intent.publicationId ?? "");
+    if (publication) return { kind: "published", publication, replayed: true };
+  }
+  if (intent.status === "ready") {
+    // Artifacts were recorded but completion was interrupted in-process; the
+    // completion transaction is idempotent.
+    const done = await documents.completeDocumentPublication(accountId, documentId, input.operationId);
+    return { kind: "published", publication: done.publication, replayed: true };
+  }
+  const renderKey = `${accountId}:${documentId}`;
+  if (activeRenderings.has(renderKey)) return { kind: "rendering", intent };
+  activeRenderings.add(renderKey);
+  try {
+    const revision = await documents.getDocumentRevision(accountId, documentId, intent.revisionId);
+    if (!revision) throw new DocumentRevisionNotFoundError();
+    const history = await documents.listDocumentPublications(accountId, documentId);
+    const nextVersion = (history.items[0]?.version ?? 0) + 1;
+    const directory = await createDocumentPublicationDirectory(accountId, documentId, intent.id);
+    if (directory !== intent.artifactDirectory) {
+      throw new DocumentPublicationRenderError("PUBLICATION_RENDER_FAILED");
+    }
+    let compiled;
+    try {
+      compiled = await compileDocumentPublication({
+        accountId,
+        directory,
+        tree: revision.payload,
+        meta: { documentId, revisionId: intent.revisionId, revision: intent.revision, version: nextVersion },
+        generatedAt: publicationTimestamp(),
+        ...(input.renderers ? { renderers: input.renderers } : {}),
+      });
+    } catch (error) {
+      throw error instanceof DocumentFormatError
+        ? new DocumentPublicationRenderError(error.code, { cause: error })
+        : new DocumentPublicationRenderError("PUBLICATION_RENDER_FAILED", { cause: error });
+    }
+    await fs.writeFile(compiled.htmlPath, compiled.html);
+    await fs.writeFile(compiled.pdfPath, compiled.pdf);
+    await fs.writeFile(compiled.markdownPath, compiled.markdownZip);
+    await fs.writeFile(compiled.docxPath, compiled.docx);
+    await documents.markDocumentPublicationReady(accountId, documentId, input.operationId, {
+      htmlPath: compiled.htmlPath,
+      pdfPath: compiled.pdfPath,
+    });
+    const done = await documents.completeDocumentPublication(accountId, documentId, input.operationId);
+    return { kind: "published", publication: done.publication, replayed: done.replayed };
+  } catch (error) {
+    const code = error instanceof DocumentPublicationRenderError ? error.code : "PUBLICATION_RENDER_FAILED";
+    await documents
+      .failDocumentPublication(accountId, documentId, input.operationId, { errorCode: code })
+      .catch(() => {});
+    // Exact-directory cleanup of the partial attempt; if this removal fails
+    // the durable document deletion (or the next retry reusing the exact
+    // intent directory) still owns every byte.
+    await removeDocumentPublicationArtifacts({
+      accountId,
+      documentId,
+      publicationId: intent.id,
+      directory: intent.artifactDirectory,
+    }).catch(() => {});
+    throw error;
+  } finally {
+    activeRenderings.delete(renderKey);
+  }
+}
+
+export interface DocumentPublicationExport {
+  readonly publication: StoredDocumentPublication;
+  readonly filePath: string;
+  readonly fileName: string;
+}
+
+/** Resolves one frozen publication's artifact for an owner-only download. */
+export async function getDocumentPublicationExport(
+  accountId: string,
+  documentId: string,
+  publicationId: string,
+  format: DocumentExportFormat
+): Promise<DocumentPublicationExport | undefined> {
+  const publication = await storageRuntime().documents.getDocumentPublication(accountId, documentId, publicationId);
+  if (!publication) return undefined;
+  const fileName = DOCUMENT_ARTIFACT_FILENAMES[format];
+  const filePath = await resolveDocumentPublicationFile({
+    accountId,
+    documentId,
+    recordedHtmlPath: publication.htmlPath,
+    fileName,
+  });
+  if (!filePath) return undefined;
+  return { publication, filePath, fileName };
 }
 
 /**

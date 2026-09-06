@@ -7,7 +7,10 @@ import Fastify, { type FastifyInstance } from "fastify";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { signToken } from "../auth.js";
+import { config } from "../config.js";
 import { encodeJson } from "../db/codecs.js";
+import { hasZipMagic, isOoxmlDocument } from "../data/documents.js";
+import { REPORT_CSP } from "../data/reports.js";
 import { documentRoutes } from "../routes/documents.js";
 import { installHttpBoundary } from "../httpErrors.js";
 import { closeStorageRuntime, initializeStorageRuntime, storageRuntime } from "../storageRuntime.js";
@@ -23,7 +26,10 @@ const apps: FastifyInstance[] = [];
 let runtimeDirectory = "";
 
 beforeEach(async () => {
-  runtimeDirectory = await fs.mkdtemp(path.join(os.tmpdir(), "borealis-document-routes-"));
+  // Publication artifacts must stay inside the temp runtime: canonicalize so
+  // the storage ownership proofs compare lexical against canonical paths.
+  runtimeDirectory = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "borealis-document-routes-")));
+  config.reportDir = path.join(runtimeDirectory, "reports");
   const runtime = await initializeStorageRuntime({
     sqlitePath: path.join(runtimeDirectory, "ledger.sqlite"),
     lanceDirectory: path.join(runtimeDirectory, "lancedb"),
@@ -140,6 +146,7 @@ describe("document routes", () => {
       ["GET", `/api/documents/${randomUUID()}/diff?base=${randomUUID()}&target=${randomUUID()}`],
       ["GET", `/api/documents/${randomUUID()}/publications`],
       ["POST", `/api/documents/${randomUUID()}/revisions/${randomUUID()}/publish`, { operation_id: randomUUID() }],
+      ["GET", `/api/documents/${randomUUID()}/publications/${randomUUID()}/export?format=pdf`],
       ["GET", "/api/document-templates"],
       ["POST", "/api/document-templates", { name: "x", document_id: randomUUID() }],
       ["GET", `/api/document-templates/${randomUUID()}`],
@@ -513,9 +520,9 @@ describe("document routes", () => {
     expect(missingEndpoint.statusCode).toBe(404);
   });
 
-  it("lists an empty publication history and reserves publish with 501", async () => {
+  it("lists an empty publication history with no render status", async () => {
     const app = await buildApp();
-    const { document, revision } = await createDocument(app, { title: "To publish" });
+    const { document } = await createDocument(app, { title: "To publish" });
     const publications = await app.inject({
       method: "GET",
       url: `/api/documents/${document.id}/publications`,
@@ -524,14 +531,13 @@ describe("document routes", () => {
     expect(publications.statusCode).toBe(200);
     expect(publications.json()).toEqual({ items: [], next_cursor: null });
 
-    const publish = await app.inject({
-      method: "POST",
-      url: `/api/documents/${document.id}/revisions/${revision.id}/publish`,
+    const detail = await app.inject({
+      method: "GET",
+      url: `/api/documents/${document.id}`,
       headers: ownerAuth,
-      body: { operation_id: randomUUID() },
     });
-    expect(publish.statusCode).toBe(501);
-    expect(publish.json().code).toBe("PUBLICATION_NOT_READY");
+    expect(detail.statusCode).toBe(200);
+    expect(detail.json().publication_status).toBeNull();
 
     const foreignPublications = await app.inject({
       method: "GET",
@@ -539,6 +545,246 @@ describe("document routes", () => {
       headers: foreignAuth,
     });
     expect(foreignPublications.statusCode).toBe(404);
+  });
+
+  it("publishes a frozen revision, replays by operation UUID, and exports all four formats", async () => {
+    const app = await buildApp();
+    const tree = {
+      title: "Published brief",
+      subtitle: "v1",
+      verified: true,
+      sections: [{ heading: "Findings", markdown: "Net positive [1]; unresolved [9] stays plain text." }],
+      charts: [],
+      tables: [{ columns: ["month", "amount"], rows: [["jul", 1234]], analysis: null }],
+      evidence: [
+        {
+          id: randomUUID(),
+          source_id: randomUUID(),
+          source_name: "ledger.csv",
+          generation: 2,
+          content_identity: "sha256:verified",
+          locator: "row 7",
+          excerpt: "verified excerpt text",
+        },
+      ],
+    };
+    const { document, revision } = await createDocument(app, { title: "Published brief", tree });
+
+    const operationId = randomUUID();
+    const publish = await app.inject({
+      method: "POST",
+      url: `/api/documents/${document.id}/revisions/${revision.id}/publish`,
+      headers: ownerAuth,
+      body: { operation_id: operationId, expected_revision_id: revision.id },
+    });
+    expect(publish.statusCode).toBe(201);
+    const publication = publish.json().publication;
+    expect(publish.json()).toMatchObject({ status: "published", replayed: false });
+    expect(publication).toMatchObject({ revision: 1, version: 1, title: "Published brief", supersedes: null });
+    expect(publish.body).not.toContain(config.reportDir);
+
+    // The same operation UUID is idempotent and yields one publication.
+    const replay = await app.inject({
+      method: "POST",
+      url: `/api/documents/${document.id}/revisions/${revision.id}/publish`,
+      headers: ownerAuth,
+      body: { operation_id: operationId, expected_revision_id: revision.id },
+    });
+    expect(replay.statusCode).toBe(200);
+    expect(replay.json()).toMatchObject({ status: "published", replayed: true });
+    expect(replay.json().publication.id).toBe(publication.id);
+
+    const detail = await app.inject({
+      method: "GET",
+      url: `/api/documents/${document.id}`,
+      headers: ownerAuth,
+    });
+    expect(detail.json().publication_status).toMatchObject({ status: "completed", revision: 1 });
+    expect(detail.json().latest_publication_version).toBe(1);
+
+    const history = await app.inject({
+      method: "GET",
+      url: `/api/documents/${document.id}/publications`,
+      headers: ownerAuth,
+    });
+    expect(history.json().items).toHaveLength(1);
+
+    const htmlExport = await app.inject({
+      method: "GET",
+      url: `/api/documents/${document.id}/publications/${publication.id}/export?format=html`,
+      headers: ownerAuth,
+    });
+    expect(htmlExport.statusCode).toBe(200);
+    expect(htmlExport.headers["content-type"]).toContain("text/html");
+    expect(htmlExport.headers["content-security-policy"]).toBe(REPORT_CSP);
+    expect(htmlExport.body).toContain("Net positive [1]; unresolved [9] stays plain text.");
+    expect(htmlExport.body).toContain("provenance verified");
+    expect(htmlExport.body).not.toMatch(/src="https?:/i);
+
+    const pdfExport = await app.inject({
+      method: "GET",
+      url: `/api/documents/${document.id}/publications/${publication.id}/export?format=pdf`,
+      headers: ownerAuth,
+    });
+    expect(pdfExport.statusCode).toBe(200);
+    expect(pdfExport.rawPayload.subarray(0, 5).toString()).toBe("%PDF-");
+
+    const zipExport = await app.inject({
+      method: "GET",
+      url: `/api/documents/${document.id}/publications/${publication.id}/export?format=markdown`,
+      headers: ownerAuth,
+    });
+    expect(zipExport.statusCode).toBe(200);
+    expect(zipExport.headers["content-type"]).toContain("application/zip");
+    expect(hasZipMagic(zipExport.rawPayload)).toBe(true);
+
+    const docxExport = await app.inject({
+      method: "GET",
+      url: `/api/documents/${document.id}/publications/${publication.id}/export?format=docx`,
+      headers: ownerAuth,
+    });
+    expect(docxExport.statusCode).toBe(200);
+    expect(isOoxmlDocument(docxExport.rawPayload)).toBe(true);
+
+    // Publishing another account's document/revision/export is a 404.
+    const foreignPublish = await app.inject({
+      method: "POST",
+      url: `/api/documents/${document.id}/revisions/${revision.id}/publish`,
+      headers: foreignAuth,
+      body: { operation_id: randomUUID() },
+    });
+    expect(foreignPublish.statusCode).toBe(404);
+    const foreignExport = await app.inject({
+      method: "GET",
+      url: `/api/documents/${document.id}/publications/${publication.id}/export?format=pdf`,
+      headers: foreignAuth,
+    });
+    expect(foreignExport.statusCode).toBe(404);
+
+    // Malformed export selection.
+    const badFormat = await app.inject({
+      method: "GET",
+      url: `/api/documents/${document.id}/publications/${publication.id}/export?format=exe`,
+      headers: ownerAuth,
+    });
+    expect(badFormat.statusCode).toBe(400);
+
+    // A stale expected head rejects with the conflict envelope.
+    const staleExpected = await app.inject({
+      method: "POST",
+      url: `/api/documents/${document.id}/revisions/${revision.id}/publish`,
+      headers: ownerAuth,
+      body: { operation_id: randomUUID(), expected_revision_id: randomUUID() },
+    });
+    expect(staleExpected.statusCode).toBe(409);
+    expect(staleExpected.json().code).toBe("DOCUMENT_REVISION_CONFLICT");
+
+    // A random (non-existent, non-head) revision target is either an
+    // unselected selection reject or, with the explicit bit, a 404.
+    const unselectedMissing = await app.inject({
+      method: "POST",
+      url: `/api/documents/${document.id}/revisions/${randomUUID()}/publish`,
+      headers: ownerAuth,
+      body: { operation_id: randomUUID() },
+    });
+    expect(unselectedMissing.statusCode).toBe(409);
+    expect(unselectedMissing.json().code).toBe("DOCUMENT_REVISION_SELECTION");
+    const missingRevision = await app.inject({
+      method: "POST",
+      url: `/api/documents/${document.id}/revisions/${randomUUID()}/publish`,
+      headers: ownerAuth,
+      body: { operation_id: randomUUID(), allow_non_head_revision: true },
+    });
+    expect(missingRevision.statusCode).toBe(404);
+    expect(missingRevision.json().code).toBe("DOCUMENT_REVISION_NOT_FOUND");
+  });
+
+  it("enforces the head rule, explicit non-head selection, and one active publication", async () => {
+    const app = await buildApp();
+    const { document, revision: first } = await createDocument(app, {
+      title: "Selection",
+      tree: { title: "Selection", sections: [{ heading: "One", markdown: "first" }] },
+    });
+    const save = await app.inject({
+      method: "POST",
+      url: `/api/documents/${document.id}/revisions`,
+      headers: ownerAuth,
+      body: {
+        base_revision_id: first.id,
+        tree: {
+          title: "Selection",
+          sections: [
+            { id: first.payload.sections[0].id, heading: "One", markdown: "second" },
+            { heading: "Two", markdown: "more" },
+          ],
+        },
+      },
+    });
+    const headId = save.json().revision.id;
+
+    // Publishing the old revision without the explicit bit rejects.
+    const unselected = await app.inject({
+      method: "POST",
+      url: `/api/documents/${document.id}/revisions/${first.id}/publish`,
+      headers: ownerAuth,
+      body: { operation_id: randomUUID() },
+    });
+    expect(unselected.statusCode).toBe(409);
+    expect(unselected.json().code).toBe("DOCUMENT_REVISION_SELECTION");
+
+    // The explicit selection bit publishes exactly the reviewed revision.
+    const explicit = await app.inject({
+      method: "POST",
+      url: `/api/documents/${document.id}/revisions/${first.id}/publish`,
+      headers: ownerAuth,
+      body: { operation_id: randomUUID(), allow_non_head_revision: true },
+    });
+    expect(explicit.statusCode).toBe(201);
+    expect(explicit.json().publication).toMatchObject({ revision: 1, version: 1, revision_id: first.id });
+
+    // Publishing the (current) head still works after the explicit publish.
+    const headPublish = await app.inject({
+      method: "POST",
+      url: `/api/documents/${document.id}/revisions/${headId}/publish`,
+      headers: ownerAuth,
+      body: { operation_id: randomUUID(), expected_revision_id: headId },
+    });
+    expect(headPublish.statusCode).toBe(201);
+    expect(headPublish.json().publication).toMatchObject({
+      revision: 2,
+      version: 2,
+      supersedes: explicit.json().publication.id,
+    });
+
+    // A durable active intent for another operation rejects new requests.
+    const active = await storageRuntime().documents.beginDocumentPublication(OWNER, document.id, {
+      operationId: randomUUID(),
+    });
+    const whileActive = await app.inject({
+      method: "POST",
+      url: `/api/documents/${document.id}/revisions/${headId}/publish`,
+      headers: ownerAuth,
+      body: { operation_id: randomUUID() },
+    });
+    expect(whileActive.statusCode).toBe(409);
+    expect(whileActive.json().code).toBe("DOCUMENT_PUBLICATION_ACTIVE");
+    await storageRuntime().documents.failDocumentPublication(OWNER, document.id, active.intent.operationId, {
+      errorCode: "TEST_CLEANUP",
+    });
+
+    // Deleting a document with published artifacts reserves durable cleanup
+    // and wipes the exact artifact namespace (trigger + cleanup end-to-end).
+    const directory = path.join(config.reportDir, "documents", OWNER, document.id);
+    await fs.lstat(directory);
+    const removed = await app.inject({
+      method: "DELETE",
+      url: `/api/documents/${document.id}`,
+      headers: ownerAuth,
+    });
+    expect(removed.statusCode).toBe(200);
+    await expect(fs.lstat(directory)).rejects.toThrow();
+    const intents = await storageRuntime().documents.listDocumentArtifactCleanupIntents();
+    expect(intents.some((intent) => intent.documentId === document.id)).toBe(false);
   });
 
   it("exposes three built-in templates and revision-checked custom template CRUD", async () => {

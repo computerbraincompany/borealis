@@ -374,6 +374,56 @@ export async function removeDocumentPublicationArtifacts(input: {
   return true;
 }
 
+/**
+ * Resolve one owned publication artifact file for read access. The immutable
+ * publication row records `html_path` inside the exact attempt directory
+ * (keyed by the publication-intent UUID); the resolver anchors on that stored
+ * path and returns a sibling file of the same directory only after proving
+ * the exact account/document containment and regular-file identity.
+ */
+export async function resolveDocumentPublicationFile(input: {
+  accountId: string;
+  documentId: string;
+  recordedHtmlPath: string | null | undefined;
+  fileName: string;
+}): Promise<string | undefined> {
+  if (
+    !UUID_RE.test(input.accountId) ||
+    !UUID_RE.test(input.documentId) ||
+    !/^document\.(?:html|pdf|zip|docx)$/.test(input.fileName) ||
+    !input.recordedHtmlPath
+  ) {
+    return undefined;
+  }
+  const root = await realRoot(documentArtifactsRoot());
+  const lexicalRoot = path.resolve(documentArtifactsRoot());
+  const recorded = path.resolve(input.recordedHtmlPath);
+  if (path.basename(recorded) !== "document.html") return undefined;
+  const attemptDirectory = path.dirname(recorded);
+  const attemptName = path.basename(attemptDirectory);
+  if (!UUID_RE.test(attemptName)) return undefined;
+  const accountDirectory = path.join(lexicalRoot, input.accountId);
+  const documentDirectory = path.join(accountDirectory, input.documentId);
+  if (path.dirname(attemptDirectory) !== documentDirectory) return undefined;
+  const canonicalAccountDirectory = path.join(root, input.accountId);
+  const canonicalDocumentDirectory = path.join(canonicalAccountDirectory, input.documentId);
+  const canonicalAttemptDirectory = path.join(canonicalDocumentDirectory, attemptName);
+  const canonicalCandidate = path.join(canonicalAttemptDirectory, input.fileName);
+  const lexical = path.join(attemptDirectory, input.fileName);
+  if (!isWithin(canonicalCandidate, root)) return undefined;
+  const stat = await fs.lstat(lexical).catch(() => undefined);
+  if (!stat) return undefined;
+  if (
+    !(await isExactDirectory(accountDirectory, canonicalAccountDirectory)) ||
+    !(await isExactDirectory(documentDirectory, canonicalDocumentDirectory)) ||
+    !(await isExactDirectory(attemptDirectory, canonicalAttemptDirectory)) ||
+    !(await isExactRegularFile(lexical, canonicalCandidate))
+  ) {
+    return undefined;
+  }
+  return canonicalCandidate;
+}
+
 /** Resolve an owned report file for read access, failing closed on path drift. */
 export async function resolveReportArtifact(input: {
   accountId: string;
