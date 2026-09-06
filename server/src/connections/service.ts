@@ -442,6 +442,15 @@ export function connectionService(): ConnectionService {
   return active;
 }
 
+ * The shared connection credential custody surface. M14 WebDAV knowledge
+ * connections reuse this exact store (keyed by account/connection); no
+ * second secret mechanism may be introduced. Desktop custody overrides
+ * registered through `configureConnectionService` apply to every surface.
+ */
+export function connectionSecretStore(): ConnectionSecretStore {
+  return configured.secrets ? configured.secrets() : defaultSecretsStore();
+}
+
 /**
  * Drops the composed service, cancels its pending sign-in sessions, and
  * releases the loopback callback listener. Custody/transport singletons are
