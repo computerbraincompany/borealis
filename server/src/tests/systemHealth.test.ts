@@ -7,6 +7,7 @@ vi.mock("../dataService.js", () => ({ dataService: { health: vi.fn() } }));
 vi.mock("../storageRuntime.js", () => ({ storageRuntime: vi.fn() }));
 
 import { dataService } from "../dataService.js";
+import { beginDatasetRegistryRehydration, finishDatasetRegistryRehydration } from "../data/registryHydration.js";
 import { closeRuntimeSettings, initializeRuntimeSettings, runtimeSettingsStore } from "../runtimeSettings.js";
 import { storageRuntime } from "../storageRuntime.js";
 import { checkSystemHealth, createSystemHealthCheck } from "../systemHealth.js";
@@ -117,6 +118,28 @@ describe("system dependency health", () => {
       signal: expect.any(AbortSignal),
     });
     expect(cancel).toHaveBeenCalledOnce();
+  });
+
+  it("makes in-flight dataset-registry rehydration a data-service prerequisite, then self-heals", async () => {
+    vi.mocked(storageRuntime).mockReturnValue({ ledger: { health: vi.fn().mockResolvedValue(true) } } as never);
+    vi.mocked(dataService.health).mockResolvedValue(true);
+    const cancel = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, body: { cancel } }));
+
+    // The startup restoration window: the DuckDB worker itself answers, so
+    // only the pending rehydration can make the readiness line honest.
+    beginDatasetRegistryRehydration();
+    try {
+      const during = await checkSystemHealth();
+      expect(during.status).toBe("degraded");
+      expect(during.services.find((service) => service.id === "data_service")?.status).toBe("unavailable");
+    } finally {
+      finishDatasetRegistryRehydration();
+    }
+
+    const after = await checkSystemHealth();
+    expect(after.status).toBe("operational");
+    expect(after.services.find((service) => service.id === "data_service")?.status).toBe("operational");
   });
 
   it("hot-applies a remote endpoint and probes a distinct LM Studio runtime without disclosure", async () => {
