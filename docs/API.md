@@ -1674,6 +1674,49 @@ unverified draft with new section UUIDs and no attachments.
 | `PATCH /api/document-templates/:id`  | Body `{expected_revision, name?, description?}`. A stale revision answers `409 {"code":"DOCUMENT_TEMPLATE_CONFLICT","current_revision":N}`. Built-ins answer `409 BUILTIN_TEMPLATE_IMMUTABLE`. |
 | `DELETE /api/document-templates/:id` | Body `{expected_revision}`; same conflict/immutable codes. `{"ok":true}`.                                                                 |
 
+### Local research (shipped in the M15 wave)
+
+Owner-scoped durable research definitions, runs, evidence dossiers, and typed
+comparison tables (schema v25). Stage 1 ships the persistence, Start admission,
+dossier reads, review, and cancellation surfaces; plan generation, the runner,
+artifact publication, and export are stages 2–3 and answer reserved `501`
+codes. All routes authenticate in `onRequest` before parsing, use keyset
+pagination with endpoint-bound cursors (`research`, `research_runs`,
+`research_evidence`, `research_table`), default to a page of 25 (evidence max
+50, the others max 100), and expose stable `code` values on failures. Responses
+never include the captured provider origin.
+
+| Endpoint | Contract |
+| --- | --- |
+| `GET /api/research` | Paginated `{items,next_cursor}` of `{id,title,output_kind,current_revision,source_count,created_at,updated_at}`, newest first. |
+| `POST /api/research` | Body `{title,question,output_kind,source_ids,library_ids?,chat_model,columns?,plan?}`. `201` with the definition DTO (head revision content plus per-source `availability`). A selected-empty `source_ids` is a legal draft; comparison output requires 1–20 `columns`, memo output forbids them. |
+| `GET /api/research/:id` | Definition at the head revision with source availability (`ready\|unready\|missing`) and the current `active_run` summary. |
+| `PATCH /api/research/:id` | Body requires `expected_revision`; the optimistic head CAS commits a new immutable revision in one transaction. A stale revision answers `409 RESEARCH_REVISION_CONFLICT`; a foreign definition is `404`. |
+| `DELETE /api/research/:id` | Refuses while a run is active with `409 RESEARCH_ACTIVE_RUN` (`existing_run_id`); the route requests durable cancellation and retries the owned deletion within a bounded drain window. `{"ok":true}` on success. |
+| `POST /api/research/:id/plan` | **Reserved — stage 2.** After the ownership check the route answers `501 {"code":"RESEARCH_PLANNER_NOT_READY"}`; nothing executes and no run starts. |
+| `POST /api/research/:id/runs` | Body `{expected_revision?,definition_revision?,rerun_of?,rerun_selection?}`. The remote-egress gate answers `403 REMOTE_EGRESS_CONSENT_REQUIRED` before persistence. Start pins the chosen revision, the concrete ready source/generation set, the model, the provider authorization snapshot, and the budget copy atomically and returns `201` with the frozen run. `409 RESEARCH_SCOPE_EMPTY` for a selected-empty selection, `409 RESEARCH_INPUTS_NOT_READY` (`unready_source_ids`) for a removed/non-ready source (never silently dropped), `409 RESEARCH_ACTIVE_RUN` (`existing_run_id`) for one-active-per-definition, and `409 RESEARCH_QUEUE_FULL` past ten queued runs per account. |
+| `GET /api/research/:id/runs` | Paginated run summaries, newest first. |
+| `GET /api/research-runs/:id` | Frozen run (`status`, `sources`, `budgets`, `usage`, `rerun_of`, `review_revision`, timestamps), persisted `steps`, captured `claims`/`gaps`, `counts`, and `run_notes`. |
+| `GET /api/research-runs/:id/evidence` | Paginated captured evidence (≤50/page): `source_id`, `generation`, `chunk_id`, sanitized `label`, M14 `locators`, bounded `excerpt`, `content_hash`, `retrieved_at`, `step_ordinal`, `query`, `irrelevant`. Source deletion never erases a captured excerpt. |
+| `GET /api/research-runs/:id/table` | Bounded column schema and keyset rows (≤100/page); each row carries the machine cell and any correction overlay, plus an explicit `limit_state` (`serialized_bytes`, `limit_bytes`, `at_limit`). |
+| `DELETE /api/research-runs/:id` | Idempotent durable cancellation; a queued run settles `cancelled` immediately, a running run records `cancelling`, terminal states are absorbing, and a repeated call returns the same `{ok:true,status}`. |
+| `PATCH /api/research-runs/:id/review` | Body `{expected_revision, ops[]}` (1–100 ops: `accept_claim`, `reject_claim`, `add_note`, `correct_claim`, `correct_cell`, `flag_evidence`). The run's `review_revision` CAS commits each state change plus one append-only ledger row; notes never become evidence and cell corrections never rewrite machine history. `409` for `RESEARCH_REVISION_CONFLICT`/`RESEARCH_RUN_STATE`; `200` returns `{review_revision,ops_applied,run}`. |
+| `POST /api/research-runs/:id/artifacts` | **Reserved — stage 3.** After the ownership check the route answers `501 {"code":"RESEARCH_EXPORT_NOT_READY"}`. |
+| `GET /api/research-runs/:id/export` | **Reserved — stage 3.** After the ownership check the route answers `501 {"code":"RESEARCH_EXPORT_NOT_READY"}`. |
+
+Definitions bound: title 120, question 4,000, model 256, at most 100 explicitly
+selected source ids and 20 provenance library ids. A run freezes 1–8 steps, 32
+search operations, 40 model requests, 100 evidence items with 2,000-character
+excerpts under a 200,000-character total, and a 15-minute wall clock; budgets
+are copied onto every run. Claims reference only this run's own evidence (≤5
+references; conflicting claims need ≥2), at most 100 claims and 50 gaps per
+run. Comparison tables declare ≤20 columns (text/number/date/boolean/enum with
+exact enum choices); typed cell values are never coerced — an unsupported model
+value is stored `invalid` verbatim — and the serialized table is capped at 1
+MiB with an explicit `at_limit` state. Restart retries an interrupted step at
+most once under the same identity; budget exhaustion is a `needs_review` settle
+in the stage-2 runner, never a claim of exhaustive completion.
+
 ## Agent tools
 
 These operations run inside an accepted chat turn, not as independently callable
