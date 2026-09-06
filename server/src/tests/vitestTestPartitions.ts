@@ -24,6 +24,7 @@ export const INTEGRATION_TEST_FILES = Object.freeze([
   "src/tests/connectorRefreshStore.test.ts",
   "src/tests/documentRewriteRunner.test.ts",
   "src/tests/documentStore.test.ts",
+  "src/tests/documents.test.ts",
   "src/tests/knowledgeFolder.test.ts",
   "src/tests/knowledgeGrants.test.ts",
   "src/tests/knowledgeRefresh.test.ts",
