@@ -800,6 +800,38 @@ export class BriefRunStore {
     });
   }
 
+  /**
+   * Durable cancellation request for one run, idempotent across repeats and
+   * terminals: an active run gets `cancel_requested=1` (the runner observes it
+   * at stage boundaries and finalizes `cancelled`); an already-terminal run
+   * simply returns unchanged. There is no silent undo.
+   */
+  async requestRunCancel(
+    accountIdValue: string,
+    runIdValue: string
+  ): Promise<{ readonly run: StoredBriefRun; readonly cancelRequested: boolean }> {
+    const accountId = uuidIdentity(accountIdValue, "account id");
+    const runId = uuidIdentity(runIdValue, "run id");
+    return this.ledger.withImmediateTransaction((transaction) => {
+      const current = transaction.get<RunRow>(`SELECT ${RUN_COLUMNS} FROM brief_runs WHERE id=? AND account_id=?`, [
+        runId,
+        accountId,
+      ]);
+      if (!current) throw new BriefRunNotFoundError();
+      const stage = String(current.stage) as BriefRunStage;
+      if (!(BRIEF_ACTIVE_STAGES as readonly string[]).includes(stage)) {
+        return Object.freeze({ run: decodeBriefRun(current), cancelRequested: decodeSafeInteger(current.cancel_requested ?? 0, "cancel requested") === 1 });
+      }
+      transaction.run("UPDATE brief_runs SET cancel_requested=1 WHERE id=? AND account_id=?", [runId, accountId]);
+      const updated = transaction.get<RunRow>(`SELECT ${RUN_COLUMNS} FROM brief_runs WHERE id=? AND account_id=?`, [
+        runId,
+        accountId,
+      ]);
+      if (!updated) throw new BriefRunNotFoundError();
+      return Object.freeze({ run: decodeBriefRun(updated), cancelRequested: true });
+    });
+  }
+
   /** Deduplicated local notification: at most one row per (run, kind). */
   async recordNotification(
     accountIdValue: string,

@@ -22,6 +22,7 @@ import {
   type AcceptDocumentRewriteRequestInput,
   type BeginPublicationResult,
   type CreateDocumentResult,
+  type DocumentOriginLinks,
   type DocumentRevisionSummary,
   type StoredDocument,
   type StoredDocumentPublication,
@@ -70,6 +71,12 @@ export interface CreateDocumentDraftInput {
   readonly tree?: DocumentTreeInput;
   readonly templateId?: string;
   readonly copyFromReportId?: string;
+  /**
+   * Opaque server-supplied origin links (M16 recipe runs carry the durable
+   * run id plus the current analysis result id). Never model or user input;
+   * ignored by the report-copy shape, which owns its own copy protocol.
+   */
+  readonly origin?: Partial<DocumentOriginLinks>;
 }
 
 /**
@@ -91,11 +98,16 @@ export async function createDocumentDraft(input: CreateDocumentDraftInput): Prom
     return storageRuntime().documents.createDocument(accountId, {
       title: input.title?.trim() || snapshot.title,
       tree: instantiateTemplateTree(snapshot, input.title),
+      ...(input.origin ? { origin: input.origin } : {}),
     });
   }
   const title = (input.title ?? "").trim() || "Untitled document";
   const tree = input.tree ?? { title, sections: [], charts: [], tables: [], evidence: [] };
-  return storageRuntime().documents.createDocument(accountId, { title, tree });
+  return storageRuntime().documents.createDocument(accountId, {
+    title,
+    tree,
+    ...(input.origin ? { origin: input.origin } : {}),
+  });
 }
 
 export interface AppendDocumentRevisionInput {
