@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { chmod, mkdir, opendir, realpath, stat } from "node:fs/promises";
 import { url as inspectorUrl } from "node:inspector";
 import path from "node:path";
@@ -10,6 +10,7 @@ import {
   ipcMain,
   safeStorage,
   session,
+  shell,
   utilityProcess,
   type IpcMainInvokeEvent,
   type UtilityProcess,
@@ -22,16 +23,19 @@ import {
   MAX_FOLDER_PREVIEW_ENTRIES,
   narrowFolderPickerResult,
   parseBackendMessage,
+  parseOpenExternalRequest,
   rejectedRenderRequestId,
   type BackendRenderRequest,
   type BootstrapSession,
   type FolderPickerResult,
   type MainMessage,
 } from "./contracts.js";
+import { ConnectionKeyVault } from "./custody.js";
 import { ElectronRenderService } from "./electronRenderer.js";
 import {
   appOrigin,
   isAllowedPreviewWindowUrl,
+  isExternalOpenUrl,
   isTrustedAppUrl,
 } from "./policies.js";
 import {
@@ -44,6 +48,7 @@ import {
 
 const BACKEND_READY_TIMEOUT_MS = 30_000;
 const BACKEND_SHUTDOWN_TIMEOUT_MS = 8_000;
+const OPEN_VERIFY_TIMEOUT_MS = 3_000;
 const PACKAGED_NATIVE_SMOKE_SWITCH = "borealis-packaged-native-smoke";
 const UTILITY_NATIVE_SMOKE_ARGUMENT =
   "--borealis-packaged-native-smoke-utility";
@@ -140,10 +145,22 @@ async function runPackagedNativeSmoke(paths: DesktopPaths): Promise<void> {
   });
 }
 
+interface PendingOpenVerification {
+  readonly token: string;
+  readonly resolve: (ok: boolean) => void;
+  readonly timer: ReturnType<typeof setTimeout>;
+}
+
 class DesktopApplication {
   readonly #paths: DesktopPaths;
   readonly #vault = new BootstrapVault();
+  readonly #custody: ConnectionKeyVault;
   readonly #renderer = new ElectronRenderService();
+  readonly #pendingOpenVerifications = new Map<
+    string,
+    PendingOpenVerification
+  >();
+  readonly #openVerificationsInFlight = new Set<string>();
   #backend: UtilityProcess | undefined;
   #window: BrowserWindow | undefined;
   #origin: string | undefined;
@@ -157,12 +174,16 @@ class DesktopApplication {
 
   constructor(paths: DesktopPaths) {
     this.#paths = paths;
+    // The key file lives beside the workspace data but outside the archived
+    // record paths: custody keys are machine-bound and never portable.
+    this.#custody = new ConnectionKeyVault(safeStorage, paths.connectionKey);
   }
 
   async start(): Promise<void> {
     await this.#assertRuntime();
     this.#installBootstrapHandler();
     this.#installFolderChooserHandler();
+    this.#installOpenExternalHandler();
     const ready = await this.#startBackend();
     this.#origin = appOrigin(ready.port);
     this.#vault.store(ready.bootstrap);
@@ -190,8 +211,16 @@ class DesktopApplication {
 
   async #performShutdown(): Promise<void> {
     this.#vault.clear();
+    this.#custody.clear();
+    for (const pending of this.#pendingOpenVerifications.values()) {
+      clearTimeout(pending.timer);
+      pending.resolve(false);
+    }
+    this.#pendingOpenVerifications.clear();
+    this.#openVerificationsInFlight.clear();
     ipcMain.removeHandler("borealis:consume-bootstrap");
     ipcMain.removeHandler("borealis:choose-folder");
+    ipcMain.removeHandler("borealis:open-external");
     this.#renderer.close();
     if (this.#window && !this.#window.isDestroyed()) this.#window.destroy();
 
@@ -300,6 +329,63 @@ class DesktopApplication {
     );
   }
 
+  /**
+   * The single system-browser open action (Connected agents stage 5). The
+   * renderer can only request an open by presenting a one-time intent token
+   * that the BACKEND minted for an exact sign-in URL; main verifies-and-
+   * consumes that token with the backend over the authenticated utility
+   * message pair before `shell.openExternal` ever runs, so a compromised
+   * renderer cannot name an arbitrary URL. Nothing else is exposed here.
+   */
+  #installOpenExternalHandler(): void {
+    ipcMain.handle(
+      "borealis:open-external",
+      async (
+        event: IpcMainInvokeEvent,
+        rawRequest: unknown,
+      ): Promise<boolean> => {
+        if (!this.#origin || !this.#window || this.#window.isDestroyed())
+          return false;
+        if (event.sender !== this.#window.webContents) return false;
+        const senderUrl = event.senderFrame?.url;
+        if (!senderUrl || !isTrustedAppUrl(senderUrl, this.#origin))
+          return false;
+        const request = parseOpenExternalRequest(rawRequest);
+        if (!request || !isExternalOpenUrl(request.url)) return false;
+        if (this.#backendStopped || !this.#backend?.pid) return false;
+        // A renderer cannot stack up parallel verifies for the same token.
+        if (this.#openVerificationsInFlight.has(request.token)) return false;
+        this.#openVerificationsInFlight.add(request.token);
+        try {
+          const requestId = randomUUID();
+          const verified = await new Promise<boolean>((resolve) => {
+            const timer = setTimeout(() => {
+              this.#settleOpenVerification(requestId, false);
+            }, OPEN_VERIFY_TIMEOUT_MS);
+            this.#pendingOpenVerifications.set(requestId, {
+              token: request.token,
+              resolve,
+              timer,
+            });
+            this.#postToBackend({
+              type: "open-verify-request",
+              request_id: requestId,
+              token: request.token,
+              url: request.url,
+            });
+          });
+          if (!verified) return false;
+          await shell.openExternal(request.url);
+          return true;
+        } catch {
+          return false;
+        } finally {
+          this.#openVerificationsInFlight.delete(request.token);
+        }
+      },
+    );
+  }
+
   /** Bounded top-level entry count for the picker preview (never content). */
   async #previewFolder(
     directory: string,
@@ -325,6 +411,14 @@ class DesktopApplication {
     } finally {
       await handle?.close().catch(() => {});
     }
+  }
+
+  #settleOpenVerification(requestId: string, ok: boolean): void {
+    const pending = this.#pendingOpenVerifications.get(requestId);
+    if (!pending) return;
+    this.#pendingOpenVerifications.delete(requestId);
+    clearTimeout(pending.timer);
+    pending.resolve(ok);
   }
 
   #startBackend(): Promise<
@@ -371,8 +465,33 @@ class DesktopApplication {
           void this.#handleRender(message);
           return;
         }
+        if (message.type === "custody-request") {
+          void this.#custody
+            .handle(message)
+            .then((response) => this.#postToBackend(response))
+            .catch(() => {
+              this.#postToBackend({
+                type: "custody-response",
+                request_id: message.request_id,
+                ok: false,
+                reason: "custody",
+              });
+            });
+          return;
+        }
+        if (message.type === "open-verify-response") {
+          this.#settleOpenVerification(message.request_id, message.ok);
+          return;
+        }
         if (message.type === "stopped") {
           this.#markBackendStopped();
+          for (const pending of this.#pendingOpenVerifications.values()) {
+            clearTimeout(pending.timer);
+            pending.resolve(false);
+          }
+          this.#pendingOpenVerifications.clear();
+          this.#openVerificationsInFlight.clear();
+          this.#custody.clear();
           if (!this.#shutdownPromise)
             this.#handleBackendFatal("BACKEND_STOPPED");
           return;
@@ -435,6 +554,12 @@ class DesktopApplication {
   #markBackendStopped(): void {
     if (this.#backendStopped) return;
     this.#backendStopped = true;
+    for (const pending of this.#pendingOpenVerifications.values()) {
+      clearTimeout(pending.timer);
+      pending.resolve(false);
+    }
+    this.#pendingOpenVerifications.clear();
+    this.#openVerificationsInFlight.clear();
     this.#resolveBackendStopped?.();
     this.#resolveBackendStopped = undefined;
   }

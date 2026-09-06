@@ -36,6 +36,7 @@ test("resolves every durable path beneath the exact userData directory", () => {
     containedModels: path.join(userData, "models"),
     settings: path.join(userData, "settings.json"),
     jwtSecret: path.join(userData, "jwt.secret"),
+    connectionKey: path.join(userData, "connection-custody", "sealed-key.bin"),
     staticWeb: path.join(application, "runtime", "web"),
     backendEntry: path.join(
       application,

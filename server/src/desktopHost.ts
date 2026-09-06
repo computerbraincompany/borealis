@@ -7,6 +7,12 @@ import { acceptDesktopGrantMessage } from "./knowledge/grants.js";
 import { buildRasterOnlyOcrSmokePdf } from "./ocrSmokePdf.js";
 import { createDeferredServiceLifecycle } from "./desktopLifecycle.js";
 import { startBorealisServer, type RunningBorealisServer } from "./serverApp.js";
+import {
+  configureDesktopCustodyPort,
+  closeDesktopCustodyPort,
+  desktopCustodySecretStore,
+} from "./connections/desktopCustody.js";
+import { configureConnectionService } from "./connections/service.js";
 
 const PACKAGED_NATIVE_SMOKE_ARGUMENT = "--borealis-packaged-native-smoke-utility";
 
@@ -109,11 +115,19 @@ if (process.argv.includes(PACKAGED_NATIVE_SMOKE_ARGUMENT)) {
 } else {
   configureElectronRenderPort(parentPort);
 
+  // Connection secret custody runs entirely through main's OS-protected
+  // safeStorage; the backend process never holds the key material. The
+  // composition must precede server start so no credential operation can
+  // ever reach the browser-development file custody default.
+  configureDesktopCustodyPort(parentPort);
+  configureConnectionService({ secrets: () => desktopCustodySecretStore() });
+
   const lifecycle = createDeferredServiceLifecycle<RunningBorealisServer>({
     start: () => startBorealisServer({ desktop: true }),
     close: (server) => server.close(),
     onStopped: () => {
       closeElectronRenderPort();
+      closeDesktopCustodyPort();
       parentPort.postMessage({ type: "stopped" });
       parentPort.close?.();
     },
@@ -151,6 +165,7 @@ if (process.argv.includes(PACKAGED_NATIVE_SMOKE_ARGUMENT)) {
   } catch {
     if (!lifecycle.stopRequested) {
       closeElectronRenderPort();
+      closeDesktopCustodyPort();
       parentPort.postMessage({ type: "fatal" });
       process.exitCode = 1;
     }

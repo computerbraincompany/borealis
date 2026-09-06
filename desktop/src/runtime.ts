@@ -42,6 +42,12 @@ export interface DesktopPaths {
   readonly settings: string;
   readonly jwtSecret: string;
   readonly containedModels: string;
+  /**
+   * Main-owned `safeStorage`-sealed connection custody key (Connected agents
+   * stage 5). Created lazily by the custody vault, machine-bound, and never
+   * readable by the backend utility process or any renderer.
+   */
+  readonly connectionKey: string;
   readonly staticWeb: string;
   readonly backendEntry: string;
 }
@@ -71,6 +77,11 @@ export function resolveDesktopPaths(
     containedModels: path.join(resolvedUserData, "models"),
     settings: path.join(resolvedUserData, "settings.json"),
     jwtSecret: path.join(resolvedUserData, "jwt.secret"),
+    connectionKey: path.join(
+      resolvedUserData,
+      "connection-custody",
+      "sealed-key.bin",
+    ),
     staticWeb: path.join(runtime, "web"),
     backendEntry: path.join(runtime, "server", "dist", "desktopHost.js"),
   };

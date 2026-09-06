@@ -6,6 +6,7 @@ import {
   hasPdfMagic,
   hasPngMagic,
   isAllowedPreviewWindowUrl,
+  isExternalOpenUrl,
   isAllowedRenderResourceUrl,
   isTrustedAppUrl,
 } from "./policies.js";
@@ -64,4 +65,24 @@ test("render magic validation is exact", () => {
     true,
   );
   assert.equal(hasPngMagic(Buffer.from("not a png")), false);
+});
+
+test("the system-browser open surface admits only https and explicit local development targets", () => {
+  assert.equal(
+    isExternalOpenUrl("https://idp.example.test/authorize?x=1"),
+    true,
+  );
+  assert.equal(isExternalOpenUrl("http://127.0.0.1:4321/callback"), true);
+  assert.equal(isExternalOpenUrl("http://localhost:3000/x"), true);
+  assert.equal(isExternalOpenUrl("http://printer.local/mcp"), true);
+  for (const url of [
+    "http://evil.example.test/steal",
+    "file:///etc/passwd",
+    "javascript:alert(1)",
+    "data:text/html,hi",
+    "https://user:pass@idp.example.test/authorize",
+    "not-a-url",
+  ]) {
+    assert.equal(isExternalOpenUrl(url), false, url);
+  }
 });

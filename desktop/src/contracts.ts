@@ -1,5 +1,11 @@
 export const MAX_RENDER_HTML_BYTES = 16 * 1024 * 1024;
 export const MAX_BOOTSTRAP_TOKEN_BYTES = 16 * 1024;
+/** Parse ceiling for the custody data key; the vault itself is exactly 32 bytes. */
+export const MAX_CUSTODY_KEY_BYTES = 64;
+export const MAX_OPEN_INTENT_TOKEN_CHARS = 128;
+export const MAX_OPEN_URL_CHARS = 4_096;
+
+const OPEN_INTENT_TOKEN_PATTERN = /^[A-Za-z0-9_-]{16,128}$/;
 
 export interface BootstrapUser {
   readonly id: string;
@@ -38,9 +44,32 @@ export interface BackendFatalMessage {
   readonly error_code?: string;
 }
 
+/**
+ * The only two custody operations the backend utility process may ask of
+ * main. `read` must never create the key (creating it would silently orphan
+ * every record sealed under the previous key); `ensure` creates it exactly
+ * once when OS-protected storage is available. There is deliberately no
+ * `list`, no per-record crypto, and no general secret API: main owns the OS
+ * key custody (`safeStorage`) and the only answer is the data key itself.
+ */
+export interface BackendCustodyRequest {
+  readonly type: "custody-request";
+  readonly request_id: string;
+  readonly op: "read" | "ensure";
+}
+
+/** The backend's verdict on one one-time system-browser open intent. */
+export interface BackendOpenVerifyResponseMessage {
+  readonly type: "open-verify-response";
+  readonly request_id: string;
+  readonly ok: boolean;
+}
+
 export type BackendMessage =
   | BackendReadyMessage
   | BackendRenderRequest
+  | BackendCustodyRequest
+  | BackendOpenVerifyResponseMessage
   | BackendStoppedMessage
   | BackendNativeSmokeMessage
   | BackendFatalMessage;
@@ -97,11 +126,38 @@ export interface RenderFailureMessage {
   readonly ok: false;
 }
 
+export interface CustodySuccessMessage {
+  readonly type: "custody-response";
+  readonly request_id: string;
+  readonly ok: true;
+  /** The custody data key; never logged or persisted unsealed by main. */
+  readonly data: Uint8Array;
+}
+
+export interface CustodyFailureMessage {
+  readonly type: "custody-response";
+  readonly request_id: string;
+  readonly ok: false;
+  /** `custody`: OS-protected storage unavailable or no key yet. `record`: unreadable sealed key. */
+  readonly reason: "custody" | "record";
+}
+
+/** Main asks the backend to verify-and-consume one system-browser open intent. */
+export interface OpenVerifyRequestMessage {
+  readonly type: "open-verify-request";
+  readonly request_id: string;
+  readonly token: string;
+  readonly url: string;
+}
+
 export type MainMessage =
   | ShutdownMessage
   | RenderSuccessMessage
   | RenderFailureMessage
-  | FolderGrantMessage;
+  | FolderGrantMessage
+  | CustodySuccessMessage
+  | CustodyFailureMessage
+  | OpenVerifyRequestMessage;
 
 /**
  * Build the one-time folder-grant handoff. Every field is contract-checked
@@ -184,10 +240,11 @@ export function narrowFolderPickerResult(input: {
 
 /**
  * Strict parser for the main→backend protocol (the mirror of the renderer
- * bridge): only the four reviewed message kinds are recognized, each to its
+ * bridge): only the reviewed message kinds are recognized, each to its
  * exact shape; anything else narrows to `undefined`. The backend re-validates
- * independently in `server/src/knowledge/grants.ts`; this parser keeps main
- * itself from ever emitting a malformed message.
+ * independently in `server/src/knowledge/grants.ts` (folder grants) and
+ * `server/src/connections/desktopCustody.ts` (custody/open-verify answers);
+ * this parser keeps main itself from ever emitting a malformed message.
  */
 export function parseMainMessage(value: unknown): MainMessage | undefined {
   if (!isRecord(value) || typeof value.type !== "string") return undefined;
@@ -251,6 +308,58 @@ export function parseMainMessage(value: unknown): MainMessage | undefined {
         grant_id: grantId,
         root_path: rootPath,
         display_label: displayLabel,
+      };
+    }
+    case "custody-response": {
+      if (!isRequestId(value.request_id)) return undefined;
+      if (value.ok === true) {
+        const keys = Object.keys(value).sort().join(",");
+        if (keys !== "data,ok,request_id,type") return undefined;
+        if (!(value.data instanceof Uint8Array) || Buffer.isBuffer(value.data))
+          return undefined;
+        // Exactly one AES-256 custody key; the backend applies the same rule.
+        if (value.data.byteLength !== 32) return undefined;
+        return {
+          type: "custody-response",
+          request_id: value.request_id,
+          ok: true,
+          data: value.data,
+        };
+      }
+      if (value.ok === false) {
+        const keys = Object.keys(value).sort().join(",");
+        if (keys !== "ok,reason,request_id,type") return undefined;
+        if (value.reason !== "custody" && value.reason !== "record")
+          return undefined;
+        return {
+          type: "custody-response",
+          request_id: value.request_id,
+          ok: false,
+          reason: value.reason,
+        };
+      }
+      return undefined;
+    }
+    case "open-verify-request": {
+      const keys = Object.keys(value).sort().join(",");
+      if (keys !== "request_id,token,type,url") return undefined;
+      if (!isRequestId(value.request_id)) return undefined;
+      if (
+        typeof value.token !== "string" ||
+        !OPEN_INTENT_TOKEN_PATTERN.test(value.token)
+      )
+        return undefined;
+      if (
+        typeof value.url !== "string" ||
+        value.url.length < 1 ||
+        value.url.length > MAX_OPEN_URL_CHARS
+      )
+        return undefined;
+      return {
+        type: "open-verify-request",
+        request_id: value.request_id,
+        token: value.token,
+        url: value.url,
       };
     }
     default:
@@ -338,6 +447,26 @@ export function parseBackendMessage(
         kind: value.kind,
         html: value.html,
       };
+    case "custody-request": {
+      if (!isRequestId(value.request_id)) return undefined;
+      // Deliberately narrow: only the two key operations exist, and no
+      // per-record material may ever cross this channel.
+      if (value.op !== "read" && value.op !== "ensure") return undefined;
+      return {
+        type: "custody-request",
+        request_id: value.request_id,
+        op: value.op,
+      };
+    }
+    case "open-verify-response":
+      if (!isRequestId(value.request_id) || typeof value.ok !== "boolean") {
+        return undefined;
+      }
+      return {
+        type: "open-verify-response",
+        request_id: value.request_id,
+        ok: value.ok,
+      };
     case "stopped":
       return { type: "stopped" };
     case "native-smoke":
@@ -357,4 +486,31 @@ export function parseBackendMessage(
 
 export function asTransferableBytes(value: Buffer): Uint8Array {
   return Uint8Array.from(value);
+}
+
+/**
+ * Shape validation for the untrusted renderer payload behind a system-browser
+ * open request. This is deliberately shape-only: the URL itself is only ever
+ * opened after the backend verifies-and-consumes the one-time intent token
+ * bound to that exact URL.
+ */
+export function parseOpenExternalRequest(
+  value: unknown,
+): { readonly token: string; readonly url: string } | undefined {
+  if (!isRecord(value)) return undefined;
+  if (
+    typeof value.token !== "string" ||
+    !OPEN_INTENT_TOKEN_PATTERN.test(value.token) ||
+    value.token.length > MAX_OPEN_INTENT_TOKEN_CHARS
+  ) {
+    return undefined;
+  }
+  if (
+    typeof value.url !== "string" ||
+    value.url.length < 1 ||
+    value.url.length > MAX_OPEN_URL_CHARS
+  ) {
+    return undefined;
+  }
+  return { token: value.token, url: value.url };
 }

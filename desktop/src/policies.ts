@@ -25,6 +25,34 @@ export function isAllowedPreviewWindowUrl(value: string): boolean {
   return value === "about:blank";
 }
 
+/**
+ * Strict allowlist for the one main-mediated `shell.openExternal` action
+ * (a backend-issued one-time sign-in intent). Only `https:` targets may be
+ * opened, plus plain `http:` for the exact loopback/`.local` development
+ * targets the connection boundary itself admits. URL credentials are always
+ * refused. This is the outer gate; the URL is still only opened after the
+ * backend verifies-and-consumes the intent token bound to the exact URL.
+ */
+export function isExternalOpenUrl(value: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return false;
+  }
+  if (parsed.username !== "" || parsed.password !== "") return false;
+  if (parsed.protocol === "https:") return parsed.hostname.length > 0;
+  if (parsed.protocol !== "http:") return false;
+  const host = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  if (/^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host)) return true;
+  if (host === "::1" || host === "[::1]") return true;
+  return (
+    host === "localhost" ||
+    host.endsWith(".localhost") ||
+    host.endsWith(".local")
+  );
+}
+
 export function isAllowedRenderResourceUrl(value: string): boolean {
   if (value === "about:blank") return true;
   if (Buffer.byteLength(value, "utf8") > MAX_EMBEDDED_PNG_URL_BYTES)

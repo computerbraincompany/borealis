@@ -24,6 +24,7 @@ import {
   type ConnectionOAuthManager,
 } from "../mcp/oauth.js";
 import { closeOAuthCallbackListener } from "../mcp/oauthCallback.js";
+import { clearDesktopBrowserOpenIntents, mintDesktopBrowserOpenIntent } from "./desktopCustody.js";
 import type { CatalogPageRequest, CatalogStorePage } from "../catalogPagination.js";
 import { storageRuntime } from "../storageRuntime.js";
 import {
@@ -292,12 +293,25 @@ export class ConnectionService {
    * sign-in URL. Discovery/registration failures surface as actionable
    * `CONNECTION_AUTH_UNSUPPORTED`/`CONNECTION_AUTH_DISCOVERY_FAILED` codes;
    * a fake success is impossible.
+   *
+   * On the packaged desktop (`desktopCustodyActive`) the response carries an
+   * additional one-time `desktop_open_token` bound to this exact
+   * `authorize_url`: the only thing the hardened preload may present to main
+   * to open the sign-in link in the system browser. Browser development gets
+   * the unchanged `{authorize_url, expires_at}` DTO.
    */
-  async authorize(accountId: string, connectionId: string): Promise<ConnectionAuthorization> {
+  async authorize(
+    accountId: string,
+    connectionId: string
+  ): Promise<ConnectionAuthorization & { desktop_open_token?: string; desktop_open_expires_at?: string }> {
     const connection = await this.store.requireConnection(accountId, connectionId);
     if (!connection.enabled) throw new ConnectionDisabledError();
     const provider = this.authorization();
-    return this.withTimeout((signal) => provider.start(accountId, connection, signal));
+    const authorization = await this.withTimeout((signal) => provider.start(accountId, connection, signal));
+    const intent = mintDesktopBrowserOpenIntent(`${accountId}:${connectionId}`, authorization.authorize_url);
+    return intent
+      ? Object.freeze({ ...authorization, desktop_open_token: intent.token, desktop_open_expires_at: intent.expiresAt })
+      : authorization;
   }
 
   /** Revokes local credentials and disconnects; provider revocation is best effort. */
@@ -602,5 +616,6 @@ export function closeConnectionService(): void {
   active?.shutdownAuthorizations();
   active = undefined;
   configured = {};
+  clearDesktopBrowserOpenIntents();
   void closeOAuthCallbackListener().catch(() => undefined);
 }

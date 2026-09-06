@@ -7,6 +7,7 @@ import {
   asTransferableBytes,
   buildFolderGrantMessage,
   narrowFolderPickerResult,
+  parseOpenExternalRequest,
   parseBackendMessage,
   parseMainMessage,
   rejectedRenderRequestId,
@@ -321,4 +322,136 @@ test("the picker result carries only the opaque grant, label, and preview", () =
       bounded.preview.truncated,
   );
   assert.deepEqual(FOLDER_PICKER_CANCELLED, { cancelled: true });
+});
+
+test("open-external renderer requests are validated narrowly", () => {
+  const token = "A".repeat(16);
+  assert.deepEqual(
+    parseOpenExternalRequest({
+      token,
+      url: "https://idp.example.test/authorize",
+    }),
+    { token, url: "https://idp.example.test/authorize" },
+  );
+  assert.equal(
+    parseOpenExternalRequest({ token: "short", url: "https://a.test" }),
+    undefined,
+  );
+  assert.equal(
+    parseOpenExternalRequest({ token, url: "x".repeat(4097) }),
+    undefined,
+  );
+  assert.equal(parseOpenExternalRequest({ token, url: "" }), undefined);
+  assert.equal(
+    parseOpenExternalRequest({ token: "bad token!", url: "https://a.test" }),
+    undefined,
+  );
+  assert.equal(parseOpenExternalRequest("nope"), undefined);
+});
+
+test("parseMainMessage recognizes the custody and open-verify answers", () => {
+  const key = new Uint8Array(32).fill(7);
+  assert.deepEqual(
+    parseMainMessage({
+      type: "custody-response",
+      request_id: "r-1",
+      ok: true,
+      data: key,
+    }),
+    { type: "custody-response", request_id: "r-1", ok: true, data: key },
+  );
+  assert.equal(
+    parseMainMessage({
+      type: "custody-response",
+      request_id: "r-1",
+      ok: true,
+      data: Buffer.from(key),
+    }),
+    undefined,
+  );
+  assert.equal(
+    parseMainMessage({
+      type: "custody-response",
+      request_id: "r-1",
+      ok: true,
+      data: new Uint8Array(31),
+    }),
+    undefined,
+  );
+  assert.equal(
+    parseMainMessage({
+      type: "custody-response",
+      request_id: "r-1",
+      ok: true,
+      data: new Uint8Array(32),
+      reason: "custody",
+    }),
+    undefined,
+  );
+  assert.deepEqual(
+    parseMainMessage({
+      type: "custody-response",
+      request_id: "r-2",
+      ok: false,
+      reason: "record",
+    }),
+    {
+      type: "custody-response",
+      request_id: "r-2",
+      ok: false,
+      reason: "record",
+    },
+  );
+  assert.equal(
+    parseMainMessage({
+      type: "custody-response",
+      request_id: "r-2",
+      ok: false,
+      reason: "unexpected",
+    }),
+    undefined,
+  );
+  const token = "B".repeat(16);
+  assert.deepEqual(
+    parseMainMessage({
+      type: "open-verify-request",
+      request_id: "r-3",
+      token,
+      url: "https://idp.example.test/authorize",
+    }),
+    {
+      type: "open-verify-request",
+      request_id: "r-3",
+      token,
+      url: "https://idp.example.test/authorize",
+    },
+  );
+  assert.equal(
+    parseMainMessage({
+      type: "open-verify-request",
+      request_id: "r-3",
+      token: "too-short",
+      url: "https://idp.example.test/authorize",
+    }),
+    undefined,
+  );
+  assert.equal(
+    parseMainMessage({
+      type: "open-verify-request",
+      request_id: "r-3",
+      token,
+      url: "x".repeat(4097),
+    }),
+    undefined,
+  );
+  assert.equal(
+    parseMainMessage({
+      type: "open-verify-request",
+      request_id: "r-3",
+      token,
+      url: "https://a.test",
+      extra: "discarded",
+    }),
+    undefined,
+  );
 });
