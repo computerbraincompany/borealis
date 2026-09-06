@@ -1082,16 +1082,33 @@ contain aggregate counts, never connector IDs, paths, or raw filesystem errors.
 
 ### Connections (Connected agents — implemented in this wave)
 
-The connection ledger (schema v17), server-side secret custody, and the management
-endpoints below are implemented and green-tested in this wave of
-`docs/MCP_CONNECTIONS.md`. The remaining stages are not yet current API: the real
-Streamable HTTP and stdio transports replace the transport-provider seam in
-`server/src/mcp/client.ts` (until stage 2, `test`/`discover` deterministically return
-`503 CONNECTION_TRANSPORT_UNAVAILABLE`), OAuth sign-in replaces the authorization seam
-(until stage 3, `authorize` returns `501 CONNECTION_AUTH_UNSUPPORTED`; local
-revocation is already real), and agent tool bindings plus the Connections UI arrive in
-later stages. This section documents the shipped contract; later stages extend it in
-place.
+The connection ledger (schema v17), server-side secret custody, the management
+endpoints below, and the real Streamable HTTP and stdio transports
+(`server/src/mcp/client.ts`, official TypeScript SDK `@modelcontextprotocol/sdk`
+pinned at 1.30.0; negotiated MCP protocol version `2025-11-25` against the
+workspace protocol fixtures) are implemented and green-tested in this wave of
+`docs/MCP_CONNECTIONS.md`. `test` and `discover` now run real bounded
+initialize/list-tools probes over those transports. The remaining stages are not
+yet current API: OAuth sign-in replaces the authorization seam (until stage 3,
+`authorize` returns `501 CONNECTION_AUTH_UNSUPPORTED`; local revocation is
+already real), and agent tool bindings, tool dispatch in chat turns, and the
+Connections UI arrive in later stages. This section documents the shipped
+contract; later stages extend it in place.
+
+Transport behavior: HTTP connections accept a full endpoint path, require HTTPS
+except explicitly configured loopback/`.local` development targets, pin the
+validated DNS answer for each socket, and never follow redirects — credential
+headers are attached only to the exact validated endpoint origin and therefore
+can never ride a redirect. stdio connections spawn the configured absolute
+executable directly without a shell with an explicit environment (credential
+environment entries come only from secret custody); protocol stdout goes only to
+the SDK parser, stderr is drained and discarded, and every child is owned:
+disconnect, cancellation, and application shutdown end the child with bounded
+TERM→KILL escalation and a pid-gone proof. One client is opened per probe
+operation; no long-lived pooled child exists, and the application runtime's
+shutdown drains any still-live connection session alongside the other owned
+drains. A `401` from the endpoint is the actionable
+`409 CONNECTION_AUTH_REQUIRED` disconnected state, never a raw provider error.
 
 | Endpoint | Contract |
 | --- | --- |
