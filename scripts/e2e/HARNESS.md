@@ -141,6 +141,15 @@ reports `not_implemented`), `--workspace=DIR`, and `--keep-on-failure`.
   negative-path probes (foreign-account `404`, stale-CAS `409`, etc.) call
   `allowStatuses([404])` to admit exactly those codes — never a blanket
   wildcard.
+- Journeys that need protocol fixtures beyond the entry-launched provider
+  start them themselves with `launchFixture({ workspace, name, env })` from
+  `harness/providers.mjs` and register cleanup with
+  `workspace.onCleanup(() => handle.stop())` (pids stay tracked; shutdown
+  order is still fixtures-last). Journeys A/D do this for the OAuth issuer,
+  the two Streamable HTTP MCP instances, and the WebDAV collection; the
+  stdio MCP fixture is not launched by the harness at all — the PRODUCT
+  spawns it from the connection config (repository Node + fixture script
+  path), which is part of what journey A exercises.
 - End every journey that touched persisted state or the data plane with
   `await server.quiesceWorkers({ token })` before returning, so the entry's
   orderly shutdown is proven rather than raced.
