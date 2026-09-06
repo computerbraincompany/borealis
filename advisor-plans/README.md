@@ -50,7 +50,7 @@ requests it.
 | [017](017-move-document-extraction-to-worker.md)       | Move document extraction to a bounded worker                          |       P2 |      L | 004, 036                          | TODO   |
 | [018](018-throttle-public-authentication.md)           | Throttle public authentication before password work                   |       P2 |      M | 007, 014                          | TODO   |
 | [019](019-add-packaged-electron-lifecycle-test.md)     | Add packaged Electron lifecycle acceptance coverage                   |       P2 |      L | 002, 014, 032, 033, 036           | TODO   |
-| [020](020-type-connector-refresh-protocol-state.md)    | Type connector-refresh protocol state in a durable table              |       P2 |      L | 003, 006, 012, 014–016, 031       | IN PROGRESS 2026-09-06 (reserved schema v16) |
+| [020](020-type-connector-refresh-protocol-state.md)    | Type connector-refresh protocol state in a durable table              |       P2 |      L | 003, 006, 012, 014–016, 031       | DONE 2026-09-06 (reserved schema v16 shipped; archive-restore rebase added for the new locations) |
 | [021](021-stabilize-exceljs-parser-boundary.md)        | Stabilize the ExcelJS parser boundary                                 |       P3 |      L | —                                 | TODO   |
 | [022](022-make-server-web-contracts-executable.md)     | Make server/web API contracts executable                              |       P3 |      L | 007, 010, 014, 018, 031, 034, 035 | TODO   |
 | [024](024-preserve-connector-cache-cleanup.md)         | Preserve connector-cache cleanup until deletion is proven             |       P1 |      M | —                                 | DONE   |

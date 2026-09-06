@@ -9,7 +9,7 @@ Read [the handoff](../docs/DEVELOPMENT_HANDOFF.md) before executing.
 
 | Work | State | Implementation commit | Verification evidence |
 | ---- | ----- | --------------------- | --------------------- |
-| Prerequisite closure 001,003–009,011–016,020 | IN PROGRESS | 001 `50d70b7`, 003 `795ebad`, 011 `042bec1`, 004 `9c14f40`, 009 `f3dc381`, 015 `5640f66`, 005 `c150ac7`, 006 `418f7a9` (v14), 012 `642032d` (v15), 013 `1a6be8e`, 007 `394ba6b` (+ web 007b `41a10e3` adaptation), 008 `fb99667`, 014 `8e92643`, 016 `e310a80` | 14 of 15 slices merged 2026-09-06 after per-diff review; merged-main gates green after each batch; 012/013/007/008/014/016 passed full root `pnpm verify` (014 also `borealis-desktop verify`) in worktrees before merge; 007's single serverApp.test.ts conflict resolved by the coordinator during rebase. Final prerequisite 020 (reserved schema v16 `connector_refresh_states`, legacy-meta migration with rollback-on-malformed, 016 index handoff) executing; Phase B (v17+) starts on its merge. Phase B v17+ pre-allocations will be recorded here at merge time (plan: v17 connections/MCP infra, v18 M12 — actual integration order rules). Protocol: one subagent per plan in `../north-clone-wt/<plan>`, plan-scoped ownership; coordinator reviews diffs, rebases in-worktree + ff-merges, runs integrated gates. Load flake: re-run 5 s-budget subprocess tests before treating as failure. |
+| Prerequisite closure 001,003–009,011–016,020 | DONE | 001 `50d70b7`, 003 `795ebad`, 011 `042bec1`, 004 `9c14f40`, 009 `f3dc381`, 015 `5640f66`, 005 `c150ac7`, 006 `418f7a9` (v14), 012 `642032d` (v15), 013 `1a6be8e`, 007 `394ba6b` (+ web 007b `41a10e3` adaptation), 008 `fb99667`, 014 `8e92643`, 016 `e310a80`, 020 (v16) | ALL 15 slices merged 2026-09-06 after per-diff review; every slice executed by a bounded subagent in an isolated worktree with plan-scoped file ownership, reviewed diff-by-diff by the coordinator, rebased and fast-forward merged by the single migrations owner. Merged-main gates green after each batch; 012/013/007/008/014/016/020 passed full root `pnpm verify` in worktrees before merge (014 also `borealis-desktop verify`). Prerequisite gate CLOSED 2026-09-06; Phase B allocates v17+ in actual integration order. Phase B v17+ pre-allocations will be recorded here at merge time (plan: v17 connections/MCP infra, v18 M12 — actual integration order rules). Protocol: one subagent per plan in `../north-clone-wt/<plan>`, plan-scoped ownership; coordinator reviews diffs, rebases in-worktree + ff-merges, runs integrated gates. Load flake: re-run 5 s-budget subprocess tests before treating as failure. |
 | Connected agents: MCP, OAuth, job setup | TODO | — | — |
 | M12 saved analyses | TODO | — | — |
 | M13 report/document workbench | TODO | — | — |
@@ -31,8 +31,8 @@ required contract must still be satisfied.
 | v1–v13 | Existing applied history, including rich agent editor | Implemented baseline; upgrade tests required |
 | v14 | Advisor 006 provider-bound consent | Implemented `418f7a9` 2026-09-06 (`users.remote_egress_ack_origin`, fixture v014, upgrade tests green) |
 | v15 | Advisor 012 automation ownership | Implemented `642032d` 2026-09-06 (owned `connector_id`/`chat_id` + generated `target_id`, FK cascades, partial unique schedule, fixture v015) |
-| v16 | Advisor 020 typed connector repair | Reserved; implemented when plan 020 lands |
-| v17+ | Allocate in actual serialized integration order | Unallocated; no placeholders or jumps |
+| v16 | Advisor 020 typed connector repair | Implemented 2026-09-06 (`connector_refresh_states` phase CAS + legacy-meta transactional backfill with rollback-on-malformed + plan-016 index handoff; fixture v016) |
+| v17+ | Allocate in actual serialized integration order | Planned working allocation: v17 = connected agents (MCP connections/secrets), v18 = M12 saved analyses; re-checked against actual merge order — no placeholders or jumps |
 
 ## Integrated acceptance
 
