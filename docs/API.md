@@ -1994,6 +1994,8 @@ limits are:
 | Saved-analysis query-capture promotion                                                |     38,128 bytes |
 | Saved-analysis run acceptance (20 typed values plus the operation UUID)               |    484,864 bytes |
 | Saved-analysis definition create/edit                                                 |  1,344,256 bytes |
+| Research definition create/edit (question, ≤100 source ids, 20 columns, bounded plan) |  1,057,504 bytes |
+| Research review batch (≤100 bounded operations)                                       |  3,148,096 bytes |
 | Settings patch/test and model-qualification draft                                     |  157,696 bytes |
 | Contained-engine configuration                                                        |        256 KiB |
 | Document draft/revision save tree                                                     |    2,531,072 bytes |
