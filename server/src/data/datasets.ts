@@ -472,18 +472,47 @@ export function __configureDatasetWorkerForTests(input: {
   return rpc("configureForTests", input);
 }
 
-/** Close all DuckDB catalogs and terminate the lazy worker. */
+/**
+ * Bounded grace before escalating to `worker.terminate()`. Every in-flight
+ * worker RPC is interruptible (query deadlines, ingestion cancels), so a
+ * thread still alive past this window is wedged; normal drains finish in
+ * well under a second. Kept below Electron main's 8s backend kill so the
+ * orderly path remains the only path the platform relies on.
+ */
+const DATASET_WORKER_EXIT_GRACE_MS = 6_000;
+
+/**
+ * Close all DuckDB catalogs and terminate the lazy worker.
+ *
+ * This is a drain, not a kill. The worker closes its own port only after
+ * every in-flight dispatch settled; if we returned on the response alone,
+ * Node could enter environment teardown while a duckdb.node
+ * `AsyncWorker::OnWorkComplete` item is still queued, which aborts the whole
+ * process with an uncaught `Napi::Error` — skipping the shutdown ack and
+ * leaking the workspace lock. So the worker handle stays ref'd (the process
+ * refuses to exit while the thread lives) and the thread's `exit` event is
+ * awaited as the proof that native teardown settled. `terminate()` survives
+ * only as the bounded last resort for a wedged thread.
+ */
 export async function shutdownDatasetWorker(): Promise<void> {
   const target = worker;
   if (!target) return;
   shuttingDown = true;
+  target.ref();
+  const exited = new Promise<void>((resolve) => {
+    target.once("exit", () => resolve());
+  });
   try {
     await rpc("shutdown", {});
   } catch {
-    // The process is terminated below even if graceful close failed.
+    // The thread's exit is still awaited below even if graceful close failed.
   }
   if (worker === target) worker = undefined;
-  await target.terminate();
+  const escalation = setTimeout(() => {
+    void target.terminate().catch(() => undefined);
+  }, DATASET_WORKER_EXIT_GRACE_MS);
+  await exited;
+  clearTimeout(escalation);
   rejectAllPending(503);
 }
 

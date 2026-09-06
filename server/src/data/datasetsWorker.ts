@@ -2125,7 +2125,36 @@ async function health(context: RequestContext): Promise<boolean> {
   }
 }
 
-async function shutdown(): Promise<void> {
+/**
+ * Number of dispatches still running, excluding one request id (the shutdown
+ * request itself). A context is removed only after its response was posted,
+ * i.e. after every awaited DuckDB operation of that dispatch settled.
+ */
+function countActiveRequests(exceptId?: number): number {
+  let count = 0;
+  for (const id of requestContexts.keys()) if (id !== exceptId) count += 1;
+  return count;
+}
+
+async function shutdown(context: RequestContext): Promise<void> {
+  // Teardown must never start while another dispatch is in flight. Closing
+  // the parent port while a duckdb.node `AsyncWorker` item still executes or
+  // has its completion queued makes Node run `OnWorkComplete` during
+  // environment cleanup, which throws an uncaught `Napi::Error` and aborts
+  // the whole process (SIGABRT) — skipping the server's shutdown ack and
+  // leaking the workspace lock. Cancel/abort paths already interrupt the
+  // in-flight work; here the worker waits for it to settle. The interval is
+  // deliberately ref'd: this thread must stay alive while it drains.
+  if (countActiveRequests(context.id) > 0) {
+    await new Promise<void>((resolve) => {
+      const timer = setInterval(() => {
+        if (countActiveRequests(context.id) === 0) {
+          clearInterval(timer);
+          resolve();
+        }
+      }, 2);
+    });
+  }
   for (const scope of scopes.values()) closeCatalog(scope);
   scopes.clear();
   registry.clear();
@@ -2133,6 +2162,16 @@ async function shutdown(): Promise<void> {
   pendingActivations.clear();
   cleanupReservations.clear();
   analysisPins.clear();
+  // A fully settled dispatch can still leave queued native completion
+  // callbacks behind (observed with the @duckdb/node-api 1.5.5-r.4 bindings:
+  // the abort reproduced even after every awaited RPC had resolved). Yield
+  // macrotask turns so any queued `OnWorkComplete` runs while this
+  // environment is still alive; only then does the caller close the port and
+  // thread teardown have nothing pending.
+  for (let turn = 0; turn < 32; turn += 1) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  }
 }
 
 function objectPayload(payload: unknown): Record<string, unknown> {
@@ -2236,7 +2275,7 @@ async function dispatch(operation: string, rawPayload: unknown, context: Request
       return undefined;
     }
     case "shutdown":
-      return shutdown();
+      return shutdown(context);
     default:
       throw operationError(400, "unknown dataset operation");
   }
@@ -2244,6 +2283,9 @@ async function dispatch(operation: string, rawPayload: unknown, context: Request
 
 if (!parentPort) throw new Error("datasetsWorker must run in a worker thread");
 const workerPort = parentPort;
+// False from the moment the shutdown request is received: later requests are
+// refused with 503 so nothing new can enter DuckDB while the drain runs.
+let acceptingRequests = true;
 
 workerPort.on("message", (message: RequestMessage | CancelMessage) => {
   if (!message || !Number.isSafeInteger(message.id)) return;
@@ -2259,15 +2301,34 @@ workerPort.on("message", (message: RequestMessage | CancelMessage) => {
     return;
   }
   if (message.type !== "request") return;
+  if (message.operation === "shutdown") {
+    acceptingRequests = false;
+  } else if (!acceptingRequests) {
+    // The worker is draining for shutdown; a request that arrives after the
+    // shutdown message must be refused rather than dispatched, or its DuckDB
+    // work would still be pending when this thread's environment ends.
+    workerPort.postMessage({
+      type: "response",
+      id: message.id,
+      error: serializeDatasetError(operationError(503, "dataset worker is shutting down")),
+    });
+    return;
+  }
   const context: RequestContext = { id: message.id, cancelled: false };
   requestContexts.set(message.id, context);
   void dispatch(message.operation, message.payload, context)
     .then((result) => {
       workerPort.postMessage({ type: "response", id: message.id, result });
-      if (message.operation === "shutdown") workerPort.close();
     })
     .catch((error: unknown) => {
       workerPort.postMessage({ type: "response", id: message.id, error: serializeDatasetError(error) });
     })
-    .finally(() => requestContexts.delete(message.id));
+    .finally(() => {
+      requestContexts.delete(message.id);
+      // After the shutdown dispatch settles — in-flight work drained, every
+      // catalog closed, and queued native completions pumped — close the
+      // port so the thread's environment ends with nothing pending. The
+      // response above is already queued for delivery before the close.
+      if (message.operation === "shutdown") workerPort.close();
+    });
 });

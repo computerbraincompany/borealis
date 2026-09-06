@@ -240,8 +240,10 @@ interface ExternalDrainContext {
  * 2. Attempt every independent external storage drain with all-settled
  *    semantics and record each positive result: HTTP plus active chat runs,
  *    ingestion workers (whose owned abort path reaps local OCR helper
- *    children), startup dataset reconciliation, and the DuckDB dataset
- *    worker.
+ *    children), and startup dataset reconciliation. The DuckDB dataset
+ *    worker then drains last, once those consumers are observed settled, so
+ *    its shutdown drain faces only already-cancelled or bounded in-flight
+ *    native work.
  * 3. Always hand the owned runtime the exact external-consumer proof. The
  *    runtime joins the scheduler/download drains started here, stops the
  *    contained engine, drains the migration coordinator, and closes storage
@@ -269,12 +271,22 @@ async function drainExternalAndClose(context: ExternalDrainContext): Promise<voi
   void analysisDrain.catch(() => undefined);
 
   // Step 2: attempt-all independent external drains with positive records.
-  const [ingress, workers, reconciliation, datasetWorker] = await Promise.allSettled([
+  const [ingress, workers, reconciliation] = await Promise.allSettled([
     drainIngressAndCancelRuns(app, schedulerDrain),
     context.workersStarted ? stopIngestionWorkers() : Promise.resolve(),
     context.startupReconciliation ?? Promise.resolve(),
-    shutdownDatasetWorker(),
   ]);
+  // The DuckDB dataset worker drains last among the external consumers, not
+  // concurrently with them: HTTP and ingestion must be observed settled (with
+  // their request cancellations already delivered to the worker) before the
+  // worker begins draining its own in-flight native work. Tearing the worker
+  // down over still-live consumers lets a late health/query RPC be overtaken
+  // by the thread's environment cleanup, which aborts the process inside
+  // duckdb.node instead of letting close() finish.
+  const datasetWorker = await shutdownDatasetWorker().then(
+    () => ({ status: "fulfilled" as const, value: undefined }),
+    () => ({ status: "rejected" as const, reason: undefined })
+  );
   const externalDrained =
     ingress.status === "fulfilled" &&
     workers.status === "fulfilled" &&
