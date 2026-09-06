@@ -3,6 +3,13 @@ import {
   type AutomationRunner,
   type AutomationRunnerDependencies,
 } from "./automationRunner.js";
+import {
+  bindDefaultAnalysisRunner,
+  createAnalysisRunner,
+  defaultAnalysisRunner,
+  type AnalysisRunner,
+  type AnalysisRunnerDependencies,
+} from "./analysisRunner.js";
 import { config } from "./config.js";
 import { syncConnector as syncConnectorRoute } from "./routes/connectors.js";
 import {
@@ -61,9 +68,19 @@ export interface ApplicationRuntime {
   readonly storage: StorageRuntime;
   /** The single automation runner over `storage.automations`. */
   readonly runner: AutomationRunner;
+  /** The single saved-analysis executor over `storage.analyses`. */
+  readonly analysisRunner: AnalysisRunner;
   startAutomationScheduler(): void;
   /** Synchronously quiesces the scheduler; the promise drains in-flight claims. */
   stopAutomationScheduler(): Promise<void>;
+  /**
+   * Startup resume for saved analyses: interrupted dispatched runs become
+   * durable terminal records (never republished/rerun), then undispatched
+   * queued runs are claimed, and the service surface becomes available.
+   */
+  startAnalysisRunner(): void;
+  /** Synchronous quiescence plus statement interrupt; the promise drains every run row. */
+  stopAnalysisRunner(): Promise<void>;
   /** Synchronously closes contained-download admission; the promise drains it. */
   quiesceDownloads(): Promise<void>;
   /** Idempotent, proof-bearing close. The same promise is returned on repeat. */
@@ -101,6 +118,7 @@ export interface ApplicationRuntimeLifecycle {
   closeStorage(): Promise<void>;
   stopEngine(): Promise<unknown>;
   createRunner(dependencies: AutomationRunnerDependencies): AutomationRunner;
+  createAnalysisRunner(dependencies: AnalysisRunnerDependencies): AnalysisRunner;
 }
 
 export interface ApplicationRuntimeOptions {
@@ -155,6 +173,8 @@ interface OwnedResources {
   storageReleased: boolean;
   runner: AutomationRunner | undefined;
   runnerReleased: boolean;
+  analysisRunner: AnalysisRunner | undefined;
+  analysisRunnerReleased: boolean;
   engineReleased: boolean;
 }
 
@@ -171,6 +191,8 @@ function newOwned(): OwnedResources {
     storageReleased: false,
     runner: undefined,
     runnerReleased: false,
+    analysisRunner: undefined,
+    analysisRunnerReleased: false,
     engineReleased: false,
   };
 }
@@ -212,6 +234,7 @@ function resolveLifecycle(options: ApplicationRuntimeOptions): ResolvedLifecycle
         await engineManager.stop();
       }),
     createRunner: lifecycle.createRunner ?? ((deps) => createAutomationRunner(deps)),
+    createAnalysisRunner: lifecycle.createAnalysisRunner ?? ((deps) => createAnalysisRunner(deps)),
     syncConnector:
       options.syncConnector ?? ((accountId, connectorId) => syncConnectorRoute(accountId, undefined, connectorId)),
     sqlitePath: options.sqlitePath ?? config.sqlitePath,
@@ -383,6 +406,10 @@ export async function createApplicationRuntime(options: ApplicationRuntimeOption
       store: owned.storage.automations,
       syncConnector: (accountId, connectorId) => lifecycle.syncConnector(accountId, connectorId),
     });
+    owned.analysisRunner = lifecycle.createAnalysisRunner({
+      store: owned.storage.analyses,
+      sources: owned.storage.sources,
+    });
   } catch (error) {
     const cleanUnwind = await unwindConstruction(lifecycle, owned, uncertainAcquisition);
     if (cleanUnwind) {
@@ -406,11 +433,13 @@ export async function createApplicationRuntime(options: ApplicationRuntimeOption
   current.phase = "active";
   const storage = owned.storage as StorageRuntime;
   const runner = owned.runner as AutomationRunner;
+  const analysisRunner = owned.analysisRunner as AnalysisRunner;
 
   let closePromise: Promise<void> | undefined;
   const runtime: ApplicationRuntime = Object.freeze({
     storage,
     runner,
+    analysisRunner,
     startAutomationScheduler(): void {
       if (current.phase !== "active") {
         throw new ApplicationRuntimeLifecycleError("application runtime is not active", true, ["phase"]);
@@ -421,6 +450,18 @@ export async function createApplicationRuntime(options: ApplicationRuntimeOption
       // Plan 013 contract: synchronous quiescence; the promise settles only
       // after the active tick settles.
       return runner.stop();
+    },
+    startAnalysisRunner(): void {
+      if (current.phase !== "active") {
+        throw new ApplicationRuntimeLifecycleError("application runtime is not active", true, ["phase"]);
+      }
+      bindDefaultAnalysisRunner(analysisRunner);
+      analysisRunner.start();
+    },
+    stopAnalysisRunner(): Promise<void> {
+      // Synchronous quiescence plus statement interrupt; the promise settles
+      // only after every execution has finalized its durable run row.
+      return analysisRunner.stop();
     },
     quiesceDownloads(): Promise<void> {
       // Plan 008 contract: synchronous admission closure; the promise joins
@@ -449,22 +490,28 @@ export async function createApplicationRuntime(options: ApplicationRuntimeOption
     current.phase = "closing";
 
     return (async () => {
-      // Owned cleanup dependency graph: scheduler, download, migration,
-      // connections, and engine are independent phases with attempt-all/
-      // all-settled semantics. Calling the already-started scheduler/download
-      // drains again simply joins their retained promises.
-      const [runnerResult, downloadResult, migrationResult, engineResult, connectionsResult] = await Promise.allSettled(
-        [
+      // Owned cleanup dependency graph: scheduler, analysis runner, download,
+      // migration, engine, and MCP connections are independent phases with
+      // attempt-all/all-settled semantics. Calling the already-started
+      // scheduler/download/connections drains again simply joins their
+      // retained promises.
+      const [runnerResult, analysisRunnerResult, downloadResult, migrationResult, engineResult, connectionsResult] =
+        await Promise.allSettled([
           runner.stop(),
+          analysisRunner.stop(),
           lifecycle.quiesceAndDrainDownloads(),
           owned.migration?.close() ?? Promise.resolve(),
           lifecycle.stopEngine(),
           lifecycle.quiesceAndDrainConnections(),
-        ]
-      );
-      const failed: string[] = [];
+        ]);      const failed: string[] = [];
       if (runnerResult.status === "fulfilled") owned.runnerReleased = true;
       else failed.push("scheduler");
+      if (analysisRunnerResult.status === "fulfilled") {
+        owned.analysisRunnerReleased = true;
+        // The executor drained its final durable rows; the service surface is
+        // unavailable again and any queued run survives for the next resume.
+        if (defaultAnalysisRunner() === analysisRunner) bindDefaultAnalysisRunner(undefined);
+      } else failed.push("analysis-runner");
       if (downloadResult.status === "fulfilled") owned.downloadReleased = true;
       else failed.push("download");
       if (migrationResult.status === "fulfilled") owned.migrationReleased = true;

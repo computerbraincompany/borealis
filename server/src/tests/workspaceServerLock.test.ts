@@ -48,6 +48,8 @@ function mockRuntime() {
     },
     startAutomationScheduler: vi.fn(),
     stopAutomationScheduler: vi.fn(() => Promise.resolve()),
+    startAnalysisRunner: vi.fn(),
+    stopAnalysisRunner: vi.fn(() => Promise.resolve()),
     quiesceDownloads: vi.fn(() => Promise.resolve()),
     close: vi.fn(async () => undefined),
   };

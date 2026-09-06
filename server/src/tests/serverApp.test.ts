@@ -75,6 +75,8 @@ interface MockRuntime {
     };
     startAutomationScheduler: ReturnType<typeof vi.fn>;
     stopAutomationScheduler: ReturnType<typeof vi.fn>;
+    startAnalysisRunner: ReturnType<typeof vi.fn>;
+    stopAnalysisRunner: ReturnType<typeof vi.fn>;
     quiesceDownloads: ReturnType<typeof vi.fn>;
     close: ReturnType<typeof vi.fn>;
   };
@@ -106,6 +108,13 @@ function newMockRuntime(spec: MockRuntimeSpec): MockRuntime {
       stopAutomationScheduler: vi.fn(() => {
         events.push(`${label}:scheduler-stop`);
         return spec.stopDrain ? spec.stopDrain() : Promise.resolve();
+      }),
+      startAnalysisRunner: vi.fn(() => {
+        events.push(`${label}:analysis-start`);
+      }),
+      stopAnalysisRunner: vi.fn(() => {
+        events.push(`${label}:analysis-stop`);
+        return Promise.resolve();
       }),
       quiesceDownloads: vi.fn(() => {
         events.push(`${label}:download-quiesce`);
@@ -693,14 +702,18 @@ describe("owned application runtime orchestration", () => {
       expect(events).toEqual([
         "A:factory",
         "A:scheduler-start",
+        "A:analysis-start",
         "A:scheduler-stop",
         "A:download-quiesce",
+        "A:analysis-stop",
         "A:runtime-close:proved",
         "A:storage-closed",
         "B:factory",
         "B:scheduler-start",
+        "B:analysis-start",
         "B:scheduler-stop",
         "B:download-quiesce",
+        "B:analysis-stop",
         "B:runtime-close:proved",
         "B:storage-closed",
       ]);
@@ -711,6 +724,8 @@ describe("owned application runtime orchestration", () => {
 
       // B's lifecycle never invoked methods on A.
       expect(runtimes[0]!.object.stopAutomationScheduler).toHaveBeenCalledOnce();
+      expect(runtimes[0]!.object.startAnalysisRunner).toHaveBeenCalledOnce();
+      expect(runtimes[0]!.object.stopAnalysisRunner).toHaveBeenCalledOnce();
       expect(runtimes[0]!.object.quiesceDownloads).toHaveBeenCalledOnce();
       expect(runtimes[0]!.object.close).toHaveBeenCalledOnce();
       expect(runtimes[1]!.object.stopAutomationScheduler).toHaveBeenCalledOnce();

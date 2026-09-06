@@ -261,6 +261,12 @@ async function drainExternalAndClose(context: ExternalDrainContext): Promise<voi
   // to this call so an early rejection can never surface as an unhandled
   // rejection while external consumers drain.
   void downloadDrain.catch(() => undefined);
+  // Analysis statements are interrupted synchronously while the dataset
+  // worker is still alive; the owned runtime close below joins the same
+  // drain, and every interrupted run finalizes its durable row (failed, or
+  // cancelled when a cancellation was requested) before storage closure.
+  const analysisDrain = runtime ? runtime.stopAnalysisRunner() : Promise.resolve();
+  void analysisDrain.catch(() => undefined);
 
   // Step 2: attempt-all independent external drains with positive records.
   const [ingress, workers, reconciliation, datasetWorker] = await Promise.allSettled([
@@ -332,6 +338,9 @@ export async function startBorealisServer(options: StartBorealisServerOptions = 
     await startIngestionWorkers();
     workersStarted = true;
     runtime.startAutomationScheduler();
+    // M12 stage 2: recover interrupted analysis runs, then resume undispatched
+    // queued runs through the owned durable executor.
+    runtime.startAnalysisRunner();
     const bootstrap = desktop ? await createDesktopBootstrapSession() : undefined;
     await app.listen({ port, host });
     const actualPort = listeningPort(app);

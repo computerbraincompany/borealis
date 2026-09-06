@@ -116,6 +116,7 @@ interface SeamOptions {
   readonly closeSettings?: () => void;
   readonly openStorage?: (options: StorageRuntimeOptions) => Promise<StorageRuntime>;
   readonly createRunner?: ApplicationRuntimeLifecycle["createRunner"];
+  readonly createAnalysisRunner?: ApplicationRuntimeLifecycle["createAnalysisRunner"];
   readonly migrationOverrides?: Partial<Record<"recover" | "finalize" | "rollback" | "close", () => Promise<unknown>>>;
 }
 
@@ -129,6 +130,7 @@ interface Harness {
   readonly storage: typeof import("../storageRuntime.js");
   readonly settings: typeof import("../runtimeSettings.js");
   readonly runnerMod: typeof import("../automationRunner.js");
+  readonly analysisRunnerMod: typeof import("../analysisRunner.js");
   readonly workspace: string;
   readonly events: string[];
   readonly openCalls: StorageRuntimeOptions[];
@@ -140,11 +142,12 @@ const harnesses: Harness[] = [];
 
 async function newHarness(): Promise<Harness> {
   vi.resetModules();
-  const [mod, storage, settings, runnerMod] = await Promise.all([
+  const [mod, storage, settings, runnerMod, analysisRunnerMod] = await Promise.all([
     import("../applicationRuntime.js"),
     import("../storageRuntime.js"),
     import("../runtimeSettings.js"),
     import("../automationRunner.js"),
+    import("../analysisRunner.js"),
   ]);
   const workspace = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "borealis-app-runtime-")));
   const harness: Harness = {
@@ -152,6 +155,7 @@ async function newHarness(): Promise<Harness> {
     storage,
     settings,
     runnerMod,
+    analysisRunnerMod,
     workspace,
     events: [],
     openCalls: [],
@@ -221,6 +225,8 @@ async function newHarness(): Promise<Harness> {
             events.push(`${tag}:runner-created`);
             return harness.runnerMod.createAutomationRunner(deps);
           }),
+        createAnalysisRunner:
+          options.createAnalysisRunner ?? ((deps) => harness.analysisRunnerMod.createAnalysisRunner(deps)),
       };
     },
   };
