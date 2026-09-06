@@ -9,8 +9,9 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { signToken } from "../auth.js";
 import { config } from "../config.js";
 import { encodeJson } from "../db/codecs.js";
-import { hasZipMagic, isOoxmlDocument } from "../data/documents.js";
+import { hasZipMagic, isOoxmlDocument, type DocumentRenderers } from "../data/documents.js";
 import { REPORT_CSP } from "../data/reports.js";
+import { setDocumentRenderersForTests } from "../documentService.js";
 import { documentRoutes } from "../routes/documents.js";
 import { installHttpBoundary } from "../httpErrors.js";
 import { closeStorageRuntime, initializeStorageRuntime, storageRuntime } from "../storageRuntime.js";
@@ -25,7 +26,21 @@ const foreignAuth = { authorization: `Bearer ${signToken({ userId: FOREIGN, emai
 const apps: FastifyInstance[] = [];
 let runtimeDirectory = "";
 
+// Deterministic renderers so route-level publication tests never launch a
+// real browser; the shipped Playwright/Electron pipeline is proven end-to-end
+// in the serialized integration suite (`documents.test.ts`).
+const FAKE_PNG = Buffer.concat([
+  Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+  Buffer.from("route-test-payload"),
+]);
+const FAKE_PDF = Buffer.from("%PDF-1.4\nroute-test\n%%EOF\n");
+const ROUTE_RENDERERS: DocumentRenderers = {
+  renderChartPng: async () => FAKE_PNG,
+  renderReportPdf: async () => FAKE_PDF,
+};
+
 beforeEach(async () => {
+  setDocumentRenderersForTests(ROUTE_RENDERERS);
   // Publication artifacts must stay inside the temp runtime: canonicalize so
   // the storage ownership proofs compare lexical against canonical paths.
   runtimeDirectory = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "borealis-document-routes-")));
@@ -44,6 +59,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  setDocumentRenderersForTests(null);
   await Promise.all(apps.splice(0).map((app) => app.close()));
   await closeStorageRuntime();
   if (runtimeDirectory) await fs.rm(runtimeDirectory, { recursive: true, force: true });

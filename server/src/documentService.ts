@@ -175,6 +175,20 @@ export async function getLatestDocumentPublicationIntent(
  */
 const activeRenderings = new Set<string>();
 
+/**
+ * Test-only renderer override (mirrors the `__renderIsolatedHtmlPdfForTests`
+ * seam): lets route-level tests exercise the full publication protocol
+ * deterministically without launching a real browser. The shipped default
+ * remains the Playwright/Electron dispatch in `data/documents.ts`, which the
+ * serialized integration suite proves end-to-end.
+ */
+let testRenderers: DocumentRenderers | null = null;
+
+export function setDocumentRenderersForTests(renderers: DocumentRenderers | null): void {
+  if (process.env.NODE_ENV !== "test") throw new Error("test-only renderer seam");
+  testRenderers = renderers;
+}
+
 export interface PublishDocumentRevisionInput {
   readonly accountId: string;
   readonly documentId: string;
@@ -258,7 +272,7 @@ export async function publishDocumentRevision(input: PublishDocumentRevisionInpu
         tree: revision.payload,
         meta: { documentId, revisionId: intent.revisionId, revision: intent.revision, version: nextVersion },
         generatedAt: publicationTimestamp(),
-        ...(input.renderers ? { renderers: input.renderers } : {}),
+        ...(input.renderers ? { renderers: input.renderers } : testRenderers ? { renderers: testRenderers } : {}),
       });
     } catch (error) {
       throw error instanceof DocumentFormatError
