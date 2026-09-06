@@ -1,4 +1,5 @@
-import { chmod, mkdir, stat } from "node:fs/promises";
+import { randomBytes } from "node:crypto";
+import { chmod, mkdir, opendir, realpath, stat } from "node:fs/promises";
 import { url as inspectorUrl } from "node:inspector";
 import path from "node:path";
 
@@ -16,10 +17,15 @@ import {
 
 import {
   asTransferableBytes,
+  buildFolderGrantMessage,
+  FOLDER_PICKER_CANCELLED,
+  MAX_FOLDER_PREVIEW_ENTRIES,
+  narrowFolderPickerResult,
   parseBackendMessage,
   rejectedRenderRequestId,
   type BackendRenderRequest,
   type BootstrapSession,
+  type FolderPickerResult,
   type MainMessage,
 } from "./contracts.js";
 import { ElectronRenderService } from "./electronRenderer.js";
@@ -156,6 +162,7 @@ class DesktopApplication {
   async start(): Promise<void> {
     await this.#assertRuntime();
     this.#installBootstrapHandler();
+    this.#installFolderChooserHandler();
     const ready = await this.#startBackend();
     this.#origin = appOrigin(ready.port);
     this.#vault.store(ready.bootstrap);
@@ -184,6 +191,7 @@ class DesktopApplication {
   async #performShutdown(): Promise<void> {
     this.#vault.clear();
     ipcMain.removeHandler("borealis:consume-bootstrap");
+    ipcMain.removeHandler("borealis:choose-folder");
     this.#renderer.close();
     if (this.#window && !this.#window.isDestroyed()) this.#window.destroy();
 
@@ -223,6 +231,100 @@ class DesktopApplication {
         return this.#vault.consume();
       },
     );
+  }
+
+  /**
+   * Native folder chooser (M14 narrow preload addition). The same trust
+   * boundary as bootstrap applies — application window only, exact trusted
+   * origin, and the window's main frame (never a subframe). On a real
+   * selection, main resolves the canonical directory, mints a one-time
+   * opaque grant, and forwards `{grant_id, root_path, label}` only to the
+   * backend over the private utility-process channel; the renderer receives
+   * only the opaque grant id, label, and bounded preview metadata.
+   * Cancellation creates no grant and no message.
+   */
+  #installFolderChooserHandler(): void {
+    ipcMain.handle(
+      "borealis:choose-folder",
+      async (event: IpcMainInvokeEvent): Promise<FolderPickerResult> => {
+        const window = this.#window;
+        if (!this.#origin || !window || window.isDestroyed())
+          return FOLDER_PICKER_CANCELLED;
+        if (event.sender !== window.webContents) return FOLDER_PICKER_CANCELLED;
+        const frame = event.senderFrame;
+        if (!frame || frame !== window.webContents.mainFrame)
+          return FOLDER_PICKER_CANCELLED;
+        if (!isTrustedAppUrl(frame.url, this.#origin))
+          return FOLDER_PICKER_CANCELLED;
+        if (this.#backendStopped || !this.#backend?.pid)
+          return FOLDER_PICKER_CANCELLED;
+        const choice = await dialog.showOpenDialog(window, {
+          title: "Choose a folder for Borealis",
+          buttonLabel: "Choose folder",
+          properties: ["openDirectory"],
+        });
+        const selected = choice.canceled ? undefined : choice.filePaths[0];
+        if (typeof selected !== "string" || selected.length < 1)
+          return FOLDER_PICKER_CANCELLED;
+        let canonical: string;
+        try {
+          canonical = await realpath(selected);
+          const info = await stat(canonical);
+          if (!info.isDirectory()) return FOLDER_PICKER_CANCELLED;
+        } catch {
+          return FOLDER_PICKER_CANCELLED;
+        }
+        const label =
+          Array.from(path.basename(canonical)).slice(0, 120).join("") ||
+          "Selected folder";
+        const grantId = randomBytes(32).toString("hex");
+        let handoff: MainMessage;
+        try {
+          handoff = buildFolderGrantMessage({
+            grantId,
+            rootPath: canonical,
+            label,
+          });
+        } catch {
+          return FOLDER_PICKER_CANCELLED;
+        }
+        this.#postToBackend(handoff);
+        const preview = await this.#previewFolder(canonical);
+        return narrowFolderPickerResult({
+          grantId,
+          label,
+          entries: preview.count,
+          truncated: preview.truncated,
+        });
+      },
+    );
+  }
+
+  /** Bounded top-level entry count for the picker preview (never content). */
+  async #previewFolder(
+    directory: string,
+  ): Promise<{ count: number; truncated: boolean }> {
+    let handle: Awaited<ReturnType<typeof opendir>> | undefined;
+    try {
+      handle = await opendir(directory);
+      let count = 0;
+      let truncated = false;
+      for await (const _entry of handle) {
+        count += 1;
+        if (count > MAX_FOLDER_PREVIEW_ENTRIES) {
+          truncated = true;
+          break;
+        }
+      }
+      return {
+        count: Math.min(count, MAX_FOLDER_PREVIEW_ENTRIES),
+        truncated,
+      };
+    } catch {
+      return { count: 0, truncated: false };
+    } finally {
+      await handle?.close().catch(() => {});
+    }
   }
 
   #startBackend(): Promise<
