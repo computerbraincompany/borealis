@@ -1468,10 +1468,10 @@ zero-row result is a success, and an exact row count is claimed only when the
 worker established the total.
 
 
-### Documents and document templates (M13 stage 2)
+### Documents, rewrites, and document templates (M13 stages 2–3)
 
 Owner-scoped editable documents with immutable, append-only revisions
-(schema v20/v21). All routes require authentication; every identifier is a
+(schema v20/v21/v23). All routes require authentication; every identifier is a
 UUID and every catalog uses keyset pagination. Responses never include
 filesystem paths.
 
@@ -1485,6 +1485,11 @@ filesystem paths.
 | `POST /api/documents/:id/revisions`                     | Body `{base_revision_id,tree}`. `201` with `{document,revision}`. A stale base answers `409 {"code":"DOCUMENT_REVISION_CONFLICT","current_head":{revision_id,revision,title,author_kind,updated_at}}` and writes nothing; the server never merges. Oversize/invalid trees answer `400` with `DOCUMENT_OVERSIZE`/`DOCUMENT_INVALID` and persist nothing. |
 | `GET /api/documents/:id/revisions/:revisionId`          | `{id,document_id,revision,title,author_kind,base_revision_id,payload,payload_chars,created_at}` — the immutable full snapshot.                                                                                                                |
 | `GET /api/documents/:id/diff?base=…&target=…`           | Deterministic bounded diff of two revisions of the same document (structure by stable section UUID: added/removed/moved/modified; line-level unified text diff per modified section; chart/table/evidence summaries). Bounds surface through `truncated` flags. Identical revisions produce empty diffs; the same pair always yields byte-identical output. |
+| `POST /api/documents/:id/rewrites` | Body `{base_revision_id, section_id, range_start?, range_end?, selection_sha256, instruction}` — `instruction` ≤2,000 characters, `selection_sha256` the lowercase hex SHA-256 of the selected text in the exact base revision (whole section when the range is omitted; `range_start`/`range_end` are UTF-16 half-open bounds). The remote-egress consent gate answers `403 REMOTE_EGRESS_CONSENT_REQUIRED` before any persistence. `202` with the queued operation. Server-side verification rejects a hash mismatch `409 DOCUMENT_REWRITE_SELECTION_MISMATCH`, an invalid or surrogate-split range `400 DOCUMENT_REWRITE_SELECTION_INVALID`, and a selection over 8,000 characters `400 DOCUMENT_REWRITE_SELECTION_OVERSIZE` (a whole section over the bound requires a smaller selection), persisting nothing. One active rewrite per document: `409 DOCUMENT_REWRITE_ACTIVE`. 100 retained proposals per document: `409 DOCUMENT_REWRITE_QUOTA_REACHED` until one is explicitly deleted. |
+| `GET /api/documents/:id/rewrites` | Paginated operations `{id,document_id,base_revision_id,section_id,range_start,range_end,selection_sha256,selection_chars,instruction,status,replacement,evidence_refs,model,error_code,error_reason,cancel_requested,applied_revision_id,created_at,started_at,finished_at,updated_at}`, newest first. `status` is `queued\|running\|completed\|failed\|cancelled\|stale`. |
+| `GET /api/documents/:id/rewrites/:rewriteId` | One operation as above. Stale and failed rows stay inspectable forever. |
+| `DELETE /api/documents/:id/rewrites/:rewriteId` | Active operations cancel durably: `{"ok":true,"action":"cancelled"\|"cancelling","rewrite":{…}}` (`cancelling` finalizes `cancelled` when the running model call observes the flag). Terminal proposals are explicitly deleted: `{"ok":true,"action":"deleted"}`; deletion is what frees a quota slot. |
+| `POST /api/documents/:id/rewrites/:rewriteId/accept` | Revision-CAS acceptance. `201` with `{document,revision,rewrite}` — one new draft revision (`author_kind:"model"`) created only while the proposal's base revision is still the head and the stored selection still matches byte-for-byte. A changed head/selection marks the proposal durably `stale` and answers `409 {"code":"DOCUMENT_REWRITE_STALE","current_head":{…}}`; a `stale` proposal can never be applied. Re-acceptance answers `409 DOCUMENT_REWRITE_ALREADY_APPLIED` (application is one-shot). Non-completed rows answer `409 DOCUMENT_REWRITE_STATE`. |
 | `GET /api/documents/:id/publications`                   | Owner publication history (empty until publication ships). No artifact paths.                                                                                                                                                                 |
 | `POST /api/documents/:id/revisions/:revisionId/publish` | **Reserved — not implemented.** Body `{operation_id,expected_revision_id?}` is validated, then the route answers `501 {"code":"PUBLICATION_NOT_READY"}`. Publication execution arrives with M13 stage 4.                                       |
 
@@ -1501,6 +1506,26 @@ ceiling is 2,531,072 bytes. An oversize tree is rejected with
 `DOCUMENT_OVERSIZE` — unlike optional legacy report payloads, a document
 never silently drops its tree. `author_kind` is server-assigned; HTTP saves
 are always `user`.
+
+A rewrite is one durable model operation with exactly one bounded provider
+call and no tools. Its prompt carries only the selection re-derived from the
+immutable base revision and that revision's copied evidence context (≤24,000
+characters), never the whole workspace; the response is replacement text only,
+bounded at 20,000 characters — empty or over-bound output fails the run with
+the generic `DOCUMENT_REWRITE_OUTPUT_REJECTED`. Execution re-uses the
+account-authorized provider runtime: the exact consent target is re-authorized
+immediately before the single transport, so a remote provider that lost
+acknowledgment records `REMOTE_EGRESS_CONSENT_REQUIRED` without any transport,
+and content sent to a remote provider rides the same content-free `remote_turn`
+egress audit event as chat traffic. Instructions, selections, replacements,
+provider reasoning, and provider exception bodies never reach logs or other
+accounts. Restart or shutdown interrupts an in-flight call and settles the row
+`failed` with `SERVER_RESTARTED`; the provider call is never replayed and a
+fresh request is required. Cancellation is the durable DELETE-side flag
+observed at the transport boundary, and the store's cancellation-wins status
+CAS ensures a cancelled run never stores a proposal. Evidence references
+copied from the base revision ride `evidence_refs` and flow through unchanged
+when the accepted proposal creates its model-authored revision.
 
 Templates come in two kinds. `GET /api/document-templates` lists the three
 built-in structure-only templates as server constants (`Monthly financial
