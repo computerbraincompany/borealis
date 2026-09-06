@@ -55,11 +55,19 @@ import {
   type BriefRunStage,
   type StoredBriefRun,
 } from "./db/stores/briefRunStore.js";
-import { BriefRecipeNotFoundError, type BriefRecipeStore, type BriefRefreshBinding } from "./db/stores/briefRecipeStore.js";
+import {
+  BriefRecipeNotFoundError,
+  type BriefRecipeStore,
+  type BriefRefreshBinding,
+} from "./db/stores/briefRecipeStore.js";
 import type { SourceStore } from "./db/stores/sourceStore.js";
 import { SourceStoreError } from "./db/stores/sourceStore.js";
 import { SourceIngestionTransitionError } from "./db/stores/sourceIngestionTransitions.js";
-import { AnalysisStore, AnalysisRevisionConflictError, type ExpectedSourceSnapshotEntry } from "./db/stores/analysisStore.js";
+import {
+  AnalysisStore,
+  AnalysisRevisionConflictError,
+  type ExpectedSourceSnapshotEntry,
+} from "./db/stores/analysisStore.js";
 import type { StoredAnalysisResult, StoredAnalysisRun } from "./analysisTypes.js";
 import { analysisSourceContentIdentity, TERMINAL_ANALYSIS_RUN_STATUSES } from "./analysisTypes.js";
 import { compareAnalysisResults, type AnalysisComparison } from "./analysisCompare.js";
@@ -70,7 +78,11 @@ import {
   type RunAnalysisServiceResult,
 } from "./analysisRunner.js";
 import { EmbeddingMigrationError } from "./embeddingMigration.js";
-import { authorizeRemoteEgressOperation, RemoteEgressConsentRequiredError, type RemoteEgressTarget } from "./egressPolicy.js";
+import {
+  authorizeRemoteEgressOperation,
+  RemoteEgressConsentRequiredError,
+  type RemoteEgressTarget,
+} from "./egressPolicy.js";
 import { auditRemoteEgressTarget } from "./egressAudit.js";
 import { syncConnector as syncConnectorRoute } from "./routes/connectors.js";
 import { knowledgeRefreshService, type RefreshAndWaitReadyResult, type RefreshTarget } from "./knowledgeRefresh.js";
@@ -253,10 +265,7 @@ interface BriefComparisonUnavailable {
 
 type BriefComparisonPayload = BriefComparisonSummary | BriefComparisonUnavailable;
 
-function summarizeComparison(
-  comparison: AnalysisComparison,
-  baselineRunId: string
-): BriefComparisonSummary {
+function summarizeComparison(comparison: AnalysisComparison, baselineRunId: string): BriefComparisonSummary {
   const summary: BriefComparisonSummary = {
     kind: "compared",
     baseline_run_id: baselineRunId,
@@ -332,9 +341,11 @@ export function buildBriefPreviewTable(
   }
   const rowBudget = columns.length > 0 ? Math.floor(cellBudget / columns.length) : 0;
   const rowCap = Math.max(0, Math.min(DOCUMENT_TABLE_ROWS_MAX, rowBudget));
-  let rows = result.rows.slice(0, rowCap);
+  const rows = result.rows.slice(0, rowCap);
   if (result.rows.length > rowCap) {
-    notes.push(`${label}: preview shows first ${rows.length} of ${result.rows.length} stored rows (${columns.length} columns each)`);
+    notes.push(
+      `${label}: preview shows first ${rows.length} of ${result.rows.length} stored rows (${columns.length} columns each)`
+    );
   }
   const clipped = rows.map((row) => row.slice(0, columns.length).map((cell) => clipCell(cell)));
   if (!result.completeness.complete) {
@@ -356,7 +367,9 @@ export function buildBriefPreviewTable(
       ready_generation: source.readyGeneration,
       content_identity: source.contentIdentity,
     })),
-    columns: result.columns.slice(0, DOCUMENT_TABLE_COLUMNS_MAX).map((column) => ({ name: column.name, type: column.type })),
+    columns: result.columns
+      .slice(0, DOCUMENT_TABLE_COLUMNS_MAX)
+      .map((column) => ({ name: column.name, type: column.type })),
     completeness: { complete: result.completeness.complete, reasons: result.completeness.reasons },
     schema_fingerprint: result.schemaFingerprint,
   };
@@ -369,7 +382,10 @@ export function buildBriefPreviewTable(
 
 // Strip citation-style markers: a recipe narrative may never mint citations.
 export function stripBriefCitationMarkers(text: string): string {
-  return text.replace(/\[\d{1,2}\]/g, "").slice(0, BRIEF_NARRATIVE_MAX_CHARS).trim();
+  return text
+    .replace(/\[\d{1,2}\]/g, "")
+    .slice(0, BRIEF_NARRATIVE_MAX_CHARS)
+    .trim();
 }
 
 // ---------------------------------------------------------------------------
@@ -513,7 +529,11 @@ export function createBriefRunner(dependencies: BriefRunnerDependencies) {
   // -- Guarding -----------------------------------------------------------------
 
   /** Re-read the durable row and enforce cancellation/deadline at every boundary. */
-  async function guard(execution: ActiveExecution, run: StoredBriefRun, phase: "refresh" | "total"): Promise<StoredBriefRun> {
+  async function guard(
+    execution: ActiveExecution,
+    run: StoredBriefRun,
+    phase: "refresh" | "total"
+  ): Promise<StoredBriefRun> {
     execution.controller.signal.throwIfAborted();
     const live = await runs.getRun(run.accountId, run.id);
     const nowMs = now().getTime();
@@ -526,7 +546,11 @@ export function createBriefRunner(dependencies: BriefRunnerDependencies) {
       throw abortError();
     }
     if (phase === "refresh" && live.refreshDeadlineAt !== null && Date.parse(live.refreshDeadlineAt) <= nowMs) {
-      throw new BriefTerminalDecision("failed", "BRIEF_REFRESH_TIMEOUT", boundedReason("the input refresh stage exceeded its deadline"));
+      throw new BriefTerminalDecision(
+        "failed",
+        "BRIEF_REFRESH_TIMEOUT",
+        boundedReason("the input refresh stage exceeded its deadline")
+      );
     }
     if (live.stage !== run.stage || live.stageOperationId !== run.stageOperationId) {
       // A newer attempt (or an out-of-process decision) owns the row; this
@@ -632,23 +656,30 @@ export function createBriefRunner(dependencies: BriefRunnerDependencies) {
     }
     if (
       (error instanceof SourceIngestionTransitionError || error instanceof SourceStoreError) &&
-      ["SOURCE_TRANSITION_CONNECTOR_SYNC_ACTIVE", "SOURCE_TRANSITION_SOURCE_IN_USE", "SOURCE_STORE_CONNECTOR_SYNC_ACTIVE", "SOURCE_STORE_SOURCE_IN_USE"].includes(
-        error.code
-      )
+      [
+        "SOURCE_TRANSITION_CONNECTOR_SYNC_ACTIVE",
+        "SOURCE_TRANSITION_SOURCE_IN_USE",
+        "SOURCE_STORE_CONNECTOR_SYNC_ACTIVE",
+        "SOURCE_STORE_SOURCE_IN_USE",
+      ].includes(error.code)
     ) {
       return new BriefTerminalDecision("blocked", "BRIEF_INPUT_BUSY", "a bound input was busy with another operation");
     }
-    return new BriefTerminalDecision("failed", "BRIEF_REFRESH_FAILED", boundedReason("an input refresh could not complete"));
+    return new BriefTerminalDecision(
+      "failed",
+      "BRIEF_REFRESH_FAILED",
+      boundedReason("an input refresh could not complete")
+    );
   }
 
-  async function refreshPhase(execution: ActiveExecution, runValue: StoredBriefRun): Promise<readonly RefreshReceipt[]> {
+  async function refreshPhase(
+    execution: ActiveExecution,
+    runValue: StoredBriefRun
+  ): Promise<readonly RefreshReceipt[]> {
     let run = runValue;
     const snapshot = run.recipeSnapshot;
     const receipts: RefreshReceipt[] = [];
-    const records = await sources.getSourcesByIds(
-      run.accountId,
-      snapshot.source_ids
-    );
+    const records = await sources.getSourcesByIds(run.accountId, snapshot.source_ids);
     const byId = new Map(records.map((record) => [record.id, record]));
     let egressTarget: RemoteEgressTarget | null = null;
 
@@ -683,7 +714,11 @@ export function createBriefRunner(dependencies: BriefRunnerDependencies) {
       }
       const record = byId.get(binding.source_id);
       if (!record || record.connectorId !== binding.connector_id) {
-        throw new BriefTerminalDecision("failed", "BRIEF_INPUT_UNAVAILABLE", boundedReason("a bound connector input is missing"));
+        throw new BriefTerminalDecision(
+          "failed",
+          "BRIEF_INPUT_UNAVAILABLE",
+          boundedReason("a bound connector input is missing")
+        );
       }
       try {
         await syncConnector(run.accountId, binding.connector_id as string);
@@ -692,14 +727,22 @@ export function createBriefRunner(dependencies: BriefRunnerDependencies) {
       }
       const state = await sourceState(run.accountId, binding.source_id);
       if (!state) {
-        throw new BriefTerminalDecision("failed", "BRIEF_INPUT_UNAVAILABLE", boundedReason("a bound connector input vanished during refresh"));
+        throw new BriefTerminalDecision(
+          "failed",
+          "BRIEF_INPUT_UNAVAILABLE",
+          boundedReason("a bound connector input vanished during refresh")
+        );
       }
       if (state.jobStatus === "error") {
         throw new BriefTerminalDecision("failed", "BRIEF_REFRESH_FAILED", boundedReason("an input refresh failed"));
       }
       const intended = state.jobGeneration ?? state.readyGeneration;
       if (intended === null) {
-        throw new BriefTerminalDecision("failed", "BRIEF_REFRESH_FAILED", boundedReason("the refreshed input generation is unknown"));
+        throw new BriefTerminalDecision(
+          "failed",
+          "BRIEF_REFRESH_FAILED",
+          boundedReason("the refreshed input generation is unknown")
+        );
       }
       receipts.push({
         source_id: binding.source_id,
@@ -723,14 +766,22 @@ export function createBriefRunner(dependencies: BriefRunnerDependencies) {
       run = await guard(execution, run, "refresh");
       const connection = await knowledge.getConnection(run.accountId, connectionId);
       if (!connection) {
-        throw new BriefTerminalDecision("failed", "BRIEF_INPUT_UNAVAILABLE", boundedReason("a bound knowledge connection is missing"));
+        throw new BriefTerminalDecision(
+          "failed",
+          "BRIEF_INPUT_UNAVAILABLE",
+          boundedReason("a bound knowledge connection is missing")
+        );
       }
       const items = await listKnowledgeItems(run.accountId, connectionId);
       const managed = items.filter((item) => item.lifecycle !== "removed");
       const targetSources = new Set(bindings.map((binding) => binding.source_id));
       const allow = managed.filter((item) => targetSources.has(item.source_id));
       if (allow.length !== targetSources.size) {
-        throw new BriefTerminalDecision("failed", "BRIEF_INPUT_UNAVAILABLE", boundedReason("a bound managed input is missing from its connection"));
+        throw new BriefTerminalDecision(
+          "failed",
+          "BRIEF_INPUT_UNAVAILABLE",
+          boundedReason("a bound managed input is missing from its connection")
+        );
       }
       let result: RefreshAndWaitReadyResult;
       try {
@@ -777,7 +828,11 @@ export function createBriefRunner(dependencies: BriefRunnerDependencies) {
             label: "verified unchanged",
           });
         } else if (item.outcome === "blocked") {
-          throw new BriefTerminalDecision("blocked", "BRIEF_INPUT_BUSY", boundedReason("a bound knowledge input is in an active run"));
+          throw new BriefTerminalDecision(
+            "blocked",
+            "BRIEF_INPUT_BUSY",
+            boundedReason("a bound knowledge input is in an active run")
+          );
         } else if (item.outcome === "cancelled") {
           throw abortError();
         } else {
@@ -793,7 +848,11 @@ export function createBriefRunner(dependencies: BriefRunnerDependencies) {
     // Receipts must cover every bound source exactly once each.
     const covered = new Set(receipts.map((receipt) => receipt.source_id));
     if (snapshot.source_ids.some((sourceId) => !covered.has(sourceId))) {
-      throw new BriefTerminalDecision("failed", "BRIEF_REFRESH_FAILED", boundedReason("an input produced no refresh receipt"));
+      throw new BriefTerminalDecision(
+        "failed",
+        "BRIEF_REFRESH_FAILED",
+        boundedReason("an input produced no refresh receipt")
+      );
     }
     return receipts;
   }
@@ -810,12 +869,19 @@ export function createBriefRunner(dependencies: BriefRunnerDependencies) {
       if (!page.next) return items;
       after = page.next;
     }
-    throw new BriefTerminalDecision("failed", "BRIEF_REFRESH_FAILED", boundedReason("the managed-item catalog exceeded its budget"));
+    throw new BriefTerminalDecision(
+      "failed",
+      "BRIEF_REFRESH_FAILED",
+      boundedReason("the managed-item catalog exceeded its budget")
+    );
   }
 
   // -- Wait stage ---------------------------------------------------------------
 
-  async function waitPhase(execution: ActiveExecution, runValue: StoredBriefRun): Promise<readonly ExpectedSourceSnapshotEntry[]> {
+  async function waitPhase(
+    execution: ActiveExecution,
+    runValue: StoredBriefRun
+  ): Promise<readonly ExpectedSourceSnapshotEntry[]> {
     let run = runValue;
     const receipts = run.refreshReceipts as readonly RefreshReceipt[];
     for (;;) {
@@ -830,10 +896,18 @@ export function createBriefRunner(dependencies: BriefRunnerDependencies) {
       for (const receipt of receipts) {
         const record = byId.get(receipt.source_id);
         if (!record) {
-          throw new BriefTerminalDecision("failed", "BRIEF_INPUT_UNAVAILABLE", boundedReason("a refreshed input vanished before analysis"));
+          throw new BriefTerminalDecision(
+            "failed",
+            "BRIEF_INPUT_UNAVAILABLE",
+            boundedReason("a refreshed input vanished before analysis")
+          );
         }
         if (record.status === "error") {
-          throw new BriefTerminalDecision("failed", "BRIEF_REFRESH_FAILED", boundedReason("a refreshed input failed ingestion"));
+          throw new BriefTerminalDecision(
+            "failed",
+            "BRIEF_REFRESH_FAILED",
+            boundedReason("a refreshed input failed ingestion")
+          );
         }
         const ready = record.readyGeneration;
         if (ready === null || ready < receipt.generation) {
@@ -909,7 +983,11 @@ export function createBriefRunner(dependencies: BriefRunnerDependencies) {
           );
         }
         if (error instanceof AnalysisServiceUnavailableError) {
-          throw new BriefTerminalDecision("failed", "BRIEF_ANALYSIS_UNAVAILABLE", boundedReason("the analysis executor is unavailable"));
+          throw new BriefTerminalDecision(
+            "failed",
+            "BRIEF_ANALYSIS_UNAVAILABLE",
+            boundedReason("the analysis executor is unavailable")
+          );
         }
         throw error;
       }
@@ -925,13 +1003,21 @@ export function createBriefRunner(dependencies: BriefRunnerDependencies) {
       run = await stageUpdate(run, { analysisRunId: settled.id, analysisSucceeded: succeeded });
       crash("analysis-accepted", run);
       if (settled.status === "stale-inputs") {
-        throw new BriefTerminalDecision("failed", "BRIEF_STALE_INPUTS", boundedReason("the saved analysis inputs were stale"));
+        throw new BriefTerminalDecision(
+          "failed",
+          "BRIEF_STALE_INPUTS",
+          boundedReason("the saved analysis inputs were stale")
+        );
       }
       if (settled.status === "cancelled") {
         throw abortError();
       }
       if (!succeeded) {
-        throw new BriefTerminalDecision("failed", "BRIEF_ANALYSIS_FAILED", boundedReason("the saved analysis could not complete"));
+        throw new BriefTerminalDecision(
+          "failed",
+          "BRIEF_ANALYSIS_FAILED",
+          boundedReason("the saved analysis could not complete")
+        );
       }
     }
     return run;
@@ -949,7 +1035,11 @@ export function createBriefRunner(dependencies: BriefRunnerDependencies) {
       await sleep(waitPollIntervalMs, execution.controller.signal);
       const live = await analyses.getAnalysisRun(run.accountId, run.recipeSnapshot.analysis_id, current.id);
       if (!live) {
-        throw new BriefTerminalDecision("failed", "BRIEF_ANALYSIS_FAILED", boundedReason("the analysis run disappeared"));
+        throw new BriefTerminalDecision(
+          "failed",
+          "BRIEF_ANALYSIS_FAILED",
+          boundedReason("the analysis run disappeared")
+        );
       }
       current = live;
     }
@@ -1002,7 +1092,10 @@ export function createBriefRunner(dependencies: BriefRunnerDependencies) {
     const truncated = summary.truncated ? " Change lists are truncated; totals above bound the preview only." : "";
     const incomplete = summary.exhaustive ? "" : " This comparison is incomplete and is labeled as such.";
     const samples = summary.changed_sample
-      .map((change) => `- ${JSON.stringify(change.key)}: ${change.changes.map((c) => `${c.column} Δ ${c.delta ?? "n/a"}`).join(", ")}`)
+      .map(
+        (change) =>
+          `- ${JSON.stringify(change.key)}: ${change.changes.map((c) => `${c.column} Δ ${c.delta ?? "n/a"}`).join(", ")}`
+      )
       .join("\n");
     return [
       `Keyed comparison against the previous successful run in this series (key: ${summary.key_columns.join(", ")}).`,
@@ -1015,7 +1108,9 @@ export function createBriefRunner(dependencies: BriefRunnerDependencies) {
 
   function provenanceSection(run: StoredBriefRun): string {
     const snap = run.recipeSnapshot;
-    const params = snap.parameter_values.map((binding) => `${binding.name}=${JSON.stringify(binding.value)}`).join(", ");
+    const params = snap.parameter_values
+      .map((binding) => `${binding.name}=${JSON.stringify(binding.value)}`)
+      .join(", ");
     return [
       `Recipe revision ${snap.revision} (${snap.name}) · ${run.trigger} occurrence ${run.occurrenceKey}`,
       `Saved analysis ${snap.analysis_id} at definition revision ${snap.analysis_revision}`,
@@ -1049,7 +1144,11 @@ export function createBriefRunner(dependencies: BriefRunnerDependencies) {
     const analysisId = run.recipeSnapshot.analysis_id;
     const currentResult = await fetchResultForRun(run.accountId, analysisId, run.analysisRunId);
     if (!currentResult) {
-      throw new BriefTerminalDecision("failed", "BRIEF_ANALYSIS_FAILED", boundedReason("the completed analysis result is no longer retained"));
+      throw new BriefTerminalDecision(
+        "failed",
+        "BRIEF_ANALYSIS_FAILED",
+        boundedReason("the completed analysis result is no longer retained")
+      );
     }
 
     // Comparison over stored values only, with completeness/truncation flags.
@@ -1095,26 +1194,42 @@ export function createBriefRunner(dependencies: BriefRunnerDependencies) {
       },
       { role: "user", content: digest.slice(0, 30_000) },
     ];
-    let narrative = "";
+    let narrative: string;
     try {
-      narrative = stripBriefCitationMarkers(await generateNarrative({ accountId: run.accountId, model, messages, signal: execution.controller.signal }));
+      narrative = stripBriefCitationMarkers(
+        await generateNarrative({ accountId: run.accountId, model, messages, signal: execution.controller.signal })
+      );
     } catch (error) {
       if (error instanceof RemoteEgressConsentRequiredError) {
-        throw new BriefTerminalDecision("skipped", "BRIEF_EGRESS_CONSENT_REQUIRED", "remote egress consent is required");
+        throw new BriefTerminalDecision(
+          "skipped",
+          "BRIEF_EGRESS_CONSENT_REQUIRED",
+          "remote egress consent is required"
+        );
       }
       if (isAbortError(error)) throw error;
-      throw new BriefTerminalDecision("failed", "BRIEF_NARRATIVE_FAILED", boundedReason("the draft narrative could not be generated"));
+      throw new BriefTerminalDecision(
+        "failed",
+        "BRIEF_NARRATIVE_FAILED",
+        boundedReason("the draft narrative could not be generated")
+      );
     }
 
     // Build the draft tree inside M13 ceilings: labeled previews with
     // verified provenance, honest comparison/freshness labels, no citations.
     const currentPreview = buildBriefPreviewTable(currentResult, BRIEF_PREVIEW_CELLS_MAX, "Current result");
-    const baseline = run.baselineRunId ? await runs.getRun(run.accountId, run.baselineRunId).catch(() => undefined) : undefined;
+    const baseline = run.baselineRunId
+      ? await runs.getRun(run.accountId, run.baselineRunId).catch(() => undefined)
+      : undefined;
     const baselineResult = baseline?.analysisRunId
       ? await fetchResultForRun(run.accountId, analysisId, baseline.analysisRunId)
       : undefined;
     const baselinePreview = baselineResult
-      ? buildBriefPreviewTable(baselineResult, Math.max(0, BRIEF_PREVIEW_CELLS_MAX - currentPreview.cells), "Baseline result")
+      ? buildBriefPreviewTable(
+          baselineResult,
+          Math.max(0, BRIEF_PREVIEW_CELLS_MAX - currentPreview.cells),
+          "Baseline result"
+        )
       : null;
 
     const notes = [...currentPreview.notes, ...(baselinePreview?.notes ?? [])];
@@ -1139,7 +1254,9 @@ export function createBriefRunner(dependencies: BriefRunnerDependencies) {
         },
         { heading: "Input freshness", markdown: freshnessSection(run) },
         { heading: "Provenance", markdown: provenanceSection(run) },
-        ...(notes.length > 0 ? [{ heading: "Preview bounds", markdown: notes.map((note) => `- ${note}`).join("\n") }] : []),
+        ...(notes.length > 0
+          ? [{ heading: "Preview bounds", markdown: notes.map((note) => `- ${note}`).join("\n") }]
+          : []),
       ],
       charts: [],
       tables: [currentPreview.table, ...(baselinePreview ? [baselinePreview.table] : [])],
@@ -1156,7 +1273,11 @@ export function createBriefRunner(dependencies: BriefRunnerDependencies) {
       });
     } catch (error) {
       if (isAbortError(error)) throw error;
-      throw new BriefTerminalDecision("failed", "BRIEF_DRAFT_REJECTED", boundedReason("the draft exceeded the report workbench bounds"));
+      throw new BriefTerminalDecision(
+        "failed",
+        "BRIEF_DRAFT_REJECTED",
+        boundedReason("the draft exceeded the report workbench bounds")
+      );
     }
     run = await stageUpdate(run, { documentId: created.documentId, documentRevisionId: created.documentRevisionId });
     crash("draft-references", run);
@@ -1173,7 +1294,9 @@ export function createBriefRunner(dependencies: BriefRunnerDependencies) {
   async function baselineDigestFor(run: StoredBriefRun, analysisId: string): Promise<string> {
     if (run.baselineRunId === null) return "Baseline: none — first run of this comparison series.";
     const baseline = await runs.getRun(run.accountId, run.baselineRunId).catch(() => undefined);
-    const result = baseline?.analysisRunId ? await fetchResultForRun(run.accountId, analysisId, baseline.analysisRunId) : undefined;
+    const result = baseline?.analysisRunId
+      ? await fetchResultForRun(run.accountId, analysisId, baseline.analysisRunId)
+      : undefined;
     if (!result) return "Baseline: unavailable from the retained ledger (labeled gap, not a no-change claim).";
     return `Baseline preview first rows: ${renderPreviewDigest(result)}`;
   }
@@ -1195,7 +1318,12 @@ export function createBriefRunner(dependencies: BriefRunnerDependencies) {
     await runs.applyExecutionOutcome(run.accountId, run.id, "succeeded");
     const summary = run.comparisonSummary as BriefComparisonPayload | null;
     if (run.baselineRunId === null) {
-      await runs.recordNotification(run.accountId, run.id, "first_draft", "a first draft for this recipe is ready for review");
+      await runs.recordNotification(
+        run.accountId,
+        run.id,
+        "first_draft",
+        "a first draft for this recipe is ready for review"
+      );
     } else if (comparisonNeedsAttention(summary)) {
       await runs.recordNotification(
         run.accountId,
@@ -1204,7 +1332,12 @@ export function createBriefRunner(dependencies: BriefRunnerDependencies) {
         "a brief draft's comparison is unsupported or incomplete and is labeled, not a proven no-change"
       );
     } else if (comparisonChangedSignal(summary)) {
-      await runs.recordNotification(run.accountId, run.id, "meaningful_change", "the newest brief results changed since the previous series baseline");
+      await runs.recordNotification(
+        run.accountId,
+        run.id,
+        "meaningful_change",
+        "the newest brief results changed since the previous series baseline"
+      );
     }
     // A complete, supported no-change draft produces no repeated notification.
     crash("outcome-accounted", run);
@@ -1298,7 +1431,12 @@ export function createBriefRunner(dependencies: BriefRunnerDependencies) {
         // startup resume — never a silent failure of work that can resume.
         return;
       }
-      await settleRun(live, "failed", "BRIEF_DEADLINE_EXCEEDED", boundedReason("the brief exceeded its execution deadline"));
+      await settleRun(
+        live,
+        "failed",
+        "BRIEF_DEADLINE_EXCEEDED",
+        boundedReason("the brief exceeded its execution deadline")
+      );
       return;
     }
     if (error instanceof BriefRunStateError || error instanceof BriefRecipeNotFoundError) return; // Ownership moved elsewhere.

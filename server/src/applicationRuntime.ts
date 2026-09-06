@@ -24,6 +24,12 @@ import {
   type ResearchRunner,
   type ResearchRunnerDependencies,
 } from "./researchRunner.js";
+  bindDefaultBriefRunner,
+  createBriefRunner,
+  defaultBriefRunner,
+  type BriefRunner,
+  type BriefRunnerDependencies,
+} from "./briefRunner.js";
 import { config } from "./config.js";
 import { syncConnector as syncConnectorRoute } from "./routes/connectors.js";
 import {
@@ -89,6 +95,8 @@ export interface ApplicationRuntime {
   readonly documentRewriteRunner: DocumentRewriteRunner;
   /** The single research executor over `storage.research` (M15 stage 2). */
   readonly researchRunner: ResearchRunner;
+  /** The single reviewed-brief executor over `storage.briefRuns`. */
+  readonly briefRunner: BriefRunner;
   startAutomationScheduler(): void;
   /** Synchronously quiesces the scheduler; the promise drains in-flight claims. */
   stopAutomationScheduler(): Promise<void>;
@@ -122,6 +130,13 @@ export interface ApplicationRuntime {
    * `cancelled`.
    */
   stopResearchRunner(): Promise<void>;
+   * M16 stage 2: startup-resume recovered brief runs, claim due occurrences,
+   * and dispatch on an unref'd interval (at most 1/account, 2 globally).
+   * Interrupted runs stay in their committed stage for the same resume path.
+   */
+  startBriefRunner(): void;
+  /** Synchronous quiescence plus bounded-wait interrupt; drains every execution. */
+  stopBriefRunner(): Promise<void>;
   /** Synchronously closes contained-download admission; the promise drains it. */
   quiesceDownloads(): Promise<void>;
   /** Idempotent, proof-bearing close. The same promise is returned on repeat. */
@@ -170,6 +185,10 @@ export interface ApplicationRuntimeLifecycle {
    * to the real research executor.
    */
   createResearchRunner?(dependencies: ResearchRunnerDependencies): ResearchRunner;
+   * Optional so pre-M16 lifecycle seams keep compiling; production defaults
+   * to the real reviewed-brief executor.
+   */
+  createBriefRunner?(dependencies: BriefRunnerDependencies): BriefRunner;
 }
 
 export interface ApplicationRuntimeOptions {
@@ -230,6 +249,8 @@ interface OwnedResources {
   rewriteRunnerReleased: boolean;
   researchRunner: ResearchRunner | undefined;
   researchRunnerReleased: boolean;
+  briefRunner: BriefRunner | undefined;
+  briefRunnerReleased: boolean;
   engineReleased: boolean;
 }
 
@@ -252,6 +273,8 @@ function newOwned(): OwnedResources {
     rewriteRunnerReleased: false,
     researchRunner: undefined,
     researchRunnerReleased: false,
+    briefRunner: undefined,
+    briefRunnerReleased: false,
     engineReleased: false,
   };
 }
@@ -263,6 +286,7 @@ interface ResolvedLifecycle extends ApplicationRuntimeLifecycle {
   quiesceAndDrainConnections(): Promise<void>;
   createRewriteRunner(dependencies: DocumentRewriteRunnerDependencies): DocumentRewriteRunner;
   createResearchRunner(dependencies: ResearchRunnerDependencies): ResearchRunner;
+  createBriefRunner(dependencies: BriefRunnerDependencies): BriefRunner;
 }
 
 function productionMigrationPhase(): EmbeddingMigrationPhase {
@@ -305,6 +329,7 @@ function resolveLifecycle(options: ApplicationRuntimeOptions): ResolvedLifecycle
     createAnalysisRunner: lifecycle.createAnalysisRunner ?? ((deps) => createAnalysisRunner(deps)),
     createRewriteRunner: lifecycle.createRewriteRunner ?? ((deps) => createDocumentRewriteRunner(deps)),
     createResearchRunner: lifecycle.createResearchRunner ?? ((deps) => createResearchRunner(deps)),
+    createBriefRunner: lifecycle.createBriefRunner ?? ((deps) => createBriefRunner(deps)),
     syncConnector:
       options.syncConnector ?? ((accountId, connectorId) => syncConnectorRoute(accountId, undefined, connectorId)),
     sqlitePath: options.sqlitePath ?? config.sqlitePath,
@@ -382,13 +407,16 @@ async function unwindConstruction(
   // construction-time seam itself opened a connection). No scheduler ever
   // started and no HTTP surface was built, so settings/storage consumers are
   // limited to these phases.
-  const [downloadResult, migrationResult, connectionsResult, rewriteResult, researchResult] = await Promise.allSettled([
+  const [downloadResult, migrationResult, connectionsResult, rewriteResult, researchResult, briefResult] =
+    await Promise.allSettled([
     owned.downloadBegun && !owned.downloadReleased ? lifecycle.quiesceAndDrainDownloads() : Promise.resolve(),
     owned.migration && !owned.migrationReleased ? owned.migration.close() : Promise.resolve(),
     lifecycle.quiesceAndDrainConnections(),
     owned.rewriteRunner && !owned.rewriteRunnerReleased ? owned.rewriteRunner.stop() : Promise.resolve(),
     owned.researchRunner && !owned.researchRunnerReleased ? owned.researchRunner.stop() : Promise.resolve(),
+    owned.briefRunner && !owned.briefRunnerReleased ? owned.briefRunner.stop() : Promise.resolve(),
   ]);
+  if (owned.briefRunner && briefResult.status === "fulfilled") owned.briefRunnerReleased = true;
   if (owned.rewriteRunner && rewriteResult.status === "fulfilled") owned.rewriteRunnerReleased = true;
   if (owned.researchRunner && researchResult.status === "fulfilled") owned.researchRunnerReleased = true;
   if (owned.downloadBegun && downloadResult.status === "fulfilled") owned.downloadReleased = true;
@@ -489,6 +517,18 @@ export async function createApplicationRuntime(options: ApplicationRuntimeOption
       chats: owned.storage.chats,
     });
     owned.researchRunner = lifecycle.createResearchRunner({ store: owned.storage.research });
+    // M16 stage 2: the reviewed-brief executor over the same storage. Its
+    // service ports default to the production singletons inside
+    // `createBriefRunner`, except the injected connector sync seam, which
+    // reuses the lifecycle's exact adapter so tests never touch real URLs.
+    owned.briefRunner = lifecycle.createBriefRunner({
+      runs: owned.storage.briefRuns,
+      recipes: owned.storage.briefRecipes,
+      sources: owned.storage.sources,
+      analyses: owned.storage.analyses,
+      knowledge: owned.storage.knowledge,
+      syncConnector: (accountId, connectorId) => lifecycle.syncConnector(accountId, connectorId),
+    });
   } catch (error) {
     const cleanUnwind = await unwindConstruction(lifecycle, owned, uncertainAcquisition);
     if (cleanUnwind) {
@@ -515,6 +555,7 @@ export async function createApplicationRuntime(options: ApplicationRuntimeOption
   const analysisRunner = owned.analysisRunner as AnalysisRunner;
   const rewriteRunner = owned.rewriteRunner as DocumentRewriteRunner;
   const researchRunner = owned.researchRunner as ResearchRunner;
+  const briefRunner = owned.briefRunner as BriefRunner;
 
   let closePromise: Promise<void> | undefined;
   const runtime: ApplicationRuntime = Object.freeze({
@@ -523,6 +564,7 @@ export async function createApplicationRuntime(options: ApplicationRuntimeOption
     analysisRunner,
     documentRewriteRunner: rewriteRunner,
     researchRunner,
+    briefRunner,
     startAutomationScheduler(): void {
       if (current.phase !== "active") {
         throw new ApplicationRuntimeLifecycleError("application runtime is not active", true, ["phase"]);
@@ -572,6 +614,21 @@ export async function createApplicationRuntime(options: ApplicationRuntimeOption
       // stay durable `running` for the bounded startup resume, never orphaned
       // as a silent rerun; cancelled rows finalize `cancelled`.
       return researchRunner.stop();
+    startBriefRunner(): void {
+      if (current.phase !== "active") {
+        throw new ApplicationRuntimeLifecycleError("application runtime is not active", true, ["phase"]);
+      }
+      bindDefaultBriefRunner(briefRunner);
+      // M16 stage 2: restart resumes every non-terminal run from its committed
+      // receipts (never a second artifact), then claims due occurrences.
+      briefRunner.start();
+    },
+    stopBriefRunner(): Promise<void> {
+      // Synchronous quiescence plus bounded-wait interrupt; the promise
+      // settles only after every execution either finalized its durable row
+      // (cancelled when a cancellation was requested) or left it in its
+      // committed stage for the next startup resume.
+      return briefRunner.stop();
     },
     quiesceDownloads(): Promise<void> {
       // Plan 008 contract: synchronous admission closure; the promise joins
@@ -610,6 +667,7 @@ export async function createApplicationRuntime(options: ApplicationRuntimeOption
         analysisRunnerResult,
         rewriteRunnerResult,
         researchRunnerResult,
+        briefRunnerResult,
         downloadResult,
         migrationResult,
         engineResult,
@@ -619,6 +677,7 @@ export async function createApplicationRuntime(options: ApplicationRuntimeOption
         analysisRunner.stop(),
         rewriteRunner.stop(),
         researchRunner.stop(),
+        briefRunner.stop(),
         lifecycle.quiesceAndDrainDownloads(),
         owned.migration?.close() ?? Promise.resolve(),
         lifecycle.stopEngine(),
@@ -647,6 +706,13 @@ export async function createApplicationRuntime(options: ApplicationRuntimeOption
         // cancelled run settled `cancelled`, and queued rows survive.
         if (defaultResearchRunner() === researchRunner) bindDefaultResearchRunner(undefined);
       } else failed.push("research-runner");
+      if (briefRunnerResult.status === "fulfilled") {
+        owned.briefRunnerReleased = true;
+        // The executor drained every execution; interrupted runs remain in
+        // their committed stage for the next startup resume and the manual
+        // wake surface becomes unavailable again.
+        if (defaultBriefRunner() === briefRunner) bindDefaultBriefRunner(undefined);
+      } else failed.push("brief-runner");
       if (downloadResult.status === "fulfilled") owned.downloadReleased = true;
       else failed.push("download");
       if (migrationResult.status === "fulfilled") owned.migrationReleased = true;

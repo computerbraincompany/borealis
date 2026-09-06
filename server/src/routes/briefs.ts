@@ -20,6 +20,7 @@ import {
   type StoredBriefRun,
 } from "../db/stores/briefRunStore.js";
 import { nextOccurrences, CALENDAR_MAX_PREVIEW } from "../calendarSchedule.js";
+import { defaultBriefRunner } from "../briefRunner.js";
 import { enforceRemoteEgressConsent } from "../egressPolicy.js";
 import { storageRuntime } from "../storageRuntime.js";
 import {
@@ -29,10 +30,10 @@ import {
 } from "./bodyLimits.js";
 
 /**
- * Reviewed-brief recipe API (M16 stage 1: store, calendar, and recipe CRUD).
- * The execution pipeline (refresh → wait → analyze → draft → review) is
- * stage 2: runs accepted here stay durably `queued`. The review inbox,
- * decision, and notification routes arrive with stage 3.
+ * Reviewed-brief recipe API (M16 stage 1: store/calendar/recipe CRUD; stage 2:
+ * the execution pipeline wakes manual runs and exposes bounded run detail and
+ * idempotent cancellation). The review inbox, decision, and notification
+ * routes arrive with stage 3.
  */
 
 const SCHEDULE_BODY_SCHEMA = {
@@ -110,6 +111,16 @@ const RUN_CREATE_BODY_SCHEMA = {
   properties: { operation_id: { type: "string", pattern: UUID_PATTERN } },
 } as const;
 
+const RUN_PARAMS_SCHEMA = {
+  type: "object",
+  required: ["id", "runId"],
+  additionalProperties: false,
+  properties: {
+    id: { type: "string", pattern: UUID_PATTERN },
+    runId: { type: "string", pattern: UUID_PATTERN },
+  },
+} as const;
+
 function publicBriefRecipe(recipe: StoredBriefRecipe) {
   return {
     id: recipe.id,
@@ -169,6 +180,22 @@ function publicBriefRunSummary(run: StoredBriefRun) {
     started_at: run.startedAt,
     stage_updated_at: run.stageUpdatedAt,
     finished_at: run.finishedAt,
+  };
+}
+
+/**
+ * Bounded stage detail for one run: the durable summary plus the server-owned
+ * refresh receipts (kind/label/generation — codes and bounded labels only),
+ * the committed source-generation snapshot, and the persisted comparison
+ * summary (already bounded ≤32 KiB at write). Linked artifact identities are
+ * part of the base summary (analysis/baseline/document ids).
+ */
+function publicBriefRunDetail(run: StoredBriefRun) {
+  return {
+    ...publicBriefRunSummary(run),
+    refresh_receipts: run.refreshReceipts,
+    source_snapshot: run.sourceSnapshot,
+    comparison_summary: run.comparisonSummary,
   };
 }
 
@@ -354,7 +381,8 @@ export async function briefRoutes(app: FastifyInstance): Promise<void> {
 
   // Manual "Run now": 202 with the durable run identity. The operation id is
   // the idempotency key — a retried request replays the original run. The
-  // stage pipeline itself is stage 2; the run stays `queued`.
+  // owned brief runner executes the durable row through the same pipeline as
+  // scheduled claims; without a live executor the row simply waits.
   app.post(
     "/api/briefs/:id/runs",
     {
@@ -370,7 +398,47 @@ export async function briefRoutes(app: FastifyInstance): Promise<void> {
           (req.params as { id: string }).id,
           body.operation_id
         );
+        // The durable 202 is the contract; when an executor is live this wake
+        // only shortens the queue delay — the row is the fallback.
+        defaultBriefRunner()?.kick();
         return reply.code(202).send({ run: publicBriefRunSummary(run), replayed });
+      } catch (error) {
+        if (sendBriefError(reply, error)) return;
+        throw error;
+      }
+    }
+  );
+
+  // Run detail: bounded stage detail, refresh receipts, the committed
+  // generation snapshot, the comparison summary, and linked artifact ids.
+  app.get(
+    "/api/briefs/:id/runs/:runId",
+    { onRequest: requireAuth, schema: { params: RUN_PARAMS_SCHEMA } },
+    async (req, reply) => {
+      try {
+        const { id, runId } = req.params as { id: string; runId: string };
+        const run = await storageRuntime().briefRuns.getRun(getAccountId(req), runId);
+        if (run.recipeId !== id) return reply.code(404).send({ error: "not found", code: "BRIEF_RUN_NOT_FOUND" });
+        return reply.send(publicBriefRunDetail(run));
+      } catch (error) {
+        if (sendBriefError(reply, error)) return;
+        throw error;
+      }
+    }
+  );
+
+  // Cancellation request: durable and idempotent. Repeated calls — including
+  // after the run finalized — return the current run; artifacts-to-date and
+  // committed review artifacts are preserved by the runner's stage rules.
+  app.delete(
+    "/api/briefs/:id/runs/:runId",
+    { onRequest: requireAuth, bodyLimit: BODYLESS_MUTATION_LIMIT_BYTES, schema: { params: RUN_PARAMS_SCHEMA } },
+    async (req, reply) => {
+      try {
+        const { id, runId } = req.params as { id: string; runId: string };
+        const { run, cancelRequested } = await storageRuntime().briefRuns.requestRunCancel(getAccountId(req), runId);
+        if (run.recipeId !== id) return reply.code(404).send({ error: "not found", code: "BRIEF_RUN_NOT_FOUND" });
+        return reply.send({ ...publicBriefRunDetail(run), cancel_requested: cancelRequested });
       } catch (error) {
         if (sendBriefError(reply, error)) return;
         throw error;

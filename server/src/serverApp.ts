@@ -283,6 +283,13 @@ async function drainExternalAndClose(context: ExternalDrainContext): Promise<voi
   // `cancelled` — no orphaned active research row crosses storage closure.
   const researchDrain = runtime ? runtime.stopResearchRunner() : Promise.resolve();
   void researchDrain.catch(() => undefined);
+  // M16 stage 2: brief executions are quiesced synchronously while the stores
+  // are alive; bounded waits interrupt, requested cancellations finalize
+  // `cancelled`, and resumable work deliberately stays in its committed stage
+  // for the next startup resume before storage closure. The owned runtime
+  // close below joins the same drain.
+  const briefDrain = runtime ? runtime.stopBriefRunner() : Promise.resolve();
+  void briefDrain.catch(() => undefined);
 
   // Step 2: attempt-all independent external drains with positive records.
   const [ingress, workers, reconciliation] = await Promise.allSettled([
@@ -394,6 +401,10 @@ export async function startBorealisServer(options: StartBorealisServerOptions = 
     // `pending` for the bounded at-most-once retry), then resume resumable
     // rows one per account through the owned durable executor.
     runtime.startResearchRunner();
+    // M16 stage 2: resume recovered brief runs from their committed receipts,
+    // then claim due occurrences and dispatch at most one brief per account
+    // and two globally on an unref'd interval.
+    runtime.startBriefRunner();
     const bootstrap = desktop ? await createDesktopBootstrapSession() : undefined;
     await app.listen({ port, host });
     const actualPort = listeningPort(app);
