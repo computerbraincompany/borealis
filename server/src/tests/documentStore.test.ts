@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { LATEST_SQLITE_SCHEMA_VERSION, SCHEMA_V20 } from "../db/migrations.js";
+import { LATEST_SQLITE_SCHEMA_VERSION, SCHEMA_V20, SCHEMA_V23 } from "../db/migrations.js";
 import { openSqliteLedger } from "../db/sqlite.js";
 import type { SqliteLedger } from "../db/types.js";
 import {
@@ -239,6 +239,50 @@ describe("DocumentStore", () => {
         });
         expect(saved.document.currentRevision).toBe(2);
         await store.recoverInterruptedDocumentPublications();
+      } finally {
+        await ledger.close();
+      }
+    } finally {
+      await historical.cleanup();
+    }
+  });
+
+  it("ships a byte-identical v023 rewrite-ledger fixture enforcing one active rewrite per document", async () => {
+    const fixtureSql = await fs.readFile(fileURLToPath(new URL("./fixtures/sqlite/v023.sql", import.meta.url)), "utf8");
+    expect(fixtureSql).toBe(SCHEMA_V23);
+
+    const historical = await createHistoricalSqliteFixture(22);
+    try {
+      const ledger = await openSqliteLedger({ path: historical.filename });
+      try {
+        await expect(ledger.get<{ user_version: bigint }>("PRAGMA user_version")).resolves.toEqual({
+          user_version: BigInt(LATEST_SQLITE_SCHEMA_VERSION),
+        });
+        await expect(ledger.all("PRAGMA foreign_key_check")).resolves.toEqual([]);
+        const account = historical.seed.accountId;
+        const store = new DocumentStore(ledger, { publicationDirectory: lexicalPublicationDirectory });
+        const created = await createDocument(store, account, "Rewrite fixture document");
+        const insertRewrite = (status: "queued" | "running") =>
+          ledger.run(
+            `INSERT INTO document_rewrites
+               (id,account_id,document_id,base_revision_id,section_id,selection_sha256,
+                selection_chars,instruction,status,evidence_refs)
+             VALUES (?,?,?,?,?,?,5,'tighten the wording',?,'[]')`,
+            [
+              randomUUID(),
+              account,
+              created.document.id,
+              created.revision.id,
+              created.revision.payload.sections[0]!.id,
+              "0".repeat(64),
+              status,
+            ]
+          );
+        await insertRewrite("queued");
+        // The partial unique index is the one-active-per-document boundary;
+        // the ledger surfaces it as the wrapped unique-constraint error.
+        await expect(insertRewrite("running")).rejects.toThrow(/unique constraint violated/i);
+        await expect(ledger.all("PRAGMA foreign_key_check")).resolves.toEqual([]);
       } finally {
         await ledger.close();
       }

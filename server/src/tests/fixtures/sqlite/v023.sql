@@ -14,7 +14,7 @@ CREATE TABLE document_rewrites (
     CHECK (status IN ('queued','running','completed','failed','cancelled','stale')),
   replacement TEXT CHECK (replacement IS NULL OR length(replacement) BETWEEN 1 AND 20000),
   evidence_refs TEXT NOT NULL
-    CHECK (json_valid(evidence_refs) AND json_type(evidence_refs)='array' AND length(evidence_refs) <= 3802),
+    CHECK (json_valid(evidence_refs) AND json_type(evidence_refs)='array' AND length(evidence_refs) <= 4000),
   model TEXT CHECK (model IS NULL OR length(model) BETWEEN 1 AND 256),
   error_code TEXT CHECK (error_code IS NULL OR length(error_code) BETWEEN 1 AND 128),
   error_reason TEXT CHECK (error_reason IS NULL OR length(error_reason) <= 500),

@@ -344,6 +344,9 @@ function sendDocumentError(reply: FastifyReply, error: unknown): boolean {
     return true;
   }
   if (error instanceof DocumentRewriteSelectionInvalidError) {
+    // Malformed selection targeting: out of bounds, empty, or a range that
+    // splits a surrogate pair. The request cannot describe a rewrite at all,
+    // so it is a 400 — a content mismatch is the 409 below.
     reply.code(400).send({
       error: "the rewrite selection range is invalid (it may split a surrogate pair)",
       code: error.code,

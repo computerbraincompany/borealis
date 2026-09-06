@@ -234,15 +234,21 @@ export function createDocumentRewriteRunner(dependencies: DocumentRewriteRunnerD
       } catch {
         model = "";
       }
+      // The claim never fails on model text: a missing or over-long resolved
+      // model records `unknown` (an unknown ID is preserved verbatim by alias
+      // resolution and fails at the provider, settled as a generic provider
+      // failure) so a queued row can never livelock the claim loop.
+      const trimmedModel = model.trim();
+      const claimModel = trimmedModel && trimmedModel.length <= 256 ? trimmedModel : "unknown";
       let live: StoredDocumentRewrite;
       try {
-        live = await store.markDocumentRewriteRunning(rewrite.accountId, rewrite.documentId, rewrite.id, model);
+        live = await store.markDocumentRewriteRunning(rewrite.accountId, rewrite.documentId, rewrite.id, claimModel);
       } catch {
-        return;
+        return; // Transient store failure or vanished row; the next claim resumes.
       }
       if (live.status !== "running") return; // A durable cancellation or another claim won.
       try {
-        await runProvider(execution, live, model || "unknown");
+        await runProvider(execution, live, claimModel);
       } catch (error) {
         await finalizeFailure(execution, error);
       }

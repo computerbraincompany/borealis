@@ -1801,7 +1801,13 @@ export class DocumentStore {
           ]
         );
       } catch (error) {
-        if (error instanceof SqliteConstraintError) throw new DocumentRewriteActiveError({ cause: error });
+        if (
+          error instanceof SqliteConstraintError &&
+          error.kind === "unique" &&
+          /document_rewrites\.document_id/.test(String((error.cause as Error | undefined)?.message ?? ""))
+        ) {
+          throw new DocumentRewriteActiveError({ cause: error });
+        }
         throw error;
       }
     });
@@ -1953,6 +1959,13 @@ export class DocumentStore {
     return this.ledger.withImmediateTransaction((transaction) => {
       const rewrite = this.requireRewriteRowInTransaction(transaction, accountId, documentId, rewriteId);
       if (rewrite.status !== "running") throw new DocumentRewriteStateError();
+      if (rewrite.cancelRequested) {
+        // Cancellation-wins: the DELETE-side flag observed at this final
+        // boundary outranks the provider result; the proposal is never stored
+        // for a run the owner cancelled.
+        this.finalizeRewriteInTransaction(transaction, rewriteId, "cancelled", this.timestamp());
+        return this.requireRewriteRowInTransaction(transaction, accountId, documentId, rewriteId);
+      }
       const completed = transaction.run(
         `UPDATE document_rewrites
          SET status='completed',replacement=?,model=COALESCE(?,model),finished_at=?,error_code=NULL,
