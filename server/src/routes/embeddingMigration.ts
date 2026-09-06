@@ -6,8 +6,8 @@ import {
   EmbeddingMigrationError,
   type EmbeddingMigrationOperations,
 } from "../embeddingMigration.js";
-import { auditRemoteEgress } from "../egressAudit.js";
-import { enforceRemoteEgressConsent } from "../egressPolicy.js";
+import { auditRemoteEgressTarget } from "../egressAudit.js";
+import { enforceRemoteEgressConsent, type RemoteEgressTarget } from "../egressPolicy.js";
 import { qualifyModelPair, type ModelPairQualificationResult } from "../llm.js";
 import { runtimeSettingsStore } from "../runtimeSettings.js";
 import {
@@ -32,8 +32,12 @@ export interface EmbeddingMigrationRouteOptions {
     settings: EffectiveLlmSettings,
     expectedDimension: number
   ) => Promise<ModelPairQualificationResult>;
-  readonly consent?: (reply: FastifyReply, accountId: string) => Promise<boolean>;
-  readonly audit?: (kind: "remote_turn" | "remote_ingest", accountId: string) => Promise<void>;
+  readonly consent?: (reply: FastifyReply, accountId: string) => Promise<RemoteEgressTarget | null>;
+  readonly audit?: (
+    kind: "remote_turn" | "remote_ingest",
+    accountId: string,
+    target: RemoteEgressTarget
+  ) => Promise<void>;
 }
 
 interface StartBody {
@@ -51,7 +55,7 @@ export async function embeddingMigrationRoutes(app: FastifyInstance): Promise<vo
 export function createEmbeddingMigrationRoutes(options: EmbeddingMigrationRouteOptions): FastifyPluginAsync {
   const qualify = options.qualify ?? qualifyModelPair;
   const consent = options.consent ?? enforceRemoteEgressConsent;
-  const audit = options.audit ?? auditRemoteEgress;
+  const audit = options.audit ?? auditRemoteEgressTarget;
   return async (app) => {
     app.get(
       "/api/models/embedding-migration",
@@ -88,7 +92,8 @@ export function createEmbeddingMigrationRoutes(options: EmbeddingMigrationRouteO
       async (req, reply) => {
         try {
           const accountId = getAccountId(req);
-          if (!(await consent(reply, accountId))) return;
+          const egressTarget = await consent(reply, accountId);
+          if (!egressTarget) return;
           const body = req.body as StartBody;
           const baseline = await options.store.read();
           const preview = await options.store.preview({
@@ -102,8 +107,8 @@ export function createEmbeddingMigrationRoutes(options: EmbeddingMigrationRouteO
               code: MODEL_PAIR_NOT_QUALIFIED_CODE,
             });
           }
-          recordQualificationAudit(audit, "remote_turn", accountId);
-          recordQualificationAudit(audit, "remote_ingest", accountId);
+          recordQualificationAudit(audit, "remote_turn", accountId, egressTarget);
+          recordQualificationAudit(audit, "remote_ingest", accountId, egressTarget);
           return reply
             .code(202)
             .send(
@@ -171,10 +176,11 @@ function sendMigrationError(req: FastifyRequest, reply: FastifyReply, error: unk
 function recordQualificationAudit(
   audit: NonNullable<EmbeddingMigrationRouteOptions["audit"]>,
   kind: "remote_turn" | "remote_ingest",
-  accountId: string
+  accountId: string,
+  target: RemoteEgressTarget
 ): void {
   try {
-    void audit(kind, accountId).catch(() => undefined);
+    void audit(kind, accountId, target).catch(() => undefined);
   } catch {
     // Content-free audit remains best effort.
   }

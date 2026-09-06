@@ -797,8 +797,9 @@ describe("durable embedding migration coordinator", () => {
     await harness.store.patch({ llmBaseUrl: "https://provider.example.test" });
     await seedAccount(harness.runtime, OTHER_ACCOUNT, "other@example.test");
     await seedReadySource(harness.runtime, OTHER_ACCOUNT, "second passage", [0, 1, 0]);
-    await harness.runtime.ledger.run("UPDATE users SET remote_egress_ack_at=? WHERE id=?", [
+    await harness.runtime.ledger.run("UPDATE users SET remote_egress_ack_at=?,remote_egress_ack_origin=? WHERE id=?", [
       new Date().toISOString(),
+      "https://provider.example.test",
       ACCOUNT,
     ]);
 
@@ -815,7 +816,10 @@ describe("durable embedding migration coordinator", () => {
     await harness.store.patch({ llmBaseUrl: "https://provider.example.test" });
     await seedAccount(harness.runtime, OTHER_ACCOUNT, "other@example.test");
     await seedReadySource(harness.runtime, OTHER_ACCOUNT, "second passage", [0, 1, 0]);
-    await harness.runtime.ledger.run("UPDATE users SET remote_egress_ack_at=?", [new Date().toISOString()]);
+    await harness.runtime.ledger.run("UPDATE users SET remote_egress_ack_at=?,remote_egress_ack_origin=?", [
+      new Date().toISOString(),
+      "https://provider.example.test",
+    ]);
 
     await harness.coordinator.start({ model: "new-embed", dimension: 5 });
     await waitForPhase(harness.coordinator, "ready_to_apply");

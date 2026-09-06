@@ -4,12 +4,17 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { signToken } from "../auth.js";
-import { remoteEgressState } from "../egressPolicy.js";
-import { auditRemoteEgress, listEgressEvents, recordEgressEvent } from "../egressAudit.js";
+import { remoteEgressState, remoteEgressTargetFromSnapshot } from "../egressPolicy.js";
+import { auditRemoteEgressTarget, listEgressEvents, recordEgressEvent } from "../egressAudit.js";
 import { installHttpBoundary } from "../httpErrors.js";
 import { auditRoutes } from "../routes/audit.js";
 import { consentRoutes } from "../routes/consent.js";
-import { closeRuntimeSettings, initializeRuntimeSettings, runtimeSettingsStore } from "../runtimeSettings.js";
+import {
+  closeRuntimeSettings,
+  getRuntimeSettings,
+  initializeRuntimeSettings,
+  runtimeSettingsStore,
+} from "../runtimeSettings.js";
 import { closeStorageRuntime, initializeStorageRuntime, storageRuntime } from "../storageRuntime.js";
 import { LATEST_SQLITE_SCHEMA_VERSION } from "../db/migrations.js";
 
@@ -72,17 +77,18 @@ describe("egress audit", () => {
   it("records consent, remote turns, and remote ingests without content", async () => {
     await runtimeSettingsStore().patch({ llmBaseUrl: "https://api.provider.example" });
     await recordEgressEvent("consent_acknowledged", OWNER, "api.provider.example");
-    await auditRemoteEgress("remote_turn", OWNER);
-    await auditRemoteEgress("remote_ingest", OWNER);
+    const remoteTarget = remoteEgressTargetFromSnapshot(await getRuntimeSettings());
+    await auditRemoteEgressTarget("remote_turn", OWNER, remoteTarget);
+    await auditRemoteEgressTarget("remote_ingest", OWNER, remoteTarget);
 
     const events = await listEgressEvents(OWNER, 50);
     expect(events.map((event) => event.kind)).toEqual(["remote_ingest", "remote_turn", "consent_acknowledged"]);
     expect(events.every((event) => event.endpoint_host === "api.provider.example")).toBe(true);
     expect(JSON.stringify(events)).not.toMatch(/prompt|content|sql/i);
 
-    // Loopback providers never write remote events.
+    // Loopback targets never write remote events, even when named directly.
     await runtimeSettingsStore().patch({ llmBaseUrl: "http://127.0.0.1:1234" });
-    await auditRemoteEgress("remote_turn", OWNER);
+    await auditRemoteEgressTarget("remote_turn", OWNER, remoteEgressTargetFromSnapshot(await getRuntimeSettings()));
     expect(await listEgressEvents(OWNER, 50)).toHaveLength(3);
   });
 
@@ -102,9 +108,11 @@ describe("egress audit", () => {
   });
 
   it("never lets an audit failure fail the caller", async () => {
+    await runtimeSettingsStore().patch({ llmBaseUrl: "https://api.provider.example" });
+    const remoteTarget = remoteEgressTargetFromSnapshot(await getRuntimeSettings());
     await closeStorageRuntime();
     await expect(recordEgressEvent("remote_turn", OWNER, null)).resolves.toBeUndefined();
-    await expect(auditRemoteEgress("remote_turn", OWNER)).resolves.toBeUndefined();
+    await expect(auditRemoteEgressTarget("remote_turn", OWNER, remoteTarget)).resolves.toBeUndefined();
   });
 
   it("serves the bounded audit list tenant-scoped", async () => {

@@ -101,7 +101,7 @@ describe("streamingChat tool-call merge", () => {
     }
     vi.spyOn(client.chat.completions, "create").mockReturnValue(chunks() as any);
 
-    const result = await streamingChat([], { model: "test-chat-model" }, () => {});
+    const result = await streamingChat([], { accountId: "account-1", model: "test-chat-model" }, () => {});
     const toolCalls = result.choices[0].message.tool_calls as any[];
 
     expect(toolCalls).toHaveLength(2);

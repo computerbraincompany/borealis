@@ -21,6 +21,8 @@ import {
 } from "../runtimeSettings.js";
 import { TOOL_DEFS } from "../tools.js";
 
+const ACCOUNT = "11111111-1111-4111-8111-111111111111";
+
 let temporaryDirectory = "";
 
 beforeEach(async () => {
@@ -43,7 +45,7 @@ describe("explicit model routing", () => {
       choices: [{ index: 0, finish_reason: "stop", message: { role: "assistant", content: "ok" } }],
     } as any);
 
-    await chatOnce([], { model: "selected-chat-a" });
+    await chatOnce([], { accountId: ACCOUNT, model: "selected-chat-a" });
 
     expect(create).toHaveBeenCalledWith(expect.objectContaining({ model: "selected-chat-a" }), {
       timeout: 120_000,
@@ -58,7 +60,7 @@ describe("explicit model routing", () => {
       choices: [{ index: 0, finish_reason: "stop", message: { role: "assistant", content: "ok" } }],
     } as any);
 
-    await chatOnce([], { model: "qwen-chat" });
+    await chatOnce([], { accountId: ACCOUNT, model: "qwen-chat" });
 
     expect(create).toHaveBeenCalledWith(expect.objectContaining({ model: "qwen/qwen3.6-35b-a3b" }), {
       timeout: 120_000,
@@ -73,7 +75,7 @@ describe("explicit model routing", () => {
     }
     const create = vi.spyOn(client.chat.completions, "create").mockReturnValue(chunks() as any);
 
-    const result = await streamingChat([], { model: "selected-chat-b" }, () => {});
+    const result = await streamingChat([], { accountId: ACCOUNT, model: "selected-chat-b" }, () => {});
 
     expect(result.choices[0].message.content).toBe("ok");
     expect(create).toHaveBeenCalledWith(
@@ -88,7 +90,7 @@ describe("explicit model routing", () => {
       yield { choices: [{ delta: { content: "ok" } }] };
     }
     const create = vi.spyOn(client.chat.completions, "create").mockReturnValue(chunks() as any);
-    await streamingChat([], { model: "selected-chat-b", tools: [] }, () => {});
+    await streamingChat([], { accountId: ACCOUNT, model: "selected-chat-b", tools: [] }, () => {});
     expect(create.mock.calls[0][0]).not.toHaveProperty("tools");
   });
 
@@ -99,7 +101,7 @@ describe("explicit model routing", () => {
     }
     const create = vi.spyOn(client.chat.completions, "create").mockReturnValue(chunks() as any);
 
-    await streamingChat([], { model: "nemotron" }, () => {});
+    await streamingChat([], { accountId: ACCOUNT, model: "nemotron" }, () => {});
 
     expect(create).toHaveBeenCalledWith(
       expect.objectContaining({ model: "nvidia/nemotron-3-nano", stream: true }),
@@ -118,7 +120,7 @@ describe("explicit model routing", () => {
       yield { choices: [{ delta }] };
     }
     vi.spyOn(client.chat.completions, "create").mockReturnValue(chunks() as any);
-    await expect(streamingChat([], { model: "selected-chat-b" }, () => {})).rejects.toThrow(
+    await expect(streamingChat([], { accountId: ACCOUNT, model: "selected-chat-b" }, () => {})).rejects.toThrow(
       "model stream budget exceeded"
     );
   });
@@ -129,7 +131,7 @@ describe("explicit model routing", () => {
       data: [{ embedding: [0.1, 0.2] }],
     } as any);
 
-    await expect(embed(["hello"])).resolves.toEqual([[0.1, 0.2]]);
+    await expect(embed(["hello"], { accountId: ACCOUNT })).resolves.toEqual([[0.1, 0.2]]);
     expect(create).toHaveBeenCalledWith(
       {
         model: resolveLlmModelId("nomic-embed"),
@@ -265,7 +267,7 @@ describe("streamed tool-name merging", () => {
     }
     vi.spyOn(client.chat.completions, "create").mockReturnValue(chunks() as any);
 
-    const result = await streamingChat([], { model: "selected-chat-b" }, () => {});
+    const result = await streamingChat([], { accountId: ACCOUNT, model: "selected-chat-b" }, () => {});
 
     expect(result.choices[0].message.tool_calls).toEqual([
       {
@@ -295,7 +297,7 @@ describe("transient stream retry", () => {
       )
       .mockReturnValueOnce(chunks() as any);
 
-    const result = await streamingChat([], { model: "selected-chat-b" }, () => {});
+    const result = await streamingChat([], { accountId: ACCOUNT, model: "selected-chat-b" }, () => {});
 
     expect(result.choices[0].message.content).toBe("recovered");
     expect(create).toHaveBeenCalledTimes(2);
@@ -307,7 +309,9 @@ describe("transient stream retry", () => {
       .spyOn(client.chat.completions, "create")
       .mockRejectedValueOnce(new OpenAI.APIError(400, undefined as any, "bad request", {} as any));
 
-    await expect(streamingChat([], { model: "selected-chat-b" }, () => {})).rejects.toThrow(/bad request/);
+    await expect(streamingChat([], { accountId: ACCOUNT, model: "selected-chat-b" }, () => {})).rejects.toThrow(
+      /bad request/
+    );
     expect(create).toHaveBeenCalledTimes(1);
   });
 
@@ -321,9 +325,9 @@ describe("transient stream retry", () => {
         new OpenAI.APIError(500, undefined as any, "engine protocol predict stream error", {} as any)
       );
 
-    await expect(streamingChat([], { model: "selected-chat-b", signal: controller.signal }, () => {})).rejects.toThrow(
-      /engine protocol/
-    );
+    await expect(
+      streamingChat([], { accountId: ACCOUNT, model: "selected-chat-b", signal: controller.signal }, () => {})
+    ).rejects.toThrow(/engine protocol/);
     expect(create).toHaveBeenCalledTimes(1);
   });
 

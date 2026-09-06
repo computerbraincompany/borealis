@@ -104,7 +104,7 @@ function agentCompletion(): AgentCompletion {
 
 async function acknowledgeRemoteEgress(accountId: string): Promise<void> {
   await storageRuntime().ledger.run(
-    "UPDATE users SET remote_egress_ack_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?",
+    "UPDATE users SET remote_egress_ack_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'),remote_egress_ack_origin='https://api.provider.example' WHERE id=?",
     [accountId]
   );
 }

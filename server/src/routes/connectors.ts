@@ -15,7 +15,7 @@ import { wakeConnectorPrepareWorkers, wakeIngestionWorkers } from "../ingest.js"
 import { completeSourceDeleteIntents } from "../sourceCleanup.js";
 import { SourceScopeError } from "../sourceScope.js";
 import { enforceRemoteEgressConsent } from "../egressPolicy.js";
-import { auditRemoteEgress } from "../egressAudit.js";
+import { auditRemoteEgressTarget } from "../egressAudit.js";
 import { storageRuntime } from "../storageRuntime.js";
 import {
   BODYLESS_MUTATION_LIMIT_BYTES,
@@ -90,8 +90,9 @@ export async function connectorRoutes(app: FastifyInstance): Promise<void> {
       } catch (error) {
         return sendConnectorError(reply, error);
       }
-      if (!(await enforceRemoteEgressConsent(reply, accountId))) return;
-      void auditRemoteEgress("remote_ingest", accountId);
+      const egressTarget = await enforceRemoteEgressConsent(reply, accountId);
+      if (!egressTarget) return;
+      void auditRemoteEgressTarget("remote_ingest", accountId, egressTarget);
       let parsed: ReturnType<typeof parseConnectorBody>;
       try {
         parsed = parseConnectorBody(req.body);
@@ -147,8 +148,9 @@ export async function connectorRoutes(app: FastifyInstance): Promise<void> {
     { onRequest: requireAuth, bodyLimit: BODYLESS_MUTATION_LIMIT_BYTES, schema: { params: idParamsSchema } },
     async (req, reply) => {
       const accountId = getAccountId(req);
-      if (!(await enforceRemoteEgressConsent(reply, accountId))) return;
-      void auditRemoteEgress("remote_ingest", accountId);
+      const egressTarget = await enforceRemoteEgressConsent(reply, accountId);
+      if (!egressTarget) return;
+      void auditRemoteEgressTarget("remote_ingest", accountId, egressTarget);
       const connectorId = (req.params as { id: string }).id;
       const connector = await storageRuntime().sources.getConnector(accountId, connectorId);
       if (!connector) return reply.code(404).send({ error: "connector not found" });
@@ -236,8 +238,9 @@ export async function connectorRoutes(app: FastifyInstance): Promise<void> {
       const accountId = getAccountId(req);
       // A schedule is a standing promise of egress-capable work, so it sits
       // behind the same remote-egress consent gate as sync.
-      if (!(await enforceRemoteEgressConsent(reply, accountId))) return;
-      void auditRemoteEgress("remote_ingest", accountId);
+      const egressTarget = await enforceRemoteEgressConsent(reply, accountId);
+      if (!egressTarget) return;
+      void auditRemoteEgressTarget("remote_ingest", accountId, egressTarget);
       const connectorId = (req.params as { id: string }).id;
       const connector = await storageRuntime().sources.getConnector(accountId, connectorId);
       if (!connector) return reply.code(404).send({ error: "connector not found" });

@@ -207,6 +207,16 @@ export function toPublicLlmSettings(snapshot: SettingsSnapshot): PublicLlmSettin
   };
 }
 
+/**
+ * The canonical, credential-free bare provider origin (Plan 005 parser): the
+ * exact `URL.origin` form, bounded by the Settings endpoint ceiling. It is the
+ * only representation durable consent may persist or compare. Never call it
+ * with credential- or payload-bearing input, and never log its failures.
+ */
+export function canonicalizeProviderOrigin(value: string): string {
+  return parseEndpointOrigin(value, "llm_base_url");
+}
+
 /** Compare loopback spellings without DNS, so localhost and 127.0.0.1 deduplicate. */
 export function modelEndpointOriginsEquivalent(left: string, right: string): boolean {
   const leftUrl = new URL(left);

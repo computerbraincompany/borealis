@@ -894,7 +894,11 @@ describe("model qualification route", () => {
       "owner@example.test",
       "hash",
     ]);
-    await runtime.chats.acknowledgeRemoteEgress(ACCOUNT_ID, "2026-08-31T00:00:00.000Z");
+    await runtime.chats.acknowledgeRemoteEgress(
+      ACCOUNT_ID,
+      "2026-08-31T00:00:00.000Z",
+      "https://new-provider.example.test"
+    );
     const app = await buildApp(store, { qualify: vi.fn(async () => successfulQualification) });
 
     const denied = await app.inject({

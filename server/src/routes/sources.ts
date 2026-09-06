@@ -15,7 +15,7 @@ import { isTabularSource, sanitizeDatasetName, wakeIngestionWorkers } from "../i
 import { publicIngestionFailure } from "../ingestionFailures.js";
 import { completeSourceDeleteIntents } from "../sourceCleanup.js";
 import { enforceRemoteEgressConsent } from "../egressPolicy.js";
-import { auditRemoteEgress } from "../egressAudit.js";
+import { auditRemoteEgressTarget } from "../egressAudit.js";
 import { storageRuntime } from "../storageRuntime.js";
 import { cleanupCreatedUploadResource, createUploadResourceDirectory } from "../storageArtifacts.js";
 import { BODYLESS_MUTATION_LIMIT_BYTES, IDENTIFIER_LIST_JSON_BODY_LIMIT_BYTES } from "./bodyLimits.js";
@@ -154,8 +154,9 @@ export async function sourceRoutes(app: FastifyInstance): Promise<void> {
       } catch (error) {
         return sendSourceError(reply, error);
       }
-      if (!(await enforceRemoteEgressConsent(reply, accountId))) return;
-      void auditRemoteEgress("remote_ingest", accountId);
+      const egressTarget = await enforceRemoteEgressConsent(reply, accountId);
+      if (!egressTarget) return;
+      void auditRemoteEgressTarget("remote_ingest", accountId, egressTarget);
       const file = await req.file();
       if (!file) return reply.code(400).send({ error: "no file" });
       const safeOriginal =
@@ -220,8 +221,9 @@ export async function sourceRoutes(app: FastifyInstance): Promise<void> {
     "/api/sources/:id/reingest",
     { onRequest: requireAuth, bodyLimit: BODYLESS_MUTATION_LIMIT_BYTES, schema: { params: idParamsSchema } },
     async (req, reply) => {
-      if (!(await enforceRemoteEgressConsent(reply, getAccountId(req)))) return;
-      void auditRemoteEgress("remote_ingest", getAccountId(req));
+      const egressTarget = await enforceRemoteEgressConsent(reply, getAccountId(req));
+      if (!egressTarget) return;
+      void auditRemoteEgressTarget("remote_ingest", getAccountId(req), egressTarget);
       try {
         const reservation = await embeddingMigrationCoordinator().runSourceMutation(() =>
           storageRuntime().sourceIngestion.reserveSourceReingest(getAccountId(req), (req.params as { id: string }).id)

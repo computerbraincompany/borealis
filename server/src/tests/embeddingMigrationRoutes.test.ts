@@ -12,11 +12,18 @@ import {
   type EmbeddingMigrationStatus,
 } from "../embeddingMigration.js";
 import { installHttpBoundary } from "../httpErrors.js";
+import type { RemoteEgressTarget } from "../egressPolicy.js";
 import type { ModelPairQualificationResult } from "../llm.js";
 import { createEmbeddingMigrationRoutes, MODEL_PAIR_NOT_QUALIFIED_CODE } from "../routes/embeddingMigration.js";
 import { createSettingsStore, type EffectiveLlmSettings, type SettingsStore } from "../settingsStore.js";
 
 const ACCOUNT = "11111111-1111-4111-8111-111111111111";
+const LOCAL_TARGET = Object.freeze({
+  revision: 1,
+  origin: "http://127.0.0.1:1234",
+  locality: "local",
+  host: null,
+}) as RemoteEgressTarget;
 const auth = { authorization: `Bearer ${signToken({ userId: ACCOUNT, email: "owner@example.test" })}` };
 const idle: EmbeddingMigrationStatus = {
   phase: "idle",
@@ -86,7 +93,7 @@ async function buildApp(options: {
   readonly store: SettingsStore;
   readonly coordinator?: EmbeddingMigrationOperations;
   readonly qualify?: (settings: EffectiveLlmSettings, dimension: number) => Promise<ModelPairQualificationResult>;
-  readonly consent?: (reply: FastifyReply, account: string) => Promise<boolean>;
+  readonly consent?: (reply: FastifyReply, account: string) => Promise<RemoteEgressTarget | null>;
 }): Promise<FastifyInstance> {
   const app = Fastify();
   apps.push(app);
@@ -96,7 +103,7 @@ async function buildApp(options: {
       coordinator: options.coordinator ?? operations(),
       store: options.store,
       ...(options.qualify ? { qualify: options.qualify } : {}),
-      ...(options.consent ? { consent: options.consent } : { consent: vi.fn(async () => true) }),
+      ...(options.consent ? { consent: options.consent } : { consent: vi.fn(async () => LOCAL_TARGET) }),
       audit: vi.fn(async () => undefined),
     })
   );
@@ -121,7 +128,7 @@ describe("managed embedding migration routes", () => {
     const store = await makeStore();
     const coordinator = operations();
     const qualifyPair = vi.fn(async () => qualified);
-    const consent = vi.fn(async () => true);
+    const consent = vi.fn(async () => LOCAL_TARGET);
     const app = await buildApp({ store, coordinator, qualify: qualifyPair, consent });
 
     const response = await app.inject({

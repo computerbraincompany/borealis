@@ -610,6 +610,11 @@ export class EmbeddingMigrationCoordinator implements EmbeddingMigrationOperatio
         const manifestRows = readManifestChunks(paths.manifest, cursor, EMBED_BATCH_SIZE);
         if (!manifestRows.length) throw new EmbeddingMigrationError("SNAPSHOT_DRIFT");
         const liveRows = await loadLiveChunks(this.#ledger(), manifestRows);
+        // Immediately before each provider transport, recheck the exact
+        // accounts represented by this batch against the same target origin.
+        // A replacement acknowledgment during the build stops the next batch
+        // before any of its content leaves the machine.
+        await this.#assertAccountsConsent([...new Set(liveRows.map((row) => row.accountId))], targetSettings);
         const providerVectors = await embed(
           liveRows.map((row) => row.content),
           signal
@@ -691,21 +696,39 @@ export class EmbeddingMigrationCoordinator implements EmbeddingMigrationOperatio
     if (available < required) throw new EmbeddingMigrationError("INSUFFICIENT_DISK", 507);
   }
 
+  /**
+   * Every affected account must acknowledge the exact canonical provider
+   * origin this migration transports to. A timestamp alone — or a pair bound
+   * to a different origin — fails closed with the existing stable code. Only
+   * aggregate state is persisted; account IDs never enter migration state.
+   */
+  async #assertAccountsConsent(accountIds: readonly string[], settings: EffectiveLlmSettings): Promise<void> {
+    if (!accountIds.length || !isRemoteProvider(settings.llmBaseUrl)) return;
+    const placeholders = accountIds.map(() => "?").join(",");
+    const rows = await this.#ledger().all<{
+      id: string;
+      remote_egress_ack_at: string | null;
+      remote_egress_ack_origin: string | null;
+    }>(`SELECT id,remote_egress_ack_at,remote_egress_ack_origin FROM users WHERE id IN (${placeholders})`, [
+      ...accountIds,
+    ]);
+    const consented = new Set(
+      rows
+        .filter((row) => row.remote_egress_ack_at !== null && row.remote_egress_ack_origin === settings.llmBaseUrl)
+        .map((row) => row.id)
+    );
+    if (accountIds.some((accountId) => !consented.has(accountId))) {
+      throw new EmbeddingMigrationError("REMOTE_EGRESS_CONSENT_REQUIRED", 403);
+    }
+  }
+
   async #assertRemoteAccountConsent(paths: ManifestPaths, settings: EffectiveLlmSettings): Promise<void> {
     if (!isRemoteProvider(settings.llmBaseUrl)) return;
     let cursor = "";
     for (;;) {
       const batch = readManifestAccounts(paths.manifest, cursor, SNAPSHOT_PAGE_SIZE);
       if (!batch.length) return;
-      const placeholders = batch.map(() => "?").join(",");
-      const rows = await this.#ledger().all<{ id: string; remote_egress_ack_at: string | null }>(
-        `SELECT id,remote_egress_ack_at FROM users WHERE id IN (${placeholders})`,
-        batch
-      );
-      const consented = new Set(rows.filter((row) => row.remote_egress_ack_at).map((row) => row.id));
-      if (batch.some((accountId) => !consented.has(accountId))) {
-        throw new EmbeddingMigrationError("REMOTE_EGRESS_CONSENT_REQUIRED", 403);
-      }
+      await this.#assertAccountsConsent(batch, settings);
       cursor = batch[batch.length - 1]!;
     }
   }

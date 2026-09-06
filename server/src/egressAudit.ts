@@ -1,5 +1,4 @@
-import { getEffectiveLlmSettings } from "./runtimeSettings.js";
-import { isRemoteProvider } from "./egressPolicy.js";
+import type { RemoteEgressTarget } from "./egressPolicy.js";
 import { storageRuntime } from "./storageRuntime.js";
 
 export type EgressEventKind = "consent_acknowledged" | "remote_turn" | "remote_ingest";
@@ -11,7 +10,7 @@ export interface EgressEvent {
   readonly created_at: string;
 }
 
-const MAX_EGRESS_HOST_CHARS = 255;
+export const MAX_EGRESS_HOST_CHARS = 255;
 
 /**
  * Content-free egress audit: who, what kind, which endpoint host, when. Best
@@ -34,21 +33,19 @@ export async function recordEgressEvent(
   }
 }
 
-/** Records a remote-egress event when the configured provider is remote. */
-export async function auditRemoteEgress(kind: EgressEventKind, accountId: string): Promise<void> {
-  try {
-    const settings = await getEffectiveLlmSettings();
-    if (!isRemoteProvider(settings.llmBaseUrl)) return;
-    let host: string | null = null;
-    try {
-      host = new URL(settings.llmBaseUrl).host || null;
-    } catch {
-      host = null;
-    }
-    await recordEgressEvent(kind, accountId, host);
-  } catch {
-    // Best effort.
-  }
+/**
+ * Records a remote-egress receipt for an operation already authorized against
+ * this exact target. It never re-reads live Settings, so an A-authorized
+ * operation can never be attributed to a later provider B. Local/private
+ * targets emit nothing, matching the settled pre-plan behavior.
+ */
+export async function auditRemoteEgressTarget(
+  kind: EgressEventKind,
+  accountId: string,
+  target: RemoteEgressTarget
+): Promise<void> {
+  if (target.locality !== "remote") return;
+  await recordEgressEvent(kind, accountId, target.host);
 }
 
 export async function listEgressEvents(accountIdValue: string, limitValue: number): Promise<EgressEvent[]> {

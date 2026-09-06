@@ -151,9 +151,9 @@ describe("SQLite ledger foundation", () => {
       "https://api.provider.example",
       account,
     ]);
-    await expect(
-      ledger.get("SELECT remote_egress_ack_origin FROM users WHERE id=?", [account])
-    ).resolves.toEqual({ remote_egress_ack_origin: "https://api.provider.example" });
+    await expect(ledger.get("SELECT remote_egress_ack_origin FROM users WHERE id=?", [account])).resolves.toEqual({
+      remote_egress_ack_origin: "https://api.provider.example",
+    });
 
     await ledger.run("UPDATE users SET remote_egress_ack_origin=? WHERE id=?", ["o".repeat(2048), account]);
     await expect(
@@ -161,9 +161,9 @@ describe("SQLite ledger foundation", () => {
     ).rejects.toMatchObject({ kind: "check" });
 
     await ledger.run("UPDATE users SET remote_egress_ack_origin=NULL WHERE id=?", [account]);
-    await expect(
-      ledger.get("SELECT remote_egress_ack_origin FROM users WHERE id=?", [account])
-    ).resolves.toEqual({ remote_egress_ack_origin: null });
+    await expect(ledger.get("SELECT remote_egress_ack_origin FROM users WHERE id=?", [account])).resolves.toEqual({
+      remote_egress_ack_origin: null,
+    });
   });
 
   it("keeps migrations idempotent and rejects a newer on-disk schema", async () => {

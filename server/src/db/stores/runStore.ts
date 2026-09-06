@@ -1000,11 +1000,14 @@ export class RunStore {
       shared_at?: unknown;
       created_at?: unknown;
     }>(
+      // CROSS JOIN pins the share-driven join order so the recipient keyset
+      // index stays the driver after the v14 users column shifted the
+      // statistics-based planner (see the catalog query-plan evidence gate).
       `SELECT r.id,r.title,r.subtitle,r.version,r.account_id AS owner_account_id,
               u.email AS owner_email,rs.shared_at,r.created_at
        FROM report_shares rs
-       JOIN reports r ON r.id=rs.report_id AND r.account_id=rs.owner_account_id AND r.status='published'
-       JOIN users u ON u.id=rs.owner_account_id
+       CROSS JOIN reports r ON r.id=rs.report_id AND r.account_id=rs.owner_account_id AND r.status='published'
+       CROSS JOIN users u ON u.id=rs.owner_account_id
        WHERE rs.recipient_account_id=?${after}
        ORDER BY rs.shared_at DESC,rs.report_id DESC LIMIT ?`,
       parameters

@@ -23,8 +23,10 @@ export async function consentRoutes(app: FastifyInstance): Promise<void> {
     },
     async (req, reply) => {
       const accountId = getAccountId(req);
-      const state = await acknowledgeRemoteEgress(accountId);
-      await recordEgressEvent("consent_acknowledged", accountId, state.endpoint_host);
+      // The result names only the host this call actually persisted; a local/
+      // private POST neither rewrites the remembered pair nor emits an event.
+      const { state, auditHost } = await acknowledgeRemoteEgress(accountId);
+      if (auditHost !== null) await recordEgressEvent("consent_acknowledged", accountId, auditHost);
       return reply.send(state);
     }
   );

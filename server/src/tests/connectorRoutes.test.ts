@@ -611,7 +611,7 @@ describe("connector schedule and sync history", () => {
     await expect(connectorSyncAutomationRows()).resolves.toEqual([]);
 
     await storageRuntime().ledger.run(
-      "UPDATE users SET remote_egress_ack_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?",
+      "UPDATE users SET remote_egress_ack_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'),remote_egress_ack_origin='https://api.provider.example' WHERE id=?",
       [ACCOUNT]
     );
     const allowed = await app.inject({

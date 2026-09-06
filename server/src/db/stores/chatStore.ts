@@ -19,6 +19,7 @@ import {
   encodeJson,
 } from "../codecs.js";
 import { SqliteConstraintError, type SqliteLedger, type SqliteTransaction } from "../types.js";
+import { canonicalizeProviderOrigin } from "../../settingsStore.js";
 
 export const MAX_CHAT_SOURCE_SCOPE = 100;
 export const MAX_CHAT_HISTORY_PAGE = 100;
@@ -110,6 +111,17 @@ export interface StoredUser {
   readonly email: string;
   readonly password_hash: string;
   readonly created_at: string;
+}
+
+/**
+ * The durable provider-bound remote-egress consent pair from schema v4's
+ * timestamp and v14's canonical origin. Both fields are independently nullable;
+ * a timestamp without a matching origin never authorizes a remote provider.
+ */
+export interface StoredRemoteEgressAcknowledgment {
+  readonly acknowledgedAt: string | null;
+  /** The canonical bare remote origin, or null when absent/unusable. Never returned publicly. */
+  readonly origin: string | null;
 }
 
 export interface ChatSummary {
@@ -277,6 +289,11 @@ interface ActiveRunRow {
 function requiredString(value: unknown, field: string): string {
   if (typeof value !== "string") throw new TypeError(`${field} is not stored as text`);
   return value;
+}
+
+function optionalStoredString(value: unknown): string | null {
+  // A stored value that is not a usable non-empty string fails closed to null.
+  return typeof value === "string" && value.length > 0 ? value : null;
 }
 
 function inputString(value: string, field: string, maximum = MAX_ID_CHARS): string {
@@ -505,22 +522,37 @@ export class ChatStore {
     return row ? decodeUser(row) : undefined;
   }
 
-  async getRemoteEgressAckAt(accountIdValue: string): Promise<string | null> {
-    const row = await this.ledger.get<{ remote_egress_ack_at?: unknown }>(
-      "SELECT remote_egress_ack_at FROM users WHERE id=?",
+  /**
+   * The stored provider-bound consent pair (schema v14). A malformed, empty,
+   * or non-string stored value decodes to `null` so callers fail closed
+   * without ever seeing the unusable raw value.
+   */
+  async getRemoteEgressAcknowledgment(accountIdValue: string): Promise<StoredRemoteEgressAcknowledgment> {
+    const row = await this.ledger.get<{ remote_egress_ack_at?: unknown; remote_egress_ack_origin?: unknown }>(
+      "SELECT remote_egress_ack_at,remote_egress_ack_origin FROM users WHERE id=?",
       [identity(accountIdValue, "account id")]
     );
     if (!row) throw new StoreNotFoundError("user");
-    const raw = row.remote_egress_ack_at;
-    return raw === null || raw === undefined ? null : requiredString(raw, "remote egress acknowledgment");
+    return {
+      acknowledgedAt: optionalStoredString(row.remote_egress_ack_at),
+      origin: optionalStoredString(row.remote_egress_ack_origin),
+    };
   }
 
-  async acknowledgeRemoteEgress(accountIdValue: string, acknowledgedAtValue: string): Promise<void> {
+  /** Atomically persist the timestamp/canonical-origin pair for one acknowledgment. */
+  async acknowledgeRemoteEgress(
+    accountIdValue: string,
+    acknowledgedAtValue: string,
+    originValue: string
+  ): Promise<void> {
     const acknowledgedAt = inputString(acknowledgedAtValue, "remote egress acknowledgment", 64);
-    const updated = await this.ledger.run("UPDATE users SET remote_egress_ack_at=? WHERE id=?", [
-      acknowledgedAt,
-      identity(accountIdValue, "account id"),
-    ]);
+    // Only the canonical bare origin returned by the Settings endpoint parser
+    // is writable; its length ceiling is enforced here and by the column CHECK.
+    const origin = canonicalizeProviderOrigin(originValue);
+    const updated = await this.ledger.run(
+      "UPDATE users SET remote_egress_ack_at=?,remote_egress_ack_origin=? WHERE id=?",
+      [acknowledgedAt, origin, identity(accountIdValue, "account id")]
+    );
     if (updated.changes !== 1) throw new StoreNotFoundError("user");
   }
 

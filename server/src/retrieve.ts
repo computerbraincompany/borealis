@@ -12,7 +12,7 @@ export async function retrieve(
   signal?: AbortSignal
 ): Promise<RetrievedPassage[]> {
   if (!query.trim() || !allowedSourceIds.length) return [];
-  const [vec] = await embed([query], signal);
+  const [vec] = await embed([query], { accountId, signal });
   if (signal?.aborted) throw signal.reason;
   const runtime = storageRuntime();
   return [

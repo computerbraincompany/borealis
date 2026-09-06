@@ -1,6 +1,6 @@
 import { beginRun, completeRunWithAssistant, finishRunDurably } from "./chatRuns.js";
-import { requireRemoteEgressConsent } from "./egressPolicy.js";
-import { auditRemoteEgress } from "./egressAudit.js";
+import { authorizeRemoteEgressOperation } from "./egressPolicy.js";
+import { auditRemoteEgressTarget } from "./egressAudit.js";
 import { publicAgentFailureMessage } from "./routes/chats.js";
 import { runAgent } from "./agent.js";
 import { acceptChatTurn } from "./turnContext.js";
@@ -55,15 +55,19 @@ export function createAutomationRunner(dependencies: AutomationRunnerDependencie
   }
 
   async function executeConnectorSync(automationId: string, accountId: string, connectorId: string): Promise<void> {
+    // Recheck the exact provider-bound consent before connector lookup,
+    // refresh reservation, download, or any provider work; a stale pair for a
+    // switched origin skips with only the bounded generic outcome recorded.
+    let egressTarget;
     try {
-      await requireRemoteEgressConsent(accountId);
+      egressTarget = await authorizeRemoteEgressOperation(accountId);
     } catch {
       await store.recordRun(automationId, accountId, "skipped", "remote egress consent is required");
       return;
     }
     // The scheduled path bypasses the connector routes that normally audit
     // remote ingest themselves; keep the receipt best effort like agent turns.
-    void auditRemoteEgress("remote_ingest", accountId);
+    void auditRemoteEgressTarget("remote_ingest", accountId, egressTarget);
     const startedAt = now().toISOString();
     const connector = await storageRuntime().sources.getConnector(accountId, connectorId);
     if (!connector) {
@@ -122,13 +126,16 @@ export function createAutomationRunner(dependencies: AutomationRunnerDependencie
     chatId: string,
     prompt: string
   ): Promise<void> {
+    let egressTarget;
     try {
-      await requireRemoteEgressConsent(accountId);
+      egressTarget = await authorizeRemoteEgressOperation(accountId);
     } catch {
       await store.recordRun(automationId, accountId, "skipped", "remote egress consent is required");
       return;
     }
-    void auditRemoteEgress("remote_turn", accountId);
+    void auditRemoteEgressTarget("remote_turn", accountId, egressTarget);
+    // The account-scoped streaming LLM boundary remains the final race check.
+
     let turn;
     try {
       turn = await acceptChatTurn(accountId, chatId, prompt);

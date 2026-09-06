@@ -4,7 +4,8 @@ import { appLog } from "./appLogger.js";
 import { normalizeEmbeddingVectorValues } from "./embeddingVector.js";
 import { publicLlmModelId, resolveLlmModelId, sameLlmModel } from "./llmAliases.js";
 import { DEFAULT_LLM_SETTINGS, type EffectiveLlmSettings } from "./settingsStore.js";
-import { getRuntimeSettings } from "./runtimeSettings.js";
+import { getRuntimeSettings, type RuntimeSettingsSnapshot } from "./runtimeSettings.js";
+import { authorizeRemoteEgressTarget, remoteEgressTargetFromSnapshot } from "./egressPolicy.js";
 import { isValidToolCallId, MAX_TOOL_CALL_ID_CHARS } from "./toolCallContract.js";
 
 interface LlmRuntimeBundle {
@@ -110,9 +111,22 @@ export async function discoverChatModels(options: { refresh?: boolean } = {}): P
   return (await getLlmRuntime()).discover(options);
 }
 
-export async function embed(texts: string[], signal?: AbortSignal): Promise<number[][]> {
-  const runtime = await getLlmRuntime();
-  return embedWithClient(runtime.client, runtime.settings.embedModel, texts, signal);
+/** Options for the ordinary account-owned embedding boundary. */
+export interface EmbedOptions {
+  /** The owning account whose remote-egress consent authorizes this call. */
+  readonly accountId: string;
+  readonly signal?: AbortSignal;
+}
+
+/**
+ * Ordinary account-owned query embedding: one snapshot capture, consent
+ * authorization of that exact revision's credential-free target, and transport
+ * only through the client built from that same snapshot. A Settings switch to
+ * an unacknowledged origin after capture cannot retarget the call.
+ */
+export async function embed(texts: string[], options: EmbedOptions): Promise<number[][]> {
+  const runtime = await authorizedAccountRuntime(options.accountId);
+  return embedWithClient(runtime.client, runtime.settings.embedModel, texts, options.signal);
 }
 
 /** Build an operation-scoped embedder for a qualified migration target. */
@@ -156,6 +170,8 @@ export type ChatMessage = OpenAI.Chat.ChatCompletionMessageParam;
 
 export interface ChatOptions {
   model: string;
+  /** The owning account whose remote-egress consent authorizes every call. */
+  accountId: string;
   maxTokens?: number;
   temperature?: number;
   json?: boolean;
@@ -689,7 +705,7 @@ export function createThinkSplitter(onDelta: (text: string) => void, onReasoning
 }
 
 export async function chatOnce(messages: ChatMessage[], opts: ChatOptions): Promise<OpenAI.Chat.ChatCompletion> {
-  const client = (await getLlmRuntime()).client;
+  const client = (await authorizedAccountRuntime(opts.accountId)).client;
   const body: OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming = {
     model: resolveLlmModelId(opts.model),
     messages,
@@ -728,7 +744,7 @@ export async function streamingChat(
   opts: StreamingChatOptions,
   onDelta: (text: string) => void
 ): Promise<OpenAI.Chat.ChatCompletion> {
-  const client = (await getLlmRuntime()).client;
+  const client = (await authorizedAccountRuntime(opts.accountId)).client;
   const body = {
     model: resolveLlmModelId(opts.model),
     messages,
@@ -813,23 +829,43 @@ async function streamOnce(
   return merged;
 }
 
-async function getLlmRuntime(): Promise<LlmRuntimeBundle> {
-  const snapshot = await getRuntimeSettings();
-  if (cachedRuntime?.revision === snapshot.revision) return cachedRuntime;
+/**
+ * Resolve the revision-scoped runtime, building from the supplied captured
+ * snapshot when one is given. Revision equality means equal effective settings,
+ * so a captured snapshot reuses the cache instead of re-reading Settings.
+ */
+async function getLlmRuntime(snapshot?: RuntimeSettingsSnapshot): Promise<LlmRuntimeBundle> {
+  const current = snapshot ?? (await getRuntimeSettings());
+  if (cachedRuntime?.revision === current.revision) return cachedRuntime;
 
-  const client = createOpenAiClient(snapshot.settings);
+  const client = createOpenAiClient(current.settings);
   const runtime: LlmRuntimeBundle = {
-    revision: snapshot.revision,
-    settings: snapshot.settings,
+    revision: current.revision,
+    settings: current.settings,
     client,
     discover: createChatModelDiscovery({
-      configuredEmbeddingModel: snapshot.settings.embedModel,
+      configuredEmbeddingModel: current.settings.embedModel,
       listModels: () => client.models.list({ timeout: 5_000, maxRetries: 0 }),
       warn: () => appLog.warn({ error_code: "MODEL_DISCOVERY_UNAVAILABLE" }, "model discovery unavailable"),
     }),
   };
   cachedRuntime = runtime;
   return runtime;
+}
+
+/**
+ * The account-scoped boundary for ordinary workspace-content model traffic:
+ * capture Settings exactly once, authorize that revision's credential-free
+ * target against the owning account's provider-bound consent, and obtain the
+ * SDK runtime for that same captured snapshot. Nothing credential-bearing
+ * leaves this module, and no second Settings read can retarget the payload.
+ * The settings-explicit `qualifyModelPair`/`createEmbeddingExecutor` paths and
+ * the body-free model discovery stay outside this gate by contract.
+ */
+async function authorizedAccountRuntime(accountId: string): Promise<LlmRuntimeBundle> {
+  const snapshot = await getRuntimeSettings();
+  await authorizeRemoteEgressTarget(accountId, remoteEgressTargetFromSnapshot(snapshot));
+  return getLlmRuntime(snapshot);
 }
 
 export function createOpenAiClient(settings: EffectiveLlmSettings): OpenAI {

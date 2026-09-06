@@ -68,7 +68,7 @@ describe("runAgent model snapshot", () => {
     expect(chatOnceMock).not.toHaveBeenCalled();
     expect(streamingChatMock).toHaveBeenCalledWith(
       expect.any(Array),
-      expect.objectContaining({ model: "selected-chat-model" }),
+      expect.objectContaining({ accountId: "account-1", model: "selected-chat-model" }),
       expect.any(Function)
     );
     expect(completion).toEqual({

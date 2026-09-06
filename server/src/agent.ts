@@ -278,6 +278,7 @@ export async function runAgent(opts: {
       res = await streamingChat(
         [requestSystem, ...messages],
         {
+          accountId,
           model,
           maxTokens: 8192,
           tools: finalizing
