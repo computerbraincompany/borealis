@@ -218,3 +218,29 @@ investigate supported alternatives and record evidence. Do not mark complete,
 ship a disabled stub as the feature, or fall back to plaintext renderer secrets.
 Any newly discovered need for generic process execution, broad preload access,
 or external write automation requires a separate explicit scope decision.
+
+## Implementation status — 2026-09-06
+
+Stages 1–5 of this specification are merged on `main` and stage 6 aligned the
+documentation: the schema v17 connection/tool-snapshot ledger, the reusable
+connection secret store, and the `CONNECTION_*` routes; the pinned
+`@modelcontextprotocol/sdk` 1.30.0 Streamable HTTP and stdio transports
+(negotiated protocol `2025-11-25`) with bounded, budgeted discovery; PKCE
+authorization-code sign-in with the backend-owned loopback one-use callback and
+the packaged-desktop one-time system-browser open-intent flow; frozen per-run
+connected-tool snapshots in `chat_runs.agent_mcp_tools` (schema v21) with
+per-call revocation/custody re-checks, write-tool default-deny, and no
+sampling/roots/elicitation/delegation capabilities; versioned job setup with
+`GET /api/jobs` and selected-empty chat-from-job confirmation; and the
+Settings → Connections panel, AgentEditor Connected/Job tabs, and
+job-confirmation card, with packaged-desktop `safeStorage` key custody and the
+three-operation preload. The M14 knowledge transport already reuses the shared
+secret store without changing MCP semantics, and archive/restore already
+retains ledger work while forcing every connection back to an actionable
+reconnect state. The shipped contracts are recorded in [API.md](API.md) under
+"Connections (Connected agents)", "Connected tools in durable chat turns", and
+"Jobs", with runtime invariants in [AGENTS.md](../AGENTS.md) and
+[desktop/README.md](../desktop/README.md). The completion checkboxes above stay
+open until the coordinator records final packaged/live-model acceptance evidence
+in [END_TO_END_ACCEPTANCE.md](END_TO_END_ACCEPTANCE.md) and
+[milestones/EXECUTION.md](../milestones/EXECUTION.md).
