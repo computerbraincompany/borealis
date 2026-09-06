@@ -20,7 +20,10 @@ export type CatalogEndpoint =
   | "agents"
   | "libraries"
   | "automations"
-  | "connections";
+  | "connections"
+  | "analyses"
+  | "analysis_runs"
+  | "analysis_results";
 
 export interface CatalogPosition {
   readonly timestamp: string;

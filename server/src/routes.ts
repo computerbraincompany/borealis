@@ -1,4 +1,5 @@
 import { agentSkillRoutes } from "./routes/agentSkills.js";
+import { analysisRoutes } from "./routes/analyses.js";
 import type { FastifyInstance } from "fastify";
 import swagger from "@fastify/swagger";
 import { authRoutes, requireAuth, installAccountSessionValidation } from "./auth.js";
@@ -80,6 +81,7 @@ export async function routes(app: FastifyInstance, options: RoutesOptions = {}):
     automationScheduler: options.automationScheduler ?? STOPPED_AUTOMATION_SCHEDULER,
   });
   await app.register(chatRoutes);
+  await app.register(analysisRoutes);
   await app.register(sourceRoutes);
   await app.register(libraryRoutes);
   await app.register(agentRoutes);

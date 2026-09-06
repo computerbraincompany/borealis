@@ -18,6 +18,17 @@ import {
   CONNECTOR_URL_MAX_CHARS,
   PREFERENCE_MODEL_MAX_CHARS,
 } from "./schemas.js";
+import {
+  ANALYSIS_COMPARISON_KEY_MAX_COLUMNS,
+  ANALYSIS_DESCRIPTION_MAX_CHARS,
+  ANALYSIS_LABEL_MAX_CHARS,
+  ANALYSIS_PARAMETER_MAX_COUNT,
+  ANALYSIS_PARAMETER_STRING_MAX_CHARS,
+  ANALYSIS_RESULT_COLUMN_NAME_MAX_CHARS,
+  ANALYSIS_SOURCE_MAX_COUNT,
+  ANALYSIS_SQL_MAX_CHARS,
+  ANALYSIS_TITLE_MAX_CHARS,
+} from "../analysisTypes.js";
 
 /**
  * Request-body ceilings used at the Fastify parser boundary.
@@ -74,4 +85,36 @@ export const CONNECTION_JSON_BODY_LIMIT_BYTES =
     MAX_SECRET_NAME_CHARS * (MAX_SECRET_HEADER_ENTRIES + MAX_SECRET_ENV_ENTRIES) +
     MAX_SECRET_VALUE_CHARS * (MAX_SECRET_HEADER_ENTRIES + MAX_SECRET_ENV_ENTRIES)) *
     MAX_JSON_BYTES_PER_CODE_POINT +
+  OBJECT_KEYS_AND_SYNTAX_HEADROOM_BYTES;
+
+/**
+ * Saved-analysis definition create/edit contract (M12): full SQL, description,
+ * comparison key, 100 UUID source ids, and up to 20 parameter declarations
+ * (each carrying a name, label, description, and typed default), all escaped
+ * astrally. The durable semantic bounds live in `analysisTypes.ts`; this is
+ * the transport ceiling derived from them.
+ */
+export const ANALYSIS_DEFINITION_JSON_BODY_LIMIT_BYTES =
+  (ANALYSIS_TITLE_MAX_CHARS +
+    ANALYSIS_DESCRIPTION_MAX_CHARS +
+    ANALYSIS_SQL_MAX_CHARS +
+    ANALYSIS_COMPARISON_KEY_MAX_COLUMNS * ANALYSIS_RESULT_COLUMN_NAME_MAX_CHARS +
+    ANALYSIS_SOURCE_MAX_COUNT * 36 +
+    ANALYSIS_PARAMETER_MAX_COUNT *
+      (64 + ANALYSIS_LABEL_MAX_CHARS + ANALYSIS_DESCRIPTION_MAX_CHARS + ANALYSIS_PARAMETER_STRING_MAX_CHARS)) *
+    MAX_JSON_BYTES_PER_CODE_POINT +
+  OBJECT_KEYS_AND_SYNTAX_HEADROOM_BYTES;
+
+/**
+ * Saved-analysis run acceptance: at most 20 typed parameter values (string
+ * values bounded at the durable limit) plus the operation UUID, escaped
+ * astrally.
+ */
+export const ANALYSIS_RUN_JSON_BODY_LIMIT_BYTES =
+  (ANALYSIS_PARAMETER_MAX_COUNT * ANALYSIS_PARAMETER_STRING_MAX_CHARS + 64) * MAX_JSON_BYTES_PER_CODE_POINT +
+  OBJECT_KEYS_AND_SYNTAX_HEADROOM_BYTES;
+
+/** Query-capture promotion contract: bounded title/description plus the key. */
+export const ANALYSIS_PROMOTION_JSON_BODY_LIMIT_BYTES =
+  (ANALYSIS_TITLE_MAX_CHARS + ANALYSIS_DESCRIPTION_MAX_CHARS + 36 + 600) * MAX_JSON_BYTES_PER_CODE_POINT +
   OBJECT_KEYS_AND_SYNTAX_HEADROOM_BYTES;
