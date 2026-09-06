@@ -3,6 +3,7 @@ import path from "node:path";
 
 import { closeElectronRenderPort, configureElectronRenderPort, type ElectronParentPort } from "./electronRender.js";
 import { extractPdfText } from "./ingestSupport.js";
+import { acceptDesktopGrantMessage } from "./knowledge/grants.js";
 import { buildRasterOnlyOcrSmokePdf } from "./ocrSmokePdf.js";
 import { createDeferredServiceLifecycle } from "./desktopLifecycle.js";
 import { startBorealisServer, type RunningBorealisServer } from "./serverApp.js";
@@ -124,7 +125,12 @@ if (process.argv.includes(PACKAGED_NATIVE_SMOKE_ARGUMENT)) {
       void lifecycle.stop().catch(() => {
         process.exitCode = 1;
       });
+      return;
     }
+    // The one other main→backend kind: a native folder-selection grant.
+    // `acceptDesktopGrantMessage` fails closed on anything malformed and
+    // never throws, so an unrecognized message is ignored here.
+    void acceptDesktopGrantMessage(message).catch(() => undefined);
   });
   process.once("SIGTERM", () => void lifecycle.stop());
   process.once("SIGINT", () => void lifecycle.stop());

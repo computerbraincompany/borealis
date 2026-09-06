@@ -29,6 +29,8 @@ import {
   ANALYSIS_SQL_MAX_CHARS,
   ANALYSIS_TITLE_MAX_CHARS,
 } from "../analysisTypes.js";
+import { MAX_KNOWLEDGE_RELATIVE_PATH_CHARS } from "../db/stores/knowledgeStore.js";
+import { MAX_DIRECTORY_IMPORT_ITEMS } from "../db/stores/directoryImportStore.js";
 
 import { DOCUMENT_REVISION_PAYLOAD_MAX_CHARS } from "../documentTypes.js";
 /**
@@ -69,6 +71,18 @@ export const CONNECTOR_JSON_BODY_LIMIT_BYTES =
 
 /** Account model preference, including an escaped astral model identifier. */
 export const PREFERENCE_JSON_BODY_LIMIT_BYTES = PREFERENCE_MODEL_MAX_CHARS * MAX_JSON_BYTES_PER_CODE_POINT + 1024;
+
+/**
+ * Browser directory-import manifest (M14 stage 2): one hundred items of a
+ * UUID plus a maximally escaped 1,024-character managed relative path, plus
+ * the operation UUID and revision fields. The durable semantic limits live
+ * in `db/stores/directoryImportStore.ts`.
+ */
+export const DIRECTORY_IMPORT_JSON_BODY_LIMIT_BYTES =
+  MAX_DIRECTORY_IMPORT_ITEMS *
+    (MAX_KNOWLEDGE_RELATIVE_PATH_CHARS * MAX_JSON_BYTES_PER_CODE_POINT + 36 * MAX_JSON_BYTES_PER_CODE_POINT + 128) +
+  (36 + 24) * MAX_JSON_BYTES_PER_CODE_POINT +
+  OBJECT_KEYS_AND_SYNTAX_HEADROOM_BYTES;
 
 /**
  * Connection create/edit contract: bounded name, endpoint URL or absolute

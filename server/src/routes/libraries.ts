@@ -2,20 +2,31 @@ import type { FastifyInstance, FastifyReply } from "fastify";
 import { getAccountId, requireAuth } from "../auth.js";
 import { catalogPageQuerySchema, catalogResponse, parseCatalogPageQuery } from "../catalogPagination.js";
 import {
+  commitDirectoryImport,
+  DirectoryImportError,
+  LibraryRevisionConflictError,
+  libraryMembershipRevision,
+  MAX_DIRECTORY_IMPORT_ITEMS,
+} from "../db/stores/directoryImportStore.js";
+import {
   DuplicateLibraryError,
   LibraryMemberMissingError,
   LibraryNotFoundError,
   MAX_LIBRARY_MEMBERS,
   MAX_LIBRARY_NAME_CHARS,
 } from "../db/stores/libraryStore.js";
+import { MAX_KNOWLEDGE_RELATIVE_PATH_CHARS } from "../db/stores/knowledgeStore.js";
 import type { SourceRecord } from "../db/stores/sourceStore.js";
 import { storageRuntime } from "../storageRuntime.js";
 import {
   BODYLESS_MUTATION_LIMIT_BYTES,
   COMPACT_JSON_BODY_LIMIT_BYTES,
+  DIRECTORY_IMPORT_JSON_BODY_LIMIT_BYTES,
   IDENTIFIER_LIST_JSON_BODY_LIMIT_BYTES,
 } from "./bodyLimits.js";
 import { idParamsSchema } from "./schemas.js";
+
+const UUID_JSON = "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$";
 
 const libraryBodySchema = {
   type: "object",
@@ -23,6 +34,30 @@ const libraryBodySchema = {
   additionalProperties: false,
   properties: {
     name: { type: "string", minLength: 1, maxLength: MAX_LIBRARY_NAME_CHARS, pattern: "\\S" },
+  },
+} as const;
+
+const directoryImportBodySchema = {
+  type: "object",
+  required: ["operation_id", "expected_revision", "items"],
+  additionalProperties: false,
+  properties: {
+    operation_id: { type: "string", pattern: UUID_JSON },
+    expected_revision: { type: "integer", minimum: 0, maximum: 9_007_199_254_740_991 },
+    items: {
+      type: "array",
+      minItems: 1,
+      maxItems: MAX_DIRECTORY_IMPORT_ITEMS,
+      items: {
+        type: "object",
+        required: ["source_id", "relative_path"],
+        additionalProperties: false,
+        properties: {
+          source_id: { type: "string", pattern: UUID_JSON },
+          relative_path: { type: "string", minLength: 1, maxLength: MAX_KNOWLEDGE_RELATIVE_PATH_CHARS },
+        },
+      },
+    },
   },
 } as const;
 
@@ -80,6 +115,21 @@ function sendLibraryError(reply: FastifyReply, error: unknown): boolean {
   return false;
 }
 
+function sendDirectoryImportError(reply: FastifyReply, error: unknown): boolean {
+  if (sendLibraryError(reply, error)) return true;
+  if (error instanceof LibraryRevisionConflictError) {
+    reply
+      .code(error.statusCode)
+      .send({ error: "the library membership changed; reload before committing", code: error.code });
+    return true;
+  }
+  if (error instanceof DirectoryImportError) {
+    reply.code(error.statusCode).send({ error: error.message, code: error.code });
+    return true;
+  }
+  return false;
+}
+
 export async function libraryRoutes(app: FastifyInstance): Promise<void> {
   app.get(
     "/api/libraries",
@@ -113,8 +163,40 @@ export async function libraryRoutes(app: FastifyInstance): Promise<void> {
     const library = await storageRuntime().libraries.getLibrary(accountId, libraryId);
     if (!library) return reply.code(404).send({ error: "library not found" });
     const members = await storageRuntime().libraries.listMembers(accountId, libraryId);
-    return reply.send({ ...library, members: members.map(sourceToApi) });
+    // The derived membership revision is the compare-and-swap token for
+    // directory imports; it changes whenever the member set changes.
+    const revision = libraryMembershipRevision(
+      libraryId,
+      members.map((member) => member.id)
+    );
+    return reply.send({ ...library, revision, members: members.map(sourceToApi) });
   });
+
+  // Browser copied-directory import (M14 stage 2): commits an idempotent,
+  // operation-UUID-keyed manifest of already-uploaded owned sources against
+  // the exact library membership revision. Creates no refreshable connection.
+  app.post(
+    "/api/libraries/:id/directory-imports",
+    {
+      onRequest: requireAuth,
+      bodyLimit: DIRECTORY_IMPORT_JSON_BODY_LIMIT_BYTES,
+      schema: { params: idParamsSchema, body: directoryImportBodySchema },
+    },
+    async (req, reply) => {
+      try {
+        const result = await commitDirectoryImport(
+          storageRuntime().ledger,
+          getAccountId(req),
+          (req.params as any).id,
+          req.body as any
+        );
+        return reply.send(result);
+      } catch (error) {
+        if (sendDirectoryImportError(reply, error)) return;
+        throw error;
+      }
+    }
+  );
 
   app.patch(
     "/api/libraries/:id",
