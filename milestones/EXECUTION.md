@@ -70,7 +70,7 @@ Store only content-free summaries and synthetic fixture artifact references.
 
 ## Decisions and unresolved blockers
 
-Open small follow-ups (queued, none blocking): (1) fix two stale code comments (oauthCallback.ts header claims a main-owned listener that is never installed; desktopCustody.ts archive sentence contradicts workspaceArchive exclusions). (2) Decide+test whether the desktop connection-custody/ sealed-key envelope should join NONPORTABLE archive exclusions (currently rides archives as unsealable ciphertext). (3) M15 s4 will add the research UI; M16 s3 review decisions + s4 briefs UI; journeys E/F after their UIs.
+Open small follow-ups (queued, none blocking): (1) DONE f1c194e: the two stale code comments (oauthCallback.ts, desktopCustody.ts) now state shipped behavior. (2) Decide+test whether the desktop connection-custody/ sealed-key envelope should join NONPORTABLE archive exclusions (currently rides archives as unsealable ciphertext). (3) M15 s4 will add the research UI; M16 s3 review decisions + s4 briefs UI; journeys E/F after their UIs.
 
 Record new integration decisions here with affected spec links. Do not silently
 remove a requirement, relax an invariant, or label a blocker as completion.
