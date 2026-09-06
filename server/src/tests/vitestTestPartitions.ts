@@ -21,6 +21,7 @@ export const INTEGRATION_TEST_FILES = Object.freeze([
   "src/tests/chatStore.test.ts",
   "src/tests/connectionStore.test.ts",
   "src/tests/connectorRefreshStore.test.ts",
+  "src/tests/documentStore.test.ts",
   "src/tests/runStore.test.ts",
   "src/tests/sqliteFoundation.test.ts",
   "src/tests/sqliteSourceStore.test.ts",
