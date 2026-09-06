@@ -1746,17 +1746,18 @@ MiB with an explicit `at_limit` state. Restart retries an interrupted step at
 most once under the same identity; budget exhaustion is a `needs_review` settle
 in the stage-2 runner, never a claim of exhaustive completion.
 
-### Reviewed briefs (M16 — stage 1: store, calendar, and recipe API)
+### Reviewed briefs (M16 — stage 1: store, calendar, and recipe API; stage 2: durable execution pipeline)
 
 Reviewed briefs schedule a saved analysis over an explicit source set and
-deliver a report draft into a review inbox. Stage 1 ships the durable recipe
-ledger, the civil calendar, the run stage machine, and the recipe routes
-below. The execution pipeline (input refresh → generation-ready wait →
-analysis → draft creation → review → publish) is stage 2: manual
-`POST /api/briefs/:id/runs` and scheduled claims persist a durable `queued`
-run and stop there. The review inbox, decision, and notification routes
-arrive with stage 3; the durable `brief_review_events` and
-`brief_notifications` tables already exist.
+deliver a report draft into a review inbox. Stage 1 shipped the durable recipe
+ledger, the civil calendar, the run stage machine, and the recipe routes.
+Stage 2 ships the owned execution pipeline (input refresh → generation-ready
+wait → analysis → draft creation → `awaiting_review`) plus bounded run detail
+and idempotent cancellation; manual `POST /api/briefs/:id/runs` and scheduled
+claims now execute through it (without a live executor the durable `queued`
+row simply waits for the next startup resume). The review inbox, decision,
+and notification routes arrive with stage 3; the durable
+`brief_review_events` and `brief_notifications` tables already exist.
 
 A recipe binds exactly one saved analysis at its current definition revision.
 Recipe source membership must equal the bound revision's selected source set
@@ -1798,8 +1799,11 @@ survives recipe deletion through each run's immutable recipe snapshot.
 | `POST /api/briefs/:id/pause`      | Pauses scheduling; repeated calls are no-ops. Resume re-advances the civil cursor strictly after now.                                              |
 | `POST /api/briefs/:id/resume`     | Resumes with `active` state and a fresh cursor.                                                                                                     |
 | `DELETE /api/briefs/:id`          | Removes the recipe head and revision snapshots. Existing runs/reviews survive through their snapshots. `{"ok":true}`.                              |
-| `POST /api/briefs/:id/runs`       | Run-now with body `{operation_id}` (UUID idempotency key). `202 {"run":{...},"replayed":bool}` with the durable `queued` run; a retried key replays the original run; an active run answers `409 BRIEF_ACTIVE_RUN`. |
+| `POST /api/briefs/:id/runs`       | Run-now with body `{operation_id}` (UUID idempotency key). `202 {"run":{...},"replayed":bool}` with the durable `queued` run (executed by the owned pipeline through the same stages as scheduled claims); a retried key replays the original run; an active run answers `409 BRIEF_ACTIVE_RUN`. |
 | `GET /api/briefs/:id/runs`        | Keyset run history (bounded summaries: stage, deadlines, coalescing counts, artifact ids, generic failure reason).                                  |
+| `GET /api/briefs/:id/runs/:runId` | Bounded stage detail for one run: durable summary plus the server-owned refresh receipts (kind, label, intended generation), the committed source-generation snapshot, the persisted comparison summary (≤32 KiB by write-time bound), and the linked analysis/baseline/document artifact ids. |
+| `DELETE /api/briefs/:id/runs/:runId` | Requests durable cancellation (`cancel_requested=1`). Repeated calls — including after terminalization — are idempotent and return the current run. The runner observes it at stage boundaries and finalizes `cancelled`; artifacts committed up to that point are preserved. |
+| `PATCH /api/briefs/:id/notifications` | Body `{enabled}` toggles the recipe's local-notification preference (schema v27). Head-only: no revision bump, no reschedule. While disabled, every future notification kind for the recipe's runs is suppressed; the five-failure pause transition itself still happens. |
 
 Run stages are `queued → refreshing → waiting_ready → analyzing → drafting →
 awaiting_review → publishing`, with terminal `failed`, `cancelled`, `skipped`,
@@ -1809,6 +1813,54 @@ stale worker can never advance a newer attempt; the 15-minute refresh-stage
 deadline and the 30-minute total-to-review deadline are persisted with the
 run (human review time excluded) and survive restart. Failure reasons are
 content-free and capped at 500 characters.
+
+Pipeline execution (stage 2) is owned by `server/src/briefRunner.ts`, resumed
+at startup and driven by an unref'd tick alongside the automation/analysis
+intervals: at most one brief executes per account and two globally, with
+detached executions so a long run never blocks other scheduled work. Refresh
+uses only the existing services: connector-bound inputs sync through the
+consent-gated `connector_sync` machinery (consent rechecked immediately before
+the transport; revoked consent, migration admission, and busy inputs surface
+as visible `skipped`/`blocked` outcomes with a stable code and never count
+toward the pause), and knowledge-bound inputs refresh through
+`refreshAndWaitReady` with the exact managed-item allowlist and the live
+expected connection revision. Every bound source commits a refresh receipt
+carrying its intended generation; static inputs are labeled
+`uses imported version`. The wait stage accepts only ready generations equal
+to the receipt's intended one — a generation that raced ahead is a durable
+`BRIEF_STALE_INPUTS` failure, never a silent switch to whatever is current —
+and the run then persists its exact source-generation snapshot. Analysis runs
+through the ordinary M12 execution service pinned to the recipe's definition
+revision, typed parameters, and that snapshot (acceptance-time mismatch is a
+durable `stale-inputs`), keyed by an operation id derived from the run so a
+crash-and-resume replays the original analysis run instead of double-running.
+The comparison baseline (newest earlier run of the same recipe with the same
+definition revision, parameter bindings, and source set whose analysis
+succeeded) is selected and persisted before execution; a rejected draft never
+erases a successful result or moves the next baseline, and a definition or
+parameter change begins a new series whose first run is labeled as such.
+Comparison uses only the stored M12 results and their completeness flags;
+unsupported or incomplete comparisons are labeled and raise an `attention`
+event rather than ever claiming no-change. Drafting creates an M13 document
+(revision 1) with labeled current/baseline preview tables
+inside M13 ceilings (8 tables / 60 rows / 32 columns / 1,000 preview cells
+across the copied previews, 400,000-character revision payload) carrying
+server-verified analysis provenance envelopes, truthful omitted-row/column
+notes, the comparison and freshness labels, and exactly one bounded model
+narrative call (consent-gated, audited, never reasoning-bearing;
+citation-style markers are stripped so a recipe can never manufacture a
+citation). The draft is created before the atomic `awaiting_review`
+transition, which only lands with both document references persisted; an
+interrupted draft whose references never persisted cannot be proven complete
+and fails visibly for a fresh explicit retry rather than risking a second
+draft. Drafts stay outside the published report version chain and owner
+shares, and the authoritative run↔document link is `brief_runs.document_id`
+(the draft origin carries the verified analysis-result id).
+Notifications are the step-8 kinds `first_draft`, `meaningful_change` (keyed
+comparison changed-row signal only), `attention`, and `paused`, deduplicated
+per run and kind, silent for a complete supported no-change draft, and
+suppressible per recipe via `PATCH /api/briefs/:id/notifications`. Approval
+never enables any outbound delivery.
 
 ## Agent tools
 
