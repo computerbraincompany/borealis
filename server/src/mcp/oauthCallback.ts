@@ -26,9 +26,12 @@ import http from "node:http";
  *   no request data (state, code, path, query) is ever reflected into a
  *   response — every reply is a fixed notice document with `default-src
  *   'none'` and no scripting;
- * - the packaged desktop replaces this module's listener with the exact
- *   main-process-owned listener through the `OAuthCallbackHost` seam in
- *   `mcp/oauth.ts` (stage 5); nothing here ever runs in a renderer.
+ * - the packaged desktop keeps THIS backend-owned loopback listener (it is
+ *   loopback-local on both platforms); main owns only the one-time
+ *   system-browser open intent verified against the backend. The
+ *   `OAuthCallbackHost` seam in `mcp/oauth.ts` exists for a future
+ *   main-owned host but has no production caller today; nothing here ever
+ *   runs in a renderer.
  */
 
 /** Fixed lifetime of one pending authorize session (spec: 5 minutes). */

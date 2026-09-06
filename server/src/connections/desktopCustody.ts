@@ -21,8 +21,9 @@ import { FileConnectionSecretStore, type ConnectionKeyCustody, type ConnectionSe
  * `list`, per-record crypto, and anything else are deliberately absent: the
  * only thing main ever hands back is the data key, and the durable sealed
  * records stay in the one `FileConnectionSecretStore` envelope that browser
- * development already uses, so workspace archives keep including the same
- * encrypted records on both platforms. The key is machine-bound: after a
+ * development already uses — the same encrypted record layout on both
+ * platforms, and like browser custody those records (`secrets/`, `connections.key`)
+ * are intentionally NONPORTABLE and excluded from workspace archives. The key is machine-bound: after a
  * restore on another machine the sealed key cannot be unsealed, reads report
  * the actionable `unavailable:custody` state, and reconnect is required —
  * exactly the documented archive/restore contract.
