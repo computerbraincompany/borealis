@@ -1761,12 +1761,9 @@ BEGIN
 END;
 `;
 
-`;
-
 // Schema v26 — reviewed recurring briefs (M16 stage 1: store and calendar).
-// The v25 slot belongs to the parallel in-flight M15 research branch (pending
-// merge, never applied after this entry); the coordinator allocated v26 to
-// this slice, and at merge the array reads 24, 25, 26. `automations` is
+// Contiguous at merge: v25 (M15 research) precedes this entry in the ordered
+// migration array. `automations` is
 // untouched: reviewed_brief lives in its own recipe ledger, linked to the
 // existing interval kinds only conceptually.
 //
