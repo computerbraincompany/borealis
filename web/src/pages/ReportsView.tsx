@@ -1,9 +1,22 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { BarChart3, Trash2, FileText, Eye, Download, MessageSquare, Pencil, Loader2, RefreshCw } from "lucide-react";
+import {
+  BarChart3,
+  Trash2,
+  FileText,
+  Eye,
+  Download,
+  MessageSquare,
+  Pencil,
+  Loader2,
+  RefreshCw,
+  FileEdit,
+} from "lucide-react";
 import {
   api,
   reportsApi,
   chartsApi,
+  documentsApi,
+  isDocumentUnavailableCopyError,
   type Report,
   type ChartArtifactSummary,
   type ReportShare,
@@ -112,6 +125,12 @@ export function ReportsView() {
   const [sharing, setSharing] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<Report | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [copyBusyId, setCopyBusyId] = useState<string | null>(null);
+  // Owned reports whose copy attempt hit the typed payload-less state; the
+  // button stays visibly unavailable instead of silently re-enabling.
+  const [copyUnavailableIds, setCopyUnavailableIds] = useState<string[]>([]);
+  const copyRequestRef = useRef(0);
+  const copyAbortRef = useRef<AbortController | null>(null);
   const previewRequestRef = useRef(0);
   const previewAbortRef = useRef<AbortController | null>(null);
   const shareRequestRef = useRef(0);
@@ -252,8 +271,38 @@ export function ReportsView() {
       renameAbortRef.current?.abort();
       for (const request of deleteRequests.values()) request.abort.abort();
       deleteRequests.clear();
+      copyRequestRef.current += 1;
+      copyAbortRef.current?.abort();
     };
   }, [load]);
+
+  const createEditableCopy = async (report: Report) => {
+    if (copyBusyId !== null || copyUnavailableIds.includes(report.id)) return;
+    const targetId = report.id;
+    const requestId = ++copyRequestRef.current;
+    copyAbortRef.current?.abort();
+    const abort = new AbortController();
+    copyAbortRef.current = abort;
+    setCopyBusyId(targetId);
+    setPageError(null);
+    try {
+      const created = await documentsApi.create({ copy_from_report_id: targetId }, abort.signal);
+      if (copyRequestRef.current !== requestId || abort.signal.aborted || !mountedRef.current) return;
+      window.location.hash = `#/documents/${created.document.id}`;
+    } catch (failure: unknown) {
+      if (copyRequestRef.current !== requestId || abort.signal.aborted || !mountedRef.current) return;
+      if (isDocumentUnavailableCopyError(failure)) {
+        setCopyUnavailableIds((current) => (current.includes(targetId) ? current : [...current, targetId]));
+        setPageError(
+          "That report has no stored normalized payload, so an editable copy is unavailable. Create a blank document and copy the text in explicitly instead.",
+        );
+      } else {
+        setPageError(formatApiError(failure, "Could not create the editable copy"));
+      }
+    } finally {
+      if (copyRequestRef.current === requestId && mountedRef.current) setCopyBusyId(null);
+    }
+  };
 
   const openRenameDialog = (report: Report) => {
     renameRequestRef.current += 1;
@@ -571,6 +620,20 @@ export function ReportsView() {
                       title={r.has_html === false ? "HTML artifact is not available" : "Preview report"}
                     >
                       <Eye className="h-4 w-4" /> Preview
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => void createEditableCopy(r)}
+                      disabled={copyBusyId === r.id || copyUnavailableIds.includes(r.id)}
+                      title={
+                        copyUnavailableIds.includes(r.id)
+                          ? "Editable copy unavailable — no stored normalized payload"
+                          : "Create editable copy"
+                      }
+                    >
+                      {copyBusyId === r.id ? <Loader2 className="animate-spin" /> : <FileEdit className="h-4 w-4" />}
+                      Copy
                     </Button>
                     <Button variant="ghost" size="sm" onClick={() => void openShareDialog(r)} title="Share snapshot">
                       Share

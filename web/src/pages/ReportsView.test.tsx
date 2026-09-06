@@ -14,6 +14,8 @@ const apiMocks = vi.hoisted(() => ({
   apiText: vi.fn(),
   accounts: vi.fn(),
   openProtected: vi.fn(),
+  documentsCreate: vi.fn(),
+  isUnavailableCopyError: vi.fn((_error: unknown) => false),
 }));
 
 vi.mock("@/lib/api", () => ({
@@ -27,6 +29,8 @@ vi.mock("@/lib/api", () => ({
     revoke: apiMocks.revoke,
   },
   chartsApi: { list: apiMocks.chartsList, get: apiMocks.chartsGet },
+  documentsApi: { create: apiMocks.documentsCreate },
+  isDocumentUnavailableCopyError: apiMocks.isUnavailableCopyError,
   api: apiMocks.accounts,
   apiText: apiMocks.apiText,
   formatApiError: (_error: unknown, fallback: string) => fallback,
@@ -415,6 +419,56 @@ describe("ReportsView preview", () => {
 
     await act(async () => stale.resolve({ items: reports, next_cursor: null }));
     expect(screen.queryByText("First")).not.toBeInTheDocument();
+  });
+
+  describe("create editable copy", () => {
+    it("creates a document copy and routes to the workbench", async () => {
+      apiMocks.documentsCreate.mockResolvedValue({ document: { id: "doc-new" } });
+      window.location.hash = "";
+      render(<ReportsView />);
+
+      await screen.findByText("First");
+      fireEvent.click(screen.getAllByTitle("Create editable copy")[0]);
+      await waitFor(() =>
+        expect(apiMocks.documentsCreate).toHaveBeenCalledWith({ copy_from_report_id: "r1" }, expect.any(AbortSignal)),
+      );
+      await waitFor(() => expect(window.location.hash).toBe("#/documents/doc-new"));
+    });
+
+    it("surfaces the typed payload-less unavailable state and keeps the action disabled", async () => {
+      apiMocks.documentsCreate.mockRejectedValue(new Error("no payload"));
+      apiMocks.isUnavailableCopyError.mockImplementation((error: unknown) => (error as Error).message === "no payload");
+      render(<ReportsView />);
+
+      await screen.findByText("First");
+      fireEvent.click(screen.getAllByTitle("Create editable copy")[0]);
+      await waitFor(() => expect(apiMocks.documentsCreate).toHaveBeenCalledTimes(1));
+      expect(await screen.findByText(/no stored normalized payload/)).toBeInTheDocument();
+
+      const disabledButton = screen.getByTitle("Editable copy unavailable — no stored normalized payload");
+      expect(disabledButton).toBeDisabled();
+      fireEvent.click(disabledButton);
+      expect(apiMocks.documentsCreate).toHaveBeenCalledTimes(1);
+    });
+
+    it("guards a pending copy and aborts it on unmount", async () => {
+      const pending = deferred<{ document: { id: string } }>();
+      apiMocks.documentsCreate.mockReturnValue(pending.promise);
+      const { unmount } = render(<ReportsView />);
+
+      await screen.findByText("First");
+      const buttons = screen.getAllByTitle("Create editable copy");
+      fireEvent.click(buttons[0]);
+      await waitFor(() => expect(apiMocks.documentsCreate).toHaveBeenCalledTimes(1));
+      // A second click while pending is a no-op rather than a second request.
+      fireEvent.click(buttons[1]);
+      expect(apiMocks.documentsCreate).toHaveBeenCalledTimes(1);
+
+      const signal = apiMocks.documentsCreate.mock.calls[0][1] as AbortSignal;
+      unmount();
+      expect(signal.aborted).toBe(true);
+      await act(async () => pending.resolve({ document: { id: "late-doc" } }));
+    });
   });
 
   it("keeps sharing state and actions owned by the newest report", async () => {

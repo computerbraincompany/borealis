@@ -1,4 +1,5 @@
 import {
+  FileEdit,
   MessageSquare,
   Database,
   BookOpen,
@@ -22,6 +23,7 @@ const NAV_ITEMS = [
   { href: "/connectors", label: "Connectors", icon: Plug },
   { href: "/reports", label: "Reports", icon: FileText },
   { href: "/analyses", label: "Analyses", icon: FlaskConical },
+  { href: "/documents", label: "Documents", icon: FileEdit },
 ];
 
 export function Shell({ children }: { children: React.ReactNode }) {

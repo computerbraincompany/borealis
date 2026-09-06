@@ -1467,6 +1467,267 @@ export const reportsApi = {
   remove: (id: string, signal?: AbortSignal) => api<{ ok: true }>(`/api/reports/${id}`, { method: "DELETE", signal }),
 };
 
+// ------------------------------------------------------------------ documents
+export type DocumentAuthorKind = "user" | "model" | "automation";
+
+export interface DocumentOrigin {
+  report_id: string | null;
+  chat_id: string | null;
+  run_id: string | null;
+  analysis_result_id: string | null;
+}
+
+export interface DocumentSummary {
+  id: string;
+  title: string;
+  current_revision: number;
+  current_revision_id: string;
+  head_author_kind: DocumentAuthorKind;
+  origin: DocumentOrigin;
+  latest_publication_version: number | null;
+  revision_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DocumentSectionPayload {
+  id: string;
+  heading: string;
+  markdown: string;
+}
+
+/** Versioned document evidence entry; `unknown` provenance is never upgraded. */
+export interface DocumentEvidencePayload {
+  id: string;
+  source_id: string;
+  source_name: string;
+  generation: number | "unknown";
+  content_identity: string | "unknown";
+  locator: string | null;
+  excerpt: string;
+}
+
+export interface DocumentTreePayload {
+  title: string;
+  subtitle: string;
+  verified: boolean;
+  sections: DocumentSectionPayload[];
+  charts: unknown[];
+  tables: unknown[];
+  evidence: DocumentEvidencePayload[];
+}
+
+export interface DocumentRevisionPayload {
+  id: string;
+  document_id: string;
+  revision: number;
+  title: string;
+  author_kind: DocumentAuthorKind;
+  base_revision_id: string | null;
+  payload: DocumentTreePayload;
+  payload_chars: number;
+  created_at: string;
+}
+
+export interface DocumentRevisionSummary {
+  id: string;
+  revision: number;
+  title: string;
+  author_kind: DocumentAuthorKind;
+  base_revision_id: string | null;
+  payload_chars: number;
+  published_version: number | null;
+  created_at: string;
+}
+
+export interface DocumentPublicationSummary {
+  id: string;
+  document_id: string;
+  revision_id: string;
+  revision: number;
+  version: number;
+  title: string;
+  supersedes: string | null;
+  created_at: string;
+}
+
+export interface DocumentDiffOp {
+  kind: "equal" | "insert" | "delete";
+  old_line: number | null;
+  new_line: number | null;
+  text: string;
+}
+
+export interface DocumentSectionTextDiff {
+  section_id: string;
+  heading: string;
+  ops: DocumentDiffOp[];
+  truncated: boolean;
+}
+
+export interface DocumentRevisionDiff {
+  base: { revision_id: string; revision: number; title: string };
+  target: { revision_id: string; revision: number; title: string };
+  fields: { title_changed: boolean; subtitle_changed: boolean; verified_changed: boolean };
+  sections: {
+    added: Array<{ id: string; heading: string; index: number }>;
+    removed: Array<{ id: string; heading: string; index: number }>;
+    moved: Array<{ id: string; heading: string; base_index: number; target_index: number }>;
+    modified: Array<{ id: string; heading: string; index: number }>;
+  };
+  text_diffs: DocumentSectionTextDiff[];
+  charts: { added: string[]; removed: string[]; changed: string[] };
+  tables: {
+    added: Array<{ index: number; columns: string[] }>;
+    removed: Array<{ index: number; columns: string[] }>;
+    changed: number[];
+  };
+  evidence: {
+    added: Array<{ id: string; source_name: string }>;
+    removed: Array<{ id: string; source_name: string }>;
+    changed: string[];
+  };
+  truncated: boolean;
+}
+
+/** Tree input accepted by the create/save routes; the server normalizes it. */
+export interface DocumentTreeInput {
+  title: string;
+  subtitle?: string;
+  verified?: boolean;
+  sections?: Array<{ id?: string; heading?: string; markdown?: string }>;
+  charts?: Array<{ id: string; spec: unknown }>;
+  tables?: Array<{ columns: string[]; rows: unknown[][]; analysis?: unknown | null }>;
+  evidence?: unknown[];
+}
+
+export const DOCUMENT_REVISION_CONFLICT_CODE = "DOCUMENT_REVISION_CONFLICT";
+export const DOCUMENT_UNAVAILABLE_CODE = "DOCUMENT_UNAVAILABLE";
+export const PUBLICATION_NOT_READY_CODE = "PUBLICATION_NOT_READY";
+
+/** Head metadata carried on a lost base-revision compare-and-swap (409). */
+export interface DocumentConflictHead {
+  revision_id: string;
+  revision: number;
+  title: string;
+  author_kind: DocumentAuthorKind;
+  updated_at: string;
+}
+
+function conflictData(error: unknown, code: string): Record<string, unknown> | null {
+  if (!(error instanceof ApiError) || error.status !== 409) return null;
+  const data = error.data as { code?: unknown } | undefined;
+  return data?.code === code ? (data as Record<string, unknown>) : null;
+}
+
+/** Extracts the authoritative head metadata from a save-conflict failure. */
+export function parseDocumentRevisionConflict(error: unknown): DocumentConflictHead | null {
+  const data = conflictData(error, DOCUMENT_REVISION_CONFLICT_CODE);
+  const value = data?.current_head as Record<string, unknown> | undefined;
+  if (
+    !value ||
+    typeof value.revision_id !== "string" ||
+    typeof value.revision !== "number" ||
+    typeof value.title !== "string"
+  ) {
+    return null;
+  }
+  return {
+    revision_id: value.revision_id,
+    revision: value.revision,
+    title: value.title,
+    author_kind: (value.author_kind === "model" || value.author_kind === "automation"
+      ? value.author_kind
+      : "user") as DocumentAuthorKind,
+    updated_at: typeof value.updated_at === "string" ? value.updated_at : "",
+  };
+}
+
+/** True when a copy request hit the typed payload-less legacy-report state. */
+export function isDocumentUnavailableCopyError(error: unknown): boolean {
+  return conflictData(error, DOCUMENT_UNAVAILABLE_CODE) !== null;
+}
+
+export const documentsApi = {
+  list: async (options: CatalogPageOptions = {}) =>
+    parseTypedCatalogEnvelope<DocumentSummary>(
+      await api<unknown>(catalogPath("/api/documents", options), { signal: options.signal }),
+    ),
+  create: (
+    body: { title?: string; tree?: DocumentTreeInput; template_id?: string; copy_from_report_id?: string },
+    signal?: AbortSignal,
+  ) =>
+    api<{ document: DocumentSummary; revision: DocumentRevisionPayload }>("/api/documents", {
+      method: "POST",
+      body: JSON.stringify(body),
+      signal,
+    }),
+  get: (id: string, signal?: AbortSignal) => api<DocumentSummary>(`/api/documents/${id}`, { signal }),
+  remove: (id: string, signal?: AbortSignal) => api<{ ok: true }>(`/api/documents/${id}`, { method: "DELETE", signal }),
+  revisions: async (id: string, options: CatalogPageOptions = {}) =>
+    parseTypedCatalogEnvelope<DocumentRevisionSummary>(
+      await api<unknown>(catalogPath(`/api/documents/${id}/revisions`, options), { signal: options.signal }),
+    ),
+  saveRevision: (id: string, body: { base_revision_id: string; tree: DocumentTreeInput }, signal?: AbortSignal) =>
+    api<{ document: DocumentSummary; revision: DocumentRevisionPayload }>(`/api/documents/${id}/revisions`, {
+      method: "POST",
+      body: JSON.stringify(body),
+      signal,
+    }),
+  revision: (id: string, revisionId: string, signal?: AbortSignal) =>
+    api<DocumentRevisionPayload>(`/api/documents/${id}/revisions/${revisionId}`, { signal }),
+  diff: (id: string, base: string, target: string, signal?: AbortSignal) =>
+    api<DocumentRevisionDiff>(`/api/documents/${id}/diff?base=${base}&target=${target}`, { signal }),
+  publications: async (id: string, options: CatalogPageOptions = {}) =>
+    parseTypedCatalogEnvelope<DocumentPublicationSummary>(
+      await api<unknown>(catalogPath(`/api/documents/${id}/publications`, options), { signal: options.signal }),
+    ),
+};
+
+// ------------------------------------------------------------------ document templates
+export interface DocumentTemplateSnapshot {
+  title: string;
+  subtitle: string;
+  sections: Array<{ heading: string; markdown: string }>;
+}
+
+export interface DocumentTemplateSummary {
+  id: string;
+  built_in: boolean;
+  name: string;
+  description: string;
+  snapshot: DocumentTemplateSnapshot;
+  revision?: number;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export const documentTemplatesApi = {
+  list: async (options: CatalogPageOptions = {}) =>
+    parseTypedCatalogEnvelope<DocumentTemplateSummary>(
+      await api<unknown>(catalogPath("/api/document-templates", options), { signal: options.signal }),
+    ),
+  get: (id: string, signal?: AbortSignal) => api<DocumentTemplateSummary>(`/api/document-templates/${id}`, { signal }),
+  create: (body: { name: string; description?: string; document_id: string }, signal?: AbortSignal) =>
+    api<DocumentTemplateSummary>("/api/document-templates", { method: "POST", body: JSON.stringify(body), signal }),
+  update: (
+    id: string,
+    body: { name?: string; description?: string; expected_revision: number },
+    signal?: AbortSignal,
+  ) =>
+    api<DocumentTemplateSummary>(`/api/document-templates/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+      signal,
+    }),
+  remove: (id: string, expectedRevision: number, signal?: AbortSignal) =>
+    api<{ ok: true }>(`/api/document-templates/${id}`, {
+      method: "DELETE",
+      body: JSON.stringify({ expected_revision: expectedRevision }),
+      signal,
+    }),
+};
+
 // ------------------------------------------------------------------ charts
 export const chartsApi = {
   list: () => api<ChartArtifactSummary[]>("/api/charts"),
