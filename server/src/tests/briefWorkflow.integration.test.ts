@@ -127,7 +127,7 @@ async function workflow(): Promise<Workflow> {
           const created = await documents.createDocument(request.accountId, {
             title: request.title,
             tree: request.tree,
-            origin: { runId: request.origin.runId, analysisResultId: request.origin.analysisResultId },
+            origin: { analysisResultId: request.origin.analysisResultId },
           });
           return { documentId: created.document.id, documentRevisionId: created.revision.id };
         },
@@ -215,7 +215,7 @@ async function runDue(w: Workflow, recipeId: string, runner: BriefRunner) {
   const dueMs = Date.parse(recipe.nextRunAt);
   if (dueMs > w.clock.getTime()) w.clock = new Date(dueMs);
   await runner.tick();
-  await waitFor(() => runner.activeRunCount() === 0, "execution settled");
+  await waitFor(async () => runner.activeRunCount() === 0, "execution settled");
   const page = await w.runs.listRuns(w.account, recipeId, { limit: 50, after: null });
   const run = page.items[0];
   if (!run) throw new Error("no run");
@@ -257,7 +257,6 @@ describe("reviewed-brief workflow (real stores + real DuckDB execution + real do
     // Second week: same recipe, changed fixture. The baseline is the first run.
     await writeCsv(w, "finance.csv", 125);
     await advanceGeneration(w, sourceId, path.join(w.directory, "finance.csv"));
-    w.advance;
     w.clock = new Date(w.clock.getTime() + 25 * 60_000);
     const second = await runDue(w, recipeId, runner);
     expect(second.baselineRunId).toBe(first.id);
@@ -299,7 +298,7 @@ describe("reviewed-brief workflow (real stores + real DuckDB execution + real do
     const recipe = await w.recipes.getRecipe(w.account, recipeId);
     w.clock = new Date(Date.parse(recipe!.nextRunAt));
     await runner.tick();
-    await waitFor(() => runner.activeRunCount() === 0, "execution settled");
+    await waitFor(async () => runner.activeRunCount() === 0, "execution settled");
     // Race the generation forward just before acceptance via a fresh clock
     // bump is unnecessary here: bump after this claim's snapshot persisted is
     // nondeterministic — instead exercise the accept-time CAS directly with a
@@ -319,7 +318,7 @@ describe("reviewed-brief workflow (real stores + real DuckDB execution + real do
     ]);
     late.kick();
     await waitFor(async () => (await w.runs.getRun(w.account, manual.run.id)).stage !== "queued", "manual run started");
-    await waitFor(() => late.activeRunCount() === 0, "manual settled");
+    await waitFor(async () => late.activeRunCount() === 0, "manual settled");
     const final = await w.runs.getRun(w.account, manual.run.id);
     expect(final.stage).toBe("failed");
     expect(final.failureCode).toBe("BRIEF_STALE_INPUTS");
@@ -384,7 +383,7 @@ describe("reviewed-brief workflow (real stores + real DuckDB execution + real do
     const recipe = await w.recipes.getRecipe(w.account, recipeId);
     w.clock = new Date(Date.parse(recipe!.nextRunAt));
     await first.tick();
-    await waitFor(() => first.activeRunCount() === 0, "crashed run unwound");
+    await waitFor(async () => first.activeRunCount() === 0, "crashed run unwound");
     const crashed = (await w.runs.listRuns(w.account, recipeId, { limit: 50, after: null })).items[0];
     expect(crashed.stage).toBe("analyzing");
     expect(crashed.analysisRunId).toBeNull();

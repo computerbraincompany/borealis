@@ -126,7 +126,13 @@ export interface BriefDraftRequest {
   readonly accountId: string;
   readonly title: string;
   readonly tree: DocumentTreeInput;
-  readonly origin: { readonly runId: string; readonly analysisResultId: string | null };
+  /**
+   * Verified origin links only. The recipe-run linkage is authoritative on
+   * `brief_runs.document_id` (the document store validates `origin.runId`
+   * against `chat_runs`, which brief runs are not), and the provenance
+   * section repeats the run identity as data.
+   */
+  readonly origin: { readonly analysisResultId: string | null };
 }
 
 export interface BriefNarrativeRequest {
@@ -428,7 +434,7 @@ const productionDraft = async (
     accountId: request.accountId,
     title: request.title,
     tree: request.tree,
-    origin: { runId: request.origin.runId, analysisResultId: request.origin.analysisResultId },
+    origin: { analysisResultId: request.origin.analysisResultId },
   });
   return { documentId: created.document.id, documentRevisionId: created.revision.id };
 };
@@ -1282,7 +1288,7 @@ export function createBriefRunner(dependencies: BriefRunnerDependencies) {
         accountId: run.accountId,
         title: tree.title,
         tree,
-        origin: { runId: run.id, analysisResultId: currentResult.id },
+        origin: { analysisResultId: currentResult.id },
       });
     } catch (error) {
       if (isAbortError(error)) throw error;

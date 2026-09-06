@@ -69,7 +69,7 @@ function abortError(): Error {
 interface DraftCall {
   readonly title: string;
   readonly tree: DocumentTreeInput;
-  readonly origin: { runId: string; analysisResultId: string | null };
+  readonly origin: { analysisResultId: string | null };
 }
 
 type SourceStateValue = BriefSourceState;
@@ -441,7 +441,7 @@ describe("brief runner green path", () => {
     // tables with server-verified provenance.
     expect(h.fakes.draftCalls).toHaveLength(1);
     const draft = h.fakes.draftCalls[0];
-    expect(draft.origin.runId).toBe(final.id);
+    // The authoritative run↔document link is `brief_runs.document_id`.
     expect(draft.origin.analysisResultId).not.toBeNull();
     const markdown = JSON.stringify(draft.tree.sections);
     expect(markdown).not.toContain("[7]");

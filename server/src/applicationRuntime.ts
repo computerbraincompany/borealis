@@ -24,6 +24,7 @@ import {
   type ResearchRunner,
   type ResearchRunnerDependencies,
 } from "./researchRunner.js";
+import {
   bindDefaultBriefRunner,
   createBriefRunner,
   defaultBriefRunner,
@@ -130,6 +131,7 @@ export interface ApplicationRuntime {
    * `cancelled`.
    */
   stopResearchRunner(): Promise<void>;
+  /**
    * M16 stage 2: startup-resume recovered brief runs, claim due occurrences,
    * and dispatch on an unref'd interval (at most 1/account, 2 globally).
    * Interrupted runs stay in their committed stage for the same resume path.
@@ -185,6 +187,7 @@ export interface ApplicationRuntimeLifecycle {
    * to the real research executor.
    */
   createResearchRunner?(dependencies: ResearchRunnerDependencies): ResearchRunner;
+  /**
    * Optional so pre-M16 lifecycle seams keep compiling; production defaults
    * to the real reviewed-brief executor.
    */
@@ -614,6 +617,7 @@ export async function createApplicationRuntime(options: ApplicationRuntimeOption
       // stay durable `running` for the bounded startup resume, never orphaned
       // as a silent rerun; cancelled rows finalize `cancelled`.
       return researchRunner.stop();
+    },
     startBriefRunner(): void {
       if (current.phase !== "active") {
         throw new ApplicationRuntimeLifecycleError("application runtime is not active", true, ["phase"]);
