@@ -34,6 +34,13 @@ export interface ScriptedOpenAiServerOptions {
    * are never logged.
    */
   readonly onCall?: (index: number, body: Readonly<Record<string, unknown>>) => Promise<void> | void;
+  /**
+   * When present, `GET /v1/models` answers 200 with exactly these model ids
+   * (the scripted catalog). Omitted, the endpoint keeps answering 404 so the
+   * default fixture stays a chat-completion-only seam and discovery reports
+   * `unavailable`.
+   */
+  readonly models?: readonly string[];
 }
 
 function chunk(
@@ -115,6 +122,16 @@ export async function startScriptedOpenAiServer(
       }
       body.push(piece);
     });
+    if (req.method === "GET" && req.url === "/v1/models" && options.models) {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(
+        JSON.stringify({
+          object: "list",
+          data: options.models.map((id) => ({ id, object: "model", owned_by: "scripted" })),
+        })
+      );
+      return;
+    }
     req.on("end", () => {
       void (async () => {
         if (aborted) return;

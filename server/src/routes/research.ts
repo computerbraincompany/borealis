@@ -8,10 +8,14 @@
  * keyset dossier and table reads (25 default; evidence max 50, others max
  * 100), idempotent cancellation, and revision-CAS review batches.
  *
- * Plan generation, the runner, artifact publication, and export are stages
- * 2–3: those routes are registered but answer the reserved 501 codes
- * (`RESEARCH_PLANNER_NOT_READY`, `RESEARCH_EXPORT_NOT_READY`) with declared
- * bodies and no execution.
+ * Stage 2 adds bounded, editable plan-proposal generation
+ * (`POST /:id/plan`) and durable execution: a started run is dispatched to the
+ * registered research runner (fire-and-forget; the durable `queued` row is the
+ * contract, so a missing runner just defers to the next startup resume). Plan
+ * generation performs one bounded model call and NEVER starts execution — the
+ * proposal is returned for review and becomes durable only via an explicit
+ * CAS `PATCH`. Artifact publication and export remain stage 3 (reserved 501
+ * `RESEARCH_EXPORT_NOT_READY`).
  *
  * All routes authenticate in `onRequest` before body parsing and carry
  * schema-derived body ceilings. Responses never include the captured provider
@@ -21,7 +25,7 @@
  * RESEARCH_SCOPE_EMPTY, RESEARCH_INPUTS_NOT_READY (with `unready_source_ids`),
  * RESEARCH_RUN_STATE, RESEARCH_REVIEW_TARGET_NOT_FOUND, RESEARCH_EVIDENCE_NOT_FOUND,
  * RESEARCH_EVIDENCE_CAP, RESEARCH_CLAIM_CAP, RESEARCH_GAP_CAP, RESEARCH_TABLE_LIMIT,
- * INVALID_CATALOG_CURSOR, REMOTE_EGRESS_CONSENT_REQUIRED.
+ * RESEARCH_MODEL_UNAVAILABLE, INVALID_CATALOG_CURSOR, REMOTE_EGRESS_CONSENT_REQUIRED.
  */
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { getAccountId, requireAuth } from "../auth.js";
@@ -37,6 +41,7 @@ import { enforceRemoteEgressConsent } from "../egressPolicy.js";
 import {
   ResearchActiveRunError,
   ResearchInputsNotReadyError,
+  ResearchRevisionConflictError,
   ResearchStoreError,
   type ResearchRunCounts,
   type ResearchRunSummary,
@@ -47,6 +52,9 @@ import {
   type StoredResearchRun,
   type StoredResearchStep,
 } from "../db/stores/researchStore.js";
+import { discoverChatModels } from "../llm.js";
+import { sameLlmModel } from "../llmAliases.js";
+import { generateResearchPlanProposal } from "../researchPlanner.js";
 import {
   RESEARCH_QUESTION_MAX_CHARS,
   RESEARCH_TITLE_MAX_CHARS,
@@ -54,6 +62,7 @@ import {
   researchTableLimitState,
   type ResearchColumnDeclaration,
 } from "../researchSchemas.js";
+import { defaultResearchRunner } from "../researchRunner.js";
 import { storageRuntime } from "../storageRuntime.js";
 import {
   BODYLESS_MUTATION_LIMIT_BYTES,
@@ -66,11 +75,6 @@ import { idParamsSchema, UUID_PATTERN } from "./schemas.js";
 const DEFAULT_RESEARCH_PAGE_LIMIT = 25;
 const MAX_RESEARCH_PAGE_LIMIT = 100;
 const MAX_EVIDENCE_PAGE_LIMIT = 50;
-
-const PLANNER_RESERVED_BODY = {
-  error: "research plan generation is not implemented yet",
-  code: "RESEARCH_PLANNER_NOT_READY",
-} as const;
 
 const EXPORT_RESERVED_BODY = {
   error: "research artifact/export generation is not implemented yet",
@@ -186,7 +190,7 @@ const EVIDENCE_QUERY_SCHEMA = {
   },
 } as const;
 
-const RESERVED_PLAN_BODY_SCHEMA = {
+const PLAN_PROPOSAL_BODY_SCHEMA = {
   type: "object",
   additionalProperties: false,
   properties: {
@@ -550,24 +554,56 @@ export async function researchRoutes(app: FastifyInstance): Promise<void> {
     }
   );
 
-  // -- Plan generation (reserved: stage 2) --------------------------------------
+  // -- Plan generation (bounded editable proposal; never starts execution) --------
 
   app.post(
     "/api/research/:id/plan",
     {
       onRequest: requireAuth,
+      // The proposal sends the question and selected-source labels to the
+      // configured provider, so the remote-egress consent gate applies.
       bodyLimit: BODYLESS_MUTATION_LIMIT_BYTES,
-      schema: { params: idParamsSchema, body: RESERVED_PLAN_BODY_SCHEMA },
+      schema: { params: idParamsSchema, body: PLAN_PROPOSAL_BODY_SCHEMA },
     },
     async (req, reply) => {
-      const owned = await storageRuntime().research.getResearchDefinition(
-        getAccountId(req),
-        (req.params as { id: string }).id
-      );
-      if (!owned) return reply.code(404).send({ error: "not found", code: "RESEARCH_NOT_FOUND" });
-      // Bounded, editable, never auto-starting plan proposals arrive with the
-      // stage-2 planner. Nothing executes here.
-      return reply.code(501).send(PLANNER_RESERVED_BODY);
+      const accountId = getAccountId(req);
+      const target = await enforceRemoteEgressConsent(reply, accountId);
+      if (!target) return;
+      const store = storageRuntime().research;
+      const definitionId = (req.params as { id: string }).id;
+      try {
+        const owned = await store.getResearchDefinition(accountId, definitionId);
+        if (!owned) return reply.code(404).send({ error: "not found", code: "RESEARCH_NOT_FOUND" });
+        const body = (req.body ?? {}) as { expected_revision?: number };
+        // The proposal is generated against the revision the user is editing;
+        // a stale `expected_revision` is an honest conflict, never a silent
+        // regeneration against a different head.
+        if (body.expected_revision !== undefined && body.expected_revision !== owned.currentRevision) {
+          throw new ResearchRevisionConflictError();
+        }
+        const controller = new AbortController();
+        req.raw.once("aborted", () => controller.abort());
+        const proposal = await generateResearchPlanProposal({
+          accountId,
+          definition: owned,
+          target,
+          signal: controller.signal,
+        });
+        // The proposal is returned for review only. It creates no run and
+        // approves nothing; the user persists it through a CAS PATCH.
+        return reply.send({
+          definition_id: owned.id,
+          base_revision: owned.currentRevision,
+          model: proposal.model,
+          model_used: proposal.modelUsed,
+          fallback: proposal.fallback,
+          error_code: proposal.errorCode,
+          plan: proposal.plan,
+        });
+      } catch (error) {
+        if (sendResearchError(reply, error)) return;
+        throw error;
+      }
     }
   );
 
@@ -619,7 +655,33 @@ export async function researchRoutes(app: FastifyInstance): Promise<void> {
           rerun_of?: string;
           rerun_selection?: { row_source_ids?: readonly string[]; column_ids?: readonly string[] };
         };
-        const run = await storageRuntime().research.startResearchRun(accountId, (req.params as { id: string }).id, {
+        // Validate the pinned definition's explicit chat model against the
+        // live catalog when discovery answers. An unavailable provider does
+        // NOT refuse admission — the durable row is the contract and the
+        // runner revalidates/ settles honestly at transport time (the same
+        // durable-run convention as a provider switch mid-queue).
+        const store = storageRuntime().research;
+        const pinned =
+          body.definition_revision !== undefined
+            ? await store.getResearchRevisionContent(
+                accountId,
+                (req.params as { id: string }).id,
+                body.definition_revision
+              )
+            : (await store.getResearchDefinition(accountId, (req.params as { id: string }).id))?.revision;
+        if (pinned) {
+          const catalog = await discoverChatModels();
+          if (
+            catalog.discovery === "live" &&
+            !catalog.available_models.some((model) => sameLlmModel(model.id, pinned.chatModel))
+          ) {
+            return reply.code(409).send({
+              error: "the definition's chat model is not available on the provider",
+              code: "RESEARCH_MODEL_UNAVAILABLE",
+            });
+          }
+        }
+        const run = await store.startResearchRun(accountId, (req.params as { id: string }).id, {
           expectedRevision: body.expected_revision ?? null,
           definitionRevision: body.definition_revision ?? null,
           rerunOf: body.rerun_of ?? null,
@@ -630,6 +692,10 @@ export async function researchRoutes(app: FastifyInstance): Promise<void> {
             providerRevision: target.revision,
           },
         });
+        // Fire-and-forget dispatch through the registered executor. The
+        // accepted `queued` row is the contract: with no live runner (or a
+        // busy account) the durable claim loop resumes it at the next pass.
+        defaultResearchRunner()?.dispatch(run);
         return reply.code(201).send(publicRun(run));
       } catch (error) {
         if (sendResearchError(reply, error)) return;
@@ -776,7 +842,7 @@ export async function researchRoutes(app: FastifyInstance): Promise<void> {
     {
       onRequest: requireAuth,
       bodyLimit: BODYLESS_MUTATION_LIMIT_BYTES,
-      schema: { params: idParamsSchema, body: RESERVED_PLAN_BODY_SCHEMA },
+      schema: { params: idParamsSchema, body: PLAN_PROPOSAL_BODY_SCHEMA },
     },
     async (req, reply) => {
       const run = await storageRuntime().research.getResearchRun(getAccountId(req), (req.params as { id: string }).id);

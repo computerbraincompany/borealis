@@ -276,6 +276,13 @@ async function drainExternalAndClose(context: ExternalDrainContext): Promise<voi
   // replayed; cancelled when a cancellation was requested) before closure.
   const rewriteDrain = runtime ? runtime.stopDocumentRewriteRunner() : Promise.resolve();
   void rewriteDrain.catch(() => undefined);
+  // Research model transports are interrupted synchronously while the stores
+  // are alive; the owned runtime close below joins the same drain. An
+  // interrupted research run stays durable `running` for the bounded at-most-
+  // once startup resume, and a run whose cancellation was requested settles
+  // `cancelled` — no orphaned active research row crosses storage closure.
+  const researchDrain = runtime ? runtime.stopResearchRunner() : Promise.resolve();
+  void researchDrain.catch(() => undefined);
 
   // Step 2: attempt-all independent external drains with positive records.
   const [ingress, workers, reconciliation] = await Promise.allSettled([
@@ -383,6 +390,10 @@ export async function startBorealisServer(options: StartBorealisServerOptions = 
     // M13 stage 3: recover interrupted rewrites as durable failures (never
     // replayed), then resume undispatched queued requests.
     runtime.startDocumentRewriteRunner();
+    // M15 stage 2: recover interrupted research runs (steps revert to
+    // `pending` for the bounded at-most-once retry), then resume resumable
+    // rows one per account through the owned durable executor.
+    runtime.startResearchRunner();
     const bootstrap = desktop ? await createDesktopBootstrapSession() : undefined;
     await app.listen({ port, host });
     const actualPort = listeningPort(app);

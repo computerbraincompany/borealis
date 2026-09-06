@@ -5,6 +5,8 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { signToken } from "../auth.js";
+import { assistantTextChunks, startScriptedOpenAiServer, type ScriptedOpenAiServer } from "./scriptedOpenAiServer.js";
+import { runtimeSettingsStore } from "../runtimeSettings.js";
 import { encodeCatalogCursor } from "../catalogPagination.js";
 import { LATEST_SQLITE_SCHEMA_VERSION } from "../db/migrations.js";
 import { installHttpBoundary } from "../httpErrors.js";
@@ -19,7 +21,24 @@ const ownerAuth = { authorization: `Bearer ${signToken({ userId: OWNER, email: "
 const foreignAuth = { authorization: `Bearer ${signToken({ userId: FOREIGN, email: "foreign@example.test" })}` };
 
 const apps: FastifyInstance[] = [];
+const providers: ScriptedOpenAiServer[] = [];
 let runtimeDirectory = "";
+
+/**
+ * The run-start admission validates the definition's chat model against the
+ * live catalog when discovery answers. Every start/plan test points Settings
+ * at a scripted catalog so the outcome is identical whether or not a real
+ * provider happens to be listening on the default loopback port.
+ */
+async function startProvider(
+  models: readonly string[],
+  chatResponses: readonly (readonly Record<string, unknown>[])[] = []
+): Promise<ScriptedOpenAiServer> {
+  const provider = await startScriptedOpenAiServer(models[0] ?? "route-chat-model", chatResponses, { models });
+  providers.push(provider);
+  await runtimeSettingsStore().patch({ llmBaseUrl: provider.origin, chatModel: models[0] ?? "route-chat-model" });
+  return provider;
+}
 
 beforeEach(async () => {
   runtimeDirectory = await fs.mkdtemp(path.join(os.tmpdir(), "borealis-research-"));
@@ -44,6 +63,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   await Promise.all(apps.splice(0).map((app) => app.close()));
+  await Promise.all(providers.splice(0).map((provider) => provider.close().catch(() => undefined)));
   closeRuntimeSettings();
   await closeStorageRuntime();
   if (runtimeDirectory) await fs.rm(runtimeDirectory, { recursive: true, force: true });
@@ -231,6 +251,7 @@ describe("research routes — definitions", () => {
 
 describe("research routes — start, cancel, and history", () => {
   it("starts a durable run, refuses one active per definition, and cancels idempotently", async () => {
+    await startProvider(["test-chat-model"]);
     const app = await buildApp();
     const sourceId = randomUUID();
     await insertSource(sourceId, OWNER, { readyGeneration: 5 });
@@ -281,6 +302,7 @@ describe("research routes — start, cancel, and history", () => {
   });
 
   it("surfaces precise start-admission conflicts", async () => {
+    await startProvider(["test-chat-model"]);
     const app = await buildApp();
     const ready = randomUUID();
     const indexing = randomUUID();
@@ -458,7 +480,20 @@ describe("research routes — review and reserved stages", () => {
     expect(foreign.statusCode).toBe(404);
   });
 
-  it("answers the reserved stage 2–3 routes with declared 501 shapes", async () => {
+  it("generates an editable plan proposal (never starting execution) and keeps stage 3 reserved", async () => {
+    await startProvider(
+      ["test-chat-model"],
+      [
+        assistantTextChunks("test-chat-model", [
+          JSON.stringify({
+            steps: [
+              { objective: "Find pricing evidence", questions: ["renewal price", "uplift percentage"] },
+              { objective: "Compare terms", questions: ["contract length"] },
+            ],
+          }),
+        ]),
+      ]
+    );
     const app = await buildApp();
     const sourceId = randomUUID();
     await insertSource(sourceId, OWNER);
@@ -471,11 +506,35 @@ describe("research routes — review and reserved stages", () => {
       headers: ownerAuth,
       body: { expected_revision: 1 },
     });
-    expect(plan.statusCode).toBe(501);
-    expect(plan.json()).toEqual({
-      error: "research plan generation is not implemented yet",
-      code: "RESEARCH_PLANNER_NOT_READY",
+    expect(plan.statusCode).toBe(200);
+    const proposal = plan.json();
+    expect(proposal).toMatchObject({
+      definition_id: definition.id,
+      base_revision: 1,
+      model_used: true,
+      fallback: false,
+      error_code: null,
     });
+    // The model's proposal is returned verbatim (with ids assigned), not run.
+    expect(proposal.plan.steps.map((step: { objective: string }) => step.objective)).toEqual([
+      "Find pricing evidence",
+      "Compare terms",
+    ]);
+    expect(proposal.plan.steps[0].id).toMatch(/^[0-9a-f-]{36}$/);
+
+    // The proposal creates no run: the only run is the seeded one.
+    const history = await app.inject({ method: "GET", url: `/api/research/${definition.id}/runs`, headers: ownerAuth });
+    expect(history.json().items.map((item: { id: string }) => item.id)).toEqual([runId]);
+
+    // A stale expected_revision is an honest conflict; no second provider call.
+    const stale = await app.inject({
+      method: "POST",
+      url: `/api/research/${definition.id}/plan`,
+      headers: ownerAuth,
+      body: { expected_revision: 2 },
+    });
+    expect(stale.statusCode).toBe(409);
+    expect(stale.json().code).toBe("RESEARCH_REVISION_CONFLICT");
 
     const artifacts = await app.inject({
       method: "POST",
