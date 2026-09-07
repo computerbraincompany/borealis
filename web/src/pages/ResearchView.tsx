@@ -729,6 +729,10 @@ function ResearchDetail({ definitionId }: { definitionId: string }) {
   }, [selectedRunId]);
 
   const selectRun = (runId: string | null) => {
+    // Re-clicking the already-selected row must be a no-op: the poll effect is
+    // keyed on selectedRunId, so nulling the detail without an id change would
+    // leave "Loading run…" with no in-flight request until another selection.
+    if (runId !== null && runId === selectedRunId) return;
     runTargetRef.current = runId;
     runDetailRequestRef.current += 1;
     setRunDetail(null);

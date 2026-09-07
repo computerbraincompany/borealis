@@ -3,6 +3,7 @@ import { AlertTriangle, Download, GitCompareArrows, Loader2, RefreshCw } from "l
 import {
   downloadBlob,
   formatApiError,
+  isTerminalResearchRunStatus,
   researchApi,
   RESEARCH_CELL_EXPLANATION_MAX_CHARS,
   type ResearchCellStatus,
@@ -182,11 +183,15 @@ export function TablePanel({
 
   // Applied corrections refetch the stored page without widening deps.
   const [reloadKey, setReloadKey] = useState(0);
+  // A run completed while this view is mounted materialized its table cells;
+  // refetch once when the run reaches a terminal status (the parent's
+  // exact-ID poll updates run.status in place, so run.id alone never rekeys).
+  const dataPhase = isTerminalResearchRunStatus(run.status) ? "final" : "live";
   useEffect(() => {
     setItems([]);
     setNextCursor(null);
     void fetchTable(null);
-  }, [fetchTable, reloadKey]);
+  }, [fetchTable, reloadKey, dataPhase]);
 
   // Resolve cell evidence refs: load the run's captured evidence pages so a
   // cell click always opens a real captured entry (unresolved refs render no

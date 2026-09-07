@@ -602,4 +602,35 @@ describe("ResearchView review workflow", () => {
       rerun_selection: { row_source_ids: [SOURCE_ID] },
     });
   });
+  it("keeps run detail when the selected run row is clicked again (no wedge)", async () => {
+    const user = userEvent.setup();
+    mocks.listRuns.mockResolvedValue({ items: [runSummary("needs_review")], next_cursor: null });
+    mocks.getRun.mockResolvedValue(
+      runDetail({
+        claims: [
+          {
+            id: "claim-1",
+            run_id: "r1",
+            kind: "claim",
+            text: "Beta offers net 45 terms.",
+            corrected_text: null,
+            classification: "supported",
+            evidence_refs: [],
+            user_note: null,
+            review_state: "pending",
+            created_at: "",
+            updated_at: "",
+          },
+        ],
+      }),
+    );
+    await renderDetail();
+    await user.click(screen.getByRole("button", { name: /Needs review/ }));
+    expect(await screen.findByText("Beta offers net 45 terms.")).toBeInTheDocument();
+    // Regression: re-clicking the same row used to null the detail while the
+    // runId-keyed poll effect never re-fired, leaving the view loading forever.
+    await user.click(screen.getByRole("button", { name: /Needs review/ }));
+    expect(await screen.findByText("Beta offers net 45 terms.")).toBeInTheDocument();
+    expect(screen.queryByText("Loading run")).toBeNull();
+  });
 });

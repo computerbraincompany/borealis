@@ -146,6 +146,7 @@ export function RunPanel({
     [run.id],
   );
 
+  const dataPhase = isTerminalResearchRunStatus(run.status) ? "final" : "live";
   useEffect(() => {
     requestRef.current += 1;
     setEvidence([]);
@@ -154,8 +155,10 @@ export function RunPanel({
     setClaimNotes({});
     setRunNote("");
     void loadEvidence(null);
-    // The dossier target is the exact run id; a new run reloads everything.
-  }, [run.id, loadEvidence]);
+    // The dossier target is the exact run id; a new run reloads everything,
+    // and a run reaching a terminal status while mounted gained its final
+    // evidence/claims, so reload once at that transition too.
+  }, [run.id, loadEvidence, dataPhase]);
 
   const evidenceById = new Map(evidence.map((entry) => [entry.id, entry]));
   const claims = run.claims.filter((claim) => claim.kind === "claim");
