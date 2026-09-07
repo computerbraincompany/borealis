@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import http from "node:http";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -15,6 +16,7 @@ const mocks = vi.hoisted(() => ({
   restoreDatasets: vi.fn(),
   shutdownDatasetWorker: vi.fn(),
   createDesktopBootstrapSession: vi.fn(),
+  echoRequest: vi.fn(),
   /** Composition options the routes mock received, newest last. */
   routesOptions: [] as Array<Record<string, unknown>>,
 }));
@@ -43,7 +45,10 @@ vi.mock("../desktopBootstrap.js", () => ({
 vi.mock("../routes.js", () => ({
   routes: async (app: FastifyInstance, options?: Record<string, unknown>) => {
     mocks.routesOptions.push({ ...(options ?? {}) });
-    app.post("/api/echo", async (request) => ({ body: request.body ?? null }));
+    app.post("/api/echo", async (request) => {
+      await mocks.echoRequest();
+      return { body: request.body ?? null };
+    });
   },
 }));
 
@@ -547,6 +552,52 @@ async function withTempWorkspace(run: () => Promise<void>): Promise<void> {
 }
 
 describe("automation scheduler drain on server shutdown", () => {
+  it("finishes an active HTTP response and closes its newly idle keep-alive socket before releasing storage", async () => {
+    const entered = deferred();
+    const release = deferred();
+    mocks.echoRequest.mockImplementation(async () => {
+      entered.resolve();
+      await release.promise;
+    });
+    const runtimes: MockRuntime[] = [];
+    useRuntimeFactory(runtimes, ["A"], []);
+    await withTempWorkspace(async () => {
+      const server = await startBorealisServer({ host: "127.0.0.1", port: 0, logger: false });
+      const agent = new http.Agent({ keepAlive: true });
+      const response = new Promise<{ status: number; body: string }>((resolve, reject) => {
+        const request = http.request(
+          { host: server.host, port: server.port, path: "/api/echo", method: "POST", agent },
+          (incoming) => {
+            let body = "";
+            incoming.setEncoding("utf8");
+            incoming.on("data", (part: string) => (body += part));
+            incoming.on("end", () => resolve({ status: incoming.statusCode!, body }));
+            incoming.on("error", reject);
+          }
+        );
+        request.on("error", reject);
+        request.end();
+      });
+      try {
+        await entered.promise;
+        const closing = server.close();
+        expect(await isPending(closing)).toBe(true);
+        expect(runtimes[0]!.object.close).not.toHaveBeenCalled();
+        release.resolve();
+        expect(await response).toEqual({ status: 200, body: '{"body":null}' });
+        await vi.waitFor(() => expect(runtimes[0]!.object.close).toHaveBeenCalledOnce(), { timeout: 2_000 });
+        await closing;
+        expect(runtimes[0]!.closeProofs).toEqual([{ externalStorageConsumersDrained: true }]);
+        const lock = await acquireWorkspaceLock(config.storageDir);
+        await lock.release();
+      } finally {
+        release.resolve();
+        agent.destroy();
+        await server.close();
+      }
+    });
+  });
+
   it("synchronously quiesces scheduler/download admission and defers the owned runtime close until the drain settles", async () => {
     const events: string[] = [];
     const runtimes: MockRuntime[] = [];

@@ -72,7 +72,8 @@ creation, reopening the same local account, and clean backend shutdown. The
 repository gate runs the native smoke but leaves the GUI renderer and packaging
 checks to the focused desktop/macOS gate.
 
-After fresh unsigned packaging, run `pnpm test:e2e:product:desktop` for the
+After fresh unsigned packaging, run
+`pnpm test:e2e:product:desktop --native-driver=external` for the
 functional-wave acceptance entry point. It uses an isolated profile and must
 prove the relevant MCP/OAuth, saved-analysis, document-export, native-folder,
 research, review, and lifecycle flows through the packaged application. Native
@@ -80,6 +81,8 @@ UI permissions, local model availability, and current scenario coverage are
 recorded in [EXECUTION.md](../milestones/EXECUTION.md); passing a native-load or
 lifecycle smoke alone is not product acceptance. The complete requirements
 remain in [END_TO_END_ACCEPTANCE.md](../docs/END_TO_END_ACCEPTANCE.md).
+An OS UI driver must complete the [native checkpoints](../scripts/e2e/NATIVE_DESKTOP.md);
+omitting the driver reports the requested native journeys as blocked.
 
 ## Package
 

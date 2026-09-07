@@ -353,8 +353,13 @@ export async function knowledgeRoutes(app: FastifyInstance, options: KnowledgeRo
   // All background preview/refresh drives are bound to this controller and
   // are cut off when the app closes: no daemon runs after Borealis quits.
   const background = new AbortController();
+  const backgroundWork = new Set<Promise<unknown>>();
   const trackBackground = (work: Promise<unknown>): void => {
-    void work.catch(() => undefined);
+    backgroundWork.add(work);
+    void work.then(
+      () => backgroundWork.delete(work),
+      () => backgroundWork.delete(work)
+    );
   };
 
   let pump: KnowledgeWatchPump | undefined;
@@ -404,7 +409,9 @@ export async function knowledgeRoutes(app: FastifyInstance, options: KnowledgeRo
   }
   app.addHook("onClose", async () => {
     background.abort(new Error("knowledge routes closing"));
-    pump?.stop();
+    // Abort-aware transports unwind before their durable status finalizers.
+    // Keep stores open until those finalizers and watch passes have settled.
+    await Promise.all([pump?.stop(), Promise.allSettled([...backgroundWork])]);
     pump = undefined;
   });
 

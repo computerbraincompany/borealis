@@ -606,7 +606,7 @@ packaged desktop, and real local-model journeys:
 
 ```bash
 pnpm test:e2e:product
-pnpm test:e2e:product:desktop
+pnpm test:e2e:product:desktop --native-driver=external
 pnpm test:e2e:product:live
 ```
 
@@ -614,6 +614,12 @@ See the [acceptance contract](docs/END_TO_END_ACCEPTANCE.md) for required flows
 and the [execution ledger](milestones/EXECUTION.md) for actual results. All three
 use disposable workspaces; a missing platform/model or unimplemented scenario
 must remain a failure or explicit blocked check.
+The desktop gate requires an OS UI driver to complete the normal packaged app
+checkpoints; follow the [native driver contract](scripts/e2e/NATIVE_DESKTOP.md).
+Omitting that driver reports the native journeys as blocked.
+The complementary [process lifecycle gate](scripts/e2e/LIFECYCLE.md) runs with
+`pnpm test:e2e:product:lifecycle`; it verifies real interruption, active-work
+shutdown, recovery and scheduled catch-up using the prebuilt server.
 
 ## Workspace archives and restore
 

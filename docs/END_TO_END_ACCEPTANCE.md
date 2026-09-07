@@ -35,7 +35,7 @@ do not maintain separate suites whose passing subsets omit a milestone's checks.
 | Command | Required behavior |
 | ------------------------ | ----------------- |
 | `pnpm test:e2e:product` | Build/serve the actual production web/backend, launch a real browser, run A–F plus lifecycle cases against local protocol/model fixtures, and clean up |
-| `pnpm test:e2e:product:desktop` | Exercise A–F's relevant UI flows through the packaged arm64 app in an isolated profile; native folder, OAuth, key custody, notification and lifecycle checks included |
+| `pnpm test:e2e:product:desktop --native-driver=external` | Exercise A–F's relevant UI flows through the packaged arm64 app in an isolated profile; an OS UI driver completes the [native checkpoints](../scripts/e2e/NATIVE_DESKTOP.md), including native folder, OAuth, key custody, notification and lifecycle checks |
 | `pnpm test:e2e:product:live` | Run the scoped finance and research acceptance against a configured compatible local model pair; unavailable model is an explicit failure/blockage, never an automatic pass |
 
 Use Playwright for browser workflows. For production desktop use normal UI/OS
@@ -44,6 +44,7 @@ preload, disable a fuse, or replace normal startup. If the host's UI automation
 requires a user-granted permission, expose that as a real prerequisite and keep
 the gate pending until the run can be performed. Deterministic unit/integration
 fixtures must remain runnable without native UI access.
+Omitting the external driver reports the requested native journeys as blocked.
 
 The harness starts bounded local fixtures for an OpenAI-compatible streaming
 provider, embeddings, MCP Streamable HTTP and stdio servers, an OAuth issuer,
@@ -95,6 +96,12 @@ overlapping recipe invocations, missing target, review conflicts, ignored
 notifications, and orderly quit during every kind of background work. Prove
 the backend acknowledges shutdown only after workers, MCP children and store
 handles have drained. Check no process/profile lock is leaked after each run.
+
+The [process lifecycle companion](../scripts/e2e/LIFECYCLE.md), invoked with
+`pnpm test:e2e:product:lifecycle`, runs the real interruption, active-work
+shutdown, reopen and closed-app catch-up cases against prebuilt production
+output. It complements the native watched-folder quit, browser journeys and
+focused lifecycle tests; its scoped diagnostic cases do not replace a full run.
 
 Upgrade a populated schema-v13 fixture through real v14–v16 and all product
 migrations. Preserve old agents/skills, chats, sources, report shares and

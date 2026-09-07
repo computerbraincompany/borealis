@@ -570,8 +570,10 @@ generic message.
 | `GET /api/knowledge-refreshes/:id`            | Exact-target `{refresh, counts, items}` status with bounded per-item source/generation outcomes.                                                              |
 | `DELETE /api/knowledge-refreshes/:id`         | Durable cancellation request; idempotent — a repeat on a settled refresh reports its state rather than an error.                                               |
 
-Preview and refresh scans run on per-app background drives cut off at server
-shutdown, never as open-ended HTTP requests. The `status_code` values
+Preview and refresh scans run on per-app background drives, never as open-ended
+HTTP requests. Orderly shutdown aborts and joins those drives, including watch
+catalog scans and refresh cancellation finalizers, before closing storage;
+previously ready sources remain intact. The `status_code` values
 `KNOWLEDGE_UPSTREAM_UNAUTHORIZED` and `KNOWLEDGE_CREDENTIALS_MISSING` record an
 actionable disconnected state, and archive restore records
 `KNOWLEDGE_RESTORE_RECONNECT_REQUIRED` (WebDAV) or

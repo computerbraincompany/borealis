@@ -153,12 +153,10 @@ export async function startServer({ workspace, repoRoot, provider, models }) {
      * Worker-quiescence gate: poll the product's own authenticated
      * dependency-readiness surface until every service (including the
      * DuckDB-backed data worker) reports operational. This is a bounded poll
-     * on a real readiness signal — not a sleep — and it is what proves the
-     * data plane finished its queued work before an orderly shutdown.
-     * Known defect (reported): without this gate, SIGTERM shortly after
-     * ledger/data-plane traffic can abort the server in `duckdb.node`
-     * `AsyncWorker::OnWorkComplete` during environment cleanup and leak the
-     * workspace lock. The server must eventually drain before exit itself.
+     * on a real readiness signal, used to settle browser journey transitions.
+     * It is not active-work shutdown evidence. The repaired product drain is
+     * exercised without this convenience gate by shutdownDrain.test.ts and
+     * run-product-lifecycle.mjs, including native work and late HTTP responses.
      */
     async quiesceWorkers({ token, deadlineMs = 30_000 } = {}) {
       assert(typeof token === "string" && token.length > 0, "QUIESCE_TOKEN_MISSING");

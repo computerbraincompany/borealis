@@ -172,7 +172,8 @@ function embeddingVector(model, input, dim) {
 
 // Content-free bookkeeping: header presence/scheme only, never header values.
 const authRecord = [];
-const counters = { chat: 0, embeddings: 0 };
+const counters = { chat: 0, embeddings: 0, embeddingActive: 0 };
+let embeddingDelayMs = 0;
 
 function recordAuth(endpoint, header) {
   if (authRecord.length < 1000) {
@@ -204,10 +205,34 @@ const tracked = createTrackedServer(async (req, res) => {
       sendJson(res, 200, {
         chat_calls: counters.chat,
         embedding_calls: counters.embeddings,
+        embedding_active: counters.embeddingActive,
         auth: authRecord,
         script_remaining: script.length - nextStep,
         on_exhausted: onExhausted,
       });
+      return;
+    }
+    // Explicit local test control: default latency stays zero. The bounded
+    // hold proves real ingestion cancellation without changing application code.
+    if (req.method === "POST" && path === "/fixture/embedding-delay") {
+      const body = await readBoundedBody(req, 1024);
+      if (body === null) return;
+      let delay;
+      try {
+        delay = JSON.parse(body.toString("utf8"))?.delay_ms;
+      } catch {
+        /* invalid below */
+      }
+      if (!Number.isInteger(delay) || delay < 0 || delay > 10_000) {
+        sendJson(res, 400, {
+          error: {
+            message: "delay_ms must be an integer from 0 through 10000",
+          },
+        });
+        return;
+      }
+      embeddingDelayMs = delay;
+      sendJson(res, 200, { ok: true });
       return;
     }
     // Runtime script installation (journeys): replaces the replay script and
@@ -357,6 +382,23 @@ const tracked = createTrackedServer(async (req, res) => {
       // Float arrays are the default; base64 is honoured only when requested.
       const asBase64 = parsed.encoding_format === "base64";
       counters.embeddings += 1;
+      if (embeddingDelayMs > 0) {
+        counters.embeddingActive += 1;
+        try {
+          await new Promise((resolveDelay) => {
+            const finish = () => {
+              clearTimeout(timer);
+              res.off("close", finish);
+              resolveDelay();
+            };
+            const timer = setTimeout(finish, embeddingDelayMs);
+            res.once("close", finish);
+          });
+        } finally {
+          counters.embeddingActive -= 1;
+        }
+        if (res.destroyed) return;
+      }
       const data = inputs.map((input, index) => {
         const vector = embeddingVector(model, input, dim);
         const encoded = asBase64

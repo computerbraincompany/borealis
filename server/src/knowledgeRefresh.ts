@@ -812,9 +812,17 @@ export class KnowledgeRefreshService {
       );
       if (incomplete.length === 0) break;
       for (const item of incomplete) {
-        const outcome = await this.stepItem(context, item);
-        if (outcome.authIssue) authIssue = true;
-        if (outcome.errorCode) lastErrorCode = outcome.errorCode;
+        try {
+          const outcome = await this.stepItem(context, item);
+          if (outcome.authIssue) authIssue = true;
+          if (outcome.errorCode) lastErrorCode = outcome.errorCode;
+        } catch (error) {
+          // Transport cancellation must reach the loop's durable finalizer.
+          // That branch distinguishes a resumable deadline from caller abort;
+          // letting an aborted socket reject here would leave an active row.
+          if (!signal.aborted) throw error;
+          break;
+        }
       }
       const afterStep = await this.store.listRefreshItems(accountId, refresh.id);
       const stillIncomplete = afterStep.some(

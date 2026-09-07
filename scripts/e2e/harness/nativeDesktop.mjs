@@ -94,6 +94,44 @@ function openLedger(repoRoot, profileDir) {
   });
 }
 
+function nativeWatchedRefresh(repoRoot, profileDir, refreshId) {
+  const db = openLedger(repoRoot, profileDir);
+  try {
+    return db
+      .prepare(
+        `SELECT r.id, r.status, r.requested_by, r.finished_at, c.watch_enabled,
+        (SELECT count(*) FROM knowledge_refreshes a WHERE a.account_id=r.account_id AND a.status='active') AS active_refreshes
+       FROM knowledge_refreshes r JOIN knowledge_connections c ON c.id=r.connection_id AND c.account_id=r.account_id
+       JOIN users u ON u.id=r.account_id
+       WHERE u.email='local@borealis.app' AND c.kind='desktop_folder'
+         AND ${refreshId ? "r.id = ?" : "r.status='active' AND r.requested_by='scheduled' AND c.watch_enabled=1"}
+       ORDER BY r.created_at DESC LIMIT 1`,
+      )
+      .get(...(refreshId ? [refreshId] : []));
+  } finally {
+    db.close();
+  }
+}
+
+export function validateNativeWatchedQuit(observation, finalState, exitedAt) {
+  assert(
+    observation &&
+      exitedAt >= observation.observedAt &&
+      exitedAt - observation.observedAt <= 30_000,
+    "NATIVE_QUIT_ACTIVE_WATCH_NOT_OBSERVED",
+  );
+  assert(
+    finalState &&
+      finalState.id === observation.id &&
+      finalState.requested_by === "scheduled" &&
+      finalState.watch_enabled === 1 &&
+      finalState.status === "cancelled" &&
+      typeof finalState.finished_at === "string" &&
+      finalState.active_refreshes === 0,
+    "NATIVE_QUIT_WATCH_NOT_FINALIZED",
+  );
+}
+
 /** Content-free counts, all restricted to the native bootstrap account. */
 export function nativeState(repoRoot, profileDir) {
   const db = openLedger(repoRoot, profileDir);
@@ -690,7 +728,10 @@ export async function runNativeJourneys({
   const dav = await launchFixture({
     workspace,
     name: "webdav",
-    env: { E2E_WEBDAV_USER: "e2e-user", E2E_WEBDAV_PASS: "e2e-pass" },
+    env: {
+      E2E_WEBDAV_USER: "e2e-user",
+      E2E_WEBDAV_PASS: "e2e-pass",
+    },
   });
   workspace.onCleanup(() => dav.stop());
   const issuer = await launchFixture({
@@ -763,6 +804,7 @@ export async function runNativeJourneys({
   );
   process.stdout.write(`E2E_NATIVE_DRIVER_READY ${bridgeDir}\n`);
   const records = [];
+  const requireWatchedQuit = ids.includes("D");
   let baseline = nativeState(repoRoot, app.profileDir);
   let immutable = immutableState(repoRoot, app.profileDir);
   let initialDocumentPublication;
@@ -796,8 +838,17 @@ export async function runNativeJourneys({
     );
     process.stdout.write(`E2E_NATIVE_CHECKPOINT ${name}\n`);
     const deadline = Date.now() + driverTimeoutMs;
+    let activeWatch;
+    let exitedAt;
     while (!fs.existsSync(responseFile)) {
       assert(pidAlive(app.pid) || name === "quit", "NATIVE_APP_EXITED");
+      if (name === "quit" && requireWatchedQuit) {
+        if (pidAlive(app.pid)) {
+          const current = nativeWatchedRefresh(repoRoot, app.profileDir);
+          if (current && (await provider.state()).embedding_active > 0)
+            activeWatch = { id: current.id, observedAt: Date.now() };
+        } else exitedAt ??= Date.now();
+      }
       if (Date.now() >= deadline)
         throw new HarnessError(`NATIVE_DRIVER_TIMEOUT:${name}`);
       await sleep(250);
@@ -812,8 +863,39 @@ export async function runNativeJourneys({
     );
     const response = JSON.parse(fs.readFileSync(responseFile, "utf8"));
     validateNativeResponse(response, request);
-    if (name === "quit") verifyNativeQuit(app);
-    else {
+    if (name === "quit") {
+      verifyNativeQuit(app);
+      if (requireWatchedQuit) {
+        const finalState =
+          activeWatch &&
+          nativeWatchedRefresh(repoRoot, app.profileDir, activeWatch.id);
+        validateNativeWatchedQuit(
+          activeWatch,
+          finalState,
+          exitedAt ?? Date.now(),
+        );
+        fs.writeFileSync(
+          path.join(workspace.artifactsDir, "native-watch-quit.json"),
+          JSON.stringify(
+            {
+              requested_by: finalState.requested_by,
+              watch_enabled: true,
+              embedding_response_held: true,
+              observed_active_before_exit_ms:
+                (exitedAt ?? Date.now()) - activeWatch.observedAt,
+              final_status: finalState.status,
+              finished_at: finalState.finished_at,
+              active_refreshes_after_exit: finalState.active_refreshes,
+              pid_gone: true,
+              locks_released: true,
+            },
+            null,
+            2,
+          ),
+          { mode: 0o600 },
+        );
+      }
+    } else {
       assert(pidAlive(app.pid), "NATIVE_APP_EXITED");
       const state = nativeState(repoRoot, app.profileDir);
       checkNativeState(name, state, baseline);
@@ -1022,9 +1104,32 @@ export async function runNativeJourneys({
     });
     onJourney(journeys.at(-1));
   }
+  if (requireWatchedQuit) {
+    const delay = await fetch(`${provider.origin}/fixture/embedding-delay`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ delay_ms: 8000 }),
+      signal: AbortSignal.timeout(5000),
+    });
+    assert(delay.ok, "NATIVE_EMBEDDING_DELAY_FAILED");
+    // The already-selected regular fixture file changes upstream; no app
+    // store/API is mutated. The production desktop watch must ingest it.
+    fs.writeFileSync(
+      path.join(folder, "notes.md"),
+      "# Native folder fixture\nNATIVE_FOLDER_QUIT_CHANGED_260907.\n",
+      { mode: 0o600 },
+    );
+  }
   await checkpoint(
     "quit",
-    "Quit the actual packaged app with Cmd+Q. Observe window closes and app exits. Respond only after the process has exited; the harness checks PID/profile cleanup.",
+    requireWatchedQuit
+      ? "The harness changed the owned watched notes.md file and now delays fixture embedding responses eight seconds. In Libraries observe its automatic scheduled folder refresh while ingestion is active; do not substitute a manual refresh. While that scheduled refresh is active, quit with Cmd+Q. Respond after the process exits. The harness independently requires a scheduled desktop-folder active row with an outstanding embedding response, that same row cancelled in the stopped ledger, and PID/children/lock cleanup. If you miss the ingestion window, edit only the owned watched notes.md fixture again to trigger another genuine watch refresh."
+      : "Quit the actual packaged app normally with Cmd+Q and respond after the process exits. This selected diagnostic subset excludes journey D and does not prove active watched-refresh shutdown; the harness checks PID/children/locks.",
   );
-  return { journeys, checkpoints: records.length, package_sha256: packageHash };
+  return {
+    journeys,
+    checkpoints: records.length,
+    package_sha256: packageHash,
+    active_watched_quit: requireWatchedQuit ? "pass" : "not_selected",
+  };
 }

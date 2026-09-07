@@ -190,6 +190,83 @@ describe("KnowledgeWatchPump notify coalescing", () => {
 });
 
 describe("KnowledgeWatchPump periodic scan", () => {
+  it("stop waits for a scan's asynchronous abort cleanup and refuses queued scans", async () => {
+    const clock = new FakeClock();
+    const cleanup = deferred<void>();
+    let aborted = false;
+    let finished = false;
+    let scans = 0;
+    const pump = new KnowledgeWatchPump({
+      listConnections: async () => [target],
+      scan: async (_target, signal) => {
+        scans += 1;
+        await new Promise<void>((resolve) =>
+          signal.addEventListener(
+            "abort",
+            () => {
+              aborted = true;
+              resolve();
+            },
+            { once: true }
+          )
+        );
+        await cleanup.promise;
+        finished = true;
+      },
+      debounceMs: 100,
+      now: clock.now,
+      setTimeoutFn: clock.setTimeoutFn,
+      clearTimeoutFn: clock.clearTimeoutFn,
+    });
+    pump.start();
+    pump.notify(target);
+    await clock.advance(150);
+    pump.notify(target);
+    let stopped = false;
+    const stopping = pump.stop().then(() => {
+      stopped = true;
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(aborted).toBe(true);
+    expect(stopped).toBe(false);
+    expect(clock.pendingTimers).toBe(0);
+    cleanup.resolve();
+    await stopping;
+    expect(finished).toBe(true);
+    await clock.advance(600_000);
+    expect(scans).toBe(1);
+  });
+
+  it.each(["pulse", "reconcile"] as const)(
+    "stop joins a pending %s connection read without starting a scan",
+    async (pass) => {
+      const clock = new FakeClock();
+      const listed = deferred<readonly KnowledgeWatchTarget[]>();
+      let scans = 0;
+      const pump = new KnowledgeWatchPump({
+        listConnections: () => listed.promise,
+        scan: async () => {
+          scans += 1;
+        },
+        now: clock.now,
+        setTimeoutFn: clock.setTimeoutFn,
+        clearTimeoutFn: clock.clearTimeoutFn,
+      });
+      pump.start();
+      const running = pump[pass]();
+      let stopped = false;
+      const stopping = pump.stop().then(() => {
+        stopped = true;
+      });
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(stopped).toBe(false);
+      listed.resolve([target]);
+      await Promise.all([running, stopping]);
+      expect(scans).toBe(0);
+      expect(clock.pendingTimers).toBe(0);
+    }
+  );
+
   it("periodically scans watch-enabled connections without any events", async () => {
     const harness = buildPump();
     harness.pump.start();

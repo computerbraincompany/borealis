@@ -3,10 +3,13 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { spawn } from "node:child_process";
+import { createInterface } from "node:readline";
 import {
   checkNativeState,
   validateNativeResponse,
   nativePublicationFile,
+  validateNativeWatchedQuit,
 } from "./nativeDesktop.mjs";
 
 const request = {
@@ -24,6 +27,104 @@ const response = {
     "Native source inspector shows the changed synthetic fixture after watch refresh.",
   ],
 };
+
+test("normal native quit requires a recently active scheduled watch and finalized stopped ledger", () => {
+  const observation = { id: "owned-refresh", observedAt: 10_000 };
+  const finalState = {
+    id: "owned-refresh",
+    requested_by: "scheduled",
+    watch_enabled: 1,
+    status: "cancelled",
+    finished_at: "2026-09-07T15:00:00.000Z",
+    active_refreshes: 0,
+  };
+  validateNativeWatchedQuit(observation, finalState, 12_000);
+  assert.throws(
+    () => validateNativeWatchedQuit(undefined, finalState, 12_000),
+    /NOT_OBSERVED/,
+  );
+  for (const change of [
+    { id: "other" },
+    { requested_by: "manual" },
+    { watch_enabled: 0 },
+    { status: "active" },
+    { status: "completed" },
+    { finished_at: null },
+    { active_refreshes: 1 },
+  ])
+    assert.throws(
+      () =>
+        validateNativeWatchedQuit(
+          observation,
+          { ...finalState, ...change },
+          11_000,
+        ),
+      /NOT_FINALIZED/,
+    );
+  assert.throws(
+    () => validateNativeWatchedQuit(observation, finalState, 41_000),
+    /NOT_OBSERVED/,
+  );
+});
+
+test(
+  "fixture embedding delay exposes actual in-flight work and abort releases it",
+  { timeout: 10_000 },
+  async () => {
+    const child = spawn(
+      process.execPath,
+      [new URL("../fixtures/openai-provider.mjs", import.meta.url).pathname],
+      { stdio: ["ignore", "pipe", "ignore"] },
+    );
+    const lines = createInterface({ input: child.stdout });
+    const exited = new Promise((resolve) => child.once("exit", resolve));
+    try {
+      const line = await new Promise((resolve) => lines.once("line", resolve));
+      const { origin } = JSON.parse(line);
+      const configure = (delay_ms) =>
+        fetch(`${origin}/fixture/embedding-delay`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ delay_ms }),
+        });
+      assert.equal((await configure(-1)).status, 400);
+      assert.equal((await configure(10_001)).status, 400);
+      assert.equal((await configure(8000)).status, 200);
+      const controller = new AbortController();
+      const pending = fetch(`${origin}/v1/embeddings`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ input: "synthetic delay fixture" }),
+        signal: controller.signal,
+      }).catch((error) => error);
+      const until = async (expected) => {
+        const deadline = Date.now() + 2000;
+        while (Date.now() < deadline) {
+          const state = await (await fetch(`${origin}/fixture/state`)).json();
+          if (state.embedding_active === expected) return;
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        assert.fail("embedding counter did not reach expected state");
+      };
+      await until(1);
+      controller.abort();
+      await pending;
+      await until(0);
+      assert.equal((await configure(0)).status, 200);
+      const response = await fetch(`${origin}/v1/embeddings`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ input: "synthetic zero delay" }),
+      });
+      assert.equal(response.status, 200);
+      assert.equal((await response.json()).data.length, 1);
+    } finally {
+      lines.close();
+      child.kill("SIGTERM");
+      await exited;
+    }
+  },
+);
 
 test("native observations cannot be replayed across checkpoints, processes, profiles or packages", () => {
   validateNativeResponse(response, request);

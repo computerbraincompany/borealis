@@ -11,6 +11,7 @@
  * execution + real document store) lives in `briefWorkflow.integration.test.ts`.
  */
 import { randomUUID } from "node:crypto";
+import OpenAI from "openai";
 import { afterEach, describe, expect, it } from "vitest";
 
 import type { SqliteLedger } from "../db/types.js";
@@ -1191,37 +1192,40 @@ describe("brief runner crash recovery (at-most-one committed artifact per logica
     );
   });
 
-  it("shutdown interrupts in-flight work and the next owner resumes from the committed stage", async () => {
-    const h = await harness();
-    const source = await seedTabularSource(h, "shutdown_csv");
-    h.fakes.narrativeBehavior = async (request) => {
-      await new Promise<never>((_resolve, reject) => {
-        const onAbort = () => reject(abortError());
-        if (request.signal.aborted) onAbort();
-        else request.signal.addEventListener("abort", onAbort, { once: true });
-      });
-      throw abortError();
-    };
-    const { recipeId } = await makeRecipe(h, { sourceIds: [source], comparisonKey: ["metric_label"] });
-    const recipe = await h.recipes.getRecipe(h.account, recipeId);
-    h.clock = new Date(Date.parse(recipe!.nextRunAt));
-    const first = h.buildRunner();
-    await first.tick();
-    await waitFor(() => first.activeRunCount() === 1, "execution in flight");
-    await first.stop(); // Shutdown interrupt, no cancellation requested.
-    const mid = (await h.runs.listRuns(h.account, recipeId)).items[0];
-    expect(["queued", "refreshing", "waiting_ready", "analyzing", "drafting"]).toContain(mid.stage);
-    expect(h.fakes.draftCalls).toHaveLength(0);
+  it.each(["AbortError", "APIUserAbortError"])(
+    "shutdown during narrative %s resumes from the committed stage",
+    async (kind) => {
+      const h = await harness();
+      const source = await seedTabularSource(h, "shutdown_csv");
+      h.fakes.narrativeBehavior = async (request) => {
+        await new Promise<never>((_resolve, reject) => {
+          const onAbort = () => reject(kind === "APIUserAbortError" ? new OpenAI.APIUserAbortError() : abortError());
+          if (request.signal.aborted) onAbort();
+          else request.signal.addEventListener("abort", onAbort, { once: true });
+        });
+        throw abortError();
+      };
+      const { recipeId } = await makeRecipe(h, { sourceIds: [source], comparisonKey: ["metric_label"] });
+      const recipe = await h.recipes.getRecipe(h.account, recipeId);
+      h.clock = new Date(Date.parse(recipe!.nextRunAt));
+      const first = h.buildRunner();
+      await first.tick();
+      await waitFor(() => h.fakes.narrativeCalls === 1, "narrative in flight");
+      await first.stop(); // Shutdown interrupt, no cancellation requested.
+      const mid = (await h.runs.listRuns(h.account, recipeId)).items[0];
+      expect(mid.stage).toBe("drafting");
+      expect(h.fakes.draftCalls).toHaveLength(0);
 
-    // A fresh runner (restart) resumes the same run and finishes exactly once.
-    h.fakes.narrativeBehavior = async () => "ok after restart";
-    const second = h.buildRunner();
-    second.start();
-    await waitFor(
-      async () => (await h.runs.getRun(h.account, mid.id)).stage === "awaiting_review",
-      "resumed to review"
-    );
-    expect(h.fakes.draftCalls).toHaveLength(1);
-    expect(await h.ledger.all("SELECT id FROM analysis_runs")).toHaveLength(1);
-  });
+      // A fresh runner (restart) resumes the same run and finishes exactly once.
+      h.fakes.narrativeBehavior = async () => "ok after restart";
+      const second = h.buildRunner();
+      second.start();
+      await waitFor(
+        async () => (await h.runs.getRun(h.account, mid.id)).stage === "awaiting_review",
+        "resumed to review"
+      );
+      expect(h.fakes.draftCalls).toHaveLength(1);
+      expect(await h.ledger.all("SELECT id FROM analysis_runs")).toHaveLength(1);
+    }
+  );
 });

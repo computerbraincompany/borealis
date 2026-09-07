@@ -589,8 +589,15 @@ distinct.
   arbitrary URL. There is no path, directory-listing, file-read, or general
   IPC surface.
 - On quit, main requests orderly backend shutdown. The backend aborts active
-  runs, stops ingestion, closes DuckDB, LanceDB, and SQLite, then acknowledges;
-  main applies a bounded kill timeout.
+  runs, stops ingestion, and joins knowledge preview/refresh/watch abort
+  finalizers before closing DuckDB, LanceDB, and SQLite, then acknowledges;
+  main applies a bounded kill timeout. HTTP drain must close keep-alive sockets
+  that become idle after an admitted request completes, without interrupting
+  its response. Clearing watch timers alone is not a drain: pending catalog
+  scans and refresh promises must settle before storage closure.
+  Brief narrative cancellation uses the execution's own abort signal, including
+  SDK `APIUserAbortError`; shutdown preserves its committed stage for resume,
+  while requested cancellation and deadlines keep their distinct outcomes.
 - `RENDER_BACKEND=electron` sends bounded self-contained documents to the hidden
   renderer. Browser development and headless server CI use Playwright.
 - Production fuses must keep `RunAsNode`, `NODE_OPTIONS`, inspector arguments,

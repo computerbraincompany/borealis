@@ -17,7 +17,7 @@
  * Repeated `notify` events for one connection coalesce into a single pending
  * scan (the spec's coalescing rule); a scan never starts more often than the
  * minimum interval, the reconcile pass bypasses the interval gate, and
- * `stop()` clears every timer — no daemon runs after Borealis quits. Timers
+ * `stop()` clears every timer and drains in-flight passes and scans. Timers
  * default to unref'd handles so a running pump can never hold the process.
  */
 
@@ -76,6 +76,8 @@ export class KnowledgeWatchPump {
   private reconcileTimer: ReturnType<typeof setTimeout> | undefined;
   private pulseTimer: ReturnType<typeof setTimeout> | undefined;
   private reconcilePassRunning = false;
+  private readonly work = new Set<Promise<void>>();
+  private stopping: Promise<void> | undefined;
 
   constructor(private readonly options: KnowledgeWatchPumpOptions) {
     this.debounceMs = positiveInteger(options.debounceMs, KNOWLEDGE_WATCH_DEBOUNCE_MS, "debounceMs");
@@ -97,6 +99,7 @@ export class KnowledgeWatchPump {
   /** Idempotent start: schedules the periodic pulse and reconcile loop. */
   start(): void {
     if (this.started) return;
+    if (this.stopping) throw new Error("knowledge watch pump is stopping");
     this.started = true;
     this.controller = new AbortController();
     this.scheduleReconcile();
@@ -106,8 +109,9 @@ export class KnowledgeWatchPump {
     this.schedulePulse();
   }
 
-  /** Stops every timer, aborts in-flight scans, and refuses future work. */
-  stop(): void {
+  /** Abort immediately; await transport/status finalizers before closing stores. */
+  stop(): Promise<void> {
+    if (this.stopping) return this.stopping;
     this.started = false;
     for (const timer of this.pendingTimers.values()) this.clearTimeoutFn(timer);
     this.pendingTimers.clear();
@@ -118,7 +122,20 @@ export class KnowledgeWatchPump {
     this.pulseTimer = undefined;
     this.controller?.abort(new Error("knowledge watch pump stopped"));
     this.controller = undefined;
-    this.scanning.clear();
+    this.stopping = Promise.allSettled([...this.work]).then(() => {
+      this.scanning.clear();
+      this.stopping = undefined;
+    });
+    return this.stopping;
+  }
+
+  private track(work: Promise<void>): Promise<void> {
+    this.work.add(work);
+    void work.then(
+      () => this.work.delete(work),
+      () => this.work.delete(work)
+    );
+    return work;
   }
 
   /**
@@ -163,14 +180,22 @@ export class KnowledgeWatchPump {
   }
 
   /** Pulse pass: notify every watch connection (interval-gated coalescing). */
-  async pulse(): Promise<void> {
+  pulse(): Promise<void> {
+    return this.track(this.runPulse());
+  }
+
+  private async runPulse(): Promise<void> {
     if (!this.started) return;
     const targets = await this.options.listConnections().catch(() => []);
     for (const target of targets) this.notify(target);
   }
 
   /** Full reconciliation pass: one forced scan per watch connection. */
-  async reconcile(): Promise<void> {
+  reconcile(): Promise<void> {
+    return this.track(this.runReconcile());
+  }
+
+  private async runReconcile(): Promise<void> {
     if (!this.started || this.reconcilePassRunning) return;
     this.reconcilePassRunning = true;
     try {
@@ -196,7 +221,11 @@ export class KnowledgeWatchPump {
     }
   }
 
-  private async runScan(key: string, target: KnowledgeWatchTarget): Promise<void> {
+  private runScan(key: string, target: KnowledgeWatchTarget): Promise<void> {
+    return this.track(this.executeScan(key, target));
+  }
+
+  private async executeScan(key: string, target: KnowledgeWatchTarget): Promise<void> {
     if (!this.started || this.scanning.has(key)) {
       if (this.started && this.scanning.has(key)) this.pendingAfterScan.add(key);
       return;

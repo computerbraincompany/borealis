@@ -45,6 +45,9 @@ node scripts/e2e/run-product-desktop.mjs
 # Required native A–F checkpoints (external driver must act on the real UI):
 node scripts/e2e/run-product-desktop.mjs --journey=all --native-driver=external
 
+# Real interruption, active-work shutdown and scheduled catch-up:
+pnpm test:e2e:product:lifecycle --evidence-dir=/absolute/new/lifecycle-evidence
+
 # Configured real local model pair, using disposable finance/research data:
 pnpm test:e2e:product:live
 ```
@@ -108,9 +111,10 @@ compatibility path and never counts as native-renderer acceptance.
   `server.quiesceWorkers({ token })` polls `GET /api/health` until every
   service (including the data service worker) reports `operational`, then
   sends SIGTERM. This is a bounded poll on a real signal, not a sleep, and it
-  additionally proves the data plane finished queued work before an orderly
-  shutdown; journeys must keep calling `quiesceWorkers`, and any run that
-  still aborts must be reported, not retried.
+  settles the browser journey's readiness transitions. It does not prove
+  active-work shutdown. The [process lifecycle companion](LIFECYCLE.md)
+  deliberately bypasses that gate and checks interruption, drain, recovery,
+  and closed-app catch-up. Any unexpected abort remains a failure.
 
 ## Output and artifact policy (content-free)
 
@@ -169,7 +173,8 @@ compatibility path and never counts as native-renderer acceptance.
   path), which is part of what journey A exercises.
 - End every journey that touched persisted state or the data plane with
   `await server.quiesceWorkers({ token })` before returning, so the entry's
-  orderly shutdown is proven rather than raced.
+  final readiness state is checked. Active-work shutdown has its own ungated
+  [lifecycle proof](LIFECYCLE.md).
 - Journeys that drive MULTI-CALL durable runs (research synthesis, tool
   loops) can use a provider `slow` step as a deterministic scripting window:
   the fixture picks the script step when the request arrives but only streams

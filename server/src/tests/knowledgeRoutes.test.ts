@@ -920,3 +920,75 @@ describe("request boundary", () => {
     expect(authed.statusCode).toBe(413);
   });
 });
+
+describe("knowledge route shutdown drains", () => {
+  it.each(["preview", "refresh"] as const)("waits for an aborted %s and its durable finalizer", async (kind) => {
+    const app = await buildApp();
+    const connection = await createWebdavConnection(app);
+    webdavAdapter.put("shutdown.md", "last successfully imported content");
+    const imported = await importAll(app, connection.id);
+    await waitRefresh(app, imported.refreshId, ["completed"]);
+    const sourceId = imported.items[0]!.source_id;
+    const priorSource = await storageRuntime().ledger.get("SELECT * FROM sources WHERE id=?", [sourceId]);
+    let entered!: () => void;
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    let release!: () => void;
+    const cleanupGate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let aborted = false;
+    const holdTransport = async (signal: AbortSignal): Promise<never> => {
+      entered();
+      await new Promise<void>((resolve) => {
+        const onAbort = () => {
+          aborted = true;
+          resolve();
+        };
+        if (signal.aborted) onAbort();
+        else signal.addEventListener("abort", onAbort, { once: true });
+      });
+      // Socket/file cleanup may finish asynchronously after abort is observed.
+      await cleanupGate;
+      throw new DOMException("transport stopped", "AbortError");
+    };
+    if (kind === "preview") webdavAdapter.scan = async (_context, _bounds, _managed, signal) => holdTransport(signal);
+    else webdavAdapter.inspect = async (_context, _request, signal) => holdTransport(signal);
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/knowledge-connections/${connection.id}/${kind === "preview" ? "previews" : "refreshes"}`,
+      headers: ownerAuth,
+      ...(kind === "refresh" ? { body: {} } : {}),
+    });
+    expect(response.statusCode).toBe(202);
+    await started;
+    let closed = false;
+    const closing = app.close().then(() => {
+      closed = true;
+    });
+    try {
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(aborted).toBe(true);
+      expect(closed).toBe(false);
+    } finally {
+      release();
+      await closing;
+    }
+    const store = storageRuntime().knowledge;
+    if (kind === "preview") {
+      const preview = await store.getPreview(OWNER, response.json().preview.id);
+      expect(preview?.status).toBe("failed");
+      expect(preview?.error_code).toBe("KNOWLEDGE_SCAN_CANCELLED");
+    } else {
+      const refreshId = response.json().refresh.id as string;
+      expect((await store.requireRefresh(OWNER, refreshId)).status).toBe("cancelled");
+      const items = await store.listRefreshItems(OWNER, refreshId);
+      expect(items).toHaveLength(1);
+      expect(items[0]?.status).toBe("cancelled");
+      expect(items[0]?.error_code).toBe("KNOWLEDGE_REFRESH_CANCELLED");
+      expect(await store.getActiveRefresh(OWNER, connection.id)).toBeUndefined();
+    }
+    expect(await storageRuntime().ledger.get("SELECT * FROM sources WHERE id=?", [sourceId])).toEqual(priorSource);
+  });
+});

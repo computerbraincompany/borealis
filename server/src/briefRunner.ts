@@ -1250,6 +1250,10 @@ export function createBriefRunner(dependencies: BriefRunnerDependencies) {
         await generateNarrative({ accountId: run.accountId, model, messages, signal: execution.controller.signal })
       );
     } catch (error) {
+      // Compatible transports use different abort exception names (including
+      // the SDK's APIUserAbortError). Our signal determines cancellation;
+      // preserve the committed stage on shutdown instead of failing the brief.
+      if (execution.controller.signal.aborted) throw abortError();
       if (error instanceof RemoteEgressConsentRequiredError) {
         throw new BriefTerminalDecision(
           "skipped",

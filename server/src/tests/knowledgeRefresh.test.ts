@@ -398,6 +398,41 @@ describe("knowledge refresh service", () => {
     await expect(h.store.getPreview(h.account, preview.preview.id)).resolves.toMatchObject({ status: "complete" });
   });
 
+  it("keeps an I/O-interrupted deadline resumable instead of misclassifying it as cancellation", async () => {
+    const h = await harness();
+    h.adapter.put("deadline.md", "retained content");
+    const imported = await importAll(h);
+    await h.service.refreshAndWaitReady({
+      accountId: h.account,
+      connections: [{ connection_id: h.connection.id, expected_connection_revision: h.connection.revision }],
+    });
+    const originalInspect = h.adapter.inspect.bind(h.adapter);
+    let entered = false;
+    h.adapter.inspect = async (_context, _request, signal) => {
+      entered = true;
+      await new Promise<void>((resolve) => {
+        if (signal.aborted) resolve();
+        else signal.addEventListener("abort", () => resolve(), { once: true });
+      });
+      throw new DOMException("transport deadline", "AbortError");
+    };
+    const timedOut = await h.service.refreshAndWaitReady({
+      accountId: h.account,
+      connections: [{ connection_id: h.connection.id, expected_connection_revision: h.connection.revision }],
+      deadlineMs: 80,
+    });
+    expect(entered).toBe(true);
+    expect(timedOut.fully_ready).toBe(false);
+    expect(timedOut.refreshes[0]?.error_code).toBe("KNOWLEDGE_REFRESH_TIMEOUT");
+    const refreshId = refreshIdOf(timedOut);
+    expect((await h.store.requireRefresh(h.account, refreshId)).status).toBe("active");
+    expect((await h.store.getRefreshItem(h.account, refreshId, imported.itemIds[0]!))?.status).toBe("pending");
+    h.adapter.inspect = originalInspect;
+    await h.service.recoverInterrupted(h.account);
+    expect((await h.store.requireRefresh(h.account, refreshId)).status).toBe("completed");
+    expect(h.ingestion.calls).toBe(1);
+  });
+
   it("survives restart: recovery retries only incomplete items and adopts the reserved generation", async () => {
     const h = await harness({ autoPromote: false });
     h.adapter.put("durable.md", "content");

@@ -201,6 +201,10 @@ async function drainIngressAndCancelRuns(
     await shutdownActiveRuns().catch(() => {
       runCancellationFailed = true;
     });
+    // An in-flight request can finish after HTTP close takes its initial
+    // idle-socket snapshot. Reap newly idle keep-alive sockets while waiting,
+    // without interrupting active publications or other bounded requests.
+    if (!httpClosed) app?.server.closeIdleConnections();
     if (!httpClosed || !schedulerSettled) {
       // Race only the sources not yet observed settled plus the bounded poll;
       // including an already-settled source would spin this loop on microtasks.

@@ -28,6 +28,13 @@ complete that system prompt. CUA cannot inspect or operate the protected
 SecurityAgent application. Leave the checkpoint pending; do not change keychain
 access rules, bypass custody, or acknowledge bootstrap before the app opens.
 
+For CUA-controlled macOS Open and Save sheets, invoke the sheet's exposed
+`Raise` secondary action before selecting files or saving. A background sheet
+can report selected file rows while its Open button remains disabled. Raising
+the sheet and using `Down` / `shift+Down` enabled ordinary multi-file selection
+in the native acceptance run. Refresh the accessibility state before using
+element indices; this is a focus step, not a change to file-access policy.
+
 Its mode-0600 `session.json` contains the exact owned PID/profile, package
 SHA-256, observed loopback origin, disposable fixture locations and local fixture
 connection settings. Read it privately; do not copy credentials or its complete
@@ -86,8 +93,24 @@ The four document downloads must land under the provided exports directory:
 HTML, PDF, Markdown ZIP and DOCX. ZIP members are decoded with size/CRC checks;
 the driver additionally inspects rendered/exported layout.
 
-The final checkpoint requires an actual normal Cmd+Q and disappearance of the
-owned app process. The existing packaged shutdown smoke independently checks
+Immediately before the final checkpoint, the runner activates eight seconds
+of fixture embedding latency and edits the owned watched `notes.md` file.
+Normal runs and earlier journeys keep the fixture's default immediate embedding
+responses. The production desktop folder watch must discover and ingest that
+changed file; the harness verifies an outstanding embedding response alongside
+the exact scheduled active folder refresh. WebDAV watch is unsupported and is
+never used as a substitute.
+The final checkpoint requires an actual normal Cmd+Q during that scheduled
+refresh and disappearance of the owned app process. The harness polls the
+native account's active scheduled row, then verifies that same row cancelled
+and no refresh remains active in the stopped ledger. A cancelled row allows
+up to 30 seconds for orderly process drain. A naturally completed row cannot
+prove active-work cancellation. Missing, manual, old, or unfinished
+work cannot pass. Content-free proof is retained in `native-watch-quit.json`.
+Diagnostic journey subsets that exclude D retain ordinary quit verification
+and explicitly report `active_watched_quit: "not_selected"`; the full A–F gate
+always requires the active watched-refresh proof.
+The existing packaged shutdown smoke independently checks
 the backend's orderly-stop acknowledgment. Driver observations are retained in
 `native-checkpoints.json`; evidence export copies only synthetic artifacts,
 never the profile, credential files or private driver session metadata.
