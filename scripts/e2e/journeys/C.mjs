@@ -1242,7 +1242,15 @@ export async function run(ctx) {
     artifacts.push(await session.screenshot(artifactsDir));
 
     /* -- P10b: the copy's own two publications + four real downloads -------- */
+    // Chromium gates automatic downloads per DOCUMENT (the 11th automatic
+    // download on one document is blocked without a user prompt — proven
+    // against this exact Chromium build). The memo phase consumed 7 of the
+    // budget; navigating to the copy's workbench therefore performs a real
+    // document load (hash route + reload), which resets the per-document
+    // allowance. This mirrors exactly what a user leaving one document for
+    // another does.
     await goHash(session, `/documents/${docR}`);
+    await session.page.reload({ waitUntil: "domcontentloaded" });
     await expectText(session, "latest publication v2", 20_000);
     const rHtml = await downloadExport(0, "HTML", "docR-v2.html");
     await downloadExport(0, "PDF", "docR-v2.pdf");
