@@ -9,16 +9,11 @@
 
 ## Status and dependencies
 
-- **Status:** DONE — stages 1–4 are merged on `main` (schema v26–v28);
-  journey F browser acceptance passes repeatedly (final integrated A–F run
-  on `59d1a64`), the review-inbox head-revision decision defect is fixed
-  (`930addf`) and re-proved through the REAL UI button (`1483893`), and the
-  complete gate chain (root verify, desktop verify, packaging, packaged
-  smokes) is green on the final commit. Disclosed open items: a cosmetic
-  `coalesced_count=1` label on fresh manual runs (reported, journey
-  documents it without asserting), and the brief UI is not separately
-  exercised inside the packaged app (identical bundled web surface; the
-  packaged-app proof ran journey B). See [EXECUTION.md](EXECUTION.md).
+- **Status:** IMPLEMENTED — browser, live-model and repository acceptance pass;
+  final native packaged UI acceptance awaits macOS Keychain approval.
+  [EXECUTION.md](EXECUTION.md) records current gates and retained evidence.
+  Baseline descriptions and dated execution records below are historical
+  context; they do not supersede the current API or acceptance status.
 - **Baseline:** `e2e6a78`, 2026-09-06.
 - **Priority / effort / functional risk:** P2 / XL / high (recovery and calendar semantics).
 - **Depends on:** [M12 saved analyses](M12-saved-analyses.md),

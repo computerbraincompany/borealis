@@ -1,4 +1,4 @@
-# Functional product review — September 2026
+# Functional product review — September 6, 2026 baseline
 
 Reviewed 2026-09-05/06 against Borealis commit `e2e6a78`. This is a code-grounded
 product assessment and a dated competitive comparison. The
@@ -6,9 +6,15 @@ product assessment and a dated competitive comparison. The
 the sequence; this document supplies the rationale. The September 6 follow-up
 selected all six functional slices for the coding-agent handoff. Their precise
 scope and acceptance criteria now live in [DEVELOPMENT_HANDOFF.md](DEVELOPMENT_HANDOFF.md),
-the connected-agent spec and milestones M12–M16. These are selected TODOs,
-not shipped features; additional ideas below remain deferred unless included
-in those specifications.
+the connected-agent spec and milestones M12–M16.
+
+**Historical assessment:** the capability gaps, TODO labels, implementation
+language, and recommendations below describe `e2e6a78` on September 6. The six
+selected slices and prerequisite migrations have since been implemented.
+Use the [current README](../README.md), [API reference](API.md), and
+[execution ledger](../milestones/EXECUTION.md) for today's behavior and acceptance
+status. This dated comparison is preserved as the rationale for that wave;
+additional ideas remain deferred unless explicitly selected by a specification.
 
 ## Recommendation
 

@@ -325,6 +325,27 @@ async function groupProvider() {
   });
   ok("provider: invalid runtime script rejected 400", badScript.status === 400);
 
+  // The chart echo is an exact, bounded tool-result reference, not arbitrary
+  // request interpolation; missing and ambiguous tool results must fail.
+  const chartId = "11111111-2222-4333-8444-555555555555";
+  await fetch(`${ready.origin}/fixture/script`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ steps: [{ type: "tool_call", id: "report-call", name_pieces: ["create_report"], argument_pieces: ['{"title":"Synthetic"}'], echo_chart_from_tool_call_id: "chart-call" }], on_exhausted: "repeat-last" }),
+  });
+  const chartMessage = { role: "tool", tool_call_id: "chart-call", content: JSON.stringify({ rendered: true, chart_id: chartId }) };
+  const echo = async messages => {
+    const response = await fetch(`${ready.origin}/v1/chat/completions`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "fixture-chat-v1", stream: true, messages }),
+    });
+    return { status: response.status, raw: await response.text() };
+  };
+  const echoed = await echo([chartMessage]);
+  const echoedArgs = parseSseFrames(echoed.raw).map(frame => frame.json?.choices?.[0]?.delta?.tool_calls?.[0]?.function?.arguments ?? "").join("");
+  ok("provider: chart echo preserves report args and exact server UUID", echoed.status === 200 && JSON.parse(echoedArgs).title === "Synthetic" && JSON.parse(echoedArgs).charts[0] === chartId);
+  ok("provider: chart echo refuses missing tool result", (await echo([])).status === 400);
+  ok("provider: chart echo refuses duplicate tool result", (await echo([chartMessage, chartMessage])).status === 400);
+
   ok("provider: unknown path is 404", (await fetch(`${ready.origin}/v1/completions`, { method: "POST", body: "{}" })).status === 404);
 
   const state = await (await fetch(`${ready.origin}/fixture/state`)).json();

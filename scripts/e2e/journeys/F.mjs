@@ -346,10 +346,12 @@ export async function run(ctx) {
     await wizard.getByLabel("Hour (0-23)").fill("9");
     await wizard.getByLabel("Minute (0-59)").fill("0");
     await wizard.getByLabel("Time zone").selectOption(TIME_ZONE);
-    // Running-app caveat is a first-class part of the schedule control, and
-    // the create form defers the resolved preview to the saved detail.
+    // The draft shows all three server-resolved civil/UTC pairs before save.
     await expectIn(wizard, CALENDAR_CAVEAT);
-    await expectIn(wizard, "After saving, the recipe detail shows the server's next three run times");
+    const draftPreview = wizard.getByLabel("Next three run times");
+    await draftPreview.locator("li").nth(2).waitFor({ timeout: 30_000 });
+    const draftPreviewText = await draftPreview.innerText();
+    assert(await draftPreview.locator("li").count() === 3 && draftPreviewText.includes(TIME_ZONE), "DRAFT_SCHEDULE_PREVIEW");
     /* -- Wizard create (the shipped defect BRIEF_WIZARD_NULL_SCHEMA was
      * fixed in d805b4a: the wire body omits unused keys). This journey now
      * exercises the REAL wizard path end to end: one click, a schema-valid
@@ -386,6 +388,7 @@ export async function run(ctx) {
     assert(occurrences.length === 3, "OCCURRENCES_COUNT", String(occurrences.length));
     const seenKeys = new Set();
     for (const occurrence of occurrences) {
+      assert(draftPreviewText.includes(occurrence.civil.replace("T", " ")) && draftPreviewText.includes(occurrence.utc_at.replace("T", " ").replace(".000Z", "Z")), "DRAFT_SCHEDULE_PREVIEW_CHANGED_AFTER_SAVE");
       assert(!seenKeys.has(occurrence.occurrence_key), "OCCURRENCE_KEY_DUPLICATE");
       seenKeys.add(occurrence.occurrence_key);
       const derived = civilInZone(occurrence.utc_at, TIME_ZONE).replace(" ", "T");
@@ -405,6 +408,7 @@ export async function run(ctx) {
     checks.schedule = {
       persisted: "weekly Mon 09:00 " + TIME_ZONE,
       preview_pairs_verified: occurrences.length,
+      preview_before_save: true,
       first_utc: occurrences[0].utc_at,
     };
 
@@ -514,10 +518,8 @@ export async function run(ctx) {
 
     const run1Final = await pollRun(run1.run.id, ["awaiting_review"], "RUN1_AWAITING");
     assert(run1Final.trigger === "manual", "RUN1_TRIGGER");
-    // Cosmetic shipped defect (repro: every manual run): briefRunStore
-    // .createManualRun inserts coalesced_count=1, so the runs panel/review
-    // rows label manual runs "coalesced 1 missed occurrence". Not load-
-    // bearing; reported, not asserted, so the journey stays meaningful.
+    // The count includes the current occurrence; a manual run is never catch-up.
+    assert(await manage1.getByText(/coalesced \d+ (?:missed )?occurrences?/).count() === 0, "MANUAL_RUN_FALSE_CATCH_UP_BADGE");
     assert(run1Final.occurrence_key === `manual:${run1.run.operation_id}`, "RUN1_OCCURRENCE_KEY");
     assert(run1Final.analysis_succeeded === true && run1Final.analysis_run_id !== null, "RUN1_ANALYSIS_COMMIT");
     assert(run1Final.baseline_run_id === null, "RUN1_BASELINE_NOT_NULL");

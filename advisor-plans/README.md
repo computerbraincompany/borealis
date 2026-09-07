@@ -1,9 +1,9 @@
 # Active advisor implementation plans
 
-September 5 sequencing update: the agent editor foundation now owns v13.
-The unimplemented provider-consent, automation-ownership, and connector-repair
-migrations move to v14, v15, and v16 respectively. Applied v1–v12 history stays
-unchanged. See [the rollout plan](../docs/AGENT_EDITOR_ROLLOUT.md).
+The agent editor foundation owns v13. Provider-consent, automation-ownership,
+and connector-repair migrations shipped at v14, v15, and v16 during the
+September 6 prerequisite closure; product migrations follow through v28. Applied
+history remains unchanged. See [the rollout plan](../docs/AGENT_EDITOR_ROLLOUT.md).
 Migration executors must include the new agent tables/columns in their historical
 fixtures and preserve them through remediation rebuilds.
 
@@ -37,7 +37,7 @@ requests it.
 | [004](004-add-vertical-agent-integration-test.md)      | Add a vertical agent-turn integration test                            |       P1 |      L | 001                               | DONE 2026-09-06 `9c14f40` |
 | [005](005-bind-provider-credentials-to-origin.md)      | Bind every provider credential to one endpoint origin                 |       P1 |      M | —                                 | DONE 2026-09-06 `c150ac7` (settings file v3 for the key/origin pair; v2 was already taken by plan 034) |
 | [006](006-bind-egress-consent-to-provider-revision.md) | Bind egress consent and outbound calls to the current provider origin |       P1 |      L | 003, 005, 031                     | DONE 2026-09-06 `418f7a9` (real schema v14 shipped) |
-| [007](007-restrict-contained-engine-control.md)        | Restrict contained-engine control to the desktop operator             |       P1 |      L | 004, 005, 006                     | DONE 2026-09-06 `394ba6b` (web contained-panel projection adaptation running as 007b follow-up) |
+| [007](007-restrict-contained-engine-control.md)        | Restrict contained-engine control to the desktop operator             |       P1 |      L | 004, 005, 006                     | DONE 2026-09-06 `394ba6b` (including the web contained-panel projection adaptation) |
 | [008](008-harden-contained-download-transport.md)      | Harden contained-model download transport                             |       P1 |      L | 007                               | DONE 2026-09-06 `fb99667` |
 | [009](009-eliminate-unsolicited-ui-egress.md)          | Eliminate unsolicited UI egress                                       |       P1 |      M | —                                 | DONE 2026-09-06 `f3dc381` |
 | [010](010-authorize-shared-report-artifacts.md)        | Authorize shared report artifacts consistently                        |       P1 |      S | —                                 | TODO   |
@@ -99,6 +99,11 @@ probe also passed against loopback LM Studio with the local Qwen 3.8/Nomic
 768-dimensional pair.
 
 ## Dependency notes
+
+These notes preserve the ordering rationale. Rows marked DONE are applied
+contracts, not work to repeat. Remaining advisor TODOs are separate from the
+selected v1 functional wave; its implementation and acceptance are recorded in
+[milestones/EXECUTION.md](../milestones/EXECUTION.md).
 
 - The table's `Depends on` column records ordering edges, including completed
   predecessors when their sequencing or delivered behavior is required. Every
@@ -212,7 +217,7 @@ their supported host.
 - Keep SQLite for the relational ledger and chunk text, LanceDB for scoped
   vectors, and DuckDB for isolated tabular analytics. No plan merges the stores.
 - Keep selected-empty source semantics, immutable turn snapshots, one active run
-  per chat, the eight-round agent bound, and complete final deltas after
+  per chat, the sixteen-tool-round bound plus reserved final synthesis, and complete final deltas after
   persistence. These are documented consistency decisions.
 - Keep a full startup repair. Plan 016 changes only the unconditional minute
   full-corpus scan.

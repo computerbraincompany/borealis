@@ -1,4 +1,9 @@
-# Goal to give the coding agent
+# Functional-wave completion goal
+
+The implementation is present. Start from the current
+`milestones/EXECUTION.md` evidence and open checks; preserve completed work.
+The original full-scope goal below remains the completion boundary and does
+not authorize repeating implemented milestones or replacing required checks.
 
 Implement the complete Borealis functional development wave defined in
 `docs/DEVELOPMENT_HANDOFF.md`. Read `AGENTS.md`, the current README/API/desktop
@@ -14,7 +19,7 @@ source search; durable local research and reviewed comparison tables; and
 calendar-based recurring briefs with a real review inbox. Follow the precise
 scope, defaults, limits and acceptance criteria in those specs. Resolve and
 implement the handoff's prerequisite closure first where required; preserve
-applied schema history and reserved migrations v14–v16. Do not reimplement
+applied schema history, including real migrations v14–v16 and product v17–v28. Do not reimplement
 completed work or expand into explicitly deferred features.
 
 Work autonomously through all milestones. Use subagents where independent work

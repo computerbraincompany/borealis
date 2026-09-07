@@ -4,10 +4,11 @@ The common harness for [docs/END_TO_END_ACCEPTANCE.md](../../docs/END_TO_END_ACC
 It builds the actual production web/backend, boots the real server against
 the committed scripted fixtures under `scripts/e2e/fixtures/`, drives real
 Chromium through the product UI, runs journeys sequentially, and cleans up.
-Journeys A–F arrive with their feature waves: `B` is implemented (browser
-mode and packaged-desktop mode) and `A`/`C`/`D`/`E`/`F` remain loud
-NOT-IMPLEMENTED stubs — a green `--journey=all` run will only ever mean all
-six are real.
+Browser journeys A–F are implemented. Native packaged acceptance uses a separate
+external UI driver and per-run checkpoints; browser-on-packaged-backend coverage
+is explicitly a compatibility check. A green full product run means every
+selected scenario actually executed, never that a stub was skipped. Current
+results and remaining checks live in [EXECUTION.md](../../milestones/EXECUTION.md).
 
 Fixtures and their ready-line protocol are documented in
 [README.md](README.md).
@@ -16,11 +17,11 @@ Fixtures and their ready-line protocol are documented in
 
 - `run-product.mjs` — `pnpm test:e2e:product` entry (server + fixtures + browser).
 - `run-product-desktop.mjs` — packaged-desktop entry (lifecycle default;
-  `--journey=B` runs journey B against the real unsigned app).
+  `--journey=all --native-driver=external` requires the normal native UI driver).
 - `harness/` — `workspace`, `server`, `browser`, `providers`, `desktop`
   (lifecycle), `desktopApp` (journey target), `util`.
 - `journeys/` — `registry.mjs`, the six required modules `A.mjs`…`F.mjs`
-  (B implemented, the rest loud stubs), and the implemented `smoke.mjs`
+  (all implemented), and the `smoke.mjs`
   self-test.
 
 ## How to run
@@ -34,12 +35,18 @@ via `pnpm --filter borealis-server exec playwright install chromium`):
 # entry builds them first):
 node scripts/e2e/run-product.mjs --journey=smoke --skip-build
 
-# Required journeys (currently fails loudly until each feature lands):
+# All required browser journeys:
 node scripts/e2e/run-product.mjs --journey=all
 
 # Packaged desktop lifecycle (requires `pnpm package:unsigned` first;
 # exits 3 BLOCKED when the app is absent — never a silent pass):
 node scripts/e2e/run-product-desktop.mjs
+
+# Required native A–F checkpoints (external driver must act on the real UI):
+node scripts/e2e/run-product-desktop.mjs --journey=all --native-driver=external
+
+# Configured real local model pair, using disposable finance/research data:
+pnpm test:e2e:product:live
 ```
 
 Flags for `run-product.mjs`:
@@ -52,8 +59,14 @@ Flags for `run-product.mjs`:
 | `--keep-on-failure` | Keep the run tree on failure and print its absolute path. |
 | `--inject-failure` | `smoke`-only tripwire: proves a red run exits non-zero while cleanup still verifies. |
 
-`run-product-desktop.mjs` accepts `--journey=ID` (an A–F demand currently
-reports `not_implemented`), `--workspace=DIR`, and `--keep-on-failure`.
+`run-product-desktop.mjs` accepts `--journey=ID`, `--workspace=DIR`,
+`--keep-on-failure`, and an absolute `--app=PATH`. Native journeys require
+`--native-driver=external`: the private checkpoint bridge binds each request to
+a fresh nonce, exact app PID/profile, and bundle hash. The external driver must
+perform the requested real UI action; independent read-only checks verify durable
+state and exported bytes. Missing native driver is BLOCKED, not a pass.
+`--surface=browser --journey=B` retains the older browser-on-packaged-backend
+compatibility path and never counts as native-renderer acceptance.
 
 ### Exit codes
 
@@ -62,7 +75,7 @@ reports `not_implemented`), `--workspace=DIR`, and `--keep-on-failure`.
 | 0 | Every selected journey passed and cleanup verified lock/pid release. |
 | 1 | Any journey failed or is a NOT-IMPLEMENTED stub, or cleanup found a leak. |
 | 2 | Usage/build/workspace error before any journey ran. |
-| 3 | Desktop only: BLOCKED — the packaged arm64 app does not exist (`pnpm package:unsigned`). Distinct from failure by contract. |
+| 3 | Desktop BLOCKED — the packaged arm64 app or required external native UI driver is unavailable. Distinct from failure by contract. |
 
 ## Isolation and security contract
 
@@ -183,17 +196,20 @@ reports `not_implemented`), `--workspace=DIR`, and `--keep-on-failure`.
   keyboard selection (`End`/`Shift+ArrowLeft`, `Home`/`Shift+End`) like a
   user, and assert the mirrored badge before using the selection.
 
-## Root `package.json` wiring (for the coordinator — not applied by this stage)
+## Root commands
 
-Add to the root `scripts` block:
+The root scripts are implemented:
 
-```json
-"test:e2e:product": "node scripts/e2e/run-product.mjs --journey=all",
-"test:e2e:product:desktop": "node scripts/e2e/run-product-desktop.mjs --journey=all"
+```bash
+pnpm test:e2e:product
+pnpm test:e2e:product:desktop
+pnpm test:e2e:product:live
 ```
 
-`pnpm test:e2e:product:live` requires a configured local tool-capable chat/
-embedding pair and the scoped finance/research acceptance from the acceptance
-doc; its dedicated entry (`run-product-live.mjs`) lands with that contract
-and an unavailable model must stay an explicit failure/blockage, never an
-automatic pass.
+The browser command runs A–F. Desktop requires fresh unsigned packaging and
+an external normal-UI driver; use the native-driver option above when operating
+its checkpoints. The live entry requires a compatible configured local chat and
+embedding pair, and checks fixture finance/research facts; an unavailable model
+or unusable result is an explicit failure/blockage, never an automatic pass.
+These commands complement root verification, GUI rendering, packaged native and
+entitlement smokes, and the populated stopped-workspace archive/restore proof.

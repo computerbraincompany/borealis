@@ -14,6 +14,7 @@
  *   --workspace=DIR                   adopt an explicit empty absolute run
  *                                      root instead of a fresh temp dir
  *   --keep-on-failure                 keep the run tree and print its path
+ *   --evidence-dir=ABS_NEW_DIR         retain synthetic artifacts and summary only
  *   --inject-failure                  smoke-only self-test tripwire
  *
  * Output contract: one content-free JSON summary line on stdout
@@ -32,6 +33,7 @@ import { startServer } from "./harness/server.mjs";
 import { launchProvider } from "./harness/providers.mjs";
 import { launchBrowser } from "./harness/browser.mjs";
 import { loadJourney, resolveJourneyIds } from "./journeys/registry.mjs";
+import { createEvidenceOutput } from "./harness/evidence.mjs";
 
 const ENTRY_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(ENTRY_DIR, "..", "..");
@@ -55,6 +57,7 @@ function emitSummary(summary) {
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
+  const evidenceOutput = createEvidenceOutput(args["evidence-dir"]);
   const journeyIds = resolveJourneyIds(args.journey);
   const skipBuild = args["skip-build"] === true;
   const keepOnFailure = args["keep-on-failure"] === true;
@@ -63,7 +66,10 @@ async function main() {
   if (skipBuild) {
     for (const f of ["server/dist/index.js", "web/dist/index.html"]) {
       if (!fs.existsSync(path.join(REPO_ROOT, f))) {
-        throw new HarnessError("PREBUILT_MISSING", `${f} not found — omit --skip-build to build it`);
+        throw new HarnessError(
+          "PREBUILT_MISSING",
+          `${f} not found — omit --skip-build to build it`,
+        );
       }
     }
   } else {
@@ -72,7 +78,8 @@ async function main() {
 
   const workspace = createIsolatedWorkspace({
     repoRoot: REPO_ROOT,
-    workspaceOverride: typeof args.workspace === "string" ? args.workspace : undefined,
+    workspaceOverride:
+      typeof args.workspace === "string" ? args.workspace : undefined,
     runId: "product",
   });
 
@@ -94,7 +101,11 @@ async function main() {
       workspace,
       repoRoot: REPO_ROOT,
       provider,
-      models: { chatModel: provider.models.chatModel, embedModel: provider.models.embedModel, embedDim: provider.models.embedDim },
+      models: {
+        chatModel: provider.models.chatModel,
+        embedModel: provider.models.embedModel,
+        embedDim: provider.models.embedDim,
+      },
     });
     workspace.onCleanup(() => server.stop());
     await server.waitBaseline();
@@ -119,20 +130,37 @@ async function main() {
       let result;
       try {
         const outcome = await journey.run(ctx);
+        if (outcome?.checks) {
+          await writeText(
+            path.join(artifactsDir, "checks.json"),
+            `${JSON.stringify(outcome.checks, null, 2)}\n`,
+          );
+        }
+        if (outcome?.checks?.skipped?.length) {
+          throw new HarnessError("REQUIRED_JOURNEY_CHECKS_SKIPPED");
+        }
         result = {
           journey: id,
           status: "pass",
           duration_ms: Date.now() - started,
-          artifacts: [...(outcome?.artifacts ?? [])],
+          artifacts: [
+            ...(outcome?.artifacts ?? []),
+            ...(outcome?.checks ? ["checks.json"] : []),
+          ],
         };
       } catch (error) {
-        const code = error instanceof HarnessError ? error.code : "JOURNEY_ERROR";
+        const code =
+          error instanceof HarnessError ? error.code : "JOURNEY_ERROR";
         result = {
           journey: id,
-          status: code.startsWith("JOURNEY_NOT_IMPLEMENTED") ? "not_implemented" : "fail",
+          status: code.startsWith("JOURNEY_NOT_IMPLEMENTED")
+            ? "not_implemented"
+            : "fail",
           duration_ms: Date.now() - started,
           failure: code,
-          artifacts: fs.existsSync(artifactsDir) ? fs.readdirSync(artifactsDir).sort() : [],
+          artifacts: fs.existsSync(artifactsDir)
+            ? fs.readdirSync(artifactsDir).sort()
+            : [],
         };
       }
       summary.journeys.push(result);
@@ -146,14 +174,24 @@ async function main() {
     // Persist a pre-cleanup summary while the run tree still exists (the
     // tree is removed during cleanup unless --keep-on-failure).
     try {
-      await writeText(workspace.summaryFile, `${JSON.stringify({ ...summary, phase: "pre-cleanup" }, null, 2)}\n`);
+      await writeText(
+        workspace.summaryFile,
+        `${JSON.stringify({ ...summary, phase: "pre-cleanup" }, null, 2)}\n`,
+      );
     } catch {
       // The tree may already be unusable; stdout remains the record.
+    }
+    try {
+      evidenceOutput?.capture(workspace.artifactsDir);
+    } catch {
+      summary.setup_failure = "EVIDENCE_CAPTURE_FAILED";
     }
     const anyFailure =
       summary.setup_failure !== undefined ||
       summary.journeys.some((j) => j.status !== "pass");
-    const cleanup = await workspace.cleanup({ keep: keepOnFailure && anyFailure });
+    const cleanup = await workspace.cleanup({
+      keep: keepOnFailure && anyFailure,
+    });
     summary.cleanup = {
       workspace_removed: cleanup.removed,
       kept_path: cleanup.kept ? workspace.root : null,
@@ -162,7 +200,9 @@ async function main() {
       problems: cleanup.problems,
     };
     if (cleanup.problems.length > 0) {
-      process.stderr.write(`E2E_CLEANUP_PROBLEMS ${cleanup.problems.join(",")}\n`);
+      process.stderr.write(
+        `E2E_CLEANUP_PROBLEMS ${cleanup.problems.join(",")}\n`,
+      );
     }
     summary.finished_at = new Date().toISOString();
     summary.passed =
@@ -172,11 +212,15 @@ async function main() {
       cleanup.problems.length === 0;
     if (cleanup.kept) {
       try {
-        await writeText(workspace.summaryFile, `${JSON.stringify(summary, null, 2)}\n`);
+        await writeText(
+          workspace.summaryFile,
+          `${JSON.stringify(summary, null, 2)}\n`,
+        );
       } catch {
         // keep-on-failure tree stays usable regardless
       }
     }
+    evidenceOutput?.finish(summary);
     emitSummary(summary);
     exitCode = summary.passed ? 0 : summary.setup_failure !== undefined ? 2 : 1;
   }
@@ -184,7 +228,8 @@ async function main() {
 }
 
 process.exitCode = await main().catch((error) => {
-  const code = error instanceof HarnessError ? error.code : "UNEXPECTED_ENTRY_ERROR";
+  const code =
+    error instanceof HarnessError ? error.code : "UNEXPECTED_ENTRY_ERROR";
   process.stderr.write(`E2E_FATAL ${code}\n`);
   return 2;
 });

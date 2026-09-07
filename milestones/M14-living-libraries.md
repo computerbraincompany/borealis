@@ -2,10 +2,11 @@
 
 ## Status and execution contract
 
-- **Status:** IN PROGRESS — stages 1–4 and the archive-manifest work are merged
-  on `main` (schema v19/v24; journey D browser acceptance passes); final
-  acceptance evidence and remaining checks are tracked in
-  [EXECUTION.md](EXECUTION.md).
+- **Status:** IMPLEMENTED — browser, live-model and repository acceptance pass;
+  final native packaged UI acceptance awaits macOS Keychain approval.
+  [EXECUTION.md](EXECUTION.md) records current gates and retained evidence.
+  Baseline descriptions and dated execution records below are historical
+  context; they do not supersede the current API or acceptance status.
 - **Priority / effort:** P1 / L.
 - **Baseline:** `e2e6a78`, 2026-09-06 (the text below was a specification at that baseline).
 - **Dependencies:** M04/M09; complete the reserved schema v14–v16 remediation

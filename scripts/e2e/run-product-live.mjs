@@ -21,6 +21,7 @@
  *   --embed-dim=N           default 768
  *   --skip-build            reuse existing dist outputs
  *   --keep-on-failure       keep the isolated workspace and print its path
+ *   --evidence-dir=DIR      retain synthetic screenshots and summary in a new absolute directory
  *
  * Output contract: one content-free `E2E_LIVE_SUMMARY {json}` line (check
  * names, pass/fail, durations, model ids; NO prompts, NO document text, NO
@@ -29,6 +30,7 @@
  * the model pair is unavailable (explicit block).
  */
 import { spawnSync } from "node:child_process";
+import { createEvidenceOutput } from "./harness/evidence.mjs";
 import fs from "node:fs";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
@@ -70,6 +72,7 @@ function parseArgsLocal(argv) {
     embedDim: Number.parseInt(String(args["embed-dim"] ?? "768"), 10),
     skipBuild: args["skip-build"] === true,
     keepOnFailure: args["keep-on-failure"] === true,
+    evidenceDir: args["evidence-dir"],
   };
 }
 
@@ -131,6 +134,7 @@ async function uploadFile(session, filePath, name) {
 
 async function main() {
   const cfg = parseArgsLocal(process.argv.slice(2));
+  const evidenceOutput = createEvidenceOutput(cfg.evidenceDir);
   const checks = [];
   const startedAt = new Date().toISOString();
   const workspace = workspaceMod.createIsolatedWorkspace({
@@ -560,7 +564,8 @@ async function main() {
       for (const name of researchDocs) {
         const res = await uploadFile(session, path.join(corpusDir, name), name);
         assert(
-          (res.status === 200 || res.status === 201) && typeof res.body?.id === "string",
+          (res.status === 200 || res.status === 201) &&
+            typeof res.body?.id === "string",
           "RESEARCH_UPLOAD_STATUS",
           `${name} → ${res.status} ${JSON.stringify(res.body?.code ?? res.body?.error ?? "")}`,
         );
@@ -583,78 +588,147 @@ async function main() {
         { deadlineMs: 600_000, intervalMs: 1000, label: "research docs ready" },
       );
 
-      const col = (label, type, extra = {}) => ({
-        id: crypto.randomUUID(),
-        label,
-        question: `${label}?`,
-        type,
-        unit: null,
-        choices: null,
-        ...extra,
-      });
-      const created = await session.apiFetch("/api/research", {
-        method: "POST",
-        expectStatus: 201,
-        body: {
-          title: "Supplier terms dossier (LIVE)",
-          question:
-            "Compare renewal pricing, effective dates, renewal handling, tier, and exception clauses across the supplier documents.",
-          output_kind: "comparison",
-          chat_model: cfg.chatModel,
-          source_ids: sourceIds,
-          columns: [
-            col("Price", "number", {
-              unit: "USD",
-              question: "What is the quoted price in USD?",
-            }),
-            col("Effective date", "date", {
-              question: "What is the effective date?",
-            }),
-            col("Auto-renewal", "boolean", { question: "Does it auto-renew?" }),
-            col("Tier", "enum", {
-              choices: ["Basic", "Pro", "Enterprise"],
-              question: "Which service tier?",
-            }),
-            col("Exceptions", "text", {
-              question: "Which exception clauses are present?",
-            }),
-          ],
+      // All definition, plan and run mutations use the real research UI.
+      // Authenticated API reads below independently verify its persisted state.
+      await session.gotoHash("/research/new");
+      await session.page
+        .locator("#research-title")
+        .fill("Supplier terms dossier (LIVE)");
+      await session.page
+        .locator("#research-question")
+        .fill(
+          "Compare renewal pricing, effective dates, renewal handling, tier, and exception clauses across the supplier documents.",
+        );
+      await session.page
+        .getByRole("radio", { name: "comparison", exact: true })
+        .check();
+      const columns = [
+        {
+          label: "Price",
+          type: "number",
+          unit: "USD",
+          question: "What is the quoted price in USD?",
         },
+        {
+          label: "Effective date",
+          type: "date",
+          question: "What is the effective date?",
+        },
+        {
+          label: "Auto-renewal",
+          type: "boolean",
+          question: "Does it auto-renew?",
+        },
+        { label: "Tier", type: "enum", question: "Which service tier?" },
+        {
+          label: "Exceptions",
+          type: "text",
+          question: "Which exception clauses are present?",
+        },
+      ];
+      for (let i = 0; i < columns.length; i++) {
+        const column = columns[i];
+        const n = i + 1;
+        await session.page
+          .getByRole("button", { name: "Add column", exact: true })
+          .click();
+        await session.page
+          .getByLabel(`Label for column ${n}`, { exact: true })
+          .fill(column.label);
+        await session.page
+          .getByLabel(`Type for column ${n}`, { exact: true })
+          .selectOption(column.type);
+        await session.page
+          .getByLabel(`Question for column ${n}`, { exact: true })
+          .fill(column.question);
+        if (column.unit)
+          await session.page
+            .getByLabel(`Unit for column ${n}`, { exact: true })
+            .fill(column.unit);
+      }
+      await session.page
+        .getByLabel("Enum choices for column 4", { exact: true })
+        .fill("Basic\nPro\nPremium\nStandard\nEnterprise");
+      for (const name of researchDocs) {
+        await session.page
+          .getByLabel(`Select source: ${name}`, { exact: true })
+          .check();
+      }
+      await session.page
+        .getByRole("button", { name: "Create draft", exact: true })
+        .click();
+      await session.page.waitForURL(/#\/research\/[0-9a-f-]{36}$/, {
+        timeout: 30_000,
       });
-      const defId = created.body?.id ?? created.body?.definition?.id;
+      const defId = new URL(session.page.url()).hash.split("/").pop();
       assert(typeof defId === "string", "RESEARCH_DEF_SHAPE");
-
-      const proposal = await session.apiFetch(`/api/research/${defId}/plan`, {
-        method: "POST",
-        expectStatus: 200,
-        body: { expected_revision: created.body?.current_revision ?? 1 },
-      });
-      const plan = proposal.body?.plan;
-      const steps = Array.isArray(plan?.steps) ? plan.steps : [];
+      const created = (
+        await session.apiFetch(`/api/research/${defId}`, { expectStatus: 200 })
+      ).body;
       assert(
-        steps.length >= 1 && steps.length <= 8,
+        created.source_ids.length === sourceIds.length &&
+          created.source_ids.every((id) => sourceIds.includes(id)),
+        "RESEARCH_UI_SCOPE",
+      );
+      assert(created.columns.length === 5, "RESEARCH_UI_COLUMNS");
+      await session.page
+        .getByRole("button", { name: "Generate plan proposal", exact: true })
+        .click();
+      await session.page
+        .getByText(
+          /Proposal generated by|Proposal returned the deterministic default plan/,
+        )
+        .first()
+        .waitFor({ timeout: 180_000 });
+      const objective = session.page.getByLabel("Objective for step 1", {
+        exact: true,
+      });
+      await objective.fill(
+        "Compare the supplier terms and explicitly identify missing evidence.",
+      );
+      await session.page
+        .getByRole("button", { name: /^Save as revision/ })
+        .click();
+      const planned = await pollUntil(
+        async () => {
+          const saved = (
+            await session.apiFetch(`/api/research/${defId}`, {
+              expectStatus: 200,
+            })
+          ).body;
+          return saved.current_revision > created.current_revision
+            ? saved
+            : null;
+        },
+        { deadlineMs: 30_000, intervalMs: 200, label: "UI plan saved" },
+      );
+      assert(
+        planned.plan.steps[0].objective ===
+          "Compare the supplier terms and explicitly identify missing evidence.",
+        "RESEARCH_UI_PLAN_EDIT",
+      );
+      assert(
+        planned.plan.steps.length >= 1 && planned.plan.steps.length <= 8,
         "PLAN_STEPS",
-        String(steps.length),
       );
-      assert(
-        steps.every(
-          (step) =>
-            typeof step.objective === "string" && step.objective.length > 0,
-        ),
-        "PLAN_SHAPE",
+      await session.screenshot(artifactsDir);
+      await session.page.getByRole("button", { name: /^Start with / }).click();
+      const started = await pollUntil(
+        async () => {
+          const runs = (
+            await session.apiFetch(`/api/research/${defId}/runs`, {
+              expectStatus: 200,
+            })
+          ).body;
+          return runs.items?.[0] ?? null;
+        },
+        {
+          deadlineMs: 30_000,
+          intervalMs: 200,
+          label: "UI research run accepted",
+        },
       );
-
-      await session.apiFetch(`/api/research/${defId}`, {
-        method: "PATCH",
-        expectStatus: 200,
-        body: { expected_revision: 1, plan: { steps } },
-      });
-      const started = await session.apiFetch(`/api/research/${defId}/runs`, {
-        method: "POST",
-        expectStatus: 201,
-        body: {},
-      });
-      const runId = started.body?.id ?? started.body?.run?.id ?? started.body?.run_id;
+      const runId = started.id;
       assert(typeof runId === "string", "RESEARCH_RUN_SHAPE");
       const detail = await pollUntil(
         async () => {
@@ -696,15 +770,118 @@ async function main() {
         "RESEARCH_TABLE_ROWS",
         String(rows.length),
       );
+      const corpusManifest = JSON.parse(
+        fs.readFileSync(path.join(corpusDir, "manifest.json"), "utf8"),
+      );
+      let supportedFacts = 0;
+      const fieldByLabel = {
+        Price: "price",
+        "Effective date": "effective_date",
+        "Auto-renewal": "renewal",
+        Tier: "tier",
+      };
+      for (const [index, name] of researchDocs.entries()) {
+        const expected = corpusManifest.documents.find(
+          (document) => document.file === name,
+        ).fields;
+        const row = rows.find(
+          (candidate) => candidate.row_source_id === sourceIds[index],
+        );
+        assert(row, "RESEARCH_FACT_ROW_MISSING", name);
+        for (const [label, field] of Object.entries(fieldByLabel)) {
+          const column = planned.columns.find(
+            (candidate) => candidate.label === label,
+          );
+          const cell = row.cells.find(
+            (candidate) =>
+              candidate.column_id === column.id &&
+              candidate.origin === "machine",
+          );
+          const value =
+            field === "price"
+              ? expected.price.value
+              : field === "tier"
+                ? expected.tier[0].toUpperCase() + expected.tier.slice(1)
+                : expected[field];
+          assert(
+            cell?.status === "supported" && cell.value === value,
+            "RESEARCH_EXPECTED_FACT",
+            `${name}:${field}:${cell?.status ?? "absent"}`,
+          );
+          assert(
+            cell.evidence_refs.length > 0 &&
+              cell.evidence_refs.every((id) =>
+                items.some(
+                  (evidence) =>
+                    evidence.id === id &&
+                    evidence.source_id === sourceIds[index],
+                ),
+              ),
+            "RESEARCH_FACT_EVIDENCE",
+            `${name}:${field}`,
+          );
+          supportedFacts++;
+        }
+        const exceptionsColumn = planned.columns.find(
+          (column) => column.label === "Exceptions",
+        );
+        const exceptions = row.cells.find(
+          (cell) =>
+            cell.column_id === exceptionsColumn.id && cell.origin === "machine",
+        );
+        if (expected.exceptions === null)
+          assert(
+            exceptions?.status === "not_found" && exceptions.value === null,
+            "RESEARCH_MISSING_FACT_INVENTED",
+            name,
+          );
+        else
+          assert(
+            exceptions?.status === "supported" &&
+              typeof exceptions.value === "string" &&
+              exceptions.value.length > 0 &&
+              exceptions.evidence_refs.length > 0,
+            "RESEARCH_EXCEPTION_UNSUPPORTED",
+            name,
+          );
+      }
+      // Reload and inspect the persisted result in the real UI, including partial-state disclosure.
+      await session.page.reload();
+      await session.page
+        .locator('section[aria-label="Run history"] li button')
+        .first()
+        .click();
+      await session.page
+        .locator('[aria-label="Comparison table"] table tbody tr')
+        .first()
+        .waitFor({ timeout: 30_000 });
+      assert(
+        (await session.page
+          .locator('[aria-label="Comparison table"] table tbody tr')
+          .count()) === rows.length,
+        "RESEARCH_UI_RESULT_ROWS",
+      );
+      await session.page
+        .getByRole("button", { name: /^Open captured passage in / })
+        .first()
+        .click();
+      await session.page
+        .getByRole("button", { name: /Close passage/ })
+        .waitFor({ timeout: 20_000 });
+      await session.screenshot(artifactsDir);
       const serialized = JSON.stringify(items) + JSON.stringify(rows);
       assert(!serialized.includes("4600"), "HIDDEN_FACT_LEAKED");
       return {
         evidence: items.length,
         rows: rows.length,
         run_status: detail.status,
+        ui_created_planned_started_and_inspected: true,
+        supported_typed_facts: supportedFacts,
+        missing_exceptions_preserved: true,
       };
     });
 
+    session.assertClean();
     await session.close?.();
   } catch (error) {
     failure = String(error && error.code ? error.code : error).slice(0, 160);
@@ -733,6 +910,13 @@ async function main() {
     } catch {
       /* the summary line already carries the result */
     }
+    try {
+      evidenceOutput?.capture(workspace.artifactsDir);
+    } catch {
+      summary.passed = false;
+      failure = "EVIDENCE_CAPTURE_FAILED";
+      summary.failure = failure;
+    }
     const cleanup = await workspace.cleanup({
       keep: Boolean((failure || blocked) && cfg.keepOnFailure),
     });
@@ -743,6 +927,8 @@ async function main() {
       pids_gone: cleanup.pidsGone,
       problems: cleanup.problems,
     };
+    if (cleanup.problems.length > 0) summary.passed = false;
+    evidenceOutput?.finish(summary);
     emit(summary);
     if (blocked) process.exitCode = 3;
     else if (failure || !summary.passed) process.exitCode = 1;

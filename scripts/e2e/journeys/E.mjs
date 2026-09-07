@@ -591,9 +591,10 @@ export async function run(ctx) {
     await expectVisible(session, LIBRARY_NAME);
     artifacts.push(await session.screenshot(artifactsDir));
     const r1 = await waitForRun(session, run1, ["completed", "needs_review", "failed", "cancelled"]);
-    assert(r1.status === "completed", "R1_NOT_COMPLETED", `${r1.status}/${r1.error_code ?? ""}`);
+    // The deliberate uncited off-type value must make this result visibly partial.
+    assert(r1.status === "needs_review" && r1.error_code === "RESEARCH_OUTPUT_REJECTED", "R1_UNSUPPORTED_NOT_FLAGGED", `${r1.status}/${r1.error_code ?? ""}`);
     assert(r1.usage.searches === 9 && r1.usage.model_requests === 8, "R1_USAGE", JSON.stringify(r1.usage));
-    await expectVisible(session, "Computation finished and validated");
+    await expectVisible(session, "This run needs review — it is partial, not complete research");
     artifacts.push(await session.screenshot(artifactsDir));
 
     // Table truth: every committed fixture fact, the honest conflict/gap/
@@ -642,7 +643,7 @@ export async function run(ctx) {
     }
     const detail1 = (await session.apiFetch(`/api/research-runs/${run1}`, { expectStatus: 200 })).body;
     assert(detail1.counts.machine_cell_count === 45 && detail1.counts.correction_cell_count === 0, "R1_COUNTS", JSON.stringify(detail1.counts));
-    assert(detail1.counts.gap_count === 0, "R1_GAP_COUNT");
+    assert(detail1.counts.gap_count === 1 && detail1.claims.some((claim) => claim.kind === "gap" && claim.text.includes("not fully supported")), "R1_UNSUPPORTED_GAP");
     // Locators ride the captured evidence at real offsets (M14 contract).
     const pdfEvidence = ev1.all.filter((item) => item.source_id === sourceIdByFile["05_cedarcloud_hosting.pdf"]);
     const mdEvidence = ev1.all.filter((item) => item.source_id === sourceIdByFile["01_acme_logistics_agreement.md"]);

@@ -1,0 +1,334 @@
+{
+  "date": "2026-09-07",
+  "scope": "Borealis functional v1",
+  "runtime_source_commit": "9fd294421b771864ee322dd2445d9d58df63fa14",
+  "completion": "blocked_native_keychain_approval",
+  "platform": {
+    "os": "macOS 26.6.2",
+    "arch": "arm64",
+    "node": "22.22.3",
+    "pnpm": "10.34.5"
+  },
+  "repository_gate": {
+    "command": "pnpm verify",
+    "passed": true,
+    "tasks": 16,
+    "server_unit_tests": 1307,
+    "server_integration_tests": 413,
+    "web_tests": 485,
+    "desktop_tests": 29,
+    "log": "/tmp/borealis-v1-final-verify-5.log"
+  },
+  "desktop_gates": {
+    "verify": true,
+    "unsigned_package": true,
+    "packaged_native_smoke": true,
+    "entitlement_matrix": true,
+    "negative_entitlement_removals": 2,
+    "package_asar_sha256": "12678bd58a9bba68b9bedb595f2e2495455ed94a0303e1287083b29a69d888d9"
+  },
+  "browser": {
+    "entry": "run-product",
+    "journeys": [
+      {
+        "journey": "A",
+        "status": "pass",
+        "duration_ms": 19964,
+        "artifacts": [
+          "shot-001.png",
+          "shot-002.png",
+          "shot-003.png",
+          "shot-004.png",
+          "shot-005.png",
+          "shot-006.png",
+          "shot-007.png",
+          "shot-008.png",
+          "shot-009.png",
+          "shot-010.png",
+          "shot-011.png",
+          "shot-012.png",
+          "shot-013.png",
+          "checks.json"
+        ]
+      },
+      {
+        "journey": "B",
+        "status": "pass",
+        "duration_ms": 11279,
+        "artifacts": [
+          "shot-001.png",
+          "shot-002.png",
+          "shot-003.png",
+          "shot-004.png",
+          "shot-005.png",
+          "shot-006.png",
+          "shot-007.png",
+          "shot-008.png",
+          "shot-009.png",
+          "shot-010.png",
+          "shot-011.png",
+          "shot-012.png",
+          "checks.json"
+        ]
+      },
+      {
+        "journey": "C",
+        "status": "pass",
+        "duration_ms": 19640,
+        "artifacts": [
+          "shot-001.png",
+          "shot-002.png",
+          "shot-003.png",
+          "shot-004.png",
+          "shot-005.png",
+          "shot-006.png",
+          "shot-007.png",
+          "shot-008.png",
+          "shot-009.png",
+          "shot-010.png",
+          "shot-011.png",
+          "shot-012.png",
+          "shot-013.png",
+          "shot-014.png",
+          "shot-015.png",
+          "shot-016.png",
+          "shot-017.png",
+          "checks.json"
+        ]
+      },
+      {
+        "journey": "D",
+        "status": "pass",
+        "duration_ms": 61434,
+        "artifacts": [
+          "shot-001.png",
+          "shot-002.png",
+          "shot-003.png",
+          "shot-004.png",
+          "shot-005.png",
+          "shot-006.png",
+          "shot-007.png",
+          "shot-008.png",
+          "shot-009.png",
+          "shot-010.png",
+          "shot-011.png",
+          "checks.json"
+        ]
+      },
+      {
+        "journey": "E",
+        "status": "pass",
+        "duration_ms": 68681,
+        "artifacts": [
+          "shot-001.png",
+          "shot-002.png",
+          "shot-003.png",
+          "shot-004.png",
+          "shot-005.png",
+          "shot-006.png",
+          "shot-007.png",
+          "shot-008.png",
+          "proof-export.csv",
+          "shot-009.png",
+          "shot-010.png",
+          "shot-011.png",
+          "shot-012.png",
+          "shot-013.png",
+          "shot-014.png",
+          "shot-015.png",
+          "shot-016.png",
+          "checks.json"
+        ]
+      },
+      {
+        "journey": "F",
+        "status": "pass",
+        "duration_ms": 23028,
+        "artifacts": [
+          "shot-001.png",
+          "shot-002.png",
+          "shot-003.png",
+          "shot-004.png",
+          "shot-005.png",
+          "shot-006.png",
+          "shot-007.png",
+          "shot-008.png",
+          "shot-009.png",
+          "shot-010.png",
+          "shot-011.png",
+          "checks.json"
+        ]
+      }
+    ],
+    "passed": true,
+    "started_at": "2026-09-07T14:39:49.935Z",
+    "cleanup": {
+      "workspace_removed": true,
+      "kept_path": null,
+      "lock_released": true,
+      "pids_gone": true,
+      "problems": []
+    },
+    "finished_at": "2026-09-07T14:43:15.652Z"
+  },
+  "live": {
+    "entry": "run-product-live",
+    "started_at": "2026-09-07T14:26:15.759Z",
+    "finished_at": "2026-09-07T14:36:58.043Z",
+    "chat_model": "qwen/qwen3.6-35b-a3b",
+    "embed_model": "text-embedding-nomic-embed-text-v1.5",
+    "embed_dim": 768,
+    "checks": [
+      {
+        "check": "provider-reachable",
+        "status": "pass",
+        "duration_ms": 23,
+        "chat_model": "qwen/qwen3.6-35b-a3b",
+        "embed_model": "text-embedding-nomic-embed-text-v1.5"
+      },
+      {
+        "check": "chat-model-tool-capable",
+        "status": "pass",
+        "duration_ms": 6955,
+        "attempts": 1
+      },
+      {
+        "check": "finance-upload-ingest",
+        "status": "pass",
+        "duration_ms": 1095,
+        "sources": 4
+      },
+      {
+        "check": "live-chat-tool-turn",
+        "status": "pass",
+        "duration_ms": 98819,
+        "query_receipts": 3
+      },
+      {
+        "check": "finance-analysis-parameterized-rerun",
+        "status": "pass",
+        "duration_ms": 1052,
+        "rows": 14,
+        "checked": 14
+      },
+      {
+        "check": "finance-exports",
+        "status": "pass",
+        "duration_ms": 8,
+        "csv_bytes": 762
+      },
+      {
+        "check": "research-import-and-run",
+        "status": "pass",
+        "duration_ms": 532717,
+        "evidence": 3,
+        "rows": 3,
+        "run_status": "completed",
+        "ui_created_planned_started_and_inspected": true,
+        "supported_typed_facts": 12,
+        "missing_exceptions_preserved": true
+      }
+    ],
+    "passed": true,
+    "cleanup": {
+      "workspace_removed": true,
+      "kept": false,
+      "lock_released": true,
+      "pids_gone": true,
+      "problems": []
+    }
+  },
+  "storage": {
+    "entry": "run-product-storage",
+    "started_at": "2026-09-07T14:12:08.900Z",
+    "runtime": "v22.22.3",
+    "schema": 28,
+    "checks": [
+      {
+        "check": "populated_v13_upgrade",
+        "from": 13,
+        "to": 28,
+        "preserved_tables": 12
+      },
+      {
+        "check": "all_product_ledger_objects_seeded",
+        "product_tables": 36,
+        "populated_tables": 56,
+        "rows": 72
+      },
+      {
+        "check": "live_same_dimension_migration",
+        "dimension": 3,
+        "chunks": 1,
+        "ledger_identity_preserved": true
+      },
+      {
+        "check": "live_changed_dimension_migration",
+        "dimension": 5,
+        "chunks": 1,
+        "ledger_identity_preserved": true
+      },
+      {
+        "check": "archive_refuses_locked_workspace"
+      },
+      {
+        "check": "encrypted_cli_archive_restore",
+        "files_preserved": 15,
+        "metadata_tables": 56,
+        "chunks": 1,
+        "vectors": 1,
+        "datasets": 1,
+        "custody_excluded": true,
+        "reconnect_states_verified": 3,
+        "historical_evidence_preserved": true
+      },
+      {
+        "check": "restored_runtime_scoped_retrieval"
+      },
+      {
+        "check": "workspace_locks_released"
+      }
+    ],
+    "passed": true,
+    "finished_at": "2026-09-07T14:12:15.195Z",
+    "cleanup": {
+      "workspace_removed": true
+    }
+  },
+  "native_ui": {
+    "status": "blocked",
+    "passed_checkpoints": 0,
+    "reason": "Owned packaged main process blocked in macOS Keychain before renderer bootstrap. Protected SecurityAgent UI cannot be automated; user approval requested.",
+    "pending_run": "/tmp/borealis-v1-native-final",
+    "cleanup": "Not claimed: run remains pending so the user can approve the prompt.",
+    "next_action": "Complete macOS Keychain approval, then restart the native harness with its reviewed final checks and drive A-F through the normal UI."
+  },
+  "harness_tests": {
+    "protocol_fixture_checks": 82,
+    "native_driver_regressions": 6,
+    "skips": 0
+  },
+  "documentation": {
+    "markdown_files_reviewed": 129,
+    "missing_local_targets": 0
+  },
+  "visual_exports": {
+    "passed": true,
+    "observations": [
+      "Long unbroken PDF text wraps inside the page.",
+      "Chart title, legend and axis names are separate.",
+      "Tables and evidence appendices remain readable.",
+      "PDF headings stay with their following content.",
+      "DOCX opens through bundled LibreOffice with headings, tables and embedded charts.",
+      "Markdown ZIP has relative embedded chart assets and readable evidence."
+    ],
+    "sha256": {
+      "/tmp/borealis-v1-c-complete-evidence/artifacts/C/exports/docR-v2.docx": "f1ef065c7821e09eabdcb0a54744f30fb9767929f6fbf886ef93ad25c069f66a",
+      "/tmp/borealis-v1-c-complete-evidence/artifacts/C/exports/docT-v2.docx": "fa8f194b58bc1d1222e533e7642d6e12598f9f05da40e0853103c4c0c99fde45",
+      "/tmp/borealis-v1-c-complete-evidence/artifacts/C/exports/docR-v2.pdf": "e5cd87230cc55de4e876c52872bc407052af1b76de0e2b681815d2c039c5bdab",
+      "/tmp/borealis-v1-browser-final2-20260907/artifacts/C/exports/docT-v2.pdf": "d3ed028665b1f13644e24188125d1c21149da5a2ccfc443e158ad0e80cbfcaea",
+      "/tmp/borealis-v1-browser-final2-20260907/artifacts/C/exports/docR-v2.zip": "81c1b6c2321fb06b57690d60badfc50ce3a77077e7f0bbfa2afe4b883be7508a",
+      "/tmp/borealis-v1-browser-final2-20260907/artifacts/C/exports/docT-v2.zip": "92f3c4ddec0d83233819cde552cd73d26bab9b2ebc764cd5bf3b8e4ccadf28de"
+    }
+  }
+}

@@ -2,10 +2,11 @@
 
 ## Status and execution contract
 
-- **Status:** IN PROGRESS — stages 1–5 are merged on `main` (schema v25;
-  journey E browser acceptance passes; the live-model gate exercises a real
-  research run through the API path, not yet through the UI). Final acceptance
-  evidence is tracked in [EXECUTION.md](EXECUTION.md).
+- **Status:** IMPLEMENTED — browser, live-model and repository acceptance pass;
+  final native packaged UI acceptance awaits macOS Keychain approval.
+  [EXECUTION.md](EXECUTION.md) records current gates and retained evidence.
+  Baseline descriptions and dated execution records below are historical
+  context; they do not supersede the current API or acceptance status.
 - **Priority / effort:** P1 / L.
 - **Baseline:** `e2e6a78`, 2026-09-06 (the proposed behavior below described a specification at that baseline).
 - **Dependencies:** M14 source search/locators; M13 editable artifact revisions

@@ -49,28 +49,11 @@
  *   - a full backend restart proves the durable document/revision/
  *     publication/rewrite history and frozen export bytes survive.
  *
- * Documented acceptance-harness capability gap (reported, not worked around):
- * the chat turn DOES render a chart (the chart card shows in chat), but a
- * scripted provider can never reference it inside the same turn's
- * `create_report` call: chart ids are server-minted run-scoped random UUIDs
- * and the fixture replays static step scripts (no tool-result echo), so the
- * 12-character model-garble fallback cannot match. The legacy report
- * therefore carries the query table + narrative with an EMPTY chart list,
- * and the chart-bearing document surfaces (chart PNGs in the Markdown ZIP /
- * DOCX, evidence appendix numbering, revision-bound charts) are exercised on
- * a second document created through the product's own first-party
- * explicit-tree creation contract (`POST /api/documents` `{tree}` — the same
- * service shape M16 composes) and published/exported through the real
- * workbench.
- *
- * Skipped sub-check with reason: "a legacy report with no stored payload".
- * Product code only ever creates reports through a completed agent turn, and
- * the normalized payload is dropped only when its serialization exceeds
- * 400,000 chars; with per-tool-call arguments bounded at 20,000 chars and the
- * provider script body bounded at 256 KiB, no scripted turn (and no
- * delete-payload API) can produce a payload-less report inside this harness.
- * The reachable honest boundary IS exercised: copies are owner-only (foreign
- * 404), and the recipient of a share never sees the payload nor may copy.
+ * The fixture echoes the exact prior render_chart tool result into the next
+ * create_report call, so the real chat report and its editable copy carry the
+ * generated chart. A payload-less historical report is seeded under the exact
+ * isolated workspace lock while the server is stopped, then previewed and
+ * downloaded through the UI; copy fails visibly without changing its bytes.
  *
  * Screenshots use the harness's content-free sequential names. Numeric
  * expectations come only from `fixtures/lib/finance-expected.mjs`.
@@ -80,6 +63,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { inflateRawSync } from "node:zlib";
+import { createRequire } from "node:module";
+import { acquireWorkspaceLock } from "../../../server/dist/workspaceLock.js";
 import { HarnessError, assert, pollUntil } from "../harness/util.mjs";
 import {
   COMMITTED_EXPECTED,
@@ -412,14 +397,7 @@ export async function run(ctx) {
 
     /* -- P2: scripted turn → legacy report with the June query table -------- */
     //
-    // The turn renders a real chart (the chart card shows in the chat), but
-    // the scripted `create_report` step CANNOT reference it: chart ids are
-    // server-minted run-scoped random UUIDs and the provider fixture replays
-    // static steps with no tool-result echo, so the 12-char garble fallback
-    // has nothing to match. The chart reference therefore stays empty in the
-    // legacy payload (documented gap in the header + the final report); the
-    // chart-bearing document contract is exercised on the first-party
-    // tree-created document in P9.
+    // Echo only the chart UUID returned by this turn’s own render_chart call.
     const juneSql =
       "SELECT category, COUNT(*) AS transactions, ROUND(SUM(amount), 2) AS net_amount " +
       "FROM transactions WHERE LEFT(CAST(date AS VARCHAR), 7) = '2025-06' GROUP BY 1 ORDER BY 1";
@@ -442,7 +420,7 @@ export async function run(ctx) {
       steps: [
         toolStep("call_c_query", ["query", "_data"], { sql: juneSql }),
         toolStep("call_c_chart", ["render", "_chart"], { spec: chartSpec }),
-        toolStep("call_c_report", ["create", "_report"], reportArgs),
+        { ...toolStep("call_c_report", ["create", "_report"], reportArgs), echo_chart_from_tool_call_id: "call_c_chart" },
         textStep(["June analysis complete; the report is ready. ", ANSWER_REPORT]),
       ],
       onExhausted: "fail",
@@ -507,7 +485,8 @@ export async function run(ctx) {
     const reportDetail = (await session.apiFetch(`/api/reports/${reportId}`, { expectStatus: 200 })).body;
     assert(typeof reportDetail.payload === "object" && reportDetail.payload !== null, "REPORT_PAYLOAD_STORED");
     const reportPayload = reportDetail.payload;
-    assert(reportPayload.sections.length === 3 && reportPayload.charts.length === 0, "REPORT_PAYLOAD_SHAPE");
+    assert(reportPayload.sections.length === 3 && reportPayload.charts.length === 1, "REPORT_PAYLOAD_SHAPE");
+    assert(reportPayload.charts[0].id === assistant.meta.charts[0], "REPORT_CHART_RUN_IDENTITY");
     assert(
       JSON.stringify(reportPayload.tables[0].rows) === JSON.stringify(juneTable),
       "REPORT_TABLE_VALUES",
@@ -547,7 +526,8 @@ export async function run(ctx) {
     assert(docRDetail.current_revision === 1 && docRDetail.latest_publication_version === null, "COPY_HEAD");
     assert(docRDetail.title === REPORT_TITLE, "COPY_TITLE");
     const rev1 = await revisionPayload(session, docR, docRRev1Id);
-    assert(rev1.verified === false && rev1.evidence.length === 0 && rev1.charts.length === 0, "COPY_UNVERIFIED");
+    assert(JSON.stringify(rev1.charts[0].spec) === JSON.stringify(reportPayload.charts[0].spec), "COPY_CHART_MATCHES_REPORT");
+    assert(rev1.verified === false && rev1.evidence.length === 0 && rev1.charts.length === 1, "COPY_UNVERIFIED");
     assert(
       JSON.stringify(rev1.sections.map((s) => [s.heading, s.markdown])) ===
         JSON.stringify(reportPayload.sections.map((s) => [s.heading, s.markdown])),
@@ -1262,6 +1242,7 @@ export async function run(ctx) {
     assert(rHtmlText.includes("Unverified document — manual claims, no evidence references"), "DOC_R_VALIDITY_LINE");
     const rZip = readZip(rMd.buffer, "DOC_R");
     assert(rZip.has("document.md") && rZip.has("manifest.json"), "DOC_R_ZIP_MEMBERS");
+    assert(rZip.has("assets/chart-1.png") && PNG_MAGIC.equals(rZip.get("assets/chart-1.png").subarray(0, 8)), "DOC_R_CHAT_CHART_EXPORTED");
     const rMdText = rZip.get("document.md").toString("utf8");
     for (const row of juneTable) {
       assert(rMdText.includes(`| ${row[0]} | ${row[1]} | ${netText(row[2])} |`), "DOC_R_MD_TABLE_ROW", String(row[0]));
@@ -1362,7 +1343,40 @@ export async function run(ctx) {
       ),
       rewriteCount: (await session.apiFetch(`/api/documents/${docR}/rewrites`, { expectStatus: 200 })).body.items.length,
     };
-    const restartInfo = await server.restart({ token: await session.token() });
+    const payloadlessId = randomUUID();
+    const payloadlessTitle = "Historical report without payload (E2E-C)";
+    const restartInfo = await server.restart({
+      token: await session.token(),
+      whileStopped: async () => {
+        // Historical fixture only: never mutate a running store or real profile.
+        const exactWorkspace = workspace.assertOwnedPath(workspace.workspaceDir);
+        assert(fs.realpathSync(exactWorkspace) === exactWorkspace, "LEGACY_WORKSPACE_NOT_EXACT");
+        const lock = await acquireWorkspaceLock(exactWorkspace);
+        let database;
+        try {
+          const require = createRequire(path.join(repoRoot, "server/package.json"));
+          const Database = require("better-sqlite3");
+          database = new Database(path.join(exactWorkspace, "borealis.sqlite"), { fileMustExist: true });
+          const original = database.prepare("SELECT * FROM reports WHERE id=? AND status='published'").get(reportId);
+          assert(original && original.payload !== null, "LEGACY_ORIGINAL_MISSING");
+          const directory = workspace.assertOwnedPath(path.join(exactWorkspace, "reports", original.account_id, payloadlessId));
+          fs.mkdirSync(directory, { mode: 0o700 });
+          const fixture = { ...original, id: payloadlessId, title: payloadlessTitle, chat_id: null, run_id: null, payload: null, version: 1, supersedes: null };
+          for (const kind of ["html", "pdf"]) {
+            const source = workspace.assertOwnedPath(original[`${kind}_path`]);
+            assert(fs.realpathSync(source) === source && fs.lstatSync(source).isFile(), "LEGACY_ORIGINAL_PATH_INVALID");
+            const target = path.join(directory, `report.${kind}`);
+            fs.copyFileSync(source, target, fs.constants.COPYFILE_EXCL);
+            fixture[`${kind}_path`] = target;
+          }
+          const columns = Object.keys(fixture);
+          database.prepare(`INSERT INTO reports (${columns.join(",")}) VALUES (${columns.map(() => "?").join(",")})`).run(...Object.values(fixture));
+        } finally {
+          database?.close();
+          await lock.release();
+        }
+      },
+    });
     assert(typeof restartInfo.pid === "number", "RESTART_PID");
     const postRestartDoc = (await session.apiFetch(`/api/documents/${docR}`, { expectStatus: 200 })).body;
     assert(
@@ -1425,11 +1439,34 @@ export async function run(ctx) {
     artifacts.push(await session.screenshot(artifactsDir));
     checks.restart = { durable: true };
 
-    /* -- skipped sub-check (recorded honestly) ------------------------------ */
-    checks.skipped = [
-      "payload-less legacy report unreachable under scripted acceptance (product persists reports only via completed agent turns; payload drops above 400k serialized chars while tool args cap at 20k chars and the provider script body at 256 KiB; no delete-payload API) — owner-only copy denial + payload-less recipient view exercised instead",
-      "chart reference inside the scripted chat report (provider fixture has no tool-result echo; chart ids are run-scoped random UUIDs) — chart-bearing document contract exercised via the first-party tree-creation route",
-    ];
+    /* -- P13: a real pre-payload report remains readable, copy fails visibly -- */
+    const payloadless = (await session.apiFetch(`/api/reports/${payloadlessId}`, { expectStatus: 200 })).body;
+    assert(!Object.hasOwn(payloadless, "payload"), "LEGACY_PAYLOAD_NOT_ABSENT");
+    const documentsBefore = (await session.apiFetch("/api/documents", { expectStatus: 200 })).body.items.length;
+    await goHash(session, "/reports");
+    await expectText(session, payloadlessTitle);
+    const legacyCard = session.page.locator("div.bg-card").filter({ has: session.page.getByText(payloadlessTitle, { exact: true }) });
+    await legacyCard.getByRole("button", { name: "Preview", exact: true }).click();
+    await session.page.frameLocator('iframe[title="Report preview"]').getByRole("heading", { name: REPORT_TITLE, exact: true }).waitFor({ timeout: 30_000 });
+    artifacts.push(await session.screenshot(artifactsDir));
+    await session.page.getByRole("dialog").getByRole("button", { name: "Close", exact: true }).click();
+    const historicalPdf = await downloadVia(session,
+      () => legacyCard.getByRole("button", { name: `Download PDF of ${payloadlessTitle}`, exact: true }).click(),
+      path.join(exportsDir, "historical-payloadless-report.pdf"));
+    assertPdf(historicalPdf.buffer, "LEGACY_PAYLOADLESS");
+    assert(sha256(historicalPdf.buffer) === legacyHashes.pdf, "LEGACY_PAYLOADLESS_PDF_CHANGED");
+    await legacyCard.getByRole("button", { name: "Copy", exact: true }).click();
+    await expectText(session, /That report has no stored normalized payload/, 20_000);
+    assert(await legacyCard.getByRole("button", { name: "Copy", exact: true }).isDisabled(), "LEGACY_COPY_NOT_DISABLED");
+    assert(new URL(session.page.url()).hash === "#/reports", "LEGACY_COPY_NAVIGATED");
+    assert((await session.apiFetch("/api/documents", { expectStatus: 200 })).body.items.length === documentsBefore, "LEGACY_COPY_CREATED_DOCUMENT");
+    const historicalHtml = await fetchBytes(session, `/api/reports/${payloadlessId}/html`, 200, "PAYLOADLESS_HTML");
+    assert(sha256(historicalHtml.buffer) === legacyHashes.html, "LEGACY_PAYLOADLESS_HTML_CHANGED");
+    assert(!Object.hasOwn((await session.apiFetch(`/api/reports/${payloadlessId}`, { expectStatus: 200 })).body, "payload"), "LEGACY_COPY_MUTATED_PAYLOAD");
+    artifacts.push(await session.screenshot(artifactsDir));
+    checks.payloadless_legacy = { ui_preview: true, ui_pdf_download: true, ui_copy_denied: true, artifacts_unchanged: true };
+    checks.chat_chart_lineage = { generated_chart_in_report: true, copied_chart_matches: true };
+
 
     /* -- wrap up ------------------------------------------------------------- */
     await server.quiesceWorkers({ token: await session.token() });

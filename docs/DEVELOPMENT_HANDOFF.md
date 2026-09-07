@@ -1,10 +1,10 @@
 # Development handoff — the complete functional wave
 
-**Selected:** 2026-09-06. **Source baseline:** `e2e6a78`. **Implementation
-status:** not started by this documentation handoff. The user's selection is
-to implement all six functional slices from the product review, using subagents
-where useful, maintaining docs, and validating the complete workflows. This
-file makes that scope concrete for a coding agent with no conversation context.
+**Selected:** 2026-09-06. **Original baseline:** `e2e6a78`. The six functional
+slices and prerequisite migrations are implemented. This remains the scope
+and maintenance contract for completing their acceptance and preserving the
+result. Consult [EXECUTION.md](../milestones/EXECUTION.md) for current evidence
+and open checks before doing work; do not restart the wave from its old baseline.
 
 ## Start here and read in order
 
@@ -15,8 +15,7 @@ file makes that scope concrete for a coding agent with no conversation context.
    [desktop guide](../desktop/README.md): what runs today and how to validate it.
 3. [Milestone ledger](../milestones/README.md): completed M01–M11, the selected
    implementation wave, dependencies, and status. [Product review](PRODUCT_REVIEW.md)
-   is the rationale; its formerly proposed feature list is now selected by this
-   handoff, not already implemented.
+   is the dated rationale, not today’s feature inventory.
 4. The prerequisite gate below and its linked advisor plans, then all six specs:
 
 | Spec | Deliverable | Required predecessor |
@@ -58,20 +57,20 @@ human corrections, and scheduled briefs await review before their draft is
 promoted. Existing ordinary chat-run report publication remains supported.
 Nothing in this goal authorizes delivering messages or files to external people.
 
-## Resolve the reserved schema sequence first
+<a id="resolve-the-reserved-schema-sequence-first"></a>
 
-At the source baseline `server/src/db/migrations.ts` declares schema **13**.
-The repository already reserves **14** for advisor plan 006 (provider-bound
-consent), **15** for plan 012 (automation ownership), and **16** for plan 020
-(durable typed connector repair). New feature tables cannot take those numbers,
-modify an applied migration, jump from 13 to 17, or insert no-op placeholders.
+## Applied prerequisite schema sequence
 
-Therefore implement or positively verify the prerequisite closure below before
-integrating new product migrations. This is dependency work needed to preserve
-the selected architecture, not a replacement of the functional goal by a broad
-audit. Current TODO entries may partially overlap later fixes; reconcile each
-against source and tests, preserve completed behavior, and implement only what
-remains. A renamed owner module after the runtime refactor is expected drift.
+The original baseline ended at schema **13**. Real migrations **14** (provider-
+bound consent, advisor 006), **15** (automation ownership, advisor 012), and
+**16** (typed connector repair, advisor 020) now precede product schemas
+**17–28**. No new work may reuse these numbers, modify applied history, skip a
+version, or insert no-op placeholders.
+
+The prerequisite closure below is implemented; retain its tests and invariants.
+The table records why those changes preceded product integration. Other advisor
+TODOs remain a separate backlog, not an implied requirement to reimplement the
+wave or expand its acceptance scope.
 
 | Order | Required advisor plan | Purpose for the product wave |
 | ----- | --------------------- | ---------------------------- |
@@ -101,8 +100,8 @@ remain separate unless a concrete dependency is discovered and documented.
 This order is a safe serialization, not a requirement to idle independent
 workers. There is one owner for `migrations.ts`, historical schema fixtures,
 shared route registration, dependency manifests/lockfile, and the integration
-branch. Allocate v17 and later only in actual integration order once v16 is
-verified. Record allocated versions in [EXECUTION.md](../milestones/EXECUTION.md)
+branch. Allocate the next free version only in actual integration order after
+the current applied head. Record versions in [EXECUTION.md](../milestones/EXECUTION.md)
 and update historical migration/backup tests with each addition.
 
 ## Working contract for the implementing agent
@@ -139,13 +138,13 @@ are within the requested validation scope.
 
 ## Narrowly scoped architecture additions
 
-The existing preload exposes only one-shot bootstrap. The folder feature may
-add a **typed native folder chooser returning an opaque backend grant**, with
-trusted-main-frame validation and an exact main/backend capability handoff.
+The preload exposes one-shot bootstrap, a **typed native folder chooser returning
+an opaque backend grant**, and validated OAuth system-browser opening, with
+trusted-main-frame validation and exact main/backend capability handoffs.
 No renderer-supplied recursive path, general read/write-file method, arbitrary
 IPC dispatch, or shell execution is allowed. The single-use bootstrap semantics
-remain unchanged. Update AGENTS and desktop API declarations when this exact
-addition is implemented; do not describe it as present before then.
+remain unchanged. Keep AGENTS and desktop API declarations aligned with these
+exact capabilities.
 
 OAuth system-browser opening and OS key custody are similarly owned by main
 with narrow validated messages. Notifications are optional, local, user-enabled,
@@ -169,7 +168,7 @@ aspirations into shipped claims. Keep dated research and completed historical
 plans explicitly historical. Record compatibility changes, budgets, new states,
 public error codes and user-visible recovery instructions.
 
-Implement the acceptance harness and execute
+Maintain the acceptance harness and execute
 [END_TO_END_ACCEPTANCE.md](END_TO_END_ACCEPTANCE.md). Fix relevant failures;
 do not weaken tests, remove scenarios, widen budgets, or silently drop scope to
 claim success. A successful mock-provider fixture is required but does not

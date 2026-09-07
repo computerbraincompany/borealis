@@ -1,48 +1,13 @@
 #!/usr/bin/env node
 /**
- * Packaged-desktop acceptance entry point (`pnpm test:e2e:product:desktop`).
+ * Packaged acceptance uses the hardened app's native renderer via an external
+ * normal-UI driver (for example CUA). `--native-driver=external` starts a
+ * private, per-run checkpoint bridge; see nativeDesktop.mjs and HARNESS.md.
+ * Missing driver is BLOCKED (exit 3), never an automatic native pass.
  *
- * Default (no `--journey`): the packaged-app lifecycle proof inside an
- * isolated profile — locate the unsigned arm64 build, launch with an
- * absolute `--user-data-dir` under the disposable run tree, prove
- * single-instance behavior, and prove an orderly quit via the packaged
- * shutdown smoke.
- *
- * `--journey=B` runs the saved-finance-analyses journey against the REAL
- * packaged app instead of the harness-launched server. The app is launched
- * with an absolute `--user-data-dir` inside the isolated run tree, every
- * stdout line is drained into the run log (an undrained pipe backpressures
- * the app), the loopback origin comes from the app's own
- * `Borealis server listening` line (or its textual `Server listening at
- * http://127.0.0.1:<port>` form), journey accounts register through the
- * PUBLIC `/api/register` route, and the harness-launched scripted
- * OpenAI-compatible provider is wired through the app's authenticated
- * `PATCH /api/settings` (loopback provider, so the remote-egress gate never
- * applies; the default embedding identity is never sent because Settings
- * must reject any embedding-identity change — the fixture answers as the
- * app's default physical embed model id and dimension instead). The B
- * restart step terminates the owned app pid (SIGTERM with bounded SIGKILL
- * escalation, disclosed), relaunches on the SAME profile with a new
- * OS-assigned port, and proves the durable `jwt.secret` (a pre-restart JWT
- * authenticates on the new process) before the UI session is
- * re-established through the real login form.
- *
- * `--app=PATH` points the locator at an explicit unsigned `Borealis.app`
- * bundle (absolute path) instead of this checkout's
- * `desktop/release/mac-arm64/Borealis.app`.
- *
- * Journeys A, C, D, E, F (and therefore `all`) remain explicit
- * NOT-IMPLEMENTED results — they fail loudly, never as skips. A journey
- * demand replaces the lifecycle proof (the lifecycle default run is its own
- * gate and the journey mode drives the app itself).
- *
- * Exit codes:
- *   0 — the default lifecycle proof passed, or every demanded journey
- *       passed (today that means exactly `--journey=B`)
- *   1 — a proof or journey failed, or a not-implemented journey was demanded
- *   2 — usage/setup error before any process launched
- *   3 — BLOCKED: no packaged app exists (build `pnpm package:unsigned`);
- *       a missing app is never a silent pass
+ * No --journey retains the separate lifecycle smoke. The legacy
+ * --surface=browser --journey=B is explicitly browser-on-packaged-backend
+ * compatibility coverage, not native UI acceptance.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -60,6 +25,8 @@ import {
   DESKTOP_DEFAULT_EMBED_DIM,
 } from "./harness/desktopApp.mjs";
 import { loadJourney } from "./journeys/registry.mjs";
+import { runNativeJourneys } from "./harness/nativeDesktop.mjs";
+import { createEvidenceOutput } from "./harness/evidence.mjs";
 
 const ENTRY_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(ENTRY_DIR, "..", "..");
@@ -77,8 +44,13 @@ function resolveDesktopJourneyIds(value) {
     .split(",")
     .map((token) => token.trim().toUpperCase())
     .filter(Boolean);
-  assert(tokens.length > 0, "ARG_JOURNEY_MISSING", "pass --journey=A|B|C|D|E|F|all");
-  if (tokens.length === 1 && tokens[0] === "ALL") return ["A", "B", "C", "D", "E", "F"];
+  assert(
+    tokens.length > 0,
+    "ARG_JOURNEY_MISSING",
+    "pass --journey=A|B|C|D|E|F|all",
+  );
+  if (tokens.length === 1 && tokens[0] === "ALL")
+    return ["A", "B", "C", "D", "E", "F"];
   const ids = [];
   for (const token of tokens) {
     assert(/^[A-F]$/.test(token), "ARG_JOURNEY_UNKNOWN", token);
@@ -90,7 +62,11 @@ function resolveDesktopJourneyIds(value) {
 /** `--app=PATH` (explicit bundle) or the documented electron-builder path. */
 function resolveApp(appArg) {
   if (appArg !== undefined) {
-    assert(typeof appArg === "string" && path.isAbsolute(appArg), "ARG_APP_ABSOLUTE", String(appArg));
+    assert(
+      typeof appArg === "string" && path.isAbsolute(appArg),
+      "ARG_APP_ABSOLUTE",
+      String(appArg),
+    );
     const appDir = path.resolve(appArg);
     let stat = null;
     try {
@@ -110,7 +86,11 @@ async function runJourneys({ args, ids, workspace, summary, extraProblems }) {
   const app = resolveApp(args.app);
   if (!app) {
     summary.journeys.push(
-      ...ids.map((id) => ({ journey: id, status: "blocked", failure: "PACKAGED_APP_MISSING" }))
+      ...ids.map((id) => ({
+        journey: id,
+        status: "blocked",
+        failure: "PACKAGED_APP_MISSING",
+      })),
     );
     process.stderr.write(
       `E2E_DESKTOP_BLOCKED packaged app missing at ${path.join(
@@ -118,20 +98,47 @@ async function runJourneys({ args, ids, workspace, summary, extraProblems }) {
         "desktop",
         "release",
         "mac-arm64",
-        "Borealis.app"
-      )} — run pnpm package:unsigned (or pass --app); never treated as a pass\n`
+        "Borealis.app",
+      )} — run pnpm package:unsigned (or pass --app); never treated as a pass\n`,
     );
     return 3;
   }
 
-  for (const id of ids) {
-    if (!REAL_DESKTOP_JOURNEYS.has(id)) {
-      summary.journeys.push({ journey: id, status: "not_implemented", failure: "JOURNEY_NOT_IMPLEMENTED:DESKTOP" });
-      process.stdout.write(`journey ${id}: not_implemented\n`);
-    }
+  const native = args.surface !== "browser";
+  assert(
+    args.surface === undefined ||
+      args.surface === "native" ||
+      args.surface === "browser",
+    "ARG_DESKTOP_SURFACE_INVALID",
+  );
+  if (native && args["native-driver"] !== "external") {
+    summary.journeys.push(
+      ...ids.map((id) => ({
+        journey: id,
+        status: "blocked",
+        surface: "packaged-native-ui",
+        failure: "NATIVE_DRIVER_REQUIRED",
+      })),
+    );
+    process.stderr.write(
+      "E2E_DESKTOP_BLOCKED native UI driver required: pass --native-driver=external and drive each private checkpoint with normal OS UI automation. Browser coverage cannot satisfy this gate.\n",
+    );
+    return 3;
   }
 
-  if (!ids.some((id) => REAL_DESKTOP_JOURNEYS.has(id))) {
+  if (!native)
+    for (const id of ids) {
+      if (!REAL_DESKTOP_JOURNEYS.has(id)) {
+        summary.journeys.push({
+          journey: id,
+          status: "not_implemented",
+          failure: "JOURNEY_NOT_IMPLEMENTED:DESKTOP",
+        });
+        process.stdout.write(`journey ${id}: not_implemented\n`);
+      }
+    }
+
+  if (!native && !ids.some((id) => REAL_DESKTOP_JOURNEYS.has(id))) {
     return 1;
   }
 
@@ -159,6 +166,27 @@ async function runJourneys({ args, ids, workspace, summary, extraProblems }) {
     chatModel: DESKTOP_DEFAULT_CHAT_MODEL,
   });
 
+  if (native) {
+    const result = await runNativeJourneys({
+      workspace,
+      repoRoot: REPO_ROOT,
+      app: appHandle,
+      provider,
+      ids,
+      onJourney: (result) => summary.journeys.push(result),
+      ...(args["driver-timeout-ms"] !== undefined
+        ? { driverTimeoutMs: Number(args["driver-timeout-ms"]) }
+        : {}),
+    });
+
+    summary.native = {
+      checkpoints: result.checkpoints,
+      profile_quit_verified: true,
+      package_sha256: result.package_sha256,
+    };
+    return 0;
+  }
+
   const browser = await launchBrowser({ workspace, repoRoot: REPO_ROOT });
   workspace.onCleanup(() => browser.close());
 
@@ -185,6 +213,7 @@ async function runJourneys({ args, ids, workspace, summary, extraProblems }) {
       result = {
         journey: id,
         status: "pass",
+        surface: "browser-on-packaged-backend",
         duration_ms: Date.now() - started,
         artifacts: [...(outcome?.artifacts ?? [])],
       };
@@ -192,10 +221,14 @@ async function runJourneys({ args, ids, workspace, summary, extraProblems }) {
       const code = error instanceof HarnessError ? error.code : "JOURNEY_ERROR";
       result = {
         journey: id,
-        status: code.startsWith("JOURNEY_NOT_IMPLEMENTED") ? "not_implemented" : "fail",
+        status: code.startsWith("JOURNEY_NOT_IMPLEMENTED")
+          ? "not_implemented"
+          : "fail",
         duration_ms: Date.now() - started,
         failure: code,
-        artifacts: fs.existsSync(artifactsDir) ? fs.readdirSync(artifactsDir).sort() : [],
+        artifacts: fs.existsSync(artifactsDir)
+          ? fs.readdirSync(artifactsDir).sort()
+          : [],
       };
     }
     result.restart_disclosures = appHandle.disclosures.restarts;
@@ -208,20 +241,35 @@ async function runJourneys({ args, ids, workspace, summary, extraProblems }) {
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
-  const journeyIds = typeof args.journey === "string" ? resolveDesktopJourneyIds(args.journey) : null;
+  const journeyIds =
+    typeof args.journey === "string"
+      ? resolveDesktopJourneyIds(args.journey)
+      : null;
 
+  const evidence = createEvidenceOutput(args["evidence-dir"]);
   const workspace = createIsolatedWorkspace({
     repoRoot: REPO_ROOT,
-    workspaceOverride: typeof args.workspace === "string" ? args.workspace : undefined,
-    runId: journeyIds === null ? "desktop" : `desktop-journey-${journeyIds.join("")}`,
+    workspaceOverride:
+      typeof args.workspace === "string" ? args.workspace : undefined,
+    runId:
+      journeyIds === null
+        ? "desktop"
+        : `desktop-journey-${journeyIds.join("")}`,
   });
 
-  const summary = { entry: "run-product-desktop", started_at: new Date().toISOString(), journeys: [] };
+  const summary = {
+    entry: "run-product-desktop",
+    started_at: new Date().toISOString(),
+    journeys: [],
+  };
   const extraProblems = [];
   let exitCode = 0;
   try {
     if (journeyIds === null) {
-      const lifecycle = await runDesktopLifecycle({ workspace, repoRoot: REPO_ROOT });
+      const lifecycle = await runDesktopLifecycle({
+        workspace,
+        repoRoot: REPO_ROOT,
+      });
       summary.lifecycle = {
         status: lifecycle.status,
         ...(lifecycle.checks ? { checks: lifecycle.checks } : {}),
@@ -230,7 +278,7 @@ async function main() {
       if (lifecycle.status === "blocked") {
         exitCode = 3;
         process.stderr.write(
-          `E2E_DESKTOP_BLOCKED packaged app missing at ${lifecycle.expected_path} — run pnpm package:unsigned; never treated as a pass\n`
+          `E2E_DESKTOP_BLOCKED packaged app missing at ${lifecycle.expected_path} — run pnpm package:unsigned; never treated as a pass\n`,
         );
       } else if (lifecycle.status === "pass") {
         exitCode = 0;
@@ -238,14 +286,37 @@ async function main() {
         exitCode = 1;
       }
     } else {
-      exitCode = await runJourneys({ args, ids: journeyIds, workspace, summary, extraProblems });
+      exitCode = await runJourneys({
+        args,
+        ids: journeyIds,
+        workspace,
+        summary,
+        extraProblems,
+      });
     }
   } catch (error) {
     const code = error instanceof HarnessError ? error.code : "DESKTOP_ERROR";
     summary.failure = code;
+    if (journeyIds !== null) {
+      for (const id of journeyIds) {
+        if (!summary.journeys.some((journey) => journey.journey === id)) {
+          summary.journeys.push({
+            journey: id,
+            status: "not_run",
+            failure: code,
+          });
+        }
+      }
+    }
     process.stderr.write(`E2E_DESKTOP_FAILURE ${code}\n`);
     exitCode = 1;
   } finally {
+    try {
+      evidence?.capture(workspace.artifactsDir);
+    } catch {
+      extraProblems.push("EVIDENCE_CAPTURE_FAILED");
+      exitCode = 1;
+    }
     const keep = args["keep-on-failure"] === true && exitCode !== 0;
     const cleanup = await workspace.cleanup({ keep });
     const problems = [...cleanup.problems, ...extraProblems];
@@ -260,13 +331,20 @@ async function main() {
       if (exitCode === 0) exitCode = 1;
     }
     summary.finished_at = new Date().toISOString();
+    try {
+      evidence?.finish(summary);
+    } catch {
+      process.stderr.write("E2E_EVIDENCE_FAILURE\n");
+      exitCode = 1;
+    }
     process.stdout.write(`E2E_SUMMARY ${JSON.stringify(summary)}\n`);
   }
   return exitCode;
 }
 
 process.exitCode = await main().catch((error) => {
-  const code = error instanceof HarnessError ? error.code : "UNEXPECTED_ENTRY_ERROR";
+  const code =
+    error instanceof HarnessError ? error.code : "UNEXPECTED_ENTRY_ERROR";
   process.stderr.write(`E2E_FATAL ${code}\n`);
   return 2;
 });

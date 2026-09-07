@@ -2,15 +2,11 @@
 
 ## Status and execution contract
 
-- **Status:** DONE — stages 1–4 plus the registry-hydration fix are merged on
-  `main` (schema v18); journey B browser acceptance passes; the real-model
-  live gate executes the parameterized saved-analysis rerun with numeric cell
-  checks and byte-parsed exports; the same journey runs against the REAL
-  packaged app on an isolated absolute `--user-data-dir`; the result's
-  canonical chart copy is verified numerically against independently computed
-  fixtures; all required gates were green on the final commit `59d1a64`
-  (2026-09-07, see the final acceptance record below). No runtime
-  functionality was claimed by this document at the approved-handoff baseline.
+- **Status:** IMPLEMENTED — browser, live-model and repository acceptance pass;
+  final native packaged UI acceptance awaits macOS Keychain approval.
+  [EXECUTION.md](EXECUTION.md) records current gates and retained evidence.
+  Baseline descriptions and dated execution records below are historical
+  context; they do not supersede the current API or acceptance status.
 - **Priority / effort / risk:** P1 / L (multiple days, including integration) /
   high: durable dataset identity and worker execution change.
 - **Baseline:** `e2e6a78`, inspected 2026-09-06.

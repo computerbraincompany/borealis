@@ -1,12 +1,13 @@
 # Milestone ledger
 
-**Ledger reviewed:** 2026-09-06 against `e2e6a78`, including the rich agent
-editor, live embedding migration apply, and the functional product review.
+**Ledger reviewed:** 2026-09-07. M01–M11 form the completed baseline;
+connected agents and M12–M16 are implemented and undergoing final native
+v1 acceptance. [EXECUTION.md](EXECUTION.md) is the current evidence authority.
 
-The M05 extension now ships in `0987170`: identity, Markdown skills, atomic
-configuration revisions, and built-in tool allowlists. MCP/OAuth is still pending.
-The [agent rollout plan](../docs/AGENT_EDITOR_ROLLOUT.md) records this authorized
-extension and its verification separately from M05’s original completion.
+The M05 extension includes identity, Markdown skills, atomic configuration
+revisions, built-in tool allowlists, MCP/OAuth and reusable job setup. The
+[agent rollout record](../docs/AGENT_EDITOR_ROLLOUT.md) describes its shipped
+contract and verification separately from M05’s original completion.
 
 This directory holds **active** implementation milestones. Each milestone is a
 self-contained specification (`Mnn-<slug>.md`) with tasks and done criteria;
@@ -24,8 +25,7 @@ turn the vision into a backlog.
 **Coding-agent entry point:** [development handoff](../docs/DEVELOPMENT_HANDOFF.md),
 [acceptance matrix](../docs/END_TO_END_ACCEPTANCE.md), and
 [execution evidence](EXECUTION.md). The September 6 user request selected the
-complete functional wave below for implementation; this commit supplies the
-specifications, not the implementation. The
+complete functional wave below for implementation. The
 [copyable goal](../docs/IMPLEMENTATION_GOAL.md) delegates that complete scope.
 
 Milestones implement [docs/VISION.md](../docs/VISION.md). That document is the
@@ -88,7 +88,7 @@ Completed sequencing notes:
   plans 024–037 hardened or extended it without replacing that obligation.
 - M07 completed the first Horizon 3 substrate: same-instance report shares,
   content-free activity receipts, and interval automations. An explicit review
-  inbox and workflows that refresh inputs before analysis remain future scope.
+  inbox and refresh-before-analysis workflow now ship in M16.
   The remaining sandbox
   clause — _optional contained or cluster-local sandboxes for code that earns
   the privilege_ — is deliberately **deferred**, not forgotten: Borealis has
@@ -111,12 +111,12 @@ calendar. Detailed rationale and dated competitive evidence live in the
 
 | Order | Functional slice | First useful outcome | Status / dependency |
 | ----- | ---------------- | -------------------- | ------------------- |
-| 1 | [Connected agents](../docs/MCP_CONNECTIONS.md), M05 extension | HTTP/stdio MCP, OAuth, selected tools and reusable job setup | TODO; schema/runtime prerequisite gate |
-| 2 | [M12 saved analyses](M12-saved-analyses.md) | Parameterized SQL, preserved results, comparison and export outside chat | TODO; prerequisite gate; independent of MCP |
-| 3 | [M13 report/document workbench](M13-report-workbench.md) | Edit/rewrite, review changes and export a new evidence-bearing version | TODO; M12 for data refresh |
-| 4 | [M14 living libraries/search](M14-living-libraries.md) | Selected folders, watch/refresh, indexed WebDAV, source search/inspection | TODO; prerequisite gate and connection secret custody |
-| 5 | [M15 local research](M15-local-research.md) | Question plan, dossier, cited memo and reviewed comparison table | TODO; M13/M14 and M12 provenance patterns |
-| 6 | [M16 reviewed briefs](M16-reviewed-briefs.md) | Refresh, wait, analyze, compare, draft and review on a calendar schedule | TODO; M12/M13/M14 and drained scheduler |
+| 1 | [Connected agents](../docs/MCP_CONNECTIONS.md), M05 extension | HTTP/stdio MCP, OAuth, selected tools and reusable job setup | Implemented; native approval pending |
+| 2 | [M12 saved analyses](M12-saved-analyses.md) | Parameterized SQL, preserved results, comparison and export outside chat | Implemented; native approval pending |
+| 3 | [M13 report/document workbench](M13-report-workbench.md) | Edit/rewrite, review changes and export a new evidence-bearing version | Implemented; native approval pending |
+| 4 | [M14 living libraries/search](M14-living-libraries.md) | Selected folders, watch/refresh, indexed WebDAV, source search/inspection | Implemented; native approval pending |
+| 5 | [M15 local research](M15-local-research.md) | Question plan, dossier, cited memo and reviewed comparison table | Implemented; native approval pending |
+| 6 | [M16 reviewed briefs](M16-reviewed-briefs.md) | Refresh, wait, analyze, compare, draft and review on a calendar schedule | Implemented; native approval pending |
 
 MCP is an integration mechanism; each connection still needs a useful end-to-end
 job. It does not by itself create indexed sources, a research mode, or a

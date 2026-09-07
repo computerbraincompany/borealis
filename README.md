@@ -20,10 +20,11 @@ to LM Studio or another OpenAI-compatible endpoint.
 | [Contributor instructions](AGENTS.md)        | Architecture, commands, and security invariants                             |
 | [Configuration example](server/.env.example) | Optional environment overrides, defaults, and valid ranges                  |
 | [Milestones](milestones/README.md)           | Active implementation ledger toward the product vision                      |
-| [Functional product review](docs/PRODUCT_REVIEW.md) | Current capability gaps, North/Portable Computer comparison, and roadmap rationale |
+| [Functional product review](docs/PRODUCT_REVIEW.md) | Dated September 6 capability assessment, competitive comparison, and rationale |
 | [Advisor plans](advisor-plans/README.md)     | Active engineering-remediation ledger from the 2026-08-30 audit             |
 | [Coding-agent handoff](docs/DEVELOPMENT_HANDOFF.md) | Selected scope, implementation specs, dependencies and completion rules |
 | [End-to-end acceptance](docs/END_TO_END_ACCEPTANCE.md) | Required browser, packaged desktop and live-model proof for the selected wave |
+| [Local research walkthrough](docs/LOCAL_RESEARCH.md) | Supplier comparison, evidence review, corrections, reruns, and exports |
 
 [Milestones](milestones/README.md) are the active product implementation ledger
 toward the vision. [Advisor plans](advisor-plans/README.md) track the separate
@@ -33,28 +34,23 @@ archive](docs/cohere-north/README.md) preserve historical decisions and
 proposals; they are not current setup instructions or a list of unimplemented
 requirements.
 
-The completed baseline is M01–M11 plus the agent-editor foundation and later
-bounded extensions. The
-[selected functional wave](milestones/README.md#selected-functional-wave) is
-now landing rather than merely specified: Connected agents (MCP connections,
-OAuth, selected tools, and reusable job setup), saved analyses, the report and
-document workbench, and living libraries with folder/WebDAV knowledge
-connections and source search are implemented on `main` and documented as
-shipped contracts in the [API reference](docs/API.md). Local research ships
-its durable execution stages there, and reviewed briefs currently ship their
-recipe, calendar, and run API (the API reference marks exactly which brief and
-research actions remain reserved). Acceptance evidence — packaged, browser,
-and live-model — is tracked in the [execution ledger](milestones/EXECUTION.md),
-which distinguishes accepted work from implemented code. Coding agents should
-start with the [development handoff](docs/DEVELOPMENT_HANDOFF.md) and keep the
-ledger current.
+The implemented product includes M01–M11 and the
+[selected functional wave](milestones/README.md#selected-functional-wave): MCP
+connections and OAuth, reusable agents and jobs, saved parameterized analyses,
+editable documents with four export formats, folder/WebDAV libraries and source
+search, local research and comparison tables, and calendar briefs with a review
+inbox. The [API reference](docs/API.md) describes their current contracts.
+The [execution ledger](milestones/EXECUTION.md) records browser, packaged desktop,
+and live-model acceptance separately from implementation; an implemented feature
+is not a claim that every required acceptance gate has passed. Coding agents
+should start with the [development handoff](docs/DEVELOPMENT_HANDOFF.md).
 
 ## Architecture
 
 ```text
 desktop/    Electron shell for Apple Silicon macOS 13+
 web/        React + Vite UI: chat, sources, libraries, agents, automations,
-            connectors, reports, and Settings
+            connectors, analyses, documents, research, reviews, reports, Settings
 server/     Fastify API, agent loop, ingestion, retrieval, and rendering
 data/       deterministic personal-finance fixtures
 ```
@@ -67,7 +63,8 @@ repository gate is the root `pnpm verify` script. Do not install `server`,
 The durable store is deliberately split by job:
 
 - SQLite stores account preferences, chats and runs, sources and jobs, libraries,
-  agents, automations, artifact metadata, shares, audit receipts, and chunk text.
+  agents, connections, analyses, documents, research, briefs, automations,
+  artifact metadata, shares, audit receipts, and chunk text.
 - LanceDB stores scoped embedding vectors for retrieval.
 - DuckDB runs bounded analytical SQL against uploaded tabular data.
 - The filesystem stores uploads, reports, contained-model configuration and
@@ -513,7 +510,9 @@ connected tools of your enabled connections (at most 16; tools the editor
 flags as write-oriented need an explicit allowance, and tools whose schema this
 workspace refuses to execute are visibly non-selectable), and a job setup with
 up to five editable starter prompts, an output template, and suggested
-libraries. Two bundled starter jobs (finance analysis and diligence memo) seed
+libraries. Choose written output instructions or a built-in/custom document
+template; its structure is captured with each message under the agent prompt
+budget. Two bundled starter jobs (finance analysis and diligence memo) seed
 editable agents that attach no data and need no remote service. Bind an agent
 when creating a chat; edits apply to its next message while running messages
 retain their original configuration, including their frozen connected-tool
@@ -601,6 +600,20 @@ pnpm package:unsigned
 pnpm --filter borealis-desktop package:native:smoke
 pnpm --filter borealis-desktop package:entitlements:smoke
 ```
+
+The functional-wave release proof also runs the production browser, freshly
+packaged desktop, and real local-model journeys:
+
+```bash
+pnpm test:e2e:product
+pnpm test:e2e:product:desktop
+pnpm test:e2e:product:live
+```
+
+See the [acceptance contract](docs/END_TO_END_ACCEPTANCE.md) for required flows
+and the [execution ledger](milestones/EXECUTION.md) for actual results. All three
+use disposable workspaces; a missing platform/model or unimplemented scenario
+must remain a failure or explicit blocked check.
 
 ## Workspace archives and restore
 
@@ -742,11 +755,16 @@ restore, and forward-version behavior.
   Job setup adds versioned starter prompts, an output template, and suggested
   libraries; a job-started chat stays selected-empty until the user confirms
   the expanded ready-source list.
-- Local research and reviewed briefs ship as durable server/API surfaces:
-  research definitions, editable plan proposals, evidence dossiers, cited
-  memos, and typed comparison tables execute through the durable runner with
-  reserved artifact/export actions marked as such, while briefs currently ship
-  the recipe ledger, civil-calendar scheduling, and run-stage ledger.
+- Local research has a dedicated workspace for definitions, editable plans,
+  evidence dossiers, cited memos, and typed comparison tables. Human corrections
+  remain separate from machine values and survive selected-row reruns. Export
+  stored CSV/JSON evidence manifests or create an evidence-bearing document draft.
+- Reviewed briefs combine input refresh, ready-generation checks, saved analysis,
+  baseline comparison, and document drafting on an IANA civil calendar. The
+  Automations wizard, run history, review inbox, and notification bell support
+  manual runs, exact-revision approval, rejection, and local notification controls.
+  Scheduling runs only while the application is running; no external delivery
+  is automatic.
 - Account-scoped libraries, versioned agent identity, Markdown skills and tool
   selections, and personal model
   defaults that never widen a chat's source scope or authorization.

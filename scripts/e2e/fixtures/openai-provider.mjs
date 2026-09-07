@@ -21,6 +21,9 @@
  *   {"type":"text","pieces":["Hel","lo"]}
  *   {"type":"tool_call","id":"call_1","name_pieces":["echo","_query"],
  *    "argument_pieces":["{\"text\":","\"hi\"}"]}
+ * A create_report tool_call may set echo_chart_from_tool_call_id to one
+ * previous render_chart call ID. Only its validated chart UUID is inserted
+ * into charts; unavailable, ambiguous or malformed results fail the request.
  *   {"type":"malformed"}                       raw broken data: frame, then [DONE]
  *   {"type":"slow","delay_ms":500,"pieces":[...]}
  *   {"type":"no_response"}                     200 SSE headers, then silence
@@ -267,6 +270,31 @@ const tracked = createTrackedServer(async (req, res) => {
         sendJson(res, clampInt(step.status, 400, 599, 503), { error: { message: "scripted failure" } });
         return;
       }
+      // Opt-in chart echo: only this exact prior tool-call result may supply
+      // a server-minted UUID, and only the report's chart list can be filled.
+      let argumentPieces = step.argument_pieces ?? ["{}"];
+      if (step.echo_chart_from_tool_call_id !== undefined) {
+        try {
+          if (step.type !== "tool_call" || step.name_pieces?.join("") !== "create_report" ||
+              typeof step.echo_chart_from_tool_call_id !== "string" || step.echo_chart_from_tool_call_id.length > 128) throw new Error();
+          const matches = (Array.isArray(parsed.messages) ? parsed.messages : []).filter(
+            message => message.role === "tool" && message.tool_call_id === step.echo_chart_from_tool_call_id
+          );
+          if (matches.length !== 1 || typeof matches[0].content !== "string" || matches[0].content.length > 4096) throw new Error();
+          const result = JSON.parse(matches[0].content);
+          if (result.rendered !== true || typeof result.chart_id !== "string" ||
+              !/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(result.chart_id)) throw new Error();
+          const raw = argumentPieces.join("");
+          if (raw.length > 20000) throw new Error();
+          const args = JSON.parse(raw);
+          if (!args || typeof args !== "object" || Array.isArray(args) || Object.hasOwn(args, "charts")) throw new Error();
+          argumentPieces = [JSON.stringify({ ...args, charts: [result.chart_id] })];
+          if (argumentPieces[0].length > 20000) throw new Error();
+        } catch {
+          sendJson(res, 400, { error: { message: "fixture chart echo unavailable" } });
+          return;
+        }
+      }
       res.writeHead(200, {
         "Content-Type": "text/event-stream",
         "Cache-Control": "no-cache, no-transform",
@@ -280,7 +308,7 @@ const tracked = createTrackedServer(async (req, res) => {
           }
           break;
         case "tool_call":
-          for (const frame of toolCallFrames(model, step.id, step.name_pieces ?? ["t"], step.argument_pieces ?? ["{}"])) {
+          for (const frame of toolCallFrames(model, step.id, step.name_pieces ?? ["t"], argumentPieces)) {
             res.write(`data: ${JSON.stringify(frame)}\n\n`);
           }
           break;

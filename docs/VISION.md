@@ -2,9 +2,9 @@
 
 _The local data-intelligence platform._
 
-Current-product inventory reviewed against `e2e6a78` on 2026-09-06. The
+Current-product inventory reconciled with the functional wave on 2026-09-07. The
 [milestone roadmap](../milestones/README.md#selected-functional-wave)
-separates recommended next work from completed and already planned slices.
+separates implemented contracts, acceptance evidence, and future selections.
 
 Borealis is the northern lights of private AI: a local, open-source workspace
 that treats an organization’s files, tables, and reports as first-class
@@ -124,22 +124,29 @@ prompts, chat history, and selected
 source/tool context follow whichever provider is configured. The normal
 payload-bearing entry points are fail-closed until the account acknowledges
 remote egress; the consent UI names the current destination and payload classes,
-but the acknowledgment is per account rather than per host. The UI keeps the
-boundary ambient after consent. Scheduled connector execution rechecks the account’s remote-egress consent
-before synchronization, as completed in M07. Provider-bound acknowledgment is
-still planned remediation; current acknowledgment remains account-wide.
+and acknowledgment binds the account to the exact canonical provider origin.
+Changing remote origins requires fresh consent. The UI keeps the boundary
+ambient after consent. Scheduled execution and other payload-bearing operations
+recheck the authorization of their captured provider target.
 
-The current surfaces are Chat, Sources, Libraries, Agents, Automations,
-Connectors, Reports, and Settings. Libraries are account-scoped source
-collections that expand into an explicit chat scope. Named agents have configurable identity, versioned system prompts, reusable
-Markdown skills, and built-in tool allowlists. They bind at chat creation; the
-next message uses the latest configuration, while active messages keep their
-snapshot. Selections can restrict tools but never widen source scope or account
-authorization. MCP connections and OAuth remain planned. Reports can be shared read-only with sibling accounts
-on the same instance. Interval automations run connector refreshes and agent
-turns; agent turns reuse the normal consent and run gates, and scheduled connector refreshes recheck the same consent gate. Settings exposes a
-best-effort, content-free activity log for selected remote-capable attempts,
-not proof of completed network egress.
+The current surfaces are Chat, Sources, Libraries, Agents, Analyses, Documents,
+Research, Automations, Reviews, Connectors, Reports, and Settings. Libraries
+expand into explicit chat scope and support selected-folder/WebDAV refresh and
+keyword/semantic search. Saved analyses preserve parameterized queries and
+immutable results outside chat. Documents support editing, targeted rewrites,
+templates, and four evidence-bearing export formats. Local research stores
+dossiers and typed comparison tables with durable correction overlays.
+
+Named agents have configurable identity, versioned prompts, Markdown skills,
+and selected built-in/MCP tools. They bind at chat creation; the next message
+uses the latest configuration, while active messages keep their snapshot.
+HTTP/stdio connections support bounded discovery, OAuth, protected credential
+custody, and per-call revocation checks. Selections never widen source scope or
+account authorization. Reports can be shared read-only with sibling accounts
+on one instance. Interval automations remain available, and calendar briefs
+refresh inputs, run saved analyses, compare results, and await exact-revision
+review before publication. Settings exposes a best-effort, content-free activity
+log for selected remote-capable attempts, not proof of completed network egress.
 
 Operators can also create encrypted, integrity-verified portable workspace
 archives while Borealis is stopped. Restore is an offline, recoverable operation
@@ -148,9 +155,8 @@ the old target until the operator explicitly removes it. This remains an
 instance-wide operator surface, never an account API.
 
 That is already a local data platform in miniature, not merely a document-chat
-prototype. The remaining distance is depth: standalone artifact kinds beyond
-reports and charts, plus promotion of query receipts beyond chat metadata;
-richer review and governance than same-instance snapshot sharing; a contained
+prototype. The remaining distance is depth: richer review and governance beyond
+the bounded workflows and same-instance snapshot sharing; a contained
 runtime that does not require operator assembly; and the same product finish
 across every workflow. Multi-step automation graphs, public sharing, arbitrary
 code execution, and other desktop targets remain outside the shipping surface.
@@ -429,24 +435,28 @@ Computer without looking or behaving like an admin console.
 
 ### Horizon 2 — the intelligence layer
 
-Reports now have versions and supersession lineage; charts have a durable
-registry and originating-run links. Query receipts survive in chat. Libraries
-sit above uploads. Named agents bind versioned instructions, Markdown skills,
-and built-in tool selections without widening authorization, and numbered
-citations connect claims to frozen evidence. Connector schedules and history make the
-bounded public-URL catalog feel like part of a platform. The destination
-continues beyond this first layer: more artifact kinds, governed agent tool and
-source policy, regeneration from provenance, and citation-grade exports.
+Reports have versions and supersession lineage; charts retain originating-run
+links. Saved analyses turn query receipts into parameterized, repeatable work
+with immutable results and comparisons. The document workbench adds manual
+editing, targeted rewrites, templates, and evidence-bearing HTML/PDF/Markdown/DOCX
+exports. Folder and WebDAV libraries refresh an inspectable corpus, while local
+research preserves dossiers, typed comparison tables, and human corrections.
+Named agents bind versioned instructions, Markdown skills, and selected built-in
+or MCP tools without widening source authorization. The destination continues
+beyond these bounded workflows: richer artifact kinds and governed regeneration
+from provenance. Implementation and acceptance status belong in the milestone
+ledger, not this horizon.
 
 ### Horizon 3 — the small-team platform
 
 Same-instance report snapshots, content-free activity receipts, and interval
 automations complete M07's first small-team slice, including shared-report
-reads and connector-sync consent. Scheduled answers are reviewable chat output;
-there is no separate approval inbox or multi-step workflow yet. The destination
-is a fuller administration and audit plane for desktop-and-cluster deployment,
-plus automations with explicit human
-review for work that already has artifacts and evidence. Optional contained or
+reads and connector-sync consent. Reviewed calendar briefs now refresh inputs,
+run saved analyses, compare results, and place document drafts in an explicit
+approval inbox. Approval publishes the exact reviewed revision; rejection
+preserves the draft. The destination is a fuller administration and audit plane
+for desktop-and-cluster deployment and additional evidence-backed review
+workflows. Optional contained or
 cluster-local sandboxes for code are deferred until they have a hard process
 boundary with no network or filesystem and bounded CPU, time, and memory. Other
 desktops wait for a sandbox and packaging story as strict as macOS.

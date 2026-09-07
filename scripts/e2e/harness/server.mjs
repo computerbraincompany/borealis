@@ -198,11 +198,17 @@ export async function startServer({ workspace, repoRoot, provider, models }) {
      * data directory pinned to the SAME loopback port, so the browser
      * session's origin and stored JWT remain valid across the restart
      * (`jwt.secret` lives in the isolated workspace and is not regenerated).
+     * Optional whileStopped prepares historical acceptance fixtures only after
+     * shutdown has released all stores; the callback owns its workspace lock.
      */
-    async restart({ token } = {}) {
+    async restart({ token, whileStopped } = {}) {
       await server.quiesceWorkers({ token });
       const stopped = await server.stop();
       assert(stopped.gone && !stopped.escalated, "SERVER_RESTART_STOP_UNCLEAN");
+      if (whileStopped !== undefined) {
+        assert(typeof whileStopped === "function", "SERVER_STOPPED_CALLBACK_INVALID");
+        await whileStopped();
+      }
       const next = await spawnListeningProcess({ ...env, PORT: String(currentPort) });
       currentEntry = next.entry;
       assert(next.listenInfo.port === currentPort, "SERVER_RESTART_PORT_MOVED");

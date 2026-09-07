@@ -1,11 +1,10 @@
 # Rich agent editor rollout
 
-The September 5 sequencing decision moves the agent editor ahead of the
-unimplemented remediation migrations. Applied migrations v1–v12 stay unchanged.
-The reserved remediation work is valuable independently, but is not a runtime
-prerequisite for agent identity, instruction editing, skills, or tool allowlists.
+The September 5 sequencing decision placed the agent editor at v13 ahead of
+the remediation migrations. Those migrations subsequently shipped at v14–v16,
+followed by MCP and the functional wave at v17–v28. Applied history is unchanged.
 
-## Shipped foundation and remaining integration sequence
+## Shipped foundation and integration sequence
 
 1. **Editor foundation (v13), complete in `0987170`:** shared create/edit modal; persisted description,
    icon and color; atomic prompt/capability revisions; account-owned Markdown
@@ -29,9 +28,8 @@ prerequisite for agent identity, instruction editing, skills, or tool allowlists
    "Connected tools in durable chat turns", and "Jobs: versioned job setup and
    chat creation from a job".
 
-MCP storage must be allocated only when its implementation is ready; do not
-silently claim one of the reserved remediation versions. Reconcile the sequence
-against the ledger before introducing the next migration.
+MCP storage owns v17 and accepted-turn snapshots own v21. Reconcile the complete
+applied sequence against the ledger before introducing the next migration.
 
 The [selected functional roadmap](../milestones/README.md#selected-functional-wave)
 tracked the MCP scope together with reusable job setup; both are now
@@ -40,8 +38,11 @@ implemented. The full
 [development handoff](DEVELOPMENT_HANDOFF.md) supply implementation and acceptance
 details, including the prerequisite closure that preceded the new durable
 schema work. Job setup adds up to five starter prompts, one bounded
-instruction output template, and up to ten suggested library ids to an agent
-revision. A chat created from a job expands suggested libraries into the
+instruction output template or an owned/built-in document-template reference,
+and up to ten suggested library ids to an agent revision. The template’s bounded
+structure is captured with the prompt at message acceptance; later deletion
+cannot change that run, and missing references block a new turn. A chat created
+from a job expands suggested libraries into the
 normal explicit source selection and stays selected-empty until the user
 confirms the expanded list — never a dynamic agent-to-library authorization
 path and never a fallback to `all`.

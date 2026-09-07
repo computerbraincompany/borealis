@@ -1,9 +1,10 @@
 # Connected agents — implementation specification
 
-**Status:** TODO, selected for the September 6 development handoff. This is the
-remaining M05 extension, not a claim that MCP ships. **Baseline:** `e2e6a78`.
-**Depends on:** the schema/runtime prerequisite gate in
-[DEVELOPMENT_HANDOFF.md](DEVELOPMENT_HANDOFF.md). **Effort:** L–XL.
+**Implementation:** both transports, OAuth, frozen connected-tool execution,
+connection management, and reusable job setup are present. Selected on
+2026-09-06 against `e2e6a78`; the prerequisite gate is applied. Completion and
+platform acceptance are tracked in [EXECUTION.md](../milestones/EXECUTION.md).
+The contracts below remain required; implementation alone does not close a check.
 
 ## Outcome and scope
 
@@ -14,7 +15,7 @@ Agent edits affect the next accepted turn; running turns retain their selected
 configuration. A reusable job can suggest prompts, an output template, and
 libraries, which the user confirms into explicit source selection.
 
-This specification completes the pending stage of
+This specification defines the connected-tool extension of
 [AGENT_EDITOR_ROLLOUT.md](AGENT_EDITOR_ROLLOUT.md). Both transports, OAuth,
 connection lifecycle, cancellation, and packaged desktop execution are required.
 No tool-discovery-only screen or mocked execution counts as completion.
@@ -28,9 +29,9 @@ and [authorization](https://modelcontextprotocol.io/specification/2025-11-25/bas
 specifications are dated references checked during this handoff. Record the
 negotiated protocol and SDK release actually implemented in the API guide.
 
-## Current code and files to own
+## Implementation boundaries
 
-`server/src/agentConfiguration.ts` currently restricts tools to:
+`server/src/agentConfiguration.ts` preserves this built-in tool selection:
 
 ```ts
 export const AGENT_TOOLS = [
@@ -39,16 +40,16 @@ export const AGENT_TOOLS = [
 ] as const;
 ```
 
-`server/src/agent.ts` filters `TOOL_DEFS` against `opts.agentTools`, and
-`server/src/tools.ts:executeTool` dispatches only those built-ins. Extend these
-boundaries together. Keep the old `tools: string[]` meaning built-in selection;
-introduce a separate MCP binding collection so old clients remain compatible.
+`server/src/agent.ts` filters built-in `TOOL_DEFS` against `opts.agentTools`
+and adds the accepted MCP descriptors. `server/src/tools.ts:executeTool` owns
+built-ins; `server/src/mcp/client.ts` owns connected calls. The separate
+`mcp_tools` collection preserves the old built-in-only meaning of `tools`.
 `server/src/db/stores/chatStore.ts:acceptChatTurn` is the atomic snapshot owner;
 `server/src/turnContext.ts` exposes its accepted turn. Network discovery never
 runs while a SQLite write transaction is open.
 
-Expected new modules: `server/src/connections/{store,secrets,service}.ts`,
-`server/src/mcp/{client,tools,oauth}.ts`, `server/src/routes/connections.ts`,
+Runtime modules: `server/src/connections/{store,secrets,service}.ts`,
+`server/src/mcp/{client,oauth,oauthCallback}.ts`, `server/src/routes/connections.ts`,
 `web/src/components/ConnectionsPanel.tsx`, and focused tests. Integrate with
 `server/src/routes.ts`, `storageRuntime.ts`, the prerequisite's owned application
 runtime, `agentConfiguration.ts`, agent/chat stores, agent/tool execution,
@@ -61,7 +62,7 @@ Match account-scoped stores and `withImmediateTransaction` from `agentStore.ts`,
 keyset catalogs, and exact request-generation/abort ownership from the existing
 editor and Settings hooks. Use ESM `.js` server imports, Node 22 and pnpm 10.
 
-## Proposed contracts — implement before documenting as current API
+## Runtime contracts
 
 ### Connections and secret custody
 
@@ -87,7 +88,7 @@ editor and Settings hooks. Use ESM `.js` server imports, Node 22 and pnpm 10.
   indexed sources or saved outputs. Extend archive manifests and verification
   when new durable paths are introduced; never silently omit new work products.
 
-Proposed endpoints, all authenticated and account-scoped except the narrowly
+Endpoints, all authenticated and account-scoped except the narrowly
 scoped one-use OAuth callback described below:
 
 | Endpoint | Contract |
@@ -152,7 +153,8 @@ resource/audience binding, and serialized refresh per connection. Support
 configured client registration plus discovered registration when supported;
 an unsupported issuer gives actionable setup instructions, not a fake success.
 Open a validated authorization URL only after a sign-in click. Desktop uses the
-system browser and an exact loopback callback listener owned by main, with
+system browser through main’s one-use open intent and an exact backend-owned
+loopback callback listener, with
 state/PKCE verification and a 5-minute expiry. That callback accepts no workspace
 session credentials and is not a general public resource API. Cancel/deny,
 callback replay, token expiry, provider logout, and refresh failure are normal
@@ -163,9 +165,13 @@ Add versioned agent job setup: up to 5 starter prompts (2,000 chars each), one
 optional output template reference, and up to 10 suggested library IDs, with
 the normal 100-source cap on expansion. New job chats remain selected-empty
 until the user confirms the expanded ready-source list. Empty/missing libraries
-are visible; never fall back to `all`. Before M13 templates exist, support an
-explicit bounded instruction template; migrate references compatibly when the
-document template catalog lands. Test chat uses real accepted turns, not an
+are visible; never fall back to `all`. Output templates support both the
+compatible bounded instruction variant and a built-in or account-owned M13
+`template_id` reference. Resolve the structure in the agent save and message
+acceptance transactions under the 8,000-character template and combined
+32,000-character prompt budgets; freeze it with the accepted agent instructions.
+A missing/deleted/foreign template blocks a new turn without changing prior
+turns. Templates add no sources, tool permissions, or automatic publication. Test chat uses real accepted turns, not an
 editor-only provider call. Provide two editable starter jobs: finance analysis
 and diligence memo, with no implicit attached data or required remote service.
 
@@ -219,7 +225,7 @@ ship a disabled stub as the feature, or fall back to plaintext renderer secrets.
 Any newly discovered need for generic process execution, broad preload access,
 or external write automation requires a separate explicit scope decision.
 
-## Implementation status — 2026-09-06
+## Implementation record — 2026-09-06
 
 Stages 1–5 of this specification are merged on `main` and stage 6 aligned the
 documentation: the schema v17 connection/tool-snapshot ledger, the reusable

@@ -1,10 +1,10 @@
 # End-to-end acceptance for the functional wave
 
-**Status:** required implementation/validation contract, 2026-09-06. Scenarios
-below have **not** been run by the documentation handoff. Source baseline is
-`e2e6a78`. This file complements each milestone's focused tests; the implementing
-agent must create the missing harness and record real results in
-[EXECUTION.md](../milestones/EXECUTION.md).
+**Status:** required validation contract, selected 2026-09-06 against `e2e6a78`.
+The production browser harness, protocol fixtures, packaged desktop entry point,
+and live-model entry point now exist. Actual passes, failures, and unexecuted
+scenarios are recorded in [EXECUTION.md](../milestones/EXECUTION.md); this document
+defines what they must prove and does not itself certify completion.
 
 ## Test environment and repeatability
 
@@ -23,15 +23,16 @@ pnpm install --frozen-lockfile
 pnpm --filter borealis-server exec playwright install chromium
 ```
 
-Add a scripted product acceptance harness under `scripts/e2e/` and synthetic
-fixtures under `data/e2e/`. Add the following root scripts during implementation;
-they **do not exist at the handoff baseline**:
+The scripted product acceptance harness lives under `scripts/e2e/` and its
+synthetic fixtures under `data/e2e/`. The root scripts below are available;
+their required behavior remains the full contract, including any scenario the
+execution ledger still identifies as unfinished.
 
 Per-feature entry points named in M14/M15 may be thin wrappers over this shared
 harness. The three root commands must invoke the complete relevant scenarios;
 do not maintain separate suites whose passing subsets omit a milestone's checks.
 
-| New command to implement | Required behavior |
+| Command | Required behavior |
 | ------------------------ | ----------------- |
 | `pnpm test:e2e:product` | Build/serve the actual production web/backend, launch a real browser, run A–F plus lifecycle cases against local protocol/model fixtures, and clean up |
 | `pnpm test:e2e:product:desktop` | Exercise A–F's relevant UI flows through the packaged arm64 app in an isolated profile; native folder, OAuth, key custody, notification and lifecycle checks included |
@@ -124,7 +125,7 @@ pnpm --filter borealis-desktop package:entitlements:smoke
 
 All must exit zero. `pnpm verify` must print `ALL GATES GREEN`; it does not
 replace GUI render smoke, packaging or live-model acceptance. Then execute all
-three new product E2E commands. Capture content-free counts, final commit,
+three product E2E commands. Capture content-free counts, final commit,
 platform/runtime versions, check timestamps and fixture identifiers. Rebuild
 after source changes so desktop testing never validates stale copied runtime.
 
