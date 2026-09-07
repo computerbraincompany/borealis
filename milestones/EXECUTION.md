@@ -42,7 +42,9 @@ required contract must still be satisfied.
 | v24 | M14 search/locators (FTS5 + segment meta) | Implemented + merged 2026-09-06; ledger contiguous v1–v24, all tripwires at 24 |
 | v25 | M15 research ledger | Implemented + merged 2026-09-06 |
 | v26 | M16 brief ledger + calendar | Implemented + merged 2026-09-06; ledger contiguous v1–v26 |
-| v27+ | Allocate at dispatch only | No placeholders or jumps; contiguity revalidated at every merge |
+| v27 | M16 brief_recipes.notifications_enabled (allocated to the stage-2 slice) | Implemented + merged 2026-09-06 |
+| v28 | M16 brief_runs.publication_error_code indicator (stage 3) | Implemented + merged 2026-09-06; ledger contiguous v1–v28 |
+| v29+ | Allocate at dispatch only | No placeholders or jumps; contiguity revalidated at every merge |
 
 ## Integrated acceptance
 
