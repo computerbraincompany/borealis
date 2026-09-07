@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import Fastify, { type FastifyInstance } from "fastify";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { signToken } from "../auth.js";
@@ -15,6 +16,7 @@ import { StoreNotFoundError } from "../db/stores/chatStore.js";
 import { SettingsValidationError } from "../settingsStore.js";
 import { installHttpBoundary } from "../httpErrors.js";
 import { consentRoutes } from "../routes/consent.js";
+import { briefRoutes } from "../routes/briefs.js";
 import { closeRuntimeSettings, initializeRuntimeSettings, runtimeSettingsStore } from "../runtimeSettings.js";
 import { closeStorageRuntime, initializeStorageRuntime, storageRuntime } from "../storageRuntime.js";
 import { LATEST_SQLITE_SCHEMA_VERSION } from "../db/migrations.js";
@@ -290,6 +292,118 @@ describe("remote egress consent", () => {
     const events = await listEgressEvents(ACCOUNT_ID, 50);
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({ kind: "consent_acknowledged", endpoint_host: "api.provider-a.example" });
+  });
+});
+
+describe("remote egress consent for reviewed-brief manual runs", () => {
+  async function buildBriefApp(): Promise<FastifyInstance> {
+    const app = Fastify();
+    apps.push(app);
+    installHttpBoundary(app);
+    await app.register(consentRoutes);
+    await app.register(briefRoutes);
+    await app.ready();
+    return app;
+  }
+
+  /** One ready source + matching saved analysis + refresh-less daily recipe. */
+  async function seedBriefRecipe(name: string): Promise<string> {
+    const sourceId = randomUUID();
+    await storageRuntime().ledger.run(
+      `INSERT INTO sources (id,account_id,name,kind,display_name,status,ready_generation)
+       VALUES (?,?,?,'tabular',?,'ready',1)`,
+      [sourceId, ACCOUNT_ID, name, name]
+    );
+    const analysis = await storageRuntime().analyses.createAnalysis(ACCOUNT_ID, {
+      title: `egress brief analysis ${name}`,
+      sql: "SELECT 1 AS value",
+      sourceIds: [sourceId],
+    });
+    const recipe = await storageRuntime().briefRecipes.createRecipe(ACCOUNT_ID, {
+      name: `egress brief ${name}`,
+      analysis_id: analysis.id,
+      report_title: "Egress brief",
+      report_instruction: "Summarize the tracked totals.",
+      source_ids: [sourceId],
+      schedule: { kind: "daily", hour: 9, minute: 0, time_zone: "UTC" },
+    });
+    return recipe.id;
+  }
+
+  async function runRowCount(): Promise<number> {
+    const row = await storageRuntime().ledger.get<{ count: number | bigint }>(
+      "SELECT COUNT(*) AS count FROM brief_runs"
+    );
+    return Number(row?.count ?? 0);
+  }
+
+  function postRun(app: FastifyInstance, recipeId: string, operationId: string) {
+    return app.inject({
+      method: "POST",
+      url: `/api/briefs/${recipeId}/runs`,
+      headers: auth,
+      body: { operation_id: operationId },
+    });
+  }
+
+  it("refuses manual-run acceptance with 403 and creates no run row under an unacknowledged remote provider", async () => {
+    await runtimeSettingsStore().patch({ llmBaseUrl: "https://api.provider.example" });
+    const app = await buildBriefApp();
+    const recipeId = await seedBriefRecipe("blocked");
+
+    const blocked = await postRun(app, recipeId, randomUUID());
+    expect(blocked.statusCode).toBe(403);
+    expect(blocked.json()).toEqual({
+      error: "Acknowledgment is required before this workspace sends data to a remote model provider.",
+      code: "REMOTE_EGRESS_CONSENT_REQUIRED",
+    });
+    // Fail-closed acceptance: not even the durable run row exists.
+    await expect(runRowCount()).resolves.toBe(0);
+  });
+
+  it("acknowledgment unblocks manual acceptance without a restart and origin re-gating refuses replays", async () => {
+    await runtimeSettingsStore().patch({ llmBaseUrl: "https://api.provider-a.example" });
+    const app = await buildBriefApp();
+    const recipeId = await seedBriefRecipe("unblocked");
+    const operationId = randomUUID();
+
+    expect((await postRun(app, recipeId, operationId)).statusCode).toBe(403);
+    const acknowledged = await app.inject({ method: "POST", url: "/api/consent/remote-egress", headers: auth });
+    expect(acknowledged.statusCode).toBe(200);
+
+    const accepted = await postRun(app, recipeId, operationId);
+    expect(accepted.statusCode).toBe(202);
+    expect(accepted.json()).toMatchObject({ replayed: false, run: { stage: "queued", trigger: "manual" } });
+    await expect(runRowCount()).resolves.toBe(1);
+
+    // A retried key replays the original run under the acknowledged origin.
+    const replay = await postRun(app, recipeId, operationId);
+    expect(replay.statusCode).toBe(202);
+    expect(replay.json()).toMatchObject({ replayed: true });
+    await expect(runRowCount()).resolves.toBe(1);
+
+    // Switching to another unacknowledged remote origin re-gates acceptance —
+    // including a replay attempt — without persisting anything new.
+    await runtimeSettingsStore().patch({ llmBaseUrl: "https://api.provider-b.example" });
+    const regated = await postRun(app, recipeId, operationId);
+    expect(regated.statusCode).toBe(403);
+    expect(regated.json()).toMatchObject({ code: "REMOTE_EGRESS_CONSENT_REQUIRED" });
+    await expect(runRowCount()).resolves.toBe(1);
+  });
+
+  it("loopback and private providers never gate manual brief runs", async () => {
+    // Freshly initialized Settings are the loopback LM Studio default.
+    const app = await buildBriefApp();
+    const loopbackRecipe = await seedBriefRecipe("loopback");
+    const loopback = await postRun(app, loopbackRecipe, randomUUID());
+    expect(loopback.statusCode).toBe(202);
+    expect(loopback.json()).toMatchObject({ run: { stage: "queued" } });
+
+    await runtimeSettingsStore().patch({ llmBaseUrl: "http://spark.local:8000" });
+    const privateRecipe = await seedBriefRecipe("private");
+    const privateRun = await postRun(app, privateRecipe, randomUUID());
+    expect(privateRun.statusCode).toBe(202);
+    await expect(runRowCount()).resolves.toBe(2);
   });
 });
 

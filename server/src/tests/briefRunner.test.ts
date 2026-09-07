@@ -658,6 +658,65 @@ describe("brief runner refresh outcomes", () => {
     expect((await h.recipes.getRecipe(h.account, recipeId))?.consecutiveFailures).toBe(0);
   });
 
+  it("mid-run consent revocation stops the run before the narrative call without counting a failure", async () => {
+    const h = await harness();
+    const connectorId = await seedConnector(h, "revoked_mid_table");
+    const source = await seedTabularSource(h, "revoked_mid_csv", connectorId);
+    // Consent stands for the refresh stage and is revoked before the
+    // draft-stage provider-egress boundary (e.g. a Settings switch to an
+    // unacknowledged origin after acceptance).
+    let authorizations = 0;
+    h.fakes.authorizeBehavior = async () => {
+      authorizations += 1;
+      if (authorizations > 1) throw new RemoteEgressConsentRequiredError();
+      return LOCAL_TARGET;
+    };
+    const { recipeId } = await makeRecipe(h, {
+      sourceIds: [source],
+      comparisonKey: ["metric_label"],
+      refreshBindings: [{ source_id: source, kind: "connector", connector_id: connectorId }],
+    });
+    const runner = h.buildRunner();
+    const run = await dueAndRun(h, recipeId, runner);
+    // The refresh ran under valid consent; the narrative-boundary recheck saw
+    // the revocation and stopped before any provider call.
+    expect(h.fakes.syncCalls).toEqual([connectorId]);
+    expect(h.fakes.narrativeCalls).toBe(0);
+    expect(run.stage).toBe("skipped");
+    expect(run.failureCode).toBe("BRIEF_EGRESS_CONSENT_REQUIRED");
+    // The skipped classification keeps a bounded content-free code and no
+    // reason text, never feeds the pause counter, and never notifies.
+    expect(run.failureReason).toBeNull();
+    expect(await h.notificationKinds(run.id)).toEqual([]);
+    expect((await h.recipes.getRecipe(h.account, recipeId))?.consecutiveFailures).toBe(0);
+  });
+
+  it("a scheduled claimed run rechecks consent at the narrative boundary after the ungated local analysis", async () => {
+    const h = await harness();
+    // Static-only recipe: the refresh stage performs no provider/embedding
+    // egress, so the narrative boundary is this run's first egress point.
+    const source = await seedTabularSource(h, "static_gate_csv");
+    h.fakes.authorizeBehavior = async () => {
+      throw new RemoteEgressConsentRequiredError();
+    };
+    const { recipeId } = await makeRecipe(h, { sourceIds: [source], comparisonKey: ["metric_label"] });
+    const runner = h.buildRunner();
+    // dueAndRun claims the due occurrence through the scheduler tick — the
+    // same durable claim path manual rows share after acceptance.
+    const run = await dueAndRun(h, recipeId, runner);
+    expect(run.trigger).toBe("scheduled");
+    expect(run.stage).toBe("skipped");
+    expect(run.failureCode).toBe("BRIEF_EGRESS_CONSENT_REQUIRED");
+    expect(run.failureReason).toBeNull();
+    // The analysis is local DuckDB over already-ingested data: ungated and
+    // it did execute. The provider narrative call did not.
+    expect(await h.analysisRunCount()).toBe(1);
+    expect(h.fakes.narrativeCalls).toBe(0);
+    // Exactly the narrative-boundary recheck ran; no refresh-stage authorization.
+    expect(h.fakes.authorizeCalls).toBe(1);
+    expect((await h.recipes.getRecipe(h.account, recipeId))?.consecutiveFailures).toBe(0);
+  });
+
   it("a busy knowledge input blocks visibly without counting a failure", async () => {
     const h = await harness();
     const { connectionId, itemId, sourceId } = await seedKnowledgeItem(h, "busy_csv");
