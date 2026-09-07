@@ -87,8 +87,8 @@ field, not an HTTP error.
 The direct/manual remote-provider payload routes are fail-closed and
 provider-origin-bound. While a remote (public) provider is configured and the
 account's stored acknowledgment pair does not name that exact canonical origin,
-chat messages, source upload, source reingest, connector create/manual sync, and
-connector schedule changes refuse with `403
+chat messages, source upload, source reingest, connector create/manual sync,
+connector schedule changes, and manual brief execution refuse with `403
 {"error":"...","code":"REMOTE_EGRESS_CONSENT_REQUIRED"}` before any payload is
 processed. `GET /api/consent/remote-egress` returns
 `{required,acknowledged_at,endpoint_host}`; for a remote provider
@@ -1781,7 +1781,17 @@ instruction at 8,000 characters. Refresh bindings map recipe sources to a
 connector or a knowledge connection of the same account; creating or editing
 a recipe that carries refresh bindings requires remote-egress consent
 (`403 REMOTE_EGRESS_CONSENT_REQUIRED`) because it schedules
-payload-bearing refreshes.
+payload-bearing refreshes. Manual execution is consent-gated at acceptance:
+`POST /api/briefs/:id/runs` answers the same `403` before any run row is
+created (an executed brief's draft stage makes a provider-bound narrative
+model call, so every run is payload-bearing). The pipeline additionally
+rechecks the exact account's consent at its provider-egress boundary, so a
+revocation after acceptance (or a scheduled claim under an unacknowledged
+remote provider) skips the run visibly with
+`failure_code=BRIEF_EGRESS_CONSENT_REQUIRED` before the narrative call — a
+skipped/blocked classification that never counts toward the five-consecutive-
+failure pause. Review approval publishes through the local renderer only and
+is deliberately ungated: publication sends nothing to any provider.
 
 Schedules are civil, not cron: `daily`, `weekly` on one weekday (0 =
 Sunday), or `monthly` on day 1–28, at a fixed hour/minute in one validated
@@ -1810,7 +1820,7 @@ survives recipe deletion through each run's immutable recipe snapshot.
 | `POST /api/briefs/:id/pause`      | Pauses scheduling; repeated calls are no-ops. Resume re-advances the civil cursor strictly after now.                                              |
 | `POST /api/briefs/:id/resume`     | Resumes with `active` state and a fresh cursor.                                                                                                     |
 | `DELETE /api/briefs/:id`          | Removes the recipe head and revision snapshots. Existing runs/reviews survive through their snapshots. `{"ok":true}`.                              |
-| `POST /api/briefs/:id/runs`       | Run-now with body `{operation_id}` (UUID idempotency key). `202 {"run":{...},"replayed":bool}` with the durable `queued` run (executed by the owned pipeline through the same stages as scheduled claims); a retried key replays the original run; an active run answers `409 BRIEF_ACTIVE_RUN`. |
+| `POST /api/briefs/:id/runs`       | Run-now with body `{operation_id}` (UUID idempotency key). The remote-egress consent gate answers `403 REMOTE_EGRESS_CONSENT_REQUIRED` under an unacknowledged remote provider before persistence (no run row is created; acknowledgment unblocks without a restart). `202 {"run":{...},"replayed":bool}` with the durable `queued` run (executed by the owned pipeline through the same stages as scheduled claims); a retried key replays the original run; an active run answers `409 BRIEF_ACTIVE_RUN`. |
 | `GET /api/briefs/:id/runs`        | Keyset run history (bounded summaries: stage, deadlines, coalescing counts, artifact ids, generic failure reason).                                  |
 | `GET /api/briefs/:id/runs/:runId` | Bounded stage detail for one run: durable summary plus the server-owned refresh receipts (kind, label, intended generation), the committed source-generation snapshot, the persisted comparison summary (≤32 KiB by write-time bound), and the linked analysis/baseline/document artifact ids. |
 | `DELETE /api/briefs/:id/runs/:runId` | Requests durable cancellation (`cancel_requested=1`). Repeated calls — including after terminalization — are idempotent and return the current run. The runner observes it at stage boundaries and finalizes `cancelled`; artifacts committed up to that point are preserved. |

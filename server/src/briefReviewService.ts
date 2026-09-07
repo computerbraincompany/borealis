@@ -25,6 +25,11 @@
  * service call replays or idempotently completes the intent.
  *
  * No outbound delivery ever happens here: approval publishes locally only.
+ * This is why the review-decision path is deliberately NOT behind the remote-
+ * egress consent gate: publication renders an already-drafted revision with
+ * the local M13 renderer over durable stored values — it sends nothing to the
+ * model provider, and the run's only provider egress (the draft narrative)
+ * was itself consent-gated at its transport boundary.
  */
 import { storageRuntime } from "./storageRuntime.js";
 import { publishDocumentRevision, DocumentPublicationRenderError } from "./documentService.js";

@@ -556,6 +556,14 @@ export async function briefRoutes(app: FastifyInstance): Promise<void> {
   // the idempotency key — a retried request replays the original run. The
   // owned brief runner executes the durable row through the same pipeline as
   // scheduled claims; without a live executor the row simply waits.
+  //
+  // Acceptance is payload-bearing egress: an executed brief draft stage makes
+  // its single narrative model call and bound-input refreshes re-embed, so
+  // under a remote provider this route is fail-closed-gated exactly like chat
+  // messages and connector create/sync. Consent is evaluated before anything
+  // is durable: a blocked request creates no run row (and replays nothing),
+  // and the pipeline keeps its own rechecks for scheduled claims and for
+  // consent revoked after acceptance.
   app.post(
     "/api/briefs/:id/runs",
     {
@@ -564,10 +572,12 @@ export async function briefRoutes(app: FastifyInstance): Promise<void> {
       schema: { params: idParamsSchema, body: RUN_CREATE_BODY_SCHEMA },
     },
     async (req, reply) => {
+      const accountId = getAccountId(req);
       try {
+        if (!(await enforceRemoteEgressConsent(reply, accountId))) return;
         const body = req.body as { operation_id: string };
         const { run, replayed } = await storageRuntime().briefRuns.createManualRun(
-          getAccountId(req),
+          accountId,
           (req.params as { id: string }).id,
           body.operation_id
         );
@@ -674,7 +684,14 @@ export async function briefRoutes(app: FastifyInstance): Promise<void> {
     }
   );
 
-  // Exact-revision review decision. Approval: head-revision CAS + the stable
+  // Exact-revision review decision. Deliberately ungated by the remote-egress
+  // consent gate: publication is M13's local render of an already-drafted
+  // revision (Playwright/Electron rendering over stored values) — it sends
+  // nothing to the model provider or anywhere else outbound, so there is no
+  // egress to consent to. (The provider egress for this run already happened,
+  // consent-gated, at the draft's narrative call.)
+  //
+  // Approval: head-revision CAS + the stable
   // publication operation UUID persisted durably first (retries reconcile
   // the same intent and can never create a second publication), then the
   // real M13 publish service renders — 202 with `publishing` while rendering,

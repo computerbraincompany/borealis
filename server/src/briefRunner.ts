@@ -20,6 +20,12 @@
  * - refresh/consent/busy prerequisites surface as visible skipped or blocked
  *   outcomes with a bounded content-free reason and never feed the
  *   five-consecutive-failure pause; only `failed` counts;
+ * - remote-egress consent is fail-closed at both points: the manual-run route
+ *   refuses acceptance under an unacknowledged remote provider (no run row),
+ *   and the pipeline rechecks the exact account at the first provider-egress
+ *   boundary, so a revocation after acceptance skips the run before the
+ *   narrative call; scheduled claims have no acceptance gate and rely on this
+ *   recheck plus the refresh stage's own gated transports;
  * - the connector refresh path is the existing consent-gated `connector_sync`
  *   machinery over exact bound source ids; M14 inputs refresh through the
  *   shared `refreshAndWaitReady` service with the exact managed-item
@@ -1189,6 +1195,33 @@ export function createBriefRunner(dependencies: BriefRunnerDependencies) {
       }
       run = await stageUpdate(run, { comparisonSummary: summary });
       crash("comparison-persisted", run);
+    }
+
+    // Provider-egress boundary — consent recheck (the durable-ingestion
+    // precedent). This narrative call is the run's only model-provider
+    // transport; the refresh stage's connector/knowledge embedding transports
+    // are consent-gated at their own boundaries and are deliberately not
+    // double-gated here. Authorize the exact account against the live exact
+    // target now, so a consent revocation (or a Settings switch to an
+    // unacknowledged origin) after acceptance stops the run before a single
+    // provider byte leaves the machine. The egress stop is a visible skipped
+    // classification with a bounded content-free code — never an execution
+    // failure, so it never feeds the five-consecutive-failure pause. The
+    // transport itself binds to one authorized immutable snapshot inside the
+    // production narrative port: llm.ts `authorizedAccountRuntime` captures
+    // Settings once, authorizes that exact revision's target, and builds the
+    // client only from that same snapshot.
+    try {
+      await authorizeEgress(run.accountId);
+    } catch (error) {
+      if (error instanceof RemoteEgressConsentRequiredError) {
+        throw new BriefTerminalDecision(
+          "skipped",
+          "BRIEF_EGRESS_CONSENT_REQUIRED",
+          "remote egress consent is required"
+        );
+      }
+      throw error;
     }
 
     // One bounded narrative model call via the authorized runtime. The model
