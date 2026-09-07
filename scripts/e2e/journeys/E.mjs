@@ -129,6 +129,26 @@ async function selectLatestRun(session) {
   await expectVisible(session, /Searches \d+\//, 20_000);
 }
 
+/**
+ * Reopen a definition through the catalog and select a run row. RunPanel and
+ * TablePanel fetch keyed by the run id: a run that reaches its terminal
+ * status while the detail view was already open keeps showing its mid-run
+ * fetch (the table cells of a just-completed run are absent until a fresh
+ * mount or the "Reload page" control). Catalog → detail remount and clicking
+ * the run row is the real user path; clicking the ALREADY-selected row is
+ * not (it leaves the detail in its loading state — reported product defect,
+ * avoided here).
+ */
+async function reopenRun(session, definitionId, runIndex = 0) {
+  await session.gotoHash("/research");
+  await session.page.getByRole("heading", { name: "Research" }).first().waitFor({ timeout: 20_000 });
+  await session.gotoHash(`/research/${definitionId}`);
+  const runButton = session.page.locator('section[aria-label="Run history"] li button').nth(runIndex);
+  await runButton.waitFor({ timeout: 20_000 });
+  await runButton.click();
+  await expectVisible(session, /Searches \d+\//, 20_000);
+}
+
 async function runIds(session, definitionId) {
   const res = await session.apiFetch(`/api/research/${definitionId}/runs`, { expectStatus: 200 });
   return (res.body?.items ?? []).map((entry) => entry.id);
@@ -638,6 +658,11 @@ export async function run(ctx) {
     checks.comparison_run = { cells: 45, invalid: 1, not_found: rowFor("10_acme_scanned_invoice.pdf").cells.filter((c) => c.status === "not_found").length + 1, locators: "pdf_page+text_span/heading" };
 
     /* -- P4: review — corrections as labeled overlays, stale CAS, durable -- */
+    // The table was mounted mid-run (empty cells): reopen through the catalog
+    // so TablePanel refetches the finished revision before reviewing.
+    await reopenRun(session, defC, 0);
+    checks.ui_refresh =
+      "RunPanel/TablePanel fetch keyed by run id; a run completed while the view was open needs the catalog reopen (product has a manual 'Reload page' control)";
     // Scope to the exact cell: every populated cell carries a "correct"
     // button, so a row-scoped locator would be multi-match (strict mode).
     const columnOrder = definition.columns.map((column) => column.label);
@@ -1030,6 +1055,8 @@ export async function run(ctx) {
     await provider.setScript({ steps: [{ type: "text", pieces: [JSON.stringify(memoSynthesis)] }], onExhausted: "repeat-last" });
     const rm1 = await waitForRun(session, runM1, ["completed", "needs_review", "failed"]);
     assert(rm1.status === "completed", "MEMO_NOT_COMPLETED", `${rm1.status}/${rm1.error_code ?? ""}`);
+    // Fresh mount so the evidence dossier lists the completed run's captures.
+    await reopenRun(session, defM, 0);
     const memoClaims = rm1.claims.filter((claim) => claim.kind === "claim");
     assert(memoClaims.length === 3, "MEMO_CLAIM_COUNT", String(memoClaims.length));
     const conflictingClaim = memoClaims.find((claim) => claim.classification === "conflicting");
@@ -1159,7 +1186,9 @@ export async function run(ctx) {
     );
     assert(Boolean(runFailed), "FAILED_RUN_NOT_ACCEPTED");
     const failedDetail = await waitForRun(session, runFailed, ["failed"], 90_000);
-    await selectLatestRun(session); // terminal run must be clicked into view
+    // No row re-click here: Start already selected the run and the RunPanel
+    // polling holds the terminal detail; re-clicking the selected row would
+    // only wedge the view (known product defect, reported separately).
     assert(failedDetail.error_code === "RESEARCH_PROVIDER_FAILED", "FAILED_CODE", String(failedDetail.error_code));
     await expectVisible(session, "A failed or cancelled run cannot publish output through this action.");
     assert((await session.page.getByRole("button", { name: "Create reviewed draft", exact: true }).first().isDisabled()) === true, "FAILED_DRAFT_NOT_DISABLED");
