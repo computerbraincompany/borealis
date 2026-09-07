@@ -31,6 +31,15 @@
       "package": "/tmp/borealis-v1-final-package-lifecycle.log",
       "native": "/tmp/borealis-v1-final-packaged-native-lifecycle.log",
       "entitlements": "/tmp/borealis-v1-final-entitlements-lifecycle.log"
+    },
+    "host_harness_followup": {
+      "log": "/tmp/borealis-v1-entitlement-duration-local.log",
+      "passed": true,
+      "runtime_package_unchanged": true,
+      "retained_pair_ms": 2987,
+      "without_jit_ms": 2206,
+      "without_library_validation_ms": 1891,
+      "negative_internal_timeouts_rejected": true
     }
   },
   "browser": {
@@ -304,10 +313,9 @@
   },
   "native_ui": {
     "status": "running",
-    "passed_checkpoints": 0,
     "pending_run": "/tmp/borealis-v1-native-final-3",
     "package_asar_sha256": "77cc92964d4882213f36093644a2b7ae9eed79ab8909282abdd73da983633605",
-    "next_action": "Complete all A-F through native UI and active watched-folder quit on the same final package.",
+    "next_action": "Complete C-F through native UI and active watched-folder quit on the same final package.",
     "intermediate_evidence": "/tmp/borealis-v1-native-final-evidence-2/summary.json",
     "intermediate_passed_journeys": [
       "A",
@@ -315,12 +323,23 @@
       "C"
     ],
     "intermediate_cleanup": "Normal Cmd+Q; children/process/profile/workspace-lock cleanup clean. This intermediate package does not certify final acceptance.",
-    "bootstrap_passed": true
+    "bootstrap_passed": true,
+    "passed_journeys": [
+      "A",
+      "B"
+    ]
   },
   "harness_tests": {
     "protocol_fixture_checks": 82,
     "native_driver_regressions": 8,
-    "skips": 0
+    "skips": 0,
+    "packaged_smoke_regressions": 5,
+    "desktop_combined_tests": 34,
+    "ci_server_focused_tests": 70,
+    "automation_timezone_tests": {
+      "UTC": 27,
+      "Europe/Berlin": 27
+    }
   },
   "documentation": {
     "markdown_files_reviewed": 130,
@@ -495,9 +514,11 @@
   },
   "initial_runtime_source_commit": "9fd294421b771864ee322dd2445d9d58df63fa14",
   "ci": {
-    "status": "fixes_awaiting_rerun",
-    "prior_run": 34139730952,
-    "linux_failure": "Electron SUID sandbox helper setup missing; CI now installs Xvfb and assigns the required helper ownership/mode without disabling the sandbox.",
-    "macos_failure": "Negative library-validation entitlement result differed on macos-15; content-free driver diagnostics added and strict positive/negative requirements retained."
+    "status": "followup_fixes_awaiting_rerun",
+    "current_run": 34141950027,
+    "current_source_commit": "658468e4e325ce24b712da9306614480cfde7b2a",
+    "diagnostic_run": 34141714484,
+    "linux_setup": "Electron sandbox/Xvfb setup and native utility smoke passed. Fixed browser-timezone test assumption and test-only budgets for four native storage/CLI cases; awaited two knowledge assertions.",
+    "macos": "No-library-validation variant genuinely passed on hosted macos-15; strict matrix refuses acceptance. Added exact main/four-helper signatures and content-free host-policy diagnostics; security requirements unchanged."
   }
 }

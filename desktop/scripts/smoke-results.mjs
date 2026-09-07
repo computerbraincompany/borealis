@@ -3,9 +3,37 @@ export const SMOKE_SUCCESS_MARKER = "BOREALIS_PACKAGED_NATIVE_SMOKE_OK";
 export const SMOKE_FAILURE_MARKER = "BOREALIS_PACKAGED_NATIVE_SMOKE_FAILED";
 export const DRIVER_SUCCESS = "Packaged Electron native smoke passed.\n";
 export const DRIVER_FAILURE = "Packaged Electron native smoke failed.\n";
+export const RETAINED_ENTITLEMENTS = Object.freeze([
+  "com.apple.security.cs.allow-jit",
+  "com.apple.security.cs.disable-library-validation",
+]);
 // main.ts reports its own 30s deadline with the generic failure marker. The
 // host must exclude that outcome without changing the packaged smoke protocol.
 const NATIVE_SMOKE_INTERNAL_TIMEOUT_MS = 30_000;
+
+export function summarizeCodeSignature(metadata, entitlements) {
+  const flagMatch = /^CodeDirectory .*\bflags=0x([0-9a-f]+)\(/im.exec(metadata);
+  const flags = flagMatch ? Number.parseInt(flagMatch[1], 16) : 0;
+  const dictionary =
+    Boolean(entitlements) &&
+    typeof entitlements === "object" &&
+    !Array.isArray(entitlements);
+  const keys = dictionary ? Object.keys(entitlements) : [];
+  return {
+    runtime: (flags & 0x10000) !== 0,
+    explicit_library_validation: (flags & 0x2000) !== 0,
+    valid_entitlements:
+      dictionary &&
+      keys.every(
+        (key) =>
+          RETAINED_ENTITLEMENTS.includes(key) && entitlements[key] === true,
+      ),
+    entitlement_count: keys.length,
+    allow_jit: dictionary && entitlements[RETAINED_ENTITLEMENTS[0]] === true,
+    disable_library_validation:
+      dictionary && entitlements[RETAINED_ENTITLEMENTS[1]] === true,
+  };
+}
 
 function bytes(value) {
   return Buffer.isBuffer(value) ? value : Buffer.from(value ?? "", "utf8");

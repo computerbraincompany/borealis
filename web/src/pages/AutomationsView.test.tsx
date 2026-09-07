@@ -737,9 +737,13 @@ describe("AutomationsView", () => {
       fireEvent.change(screen.getByLabelText("Draft instruction"), { target: { value: "Sum it up." } });
       fireEvent.change(screen.getByLabelText("Refresh mode for ledger.csv"), { target: { value: "knowledge" } });
       fireEvent.change(screen.getByLabelText("Knowledge connection for ledger.csv"), { target: { value: "know-1" } });
+      // A new recipe defaults to the browser's zone, independently of the
+      // existing recipe fixture. Select the zone this submitted body verifies.
+      expect(screen.getByLabelText("Time zone")).toHaveValue(Intl.DateTimeFormat().resolvedOptions().timeZone);
+      fireEvent.change(screen.getByLabelText("Time zone"), { target: { value: "Europe/Berlin" } });
 
       const createButton = screen.getByRole("button", { name: "Create brief" });
-      expect(createButton).toBeEnabled();
+      await waitFor(() => expect(createButton).toBeEnabled());
       fireEvent.click(createButton);
       await waitFor(() => expect(apiMocks.briefsCreate).toHaveBeenCalledTimes(1));
 

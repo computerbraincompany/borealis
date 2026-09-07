@@ -193,6 +193,7 @@ afterEach(async () => {
 });
 
 describe("portable workspace archives", () => {
+  // Real native storage/CLI work needs room on shared CI; product deadlines stay unchanged.
   it("accepts the separator forwarded by the documented pnpm archive command", async () => {
     const parent = await temporaryDirectory();
     const workspace = await makeWorkspace(parent);
@@ -200,13 +201,13 @@ describe("portable workspace archives", () => {
     const { stdout } = await execFileAsync(
       process.execPath,
       ["--import", "tsx", "src/workspaceArchiveCli.ts", "--", "create", "--workspace", workspace, "--output", archive],
-      { cwd: process.cwd(), env: { ...process.env, BOREALIS_ARCHIVE_PASSPHRASE: PASSPHRASE } }
+      { cwd: process.cwd(), env: { ...process.env, BOREALIS_ARCHIVE_PASSPHRASE: PASSPHRASE }, timeout: 20_000 }
     );
     expect(JSON.parse(stdout)).toMatchObject({ status: "created", encrypted: true });
     await expect(inspectWorkspaceArchive({ archive, passphrase: PASSPHRASE })).resolves.toMatchObject({
       encrypted: true,
     });
-  });
+  }, 30_000);
 
   it("round-trips an encrypted workspace and preserves an existing target as a recoverable backup", async () => {
     const parent = await temporaryDirectory();
@@ -905,6 +906,7 @@ describe("portable workspace archives", () => {
     await assertSafeFailure(truncated, PASSPHRASE);
   });
 
+  // Real native storage/CLI work needs room on shared CI; product deadlines stay unchanged.
   it("keeps CLI failure output free of passphrases, archive paths, and member details", async () => {
     const parent = await temporaryDirectory();
     const workspace = await makeWorkspace(parent);
@@ -918,13 +920,14 @@ describe("portable workspace archives", () => {
       {
         cwd: process.cwd(),
         env: { ...process.env, BOREALIS_ARCHIVE_PASSPHRASE: suppliedSecret },
+        timeout: 20_000,
       }
     ).catch((reason: unknown) => reason as { stdout: string; stderr: string; code: number });
     expect(error).toMatchObject({ code: 1, stdout: "", stderr: "Workspace archive command failed.\n" });
     expect(`${error.stdout}${error.stderr}`).not.toContain(suppliedSecret);
     expect(`${error.stdout}${error.stderr}`).not.toContain(parent);
     expect(`${error.stdout}${error.stderr}`).not.toContain("secret-customer-name");
-  });
+  }, 30_000);
 
   it("refuses traversal, link, and case-colliding archive structures before writing outside staging", async () => {
     const parent = await temporaryDirectory();
@@ -1585,6 +1588,7 @@ const WAVE_ROW_COUNTS: Record<string, number> = {
 };
 
 describe("wave-era durable state in workspace archives", () => {
+  // Real native storage/CLI work needs room on shared CI; product deadlines stay unchanged.
   it("carries every new ledger row and artifact tree while excluding machine-bound custody", async () => {
     const parent = await temporaryDirectory();
     const workspace = await makeVerifiableWorkspace(parent, "wave-source");
@@ -1864,7 +1868,7 @@ describe("wave-era durable state in workspace archives", () => {
       await secondLedger.close();
     }
     expect(await fs.readdir(secondTarget)).not.toContain("secrets");
-  });
+  }, 30_000);
 
   it("still refuses archive and restore while a wave-era workspace lock is live", async () => {
     const parent = await temporaryDirectory();

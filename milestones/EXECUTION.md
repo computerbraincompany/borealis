@@ -5,12 +5,12 @@
 [acceptance contract](../docs/END_TO_END_ACCEPTANCE.md), not a signed public release.
 Runtime closure fixes are committed and pushed in `9fd2944` and `ec63c5e`.
 The final local repository, desktop, package, browser, storage, live-model and
-process-lifecycle gates pass. Hosted CI is being repaired: Linux needs Electron
-sandbox/Xvfb setup, and macOS needs diagnosis of a differing negative entitlement
-result; neither security gate is waived. The lifecycle audit found and repaired three real shutdown defects:
+process-lifecycle gates pass. Hosted CI is running after Linux Electron
+sandbox/Xvfb setup fixes and stricter content-free entitlement diagnostics;
+neither security gate is waived. The lifecycle audit found and repaired three real shutdown defects:
 late-idle HTTP sockets, unjoined knowledge cancellation finalizers, and SDK abort
 errors incorrectly failing resumable brief narration. Keychain approval has cleared and final native acceptance is running on the
-rebuilt package; completion of all A–F checkpoints is still pending. The superseded package's native A–C pass is retained only as
+rebuilt package; journeys A–B passed and C–F is still pending. The superseded package's native A–C pass is retained only as
 intermediate evidence, not final acceptance.
 
 ## Implementation status
@@ -38,8 +38,8 @@ provider payloads or user data belong in this ledger.
 | Desktop verify and GUI renderer | PASS | `/tmp/borealis-v1-final-desktop-verify-lifecycle.log`: tests, native utility-process loads, GUI PNG/PDF smoke; zero network hits and both unsafe requests blocked. |
 | Fresh unsigned package | PASS | `/tmp/borealis-v1-final-package-lifecycle.log`, 5/5 tasks; `/tmp/borealis-v1-final-packaged-native-lifecycle.log` and `/tmp/borealis-v1-final-entitlements-lifecycle.log` pass, including both negative entitlement removals. Final ASAR SHA-256 `77cc92964d4882213f36093644a2b7ae9eed79ab8909282abdd73da983633605`. |
 | Final browser A–F | PASS | 15:43:53–15:47:27 UTC, `/tmp/borealis-v1-ec63-browser-final/summary.json`; all six journeys pass, no skipped checks, clean workspace/lock/process cleanup. |
-| Hosted CI | FIXES AWAIT RERUN | Run `34139730952`: Linux Electron SUID sandbox setup failure; macOS negative library-validation entitlement check differed from the passing local matrix. CI now supplies Xvfb and the required sandbox helper permissions; structured content-free diagnostics retain strict entitlement checks. |
-| Native packaged A–F | IN PROGRESS | Keychain approval cleared; normal hardened startup and actual renderer bootstrap passed in `/tmp/borealis-v1-native-final-3`. A–F is running through native UI. [Native driver contract](../scripts/e2e/NATIVE_DESKTOP.md); the complete reviewed harness also requires actual scheduled folder refresh plus in-flight embedding before Cmd+Q, the same refresh cancelled, and process/lock cleanup. No final native pass claimed. |
+| Hosted CI | FOLLOW-UP FIXES AWAIT RERUN | Run `34141950027`: Electron sandbox/Xvfb and native utility smoke now pass. Fixed a browser-timezone test assumption, four disk/CLI test deadlines and two unawaited assertions. Focused server70, web27 under UTC and Berlin, desktop34 pass. macOS genuinely runs without the removed library-validation entitlement; added exact main/helper signature and host-policy diagnostics, retaining strict failure. |
+| Native packaged A–F | IN PROGRESS | Keychain approval cleared; normal hardened startup and actual renderer bootstrap passed in `/tmp/borealis-v1-native-final-3`. A passed actual stdio/OAuth/custody, tool execution and revocation. B passed parameterized June/May analysis, independent numeric comparison and native CSV/JSON exports; C–F is running through native UI. [Native driver contract](../scripts/e2e/NATIVE_DESKTOP.md); the complete reviewed harness also requires actual scheduled folder refresh plus in-flight embedding before Cmd+Q, the same refresh cancelled, and process/lock cleanup. No complete native acceptance pass claimed. |
 | Browser C including historical report | PASS | 14:20:41–14:21:04 UTC, `/tmp/borealis-v1-c-complete-evidence/summary.json`; actual chart copied from chat, legacy UI preview/download/copy denial, all exports. No skipped checks; clean lock/process cleanup. |
 | Protocol fixture self-test | PASS | 82 checks, including exact chart UUID echo and missing/duplicate refusal. |
 | Populated upgrade, managed migrations and offline archive | PASS | 15:47:16–15:47:23 UTC, `/tmp/borealis-v1-ec63-storage-final/storage-summary.json`; populated v13→v28, 36 product tables, both live managed embedding variants, encrypted archive create/inspect/restore/verify/live-lock refusal, exact artifact preservation and reconnect/reselect states. |

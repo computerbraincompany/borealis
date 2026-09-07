@@ -246,7 +246,8 @@ The command makes copy-on-write disposable app bundles, ad-hoc signs each with
 the hardened runtime, inspects its entitlements, requires the retained pair to
 pass the real packaged native/OCR smoke, and requires each retained-key removal
 to fail. The matrix emits content-free process status, signal and output-shape
-diagnostics; setup errors, timeouts, output overflow and cleanup failures cannot
+diagnostics plus parsed host policy and exact main/helper signature checks;
+setup errors, timeouts, output overflow and cleanup failures cannot
 count as successful negative checks. Repeat the same inspection for a Developer
 ID release candidate before distribution.
 

@@ -7,6 +7,8 @@ import {
   nativeSmokePassed,
   summarizeNativeSmoke,
   summarizeSmokeDriver,
+  summarizeCodeSignature,
+  RETAINED_ENTITLEMENTS,
 } from "./smoke-results.mjs";
 
 const driver = (passed) => ({
@@ -14,6 +16,51 @@ const driver = (passed) => ({
   signal: null,
   stdout: passed ? DRIVER_SUCCESS : "",
   stderr: passed ? "" : DRIVER_FAILURE,
+});
+
+test("signature inspection requires real runtime flags and exact boolean entitlements", () => {
+  const pair = Object.fromEntries(
+    RETAINED_ENTITLEMENTS.map((key) => [key, true]),
+  );
+  const metadata =
+    "CodeDirectory v=20400 size=314 flags=0x10002(adhoc,runtime) hashes=3+3\n";
+  assert.deepEqual(summarizeCodeSignature(metadata, pair), {
+    runtime: true,
+    explicit_library_validation: false,
+    valid_entitlements: true,
+    entitlement_count: 2,
+    allow_jit: true,
+    disable_library_validation: true,
+  });
+  assert.equal(
+    summarizeCodeSignature("Executable=/runtime/flags=0x10000(runtime)", pair)
+      .runtime,
+    false,
+  );
+  assert.equal(
+    summarizeCodeSignature(metadata.replace("10002", "12002"), pair)
+      .explicit_library_validation,
+    true,
+  );
+  for (const invalid of [
+    null,
+    [],
+    { unexpected: true },
+    { [RETAINED_ENTITLEMENTS[0]]: "true" },
+    { [RETAINED_ENTITLEMENTS[0]]: false },
+  ]) {
+    assert.equal(
+      summarizeCodeSignature(metadata, invalid).valid_entitlements,
+      false,
+    );
+  }
+  const summary = summarizeCodeSignature(metadata, {
+    "private-unexpected-key": true,
+  });
+  assert.equal(
+    JSON.stringify(summary).includes("private-unexpected-key"),
+    false,
+  );
 });
 const native = (changes = {}) => ({
   ...summarizeNativeSmoke({

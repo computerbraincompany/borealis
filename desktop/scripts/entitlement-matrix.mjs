@@ -5,6 +5,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   expectedEntitlementResult,
+  RETAINED_ENTITLEMENTS,
+  summarizeCodeSignature,
   summarizeSmokeDriver,
 } from "./smoke-results.mjs";
 
@@ -31,10 +33,7 @@ const packagedSmoke = path.join(
   desktopDirectory,
   "scripts/packaged-native-smoke.mjs",
 );
-const retainedKeys = [
-  "com.apple.security.cs.allow-jit",
-  "com.apple.security.cs.disable-library-validation",
-];
+const retainedKeys = RETAINED_ENTITLEMENTS;
 const matrix = [
   { name: "retained pair", remove: null, shouldPass: true },
   { name: "without allow-jit", remove: retainedKeys[0], shouldPass: false },
@@ -49,6 +48,33 @@ const temporaryDirectory = await mkdtemp(
   path.join(os.tmpdir(), "borealis-entitlement-matrix."),
 );
 try {
+  const sip = spawnSync("/usr/bin/csrutil", ["status"], {
+    encoding: "utf8",
+    timeout: 5_000,
+  });
+  const libraryPolicy = spawnSync(
+    "/usr/bin/defaults",
+    [
+      "read",
+      "/Library/Preferences/com.apple.security.libraryvalidation",
+      "DisableLibraryValidation",
+    ],
+    { encoding: "utf8", timeout: 5_000 },
+  );
+  process.stdout.write(
+    `ENTITLEMENT_MATRIX_HOST ${JSON.stringify({
+      sip:
+        sip.status === 0
+          ? (/System Integrity Protection status: (enabled|disabled)\./.exec(
+              sip.stdout,
+            )?.[1] ?? "custom-or-unknown")
+          : "unavailable",
+      library_validation_disabled_preference:
+        libraryPolicy.status === 0 && /^[01]$/.test(libraryPolicy.stdout.trim())
+          ? libraryPolicy.stdout.trim() === "1"
+          : null,
+    })}\n`,
+  );
   for (const filename of [sourceEntitlements, sourceInheritedEntitlements]) {
     const parsed = JSON.parse(
       run(
@@ -110,18 +136,54 @@ try {
       ],
       "ad-hoc hardened-runtime signing",
     );
-    const inspection = run(
-      "/usr/bin/codesign",
-      ["-d", "--verbose=4", "--entitlements", "-", appCopy],
-      "codesign inspection",
-      true,
-    );
-    if (!inspection.includes("runtime"))
-      throw new Error(`runtime flag missing for ${entry.name}`);
-    for (const key of retainedKeys) {
-      const expected = key !== entry.remove;
-      if (inspection.includes(key) !== expected)
-        throw new Error(`unexpected ${key} state for ${entry.name}`);
+    for (const [component, componentPath] of [
+      ["main", appCopy],
+      ...[
+        "Borealis Helper",
+        "Borealis Helper (GPU)",
+        "Borealis Helper (Plugin)",
+        "Borealis Helper (Renderer)",
+      ].map((name) => [
+        name,
+        path.join(appCopy, "Contents", "Frameworks", `${name}.app`),
+      ]),
+    ]) {
+      const inspection = run(
+        "/usr/bin/codesign",
+        ["-d", "--verbose=4", "--entitlements", "-", "--xml", componentPath],
+        "codesign inspection",
+        true,
+      );
+      const xml = /<\?xml\b[\s\S]*?<\/plist>/.exec(inspection)?.[0];
+      if (!xml)
+        throw new Error(
+          `signed entitlement dictionary missing for ${entry.name}`,
+        );
+      const parsed = spawnSync(
+        "/usr/bin/plutil",
+        ["-convert", "json", "-o", "-", "-"],
+        { input: xml, encoding: "utf8", timeout: 5_000 },
+      );
+      if (parsed.status !== 0 || parsed.signal !== null || parsed.error)
+        throw new Error("signed entitlement dictionary parsing failed");
+      const state = summarizeCodeSignature(
+        inspection,
+        JSON.parse(parsed.stdout),
+      );
+      process.stdout.write(
+        `ENTITLEMENT_MATRIX_SIGNATURE ${JSON.stringify({ variant: entry.name, component, ...state })}\n`,
+      );
+      if (
+        !state.runtime ||
+        !state.valid_entitlements ||
+        state.entitlement_count !== (entry.remove ? 1 : 2) ||
+        state.allow_jit !== (entry.remove !== retainedKeys[0]) ||
+        state.disable_library_validation !== (entry.remove !== retainedKeys[1])
+      ) {
+        throw new Error(
+          `unexpected signed entitlement/runtime state for ${entry.name} ${component}`,
+        );
+      }
     }
     const resultFile = path.join(
       temporaryDirectory,

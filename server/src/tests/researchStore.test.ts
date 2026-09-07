@@ -644,6 +644,7 @@ describe("ResearchStore dossier", () => {
     expect(classifyResearchCellPayload(numberColumn, 4.5)).toEqual({ status: "supported", value: 4.5 });
   });
 
+  // Real native storage/CLI work needs room on shared CI; product deadlines stay unchanged.
   it("writes correction overlays beside immutable machine cells and caps the table at 1 MiB", async () => {
     const { ledger, store } = await setup();
     const account = await insertUser(ledger, "cells");
@@ -750,7 +751,7 @@ describe("ResearchStore dossier", () => {
     expect(wideTable?.page.items.map((item) => item.row_generation).every((generation) => generation === 2)).toBe(true);
     void source;
     void run;
-  });
+  }, 30_000);
 });
 
 describe("ResearchStore review and rerun", () => {

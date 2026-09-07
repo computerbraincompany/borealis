@@ -838,7 +838,7 @@ describe("knowledge store", () => {
     expect(item?.stale).toBe(true);
     expect(item?.last_refreshed_at).not.toBeNull();
     // The source and its last ready content are retained by the scan alone.
-    expect(ledger.get("SELECT 1 FROM sources WHERE id=?", [sourceId])).resolves.toMatchObject({ "1": 1n });
+    await expect(ledger.get("SELECT 1 FROM sources WHERE id=?", [sourceId])).resolves.toMatchObject({ "1": 1n });
     await store.finishRefresh(account, begun.refresh.id, "partial", null);
     // A `missing_upstream` item may be refreshed again — it can reappear.
     const revivalRun = await store.beginRefresh(account, {
@@ -855,7 +855,7 @@ describe("knowledge store", () => {
     expect(removed?.lifecycle).toBe("removed");
     expect(removed?.stale).toBe(false);
     expect(await ledger.get("SELECT 1 FROM library_sources WHERE source_id=?", [sourceId])).toBeUndefined();
-    expect(ledger.get("SELECT 1 FROM sources WHERE id=?", [sourceId])).resolves.toMatchObject({ "1": 1n });
+    await expect(ledger.get("SELECT 1 FROM sources WHERE id=?", [sourceId])).resolves.toMatchObject({ "1": 1n });
     await expect(store.removeItem(account, itemId)).resolves.toMatchObject({ lifecycle: "removed" });
     // A `removed` item cannot be refreshed; re-importing is explicit.
     await expect(
