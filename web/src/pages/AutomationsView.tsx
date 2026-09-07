@@ -18,6 +18,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { BriefRecipeSection } from "@/components/briefs/BriefRecipeSection";
 import { useEgressConsentGate } from "@/hooks/useEgressConsentGate";
 
 const OUTCOME_STYLING: Record<AutomationRun["outcome"], string> = {
@@ -573,6 +574,8 @@ export function AutomationsView() {
             )}
           </div>
         )}
+
+        <BriefRecipeSection />
       </div>
 
       {/* create dialog */}

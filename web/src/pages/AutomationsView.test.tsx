@@ -8,6 +8,22 @@ const apiMocks = vi.hoisted(() => ({
   runs: vi.fn(),
   connectorsList: vi.fn(),
   chatsList: vi.fn(),
+  briefsList: vi.fn(),
+  briefsGet: vi.fn(),
+  briefsCreate: vi.fn(),
+  briefsUpdate: vi.fn(),
+  briefsPause: vi.fn(),
+  briefsResume: vi.fn(),
+  briefsSetNotifications: vi.fn(),
+  briefsRemove: vi.fn(),
+  briefsRun: vi.fn(),
+  briefsListRuns: vi.fn(),
+  briefsGetRun: vi.fn(),
+  briefsCancelRun: vi.fn(),
+  analysesList: vi.fn(),
+  analysesGet: vi.fn(),
+  sourcesList: vi.fn(),
+  knowledgeList: vi.fn(),
 }));
 
 vi.mock("@/lib/api", () => ({
@@ -23,6 +39,27 @@ vi.mock("@/lib/api", () => ({
   },
   connectorsApi: { list: apiMocks.connectorsList },
   chatsApi: { list: apiMocks.chatsList },
+  briefScheduleLabel: (schedule: { kind: string }) => `schedule ${schedule.kind}`,
+  isBriefActiveRunStage: (stage: string) =>
+    ["queued", "refreshing", "waiting_ready", "analyzing", "drafting", "publishing"].includes(stage),
+  BRIEF_PIPELINE_STAGES: ["queued", "refreshing", "waiting_ready", "analyzing", "drafting", "awaiting_review"],
+  briefsApi: {
+    list: apiMocks.briefsList,
+    get: apiMocks.briefsGet,
+    create: apiMocks.briefsCreate,
+    update: apiMocks.briefsUpdate,
+    pause: apiMocks.briefsPause,
+    resume: apiMocks.briefsResume,
+    setNotifications: apiMocks.briefsSetNotifications,
+    remove: apiMocks.briefsRemove,
+    run: apiMocks.briefsRun,
+    listRuns: apiMocks.briefsListRuns,
+    getRun: apiMocks.briefsGetRun,
+    cancelRun: apiMocks.briefsCancelRun,
+  },
+  analysesApi: { list: apiMocks.analysesList, get: apiMocks.analysesGet },
+  sourcesApi: { list: apiMocks.sourcesList },
+  knowledgeApi: { list: apiMocks.knowledgeList },
 }));
 
 vi.mock("@/components/ui/dialog", () => ({
@@ -67,6 +104,11 @@ describe("AutomationsView", () => {
     apiMocks.list.mockResolvedValue({ items: [automation], next_cursor: null });
     apiMocks.connectorsList.mockResolvedValue({ items: [{ id: "conn-1", name: "Ledger feed" }], next_cursor: null });
     apiMocks.chatsList.mockResolvedValue({ items: [{ id: "chat-1", title: "Digest chat" }], next_cursor: null });
+    apiMocks.briefsList.mockResolvedValue({ items: [], next_cursor: null });
+    apiMocks.briefsListRuns.mockResolvedValue({ items: [], next_cursor: null });
+    apiMocks.analysesList.mockResolvedValue({ items: [], next_cursor: null });
+    apiMocks.sourcesList.mockResolvedValue({ items: [], next_cursor: null });
+    apiMocks.knowledgeList.mockResolvedValue({ items: [], next_cursor: null });
     apiMocks.runs.mockResolvedValue([
       {
         id: 1,
