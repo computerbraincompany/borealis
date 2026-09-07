@@ -59,7 +59,7 @@ required contract must still be satisfied.
 | Upgrade and stopped archive/restore | NOT RUN | — | All new durable objects |
 | Root `pnpm verify` | NOT RUN | — | — |
 | Desktop verify | NOT RUN | — | — |
-| Fresh unsigned packaging | NOT RUN | — | — |
+| Fresh unsigned packaging | PASS (trial @ cd622d1) | 5/5 tasks; DMG 313MB + ZIP 314MB | Early trial caught+fixed a REAL defect cd622d1: copy-runtime could not resolve @modelcontextprotocol/sdk version (exports map routes ./package.json to the versionless dist/cjs marker; resolver now reads the package root first). package:native:smoke PASS (fuses/ASAR + Electron-ABI in Node + utility process). package:entitlements:smoke PASS (retained pair; both negative removals fail as required). Re-run required on the FINAL tree before DONE. |
 | Packaged native and entitlement smokes | NOT RUN | — | — |
 | Final browser product E2E | NOT RUN | — | New script required |
 | Final packaged desktop product E2E | NOT RUN | — | New script required |
