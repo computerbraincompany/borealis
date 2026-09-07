@@ -55,7 +55,12 @@ const FIXED_CREATED_SECONDS = 1_754_400_000;
 
 const chatModel = process.env.E2E_OPENAI_CHAT_MODEL || "fixture-chat-v1";
 const embedModel = process.env.E2E_OPENAI_EMBED_MODEL || "fixture-embed-v1";
-const embedDim = clampInt(process.env.E2E_OPENAI_EMBED_DIM, 1, 256, 64);
+// The packaged-desktop journey target keeps the app's default embedding
+// identity (`nomic-embed` → text-embedding-nomic-embed-text-v1.5 @ 768),
+// which Settings can never change, so the fixture must answer at that
+// dimension. The ceiling follows the product's 16,384 embedding-dimension
+// bound; the default stays 64, so the browser-mode runs are unchanged.
+const embedDim = clampInt(process.env.E2E_OPENAI_EMBED_DIM, 1, 16_384, 64);
 let onExhausted = process.env.E2E_OPENAI_ON_EXHAUSTED === "fail" ? "fail" : "repeat-last";
 
 function clampInt(raw, min, max, fallback) {
@@ -320,7 +325,7 @@ const tracked = createTrackedServer(async (req, res) => {
         return;
       }
       const model = typeof parsed.model === "string" && parsed.model ? parsed.model : embedModel;
-      const dim = clampInt(parsed.dimensions, 1, 256, embedDim);
+      const dim = clampInt(parsed.dimensions, 1, 16_384, embedDim);
       // Float arrays are the default; base64 is honoured only when requested.
       const asBase64 = parsed.encoding_format === "base64";
       counters.embeddings += 1;

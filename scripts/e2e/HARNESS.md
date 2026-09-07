@@ -4,9 +4,10 @@ The common harness for [docs/END_TO_END_ACCEPTANCE.md](../../docs/END_TO_END_ACC
 It builds the actual production web/backend, boots the real server against
 the committed scripted fixtures under `scripts/e2e/fixtures/`, drives real
 Chromium through the product UI, runs journeys sequentially, and cleans up.
-Journeys A–F arrive with their feature waves; this stage ships the lifecycle
-skeleton plus the `smoke` self-test, and A–F are loud NOT-IMPLEMENTED stubs —
-a green `--journey=all` run will only ever mean all six are real.
+Journeys A–F arrive with their feature waves: `B` is implemented (browser
+mode and packaged-desktop mode) and `A`/`C`/`D`/`E`/`F` remain loud
+NOT-IMPLEMENTED stubs — a green `--journey=all` run will only ever mean all
+six are real.
 
 Fixtures and their ready-line protocol are documented in
 [README.md](README.md).
@@ -14,10 +15,13 @@ Fixtures and their ready-line protocol are documented in
 ## Layout
 
 - `run-product.mjs` — `pnpm test:e2e:product` entry (server + fixtures + browser).
-- `run-product-desktop.mjs` — packaged-desktop entry (lifecycle skeleton).
-- `harness/` — `workspace`, `server`, `browser`, `providers`, `desktop`, `util`.
-- `journeys/` — `registry.mjs`, the six required stubs `A.mjs`…`F.mjs`, and
-  the implemented `smoke.mjs` self-test.
+- `run-product-desktop.mjs` — packaged-desktop entry (lifecycle default;
+  `--journey=B` runs journey B against the real unsigned app).
+- `harness/` — `workspace`, `server`, `browser`, `providers`, `desktop`
+  (lifecycle), `desktopApp` (journey target), `util`.
+- `journeys/` — `registry.mjs`, the six required modules `A.mjs`…`F.mjs`
+  (B implemented, the rest loud stubs), and the implemented `smoke.mjs`
+  self-test.
 
 ## How to run
 
