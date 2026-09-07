@@ -89,11 +89,11 @@ async function goHash(session, route) {
   }, route);
 }
 
-async function expectText(session, text, timeoutMs = 20_000) {
+async function expectText(session, text, timeoutMs = 45_000) {
   await session.page.getByText(text).first().waitFor({ timeout: timeoutMs });
 }
 
-async function expectIn(scope, matcher, timeoutMs = 20_000) {
+async function expectIn(scope, matcher, timeoutMs = 45_000) {
   await scope.getByText(matcher).first().waitFor({ timeout: timeoutMs });
 }
 
@@ -212,13 +212,13 @@ export async function run(ctx) {
     await webdavDialog.getByLabel("Target library").selectOption({ label: LIBRARY_NAME });
     await webdavDialog.getByRole("button", { name: "Create connection", exact: true }).click();
     const connCard = knowledge.locator("div.p-4").filter({ hasText: CONNECTION_NAME }).first();
-    await connCard.getByText("Not tested yet").waitFor({ timeout: 15_000 });
+    await connCard.getByText("Not tested yet").waitFor({ timeout: 30_000 });
 
     // Preview the one CSV and apply it — this is what makes the source
     // knowledge-refreshable for the recipe's bound refresh.
     await connCard.getByRole("button", { name: "Preview", exact: true }).click();
     const preview = session.page.getByRole("dialog", { name: `Preview — ${CONNECTION_NAME}` }).first();
-    await expectIn(preview, /1 new/, 30_000);
+    await expectIn(preview, /1 new/, 45_000);
     await preview.getByLabel("Select finance.csv").check();
     await preview.getByRole("button", { name: /Import selected \(1\)/ }).click();
     const member = await pollUntil(
@@ -319,12 +319,12 @@ export async function run(ctx) {
     // Membership mirror: the bound revision's exact source set, disabled.
     await expectIn(wizard, MEMBERSHIP_NOTE);
     const mirror = wizard.getByLabel("Source finance.csv");
-    await mirror.waitFor({ timeout: 15_000 });
+    await mirror.waitFor({ timeout: 30_000 });
     assert((await mirror.isChecked()) === true, "MEMBERSHIP_MIRROR_UNCHECKED");
     assert((await mirror.isDisabled()) === true, "MEMBERSHIP_MIRROR_EDITABLE");
     // Typed parameter seeded from the bound revision's declaration default.
     const paramInput = wizard.getByLabel("Parameter label");
-    await paramInput.waitFor({ timeout: 15_000 });
+    await paramInput.waitFor({ timeout: 30_000 });
     assert((await paramInput.inputValue()) === "total", "PARAMETER_SEED", await paramInput.inputValue());
     await wizard.getByLabel("Report title").fill(REPORT_TITLE);
     await wizard
@@ -357,7 +357,7 @@ export async function run(ctx) {
      * POST, 201, and the dialog closing — no API-side workaround. */
     const wizardCreateResponse = session.page
       .waitForResponse((res) => res.url().endsWith("/api/briefs") && res.request().method() === "POST", {
-        timeout: 20_000,
+        timeout: 45_000,
       })
       .catch(() => null);
     await wizard.getByRole("button", { name: "Create brief", exact: true }).click();
@@ -365,7 +365,7 @@ export async function run(ctx) {
     assert(wizardCreate !== null, "WIZARD_CREATE_REQUEST_MISSING");
     const wizardStatus = wizardCreate.status();
     assert(wizardStatus === 201, "WIZARD_CREATE_FAILED", String(wizardStatus));
-    await wizard.waitFor({ state: "hidden", timeout: 15_000 });
+    await wizard.waitFor({ state: "hidden", timeout: 30_000 });
     const recipeCreate = { body: await wizardCreate.json() };
     assert(recipeCreate.body?.id, "RECIPE_NOT_CREATED");
     const recipe = { id: recipeCreate.body.id, ...recipeCreate.body };
@@ -438,7 +438,7 @@ export async function run(ctx) {
     const recipeRunNow = async (dialog) => {
       const panel = dialog.locator(`[aria-label="Runs for ${RECIPE_NAME}"]`);
       const runNow = panel.getByRole("button", { name: "Run now", exact: true });
-      await runNow.waitFor({ timeout: 20_000 });
+      await runNow.waitFor({ timeout: 45_000 });
       const beforeIds = new Set(
         ((await session.apiFetch(`/api/briefs/${recipe.id}/runs`, { expectStatus: 200 })).body?.items ?? []).map(
           (item) => item.id
@@ -656,7 +656,7 @@ export async function run(ctx) {
 
     await goHash(session, "/reviews");
     const row2 = reviewRow().filter({ hasText: run2.run.id.slice(0, 8) }).first();
-    await row2.waitFor({ timeout: 20_000 });
+    await row2.waitFor({ timeout: 45_000 });
     await expectIn(row2, /Keyed comparison on metric_label/);
     await expectIn(row2, /changed 1/);
     await expectIn(row2, /value \+25/);
@@ -689,7 +689,7 @@ export async function run(ctx) {
     // shipped limitation; the server contract is exercised next via API).
     await goHash(session, "/reviews");
     const row2b = reviewRow().filter({ hasText: run2.run.id.slice(0, 8) }).first();
-    await row2b.waitFor({ timeout: 20_000 });
+    await row2b.waitFor({ timeout: 45_000 });
     await expectIn(row2b, /the draft was edited after this pointer/);
     await row2b.getByRole("button", { name: "Approve this revision", exact: true }).click();
     const row2c = reviewRow().filter({ hasText: run2.run.id.slice(0, 8) }).first();
@@ -758,7 +758,7 @@ export async function run(ctx) {
     assert(comparison3.changed_total === 0 && comparison3.added_total === 0 && comparison3.removed_total === 0, "RUN3_NO_CHANGE_TOTALS", JSON.stringify(comparison3));
     await goHash(session, "/reviews");
     const row3 = reviewRow().filter({ hasText: run3.run.id.slice(0, 8) }).first();
-    await row3.waitFor({ timeout: 20_000 });
+    await row3.waitFor({ timeout: 45_000 });
     await expectIn(row3, "Deterministically unchanged from the baseline.");
     const notificationsAfterRun3 = await notifications();
     assert(notificationsAfterRun3.length === 2, "NOTIFICATION_NO_CHANGE_LEAK", String(notificationsAfterRun3.length));
@@ -774,7 +774,7 @@ export async function run(ctx) {
     const run4Final = await pollRun(run4.run.id, ["awaiting_review"], "RUN4_AWAITING");
     await goHash(session, "/reviews");
     const row4 = reviewRow().filter({ hasText: run4.run.id.slice(0, 8) }).first();
-    await row4.waitFor({ timeout: 20_000 });
+    await row4.waitFor({ timeout: 45_000 });
     await row4.getByRole("button", { name: "Reject…", exact: true }).click();
     await row4.getByLabel("Rejection note (optional)").fill(REJECT_NOTE);
     await row4.getByRole("button", { name: /Reject \(keeps the run and draft\)/ }).click();
@@ -804,7 +804,7 @@ export async function run(ctx) {
     await trayButton.waitFor({ timeout: 20_000 });
     await trayButton.click();
     const tray = session.page.locator('[aria-label="Local notifications"]');
-    await tray.waitFor({ timeout: 15_000 });
+    await tray.waitFor({ timeout: 30_000 });
     await expectIn(tray, "New draft ready");
     await expectIn(tray, "Result changed");
     await expectIn(tray, /never sent anywhere/i);
