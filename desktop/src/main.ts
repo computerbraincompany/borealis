@@ -56,8 +56,21 @@ const PACKAGED_NATIVE_SMOKE_TIMEOUT_MS = 30_000;
 const PACKAGED_NATIVE_SMOKE_SUCCESS = "BOREALIS_PACKAGED_NATIVE_SMOKE_OK";
 const packagedNativeSmoke =
   app.isPackaged && app.commandLine.hasSwitch(PACKAGED_NATIVE_SMOKE_SWITCH);
+// Packaged quit-contract smoke (headless desktop lifecycle gate). macOS gives
+// no headless channel into the NSApplication quit flow (signals are swallowed
+// by Chromium; unattended Apple Events need Automation consent), so the
+// packaged build accepts an explicit smoke switch that drives the very same
+// app.quit() → before-quit → DesktopApplication.shutdown() chain a user quit
+// takes and reports whether the backend acknowledged an orderly stop.
+const PACKAGED_SHUTDOWN_SMOKE_SWITCH = "borealis-packaged-shutdown-smoke";
+const PACKAGED_SHUTDOWN_SMOKE_SUCCESS = "BOREALIS_PACKAGED_SHUTDOWN_SMOKE_OK";
+const PACKAGED_SHUTDOWN_SMOKE_FAILED =
+  "BOREALIS_PACKAGED_SHUTDOWN_SMOKE_FAILED";
+const PACKAGED_SHUTDOWN_SMOKE_TIMEOUT_MS = 120_000;
+const packagedShutdownSmoke =
+  app.isPackaged && app.commandLine.hasSwitch(PACKAGED_SHUTDOWN_SMOKE_SWITCH);
 
-if (packagedNativeSmoke) process.noDeprecation = true;
+if (packagedNativeSmoke || packagedShutdownSmoke) process.noDeprecation = true;
 
 class BootstrapVault {
   #encrypted: Buffer | undefined;
@@ -165,6 +178,7 @@ class DesktopApplication {
   #window: BrowserWindow | undefined;
   #origin: string | undefined;
   #backendStopped = false;
+  #backendStoppedGracefully = false;
   #readySettled = false;
   #shutdownPromise: Promise<void> | undefined;
   #resolveBackendStopped: (() => void) | undefined;
@@ -229,13 +243,22 @@ class DesktopApplication {
       return;
     }
     this.#postToBackend({ type: "shutdown" });
-    const timeout = new Promise<void>((resolve) => {
+    const graceful = this.#backendStoppedPromise.then(
+      () => "graceful" as const,
+    );
+    const timeout = new Promise<"timeout">((resolve) => {
       setTimeout(() => {
         if (!this.#backendStopped) this.#backend?.kill();
-        resolve();
+        resolve("timeout");
       }, BACKEND_SHUTDOWN_TIMEOUT_MS);
     });
-    await Promise.race([this.#backendStoppedPromise, timeout]);
+    this.#backendStoppedGracefully =
+      (await Promise.race([graceful, timeout])) === "graceful";
+  }
+
+  /** True only when the last shutdown's backend stopped by its own ack. */
+  get backendStoppedGracefully(): boolean {
+    return this.#backendStoppedGracefully;
   }
 
   async #assertRuntime(): Promise<void> {
@@ -690,6 +713,66 @@ if (packagedNativeSmoke) {
       process.stderr.write("BOREALIS_PACKAGED_NATIVE_SMOKE_FAILED\n");
       app.exit(1);
     }
+  });
+} else if (packagedShutdownSmoke) {
+  const smokeT0 = Date.now();
+  const elapsed = () => ` elapsed=${Date.now() - smokeT0}ms`;
+  // Bounded, content-free failure discriminators (never raw errors).
+  const failSmoke = (reason: "START_FAILED" | "DEADLINE" | "NOT_GRACEFUL") => {
+    process.stderr.write(
+      `${PACKAGED_SHUTDOWN_SMOKE_FAILED}:${reason}${elapsed()}\n`,
+    );
+    app.exit(1);
+  };
+  app.on("before-quit", (event) => {
+    if (quitInProgress) return;
+    event.preventDefault();
+    quitInProgress = true;
+    process.stdout.write(`BOREALIS_PACKAGED_SHUTDOWN_SMOKE_QUIT${elapsed()}\n`);
+    const application = desktop;
+    const shutdown = application ? application.shutdown() : Promise.resolve();
+    void shutdown
+      .catch(() => {})
+      .then(() => {
+        process.stdout.write(
+          `BOREALIS_PACKAGED_SHUTDOWN_SMOKE_STOPPED${elapsed()}\n`,
+        );
+        if (application?.backendStoppedGracefully) {
+          process.stdout.write(
+            `${PACKAGED_SHUTDOWN_SMOKE_SUCCESS}${elapsed()}\n`,
+          );
+          app.exit(0);
+          return;
+        }
+        failSmoke("NOT_GRACEFUL");
+      });
+  });
+  const deadline = setTimeout(() => {
+    failSmoke("DEADLINE");
+  }, PACKAGED_SHUTDOWN_SMOKE_TIMEOUT_MS);
+  deadline.unref();
+  void app.whenReady().then(async () => {
+    process.stdout.write(
+      `BOREALIS_PACKAGED_SHUTDOWN_SMOKE_READY${elapsed()}\n`,
+    );
+    const paths = resolveDesktopPaths(
+      app.getPath("userData"),
+      app.getAppPath(),
+    );
+    const application = new DesktopApplication(paths);
+    desktop = application;
+    try {
+      await application.start();
+    } catch {
+      await application.shutdown().catch(() => {});
+      failSmoke("START_FAILED");
+      return;
+    }
+    process.stdout.write(
+      `BOREALIS_PACKAGED_SHUTDOWN_SMOKE_STARTED${elapsed()}\n`,
+    );
+    // Identical trigger to a user Cmd+Q: the real quit-event plumbing.
+    app.quit();
   });
 } else if (!app.requestSingleInstanceLock()) {
   app.quit();
