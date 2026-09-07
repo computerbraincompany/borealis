@@ -3365,3 +3365,324 @@ export async function streamAgentChat(
   }
   await consumeSseJson(res.body, onEvent);
 }
+
+// ------------------------------------------------------- reviewed briefs (M16)
+// Typed clients for the reviewed-brief recipes, run pipeline, review inbox, and
+// local notifications. All pages are endpoint-bound keyset (default 20, max 50);
+// the server owns calendar math, so the only schedule preview is the `GET
+// /api/briefs/:id` detail's `next_occurrences` — never recompute client-side.
+
+export type BriefScheduleKind = "daily" | "weekly" | "monthly";
+export type BriefRunStage =
+  | "queued"
+  | "refreshing"
+  | "waiting_ready"
+  | "analyzing"
+  | "drafting"
+  | "awaiting_review"
+  | "publishing"
+  | "failed"
+  | "cancelled"
+  | "skipped"
+  | "approved"
+  | "rejected";
+
+/** The 7 progress stages in execution order (terminal stages badge separately). */
+export const BRIEF_PIPELINE_STAGES: readonly BriefRunStage[] = Object.freeze([
+  "queued",
+  "refreshing",
+  "waiting_ready",
+  "analyzing",
+  "drafting",
+  "awaiting_review",
+]);
+
+export interface BriefCalendarSchedule {
+  kind: BriefScheduleKind;
+  weekday: number | null;
+  day_of_month: number | null;
+  hour: number;
+  minute: number;
+  time_zone: string;
+}
+
+/** Server-resolved civil occurrence: the recipe-zone wall time and its UTC instant. */
+export interface BriefOccurrencePreview {
+  occurrence_key: string;
+  civil: string;
+  utc_at: string;
+}
+
+export interface BriefRefreshBinding {
+  source_id: string;
+  kind: "connector" | "knowledge";
+  connector_id: string | null;
+  connection_id: string | null;
+}
+
+export interface BriefRecipe {
+  id: string;
+  kind: "reviewed_brief";
+  name: string;
+  revision: number;
+  state: "active" | "paused";
+  paused_reason: string | null;
+  notifications_enabled: boolean;
+  consecutive_failures: number;
+  analysis_id: string;
+  analysis_revision: number;
+  parameter_values: AnalysisParameterBinding[];
+  report_title: string;
+  report_instruction: string;
+  source_ids: string[];
+  refresh_bindings: BriefRefreshBinding[];
+  schedule: BriefCalendarSchedule;
+  next_occurrence_key: string;
+  next_run_at: string;
+  last_run_at: string | null;
+  created_at: string;
+  updated_at: string;
+  /** Detail reads only: the server's next three resolved civil + UTC instants. */
+  next_occurrences?: BriefOccurrencePreview[];
+}
+
+export interface BriefRecipeCreateBody {
+  name: string;
+  analysis_id: string;
+  parameter_values?: Record<string, AnalysisParameterValue>;
+  report_title: string;
+  report_instruction: string;
+  source_ids: string[];
+  refresh_bindings?: BriefRefreshBinding[];
+  schedule: BriefCalendarSchedule;
+}
+
+export interface BriefRecipeEditBody extends Partial<Omit<BriefRecipeCreateBody, "analysis_id">> {
+  expected_revision: number;
+  analysis_id?: string;
+}
+
+export interface BriefRunSummary {
+  id: string;
+  recipe_id: string;
+  trigger: "scheduled" | "manual";
+  operation_id: string | null;
+  occurrence_key: string;
+  recipe_revision: number;
+  stage: BriefRunStage;
+  stage_attempts: number;
+  cancel_requested: boolean;
+  deadline_at: string;
+  refresh_deadline_at: string | null;
+  coalesced_count: number;
+  missed_through_key: string | null;
+  analysis_run_id: string | null;
+  baseline_run_id: string | null;
+  analysis_succeeded: boolean;
+  document_id: string | null;
+  document_revision_id: string | null;
+  reviewed_revision_id: string | null;
+  publication_operation_id: string | null;
+  publication_error_code: string | null;
+  failure_code: string | null;
+  failure_reason: string | null;
+  created_at: string;
+  started_at: string | null;
+  stage_updated_at: string;
+  finished_at: string | null;
+}
+
+/** Server-committed refresh receipt; `label` is the durable freshness text. */
+export interface BriefRefreshReceipt {
+  source_id: string;
+  kind: "connector" | "knowledge" | "static";
+  outcome: "promoted" | "unchanged" | "no-change";
+  generation: number;
+  label: string;
+}
+
+export interface BriefSourceSnapshotEntry {
+  source_id: string;
+  ready_generation: number;
+  content_identity: string;
+}
+
+export interface BriefComparisonSummary {
+  kind: "compared";
+  baseline_run_id: string;
+  baseline_result_id: string;
+  current_result_id: string;
+  mode: "keyed" | "side-by-side";
+  key_columns: string[];
+  reason_code: string | null;
+  reason_detail: string | null;
+  exhaustive: boolean;
+  added_total: number | null;
+  removed_total: number | null;
+  changed_total: number | null;
+  truncated: boolean;
+  changed_sample: Array<{
+    key: Array<string | number | boolean | null>;
+    changes: Array<{ column: string; delta: number | null }>;
+  }>;
+}
+
+export interface BriefComparisonUnavailable {
+  kind: "unavailable";
+  reason: "baseline-missing" | "baseline-result-deleted" | "current-result-deleted";
+}
+
+/** Persisted ≤32 KiB comparison; `null` before the analyzing stage commits one. */
+export type BriefComparisonPayload = BriefComparisonSummary | BriefComparisonUnavailable | null;
+
+export interface BriefRunDetail extends BriefRunSummary {
+  refresh_receipts: BriefRefreshReceipt[];
+  source_snapshot: BriefSourceSnapshotEntry[] | null;
+  comparison_summary: BriefComparisonPayload;
+}
+
+export interface BriefDecisionResult {
+  status: "publishing" | "approved" | "rejected";
+  replayed: boolean;
+  status_path: string;
+  run: BriefRunSummary;
+}
+
+export interface BriefReviewRow {
+  id: string;
+  recipe_id: string;
+  recipe_name: string;
+  recipe_revision: number;
+  /** Null once the live recipe is deleted; the run snapshot stays readable. */
+  recipe_state: string | null;
+  recipe_paused_reason: string | null;
+  trigger: "scheduled" | "manual";
+  occurrence_key: string;
+  coalesced_count: number;
+  missed_through_key: string | null;
+  stage: BriefRunStage;
+  created_at: string;
+  stage_updated_at: string;
+  finished_at: string | null;
+  analysis_run_id: string | null;
+  baseline_run_id: string | null;
+  comparison_summary: BriefComparisonPayload;
+  refresh_receipts: BriefRefreshReceipt[];
+  document_id: string | null;
+  document_revision_id: string | null;
+  document_head_revision_id: string | null;
+  head_moved: boolean;
+  reviewed_revision_id: string | null;
+  publication_operation_id: string | null;
+  publication_error_code: string | null;
+  publication_failure: { code: string; message: string } | null;
+  review: {
+    decision: "approve" | "reject";
+    note: string | null;
+    document_revision_id: string;
+    created_at: string;
+  } | null;
+}
+
+export type BriefNotificationKind = "first_draft" | "meaningful_change" | "attention" | "paused";
+export type BriefNotificationState = "unread" | "read" | "dismissed";
+
+export interface BriefNotification {
+  id: string;
+  kind: BriefNotificationKind;
+  state: BriefNotificationState;
+  detail: string;
+  recipe_id: string | null;
+  run_id: string | null;
+  created_at: string;
+  updated_at: string;
+  read_at: string | null;
+}
+
+export const BRIEFS_PAGE_LIMIT = 20;
+
+/** A durable run still occupying the recipe's pipeline (review stages excluded). */
+export function isBriefActiveRunStage(stage: BriefRunStage): boolean {
+  return (
+    stage === "queued" ||
+    stage === "refreshing" ||
+    stage === "waiting_ready" ||
+    stage === "analyzing" ||
+    stage === "drafting" ||
+    stage === "publishing"
+  );
+}
+
+export function briefScheduleLabel(schedule: BriefCalendarSchedule): string {
+  const time = `${String(schedule.hour).padStart(2, "0")}:${String(schedule.minute).padStart(2, "0")}`;
+  const weekdayNames = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+  if (schedule.kind === "weekly" && schedule.weekday !== null)
+    return `Weekly ${weekdayNames[schedule.weekday] ?? "?"} ${time} (${schedule.time_zone})`;
+  if (schedule.kind === "monthly" && schedule.day_of_month !== null)
+    return `Monthly day ${schedule.day_of_month} ${time} (${schedule.time_zone})`;
+  return `Daily ${time} (${schedule.time_zone})`;
+}
+
+export const briefsApi = {
+  list: async (options: CatalogPageOptions = {}) =>
+    parseTypedCatalogEnvelope<BriefRecipe>(
+      await api<unknown>(catalogPath("/api/briefs", options), { signal: options.signal }),
+    ),
+  /** Detail carries the server's `next_occurrences` three-run preview. */
+  get: (id: string, signal?: AbortSignal) => api<BriefRecipe>(`/api/briefs/${id}`, { signal }),
+  create: (body: BriefRecipeCreateBody, signal?: AbortSignal) =>
+    api<BriefRecipe>("/api/briefs", { method: "POST", body: JSON.stringify(body), signal }),
+  update: (id: string, body: BriefRecipeEditBody, signal?: AbortSignal) =>
+    api<BriefRecipe>(`/api/briefs/${id}`, { method: "PATCH", body: JSON.stringify(body), signal }),
+  pause: (id: string, signal?: AbortSignal) => api<BriefRecipe>(`/api/briefs/${id}/pause`, { method: "POST", signal }),
+  resume: (id: string, signal?: AbortSignal) =>
+    api<BriefRecipe>(`/api/briefs/${id}/resume`, { method: "POST", signal }),
+  setNotifications: (id: string, enabled: boolean, signal?: AbortSignal) =>
+    api<BriefRecipe>(`/api/briefs/${id}/notifications`, {
+      method: "PATCH",
+      body: JSON.stringify({ enabled }),
+      signal,
+    }),
+  remove: (id: string, signal?: AbortSignal) => api<{ ok: true }>(`/api/briefs/${id}`, { method: "DELETE", signal }),
+  /** Run now: caller-generated UUID idempotency key; a retried key replays the run. */
+  run: (id: string, body: { operation_id: string }, signal?: AbortSignal) =>
+    api<{ run: BriefRunSummary; replayed: boolean }>(`/api/briefs/${id}/runs`, {
+      method: "POST",
+      body: JSON.stringify(body),
+      signal,
+    }),
+  listRuns: async (id: string, options: CatalogPageOptions = {}) =>
+    parseTypedCatalogEnvelope<BriefRunSummary>(
+      await api<unknown>(catalogPath(`/api/briefs/${id}/runs`, options), { signal: options.signal }),
+    ),
+  getRun: (id: string, runId: string, signal?: AbortSignal) =>
+    api<BriefRunDetail>(`/api/briefs/${id}/runs/${runId}`, { signal }),
+  cancelRun: (id: string, runId: string, signal?: AbortSignal) =>
+    api<BriefRunDetail & { cancel_requested: boolean }>(`/api/briefs/${id}/runs/${runId}`, {
+      method: "DELETE",
+      signal,
+    }),
+};
+
+export const briefReviewsApi = {
+  list: async (options: CatalogPageOptions = {}) =>
+    parseTypedCatalogEnvelope<BriefReviewRow>(
+      await api<unknown>(catalogPath("/api/brief-reviews", options), { signal: options.signal }),
+    ),
+  /** Exact-revision decision; approve answers 202 `publishing` until the publication commits. */
+  decide: (
+    id: string,
+    body: { decision: "approve" | "reject"; document_revision_id: string; note?: string },
+    signal?: AbortSignal,
+  ) => api<BriefDecisionResult>(`/api/brief-reviews/${id}/decision`, { method: "POST", body: JSON.stringify(body), signal }),
+};
+
+export const notificationsApi = {
+  list: async (options: CatalogPageOptions = {}) =>
+    parseTypedCatalogEnvelope<BriefNotification>(
+      await api<unknown>(catalogPath("/api/notifications", options), { signal: options.signal }),
+    ),
+  /** Durable visibility transition only; the event content cannot be modified. */
+  setState: (id: string, state: "read" | "dismissed", signal?: AbortSignal) =>
+    api<BriefNotification>(`/api/notifications/${id}`, { method: "PATCH", body: JSON.stringify({ state }), signal }),
+};
