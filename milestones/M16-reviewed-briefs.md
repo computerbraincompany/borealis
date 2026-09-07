@@ -9,7 +9,10 @@
 
 ## Status and dependencies
 
-- **Status:** TODO; selected for implementation on 2026-09-06.
+- **Status:** IN PROGRESS — stages 1–4 are merged on `main` (schema
+  v26–v28; journey F browser acceptance passes 3×; the review-inbox head-
+  revision decision defect is fixed in `930addf`). Remaining acceptance
+  evidence is tracked in [EXECUTION.md](EXECUTION.md).
 - **Baseline:** `e2e6a78`, 2026-09-06.
 - **Priority / effort / functional risk:** P2 / XL / high (recovery and calendar semantics).
 - **Depends on:** [M12 saved analyses](M12-saved-analyses.md),

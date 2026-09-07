@@ -2,9 +2,12 @@
 
 ## Status and execution contract
 
-- **Status:** TODO — selected for the implementation handoff on 2026-09-06.
+- **Status:** IN PROGRESS — stages 1–4 and the archive-manifest work are merged
+  on `main` (schema v19/v24; journey D browser acceptance passes); final
+  acceptance evidence and remaining checks are tracked in
+  [EXECUTION.md](EXECUTION.md).
 - **Priority / effort:** P1 / L.
-- **Baseline:** `e2e6a78`, 2026-09-06. This is a specification, not shipped functionality.
+- **Baseline:** `e2e6a78`, 2026-09-06 (the text below was a specification at that baseline).
 - **Dependencies:** M04/M09; complete the reserved schema v14–v16 remediation
   before allocating a new migration. Allocate the next free version at or above
   v17 with the coordinating agent. M12/M13 are not prerequisites for importing

@@ -2,9 +2,12 @@
 
 ## Status and execution contract
 
-- **Status:** TODO — selected for implementation handoff on 2026-09-06.
+- **Status:** IN PROGRESS — stages 1–5 are merged on `main` (schema v25;
+  journey E browser acceptance passes; the live-model gate exercises a real
+  research run through the API path, not yet through the UI). Final acceptance
+  evidence is tracked in [EXECUTION.md](EXECUTION.md).
 - **Priority / effort:** P1 / L.
-- **Baseline:** `e2e6a78`, 2026-09-06; proposed behavior below is not shipped.
+- **Baseline:** `e2e6a78`, 2026-09-06 (the proposed behavior below described a specification at that baseline).
 - **Dependencies:** M14 source search/locators; M13 editable artifact revisions
   and evidence snapshots. Reuse M12 typed result conventions where applicable.
   Schema v14–v16 remediation must land first; coordinate the next free product

@@ -2,8 +2,11 @@
 
 ## Status and execution contract
 
-- **Status:** TODO — approved implementation handoff on 2026-09-06; the
-  contracts below are future behavior, not shipped endpoints.
+- **Status:** IN PROGRESS — stages 1–4 are merged on `main` (schema
+  v20/v22/v23; journey C browser acceptance with real 4-format download byte
+  parsing passes 3×). Remaining acceptance evidence is tracked in
+  [EXECUTION.md](EXECUTION.md); the contracts below were future behavior at
+  the approved-handoff baseline.
 - **Priority / effort / risk:** P1 / L (multiple days) / high: artifact identity,
   editing, model proposals, publication, and rendering must agree.
 - **Baseline:** `e2e6a78`, inspected 2026-09-06.

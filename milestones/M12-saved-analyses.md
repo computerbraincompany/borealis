@@ -2,8 +2,13 @@
 
 ## Status and execution contract
 
-- **Status:** TODO — approved implementation handoff on 2026-09-06; no runtime
-  functionality is claimed by this document.
+- **Status:** IN PROGRESS — stages 1–4 plus the registry-hydration fix are
+  merged on `main` (schema v18; journey B browser acceptance passes; the
+  live-model gate executes a real parameterized saved-analysis rerun with
+  numeric cell checks and byte-parsed exports). Isolated-profile packaged-app
+  exercise and the final root gates are the open items; evidence is tracked in
+  [EXECUTION.md](EXECUTION.md). No runtime functionality was claimed by this
+  document at the approved-handoff baseline.
 - **Priority / effort / risk:** P1 / L (multiple days, including integration) /
   high: durable dataset identity and worker execution change.
 - **Baseline:** `e2e6a78`, inspected 2026-09-06.
