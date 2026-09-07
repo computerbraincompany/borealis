@@ -18,6 +18,7 @@
     "test": "turbo run test",
     "test:e2e:product": "node scripts/e2e/run-product.mjs --journey=all",
     "test:e2e:product:desktop": "node scripts/e2e/run-product-desktop.mjs --journey=all",
+    "test:e2e:product:live": "node scripts/e2e/run-product-live.mjs",
     "typecheck": "turbo run typecheck",
     "verify": "node scripts/policy-check.mjs && turbo run typecheck lint format:check test test:integration build native:smoke && node -e \"process.stdout.write('ALL GATES GREEN\\n')\"",
     "workspace:archive": "pnpm --filter borealis-server workspace:archive"
