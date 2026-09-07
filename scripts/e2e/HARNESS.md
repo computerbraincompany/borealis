@@ -153,6 +153,15 @@ reports `not_implemented`), `--workspace=DIR`, and `--keep-on-failure`.
 - End every journey that touched persisted state or the data plane with
   `await server.quiesceWorkers({ token })` before returning, so the entry's
   orderly shutdown is proven rather than raced.
+- Journeys that drive MULTI-CALL durable runs (research synthesis, tool
+  loops) can use a provider `slow` step as a deterministic scripting window:
+  the fixture picks the script step when the request arrives but only streams
+  its content after `delay_ms`, so polling `provider.state()` proves the call
+  is in flight and `provider.setScript()` then governs the run's remaining
+  calls exactly. Use this to install responses that must embed
+  mid-run-generated ids (captured evidence, run-scoped UUIDs) fetched from
+  the product's own read APIs while the provider still holds the call —
+  bounded polling on provider counters, never sleeps or network-idle races.
 - Assertions must verify persisted state and exported bytes, not screenshots
   alone; keep waits bounded with explicit deadlines — no arbitrary sleeps,
   and never `wait: 'networkidle'`-style races.
