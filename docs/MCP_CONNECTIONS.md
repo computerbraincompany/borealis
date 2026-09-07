@@ -1,10 +1,15 @@
 # Connected agents — implementation specification
 
-**Implementation:** both transports, OAuth, frozen connected-tool execution,
-connection management, and reusable job setup are present. Selected on
-2026-09-06 against `e2e6a78`; the prerequisite gate is applied. Completion and
-platform acceptance are tracked in [EXECUTION.md](../milestones/EXECUTION.md).
-The contracts below remain required; implementation alone does not close a check.
+**Status: DONE — 2026-09-07.** Both transports, OAuth, frozen connected-tool
+execution, connection management, and reusable job setup passed the final
+integrated acceptance on runtime `1e56b21d66d119bfb4535e58a5b3535b0586b3c3`.
+The full packaged native run passed all 17 checkpoints, including OAuth expiry
+and secure credential rotation, selected-tool execution, disablement and clean
+shutdown. [EXECUTION.md](../milestones/EXECUTION.md) records final local,
+browser, live-model, archive and packaged evidence. The SIP-disabled hosted
+macOS CI runner remains an infrastructure follow-up; the required strict local
+entitlement matrix passed. The original selection was 2026-09-06 against
+`e2e6a78`; the contracts below remain maintenance requirements.
 
 ## Outcome and scope
 
@@ -210,13 +215,13 @@ integration partition; passing a command that found no tests is not acceptance.
 
 ## Completion and maintenance
 
-- [ ] Both transports complete discovery and a real selected-tool chat call.
-- [ ] OAuth succeeds, refreshes, expires, cancels, and reconnects in real fixtures.
-- [ ] Agent/job revisions and running-turn behavior satisfy the snapshot contract.
-- [ ] Browser and packaged desktop paths work, including secret custody and cleanup.
-- [ ] WebDAV can reuse the secret-store interface without changing MCP semantics.
-- [ ] Archive/restore retains work but requires reconnection for machine-bound grants.
-- [ ] Root and platform gates plus the common E2E matrix pass; docs describe actual behavior.
+- [x] Both transports complete discovery and a real selected-tool chat call.
+- [x] OAuth succeeds, refreshes, expires, cancels, and reconnects in real fixtures.
+- [x] Agent/job revisions and running-turn behavior satisfy the snapshot contract.
+- [x] Browser and packaged desktop paths work, including secret custody and cleanup.
+- [x] WebDAV can reuse the secret-store interface without changing MCP semantics.
+- [x] Archive/restore retains work but requires reconnection for machine-bound grants.
+- [x] Root and platform gates plus the common E2E matrix pass; docs describe actual behavior.
 
 Continue through routine drift and fix test failures. If a provider SDK cannot
 support the required transport or the platform cannot supply protected custody,
@@ -246,7 +251,8 @@ retains ledger work while forcing every connection back to an actionable
 reconnect state. The shipped contracts are recorded in [API.md](API.md) under
 "Connections (Connected agents)", "Connected tools in durable chat turns", and
 "Jobs", with runtime invariants in [AGENTS.md](../AGENTS.md) and
-[desktop/README.md](../desktop/README.md). The completion checkboxes above stay
-open until the coordinator records final packaged/live-model acceptance evidence
-in [END_TO_END_ACCEPTANCE.md](END_TO_END_ACCEPTANCE.md) and
-[milestones/EXECUTION.md](../milestones/EXECUTION.md).
+[desktop/README.md](../desktop/README.md). At the time of this September 6
+implementation record, the completion checkboxes remained open pending final
+packaged/live-model acceptance. That acceptance completed on September 7;
+[END_TO_END_ACCEPTANCE.md](END_TO_END_ACCEPTANCE.md) retains the contract and
+[milestones/EXECUTION.md](../milestones/EXECUTION.md) records the final proof.

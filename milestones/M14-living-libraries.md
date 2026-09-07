@@ -2,9 +2,13 @@
 
 ## Status and execution contract
 
-- **Status:** IMPLEMENTED — browser, live-model and repository acceptance pass;
-  final native packaged UI acceptance is running on the rebuilt app.
-  [EXECUTION.md](EXECUTION.md) records current gates and retained evidence.
+- **Status:** DONE — final integrated acceptance passed on 2026-09-07 for
+  runtime `1e56b21d66d119bfb4535e58a5b3535b0586b3c3`: repository, desktop,
+  packaging, strict local entitlement checks, browser A–F, live local inference,
+  storage/lifecycle, and all 17 packaged native checkpoints.
+  [EXECUTION.md](EXECUTION.md) records commands, package identity and evidence.
+  The SIP-disabled hosted macOS CI runner remains a separate infrastructure
+  follow-up; the required strict entitlement command passed on the supported Mac.
   Baseline descriptions and dated execution records below are historical
   context; they do not supersede the current API or acceptance status.
 - **Priority / effort:** P1 / L.

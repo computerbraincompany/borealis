@@ -1,10 +1,14 @@
 # End-to-end acceptance for the functional wave
 
-**Status:** required validation contract, selected 2026-09-06 against `e2e6a78`.
-The production browser harness, protocol fixtures, packaged desktop entry point,
-and live-model entry point now exist. Actual passes, failures, and unexecuted
-scenarios are recorded in [EXECUTION.md](../milestones/EXECUTION.md); this document
-defines what they must prove and does not itself certify completion.
+**Status: completed on 2026-09-07; retained regression contract.** Selected on
+2026-09-06 against `e2e6a78`, this matrix passed on final runtime
+`1e56b21d66d119bfb4535e58a5b3535b0586b3c3`: production browser A–F, live local
+inference, storage/lifecycle and package gates, plus all 17 packaged native
+checkpoints. [EXECUTION.md](../milestones/EXECUTION.md) records actual commands,
+package identity and evidence, including earlier failed attempts. The required
+strict entitlement command passed on supported local macOS. Its failure on the
+SIP-disabled hosted CI runner remains a separately recorded infrastructure
+follow-up; this contract does not require provisioning a CI runner.
 
 ## Test environment and repeatability
 

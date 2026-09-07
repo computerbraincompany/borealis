@@ -10,7 +10,8 @@ the connected-agent spec and milestones M12–M16.
 
 **Historical assessment:** the capability gaps, TODO labels, implementation
 language, and recommendations below describe `e2e6a78` on September 6. The six
-selected slices and prerequisite migrations have since been implemented.
+selected slices and prerequisite migrations have since completed implementation
+and final acceptance on 2026-09-07.
 Use the [current README](../README.md), [API reference](API.md), and
 [execution ledger](../milestones/EXECUTION.md) for today's behavior and acceptance
 status. This dated comparison is preserved as the rationale for that wave;

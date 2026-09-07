@@ -1,15 +1,16 @@
 # Milestone ledger
 
-**Ledger reviewed:** 2026-09-07. M01–M11 form the completed baseline;
-connected agents and M12–M16 are implemented; final native v1 acceptance is running
-on the rebuilt app. [EXECUTION.md](EXECUTION.md) is the current evidence authority.
+**Functional v1 completed:** 2026-09-07. M01–M11, connected agents and M12–M16
+are DONE. Final browser, live-model, repository, package, storage/lifecycle and
+all 17 native checkpoints passed. [EXECUTION.md](EXECUTION.md) is the evidence
+authority and records the separate hosted macOS CI infrastructure follow-up.
 
 The M05 extension includes identity, Markdown skills, atomic configuration
 revisions, built-in tool allowlists, MCP/OAuth and reusable job setup. The
 [agent rollout record](../docs/AGENT_EDITOR_ROLLOUT.md) describes its shipped
 contract and verification separately from M05’s original completion.
 
-This directory holds **active** implementation milestones. Each milestone is a
+This directory holds the maintained product milestone ledger. Each milestone is a
 self-contained specification (`Mnn-<slug>.md`) with tasks and done criteria;
 implementation lands in reviewable slices committed against that spec.
 
@@ -103,20 +104,21 @@ Completed sequencing notes:
 ## Selected functional wave
 
 The selected direction is **repeatable, evidence-backed work over a living
-corpus**. All six slices passed through implementation in the 2026-09-06/07
-wave; remaining acceptance evidence and open items are tracked in
-[EXECUTION.md](EXECUTION.md). This was a dependency order, not a delivery
+corpus**. All six slices completed implementation and final acceptance on
+2026-09-07, including the complete 17-checkpoint native A–F run on the final
+package. [EXECUTION.md](EXECUTION.md) records the completed functional proof and
+the separate hosted macOS CI infrastructure follow-up. This was a dependency order, not a delivery
 calendar. Detailed rationale and dated competitive evidence live in the
 [September product review](../docs/PRODUCT_REVIEW.md).
 
 | Order | Functional slice | First useful outcome | Status / dependency |
 | ----- | ---------------- | -------------------- | ------------------- |
-| 1 | [Connected agents](../docs/MCP_CONNECTIONS.md), M05 extension | HTTP/stdio MCP, OAuth, selected tools and reusable job setup | Implemented; final native acceptance running |
-| 2 | [M12 saved analyses](M12-saved-analyses.md) | Parameterized SQL, preserved results, comparison and export outside chat | Implemented; final native acceptance running |
-| 3 | [M13 report/document workbench](M13-report-workbench.md) | Edit/rewrite, review changes and export a new evidence-bearing version | Implemented; final native acceptance running |
-| 4 | [M14 living libraries/search](M14-living-libraries.md) | Selected folders, watch/refresh, indexed WebDAV, source search/inspection | Implemented; final native acceptance running |
-| 5 | [M15 local research](M15-local-research.md) | Question plan, dossier, cited memo and reviewed comparison table | Implemented; final native acceptance running |
-| 6 | [M16 reviewed briefs](M16-reviewed-briefs.md) | Refresh, wait, analyze, compare, draft and review on a calendar schedule | Implemented; final native acceptance running |
+| 1 | [Connected agents](../docs/MCP_CONNECTIONS.md), M05 extension | HTTP/stdio MCP, OAuth, selected tools and reusable job setup | DONE — final integrated acceptance passed |
+| 2 | [M12 saved analyses](M12-saved-analyses.md) | Parameterized SQL, preserved results, comparison and export outside chat | DONE — final integrated acceptance passed |
+| 3 | [M13 report/document workbench](M13-report-workbench.md) | Edit/rewrite, review changes and export a new evidence-bearing version | DONE — final integrated acceptance passed |
+| 4 | [M14 living libraries/search](M14-living-libraries.md) | Selected folders, watch/refresh, indexed WebDAV, source search/inspection | DONE — final integrated acceptance passed |
+| 5 | [M15 local research](M15-local-research.md) | Question plan, dossier, cited memo and reviewed comparison table | DONE — final integrated acceptance passed |
+| 6 | [M16 reviewed briefs](M16-reviewed-briefs.md) | Refresh, wait, analyze, compare, draft and review on a calendar schedule | DONE — final integrated acceptance passed |
 
 MCP is an integration mechanism; each connection still needs a useful end-to-end
 job. It does not by itself create indexed sources, a research mode, or a
@@ -143,10 +145,16 @@ whose changed numbers and evidence can be inspected. Add a second proof using
 a small document corpus and a cited comparison table. Measure whether users can
 repeat those jobs without reconstructing chat history, not how many new pages
 or integrations were added. These scenarios are required by the acceptance
-matrix; actual runs and remaining platform gates are recorded in
+matrix; completed runs and the separate CI infrastructure follow-up are recorded in
 [EXECUTION.md](EXECUTION.md).
 
 ## Verification record
+
+- 2026-09-07: connected agents and M12–M16 closed on runtime
+  `1e56b21d66d119bfb4535e58a5b3535b0586b3c3`. The final native A–F run passed
+  all 17 checkpoints, including held-work cancellation and clean process/profile
+  cleanup. All required local, browser, live-model, storage and lifecycle gates
+  passed; exact package identity and commands are in [EXECUTION.md](EXECUTION.md).
 
 - 2026-09-06: documentation/product review against `e2e6a78`; reconciled
   completed M03/M06/M07 prose, shared-report route descriptions, and live

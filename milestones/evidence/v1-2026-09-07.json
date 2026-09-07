@@ -2,7 +2,7 @@
   "date": "2026-09-07",
   "scope": "Borealis functional v1",
   "runtime_source_commit": "1e56b21d66d119bfb4535e58a5b3535b0586b3c3",
-  "completion": "final_native_rerun_pending",
+  "completion": "complete",
   "platform": {
     "os": "macOS 26.6.2",
     "arch": "arm64",
@@ -308,12 +308,9 @@
     "execution": "Supported source TypeScript runner and pnpm workspace:archive CLI on exact runtime source; no build."
   },
   "native_ui": {
-    "status": "awaiting_full_native_rerun",
-    "pending_run": "/tmp/borealis-v1-native-final-5",
-    "pending_evidence": "/tmp/borealis-v1-native-final-evidence-5/summary.json",
+    "status": "pass",
     "required_checkpoints": 17,
     "package_asar_sha256": "7e80766679d6744e8e7c18abaaa10901087ec4733701e2f196267eb8e1bc5b8d",
-    "next_action": "Run all 17 native checkpoints on unchanged final package with explicit embedding hold; require same scheduled refresh cancelled, no expired hold, and clean processes/locks.",
     "intermediate_evidence": "/tmp/borealis-v1-native-final-evidence-3/summary.json",
     "intermediate_passed_journeys": [
       "A",
@@ -327,7 +324,7 @@
     "intermediate_package_asar_sha256": "77cc92964d4882213f36093644a2b7ae9eed79ab8909282abdd73da983633605",
     "intermediate_cleanup": "Actual scheduled embedding was active immediately before native Cmd+Q; same refresh cancelled, no active work, all owned children/processes/locks gone and workspace removed. This earlier package does not certify final acceptance.",
     "fixed_defect": "Permission failures now return actionable KNOWLEDGE_FILE_UNREADABLE, settle durable refresh work, pause watched retries and recover without replacing sources or citations.",
-    "bootstrap_passed": false,
+    "bootstrap_passed": true,
     "final_package_attempt_4": {
       "entry": "run-product-desktop",
       "started_at": "2026-09-07T16:55:24.239Z",
@@ -381,7 +378,233 @@
       "successful_checkpoints": 16,
       "quit_explanation": "All A\u2013F passed, but the eight-second delayed embedding completed before native quit arrived. This did not prove active cancellation and the command failed honestly.",
       "oauth_refresh_evidence": "/tmp/borealis-v1-native-final-evidence-4/artifacts/native-oauth-refresh.json"
-    }
+    },
+    "passed_journeys": [
+      "A",
+      "B",
+      "C",
+      "D",
+      "E",
+      "F"
+    ],
+    "passed": true,
+    "evidence_path": "/tmp/borealis-v1-native-final-evidence-5/summary.json",
+    "started_at": "2026-09-07T18:11:35.350Z",
+    "finished_at": "2026-09-07T18:35:44.366Z",
+    "journeys": [
+      {
+        "journey": "A",
+        "status": "pass",
+        "surface": "packaged-native-ui",
+        "duration_ms": 139355
+      },
+      {
+        "journey": "B",
+        "status": "pass",
+        "surface": "packaged-native-ui",
+        "duration_ms": 135625
+      },
+      {
+        "journey": "C",
+        "status": "pass",
+        "surface": "packaged-native-ui",
+        "duration_ms": 125289
+      },
+      {
+        "journey": "D",
+        "status": "pass",
+        "surface": "packaged-native-ui",
+        "duration_ms": 366049
+      },
+      {
+        "journey": "E",
+        "status": "pass",
+        "surface": "packaged-native-ui",
+        "duration_ms": 413457
+      },
+      {
+        "journey": "F",
+        "status": "pass",
+        "surface": "packaged-native-ui",
+        "duration_ms": 189028
+      }
+    ],
+    "checkpoints": [
+      {
+        "checkpoint": "bootstrap",
+        "status": "pass",
+        "driver": "cua_repl",
+        "observations": [
+          "Fresh native packaged window opened register-free as local account, provider reachable and selected-empty source scope. No bootstrap approval blocker."
+        ],
+        "finished_at": "2026-09-07T18:12:09.465Z"
+      },
+      {
+        "checkpoint": "A.connections",
+        "status": "pass",
+        "driver": "cua_repl",
+        "observations": [
+          "Created and tested stdio connection with six published tools. Native one-time Open in system browser produced real OAuth callback success; secure custody and HTTP discovery published six tools. After prior sealed record age32640ms exceeded30s TTL, native Test and Discover succeeded without another authorization browser and rotated the sealed envelope; content-free proof retained."
+        ],
+        "finished_at": "2026-09-07T18:13:47.390Z"
+      },
+      {
+        "checkpoint": "A.agent",
+        "status": "pass",
+        "driver": "cua_repl",
+        "observations": [
+          "Saved and reopened Finance job agent with one evidence discipline skill, one selected stdio echo tool, five starter prompts and output template. Actual source preflight required confirmation, selected-tool turn completed, and native Settings disable caused actionable next-send rejection."
+        ],
+        "finished_at": "2026-09-07T18:14:28.820Z"
+      },
+      {
+        "checkpoint": "B.capture",
+        "status": "pass",
+        "driver": "cua_repl",
+        "observations": [
+          "Native CSV upload yielded expected four ready datasets. Explicit four-source chat returned142rows/83stored with visible truncation. Saved complete SQL with category key and required string month defaultJune, executed r2June14rows and inspected Groceries6/net-518.65 with fourgeneration1 bindings."
+        ],
+        "finished_at": "2026-09-07T18:15:57.241Z"
+      },
+      {
+        "checkpoint": "B.analysis",
+        "status": "pass",
+        "driver": "cua_repl",
+        "observations": [
+          "Native May run produced12rows. June-to-May category comparison showed two removed and12changed rows with unchanged four source versions; Groceries net-518.65 to-468.01. Exported originalJune CSV andJSON via native Save into isolated exports. Reopened May andJune confirming unchanged typed month, source bindings and exact totals."
+        ],
+        "finished_at": "2026-09-07T18:16:44.446Z"
+      },
+      {
+        "checkpoint": "C.publish",
+        "status": "pass",
+        "driver": "cua_repl",
+        "observations": [
+          "Generated actual chart-backed report from four selected finance sources, copied to editable document, publishedr1v1 and opened native preview. Readable chart/table with Groceries-518.65, original narrative and truthful manual-no-evidence badge observed; closed only preview window."
+        ],
+        "finished_at": "2026-09-07T18:17:33.915Z"
+      },
+      {
+        "checkpoint": "C.document",
+        "status": "pass",
+        "driver": "cua_repl",
+        "observations": [
+          "Edited/saved narrative r2, generated rewrite, saved newer subtitle r3 and observed stale refusal on old proposal. Fresh rewrite accepted as modelr4 and publishedv2. Saved HTML/PDF/MarkdownZIP/DOCX through native Save. Originalv1 preview still has initial narrative; newv2 shows revised subtitle/narrative with readable chart/table and honest manual validity badge."
+        ],
+        "finished_at": "2026-09-07T18:18:49.735Z"
+      },
+      {
+        "checkpoint": "D.folder",
+        "status": "pass",
+        "driver": "cua_repl",
+        "observations": [
+          "Created knowledge library and native folder connection using actual macOS chooser, previewed one new note and explicitly imported only it. Source reached Ready, folder Watch enabled, and fresh chat remained selected-empty."
+        ],
+        "finished_at": "2026-09-07T18:19:56.525Z"
+      },
+      {
+        "checkpoint": "D.watch",
+        "status": "pass",
+        "driver": "cua_repl",
+        "observations": [
+          "Actual automatic watched refresh produced generation2 and matching keyword plus explicit semantic hits with text locator. Native note-only chat captured a real citation, opened and verified. Renamed upstream note, native Preview showed one new plus one missing, cancelled without import, restored name and reopened unchanged captured citation."
+        ],
+        "finished_at": "2026-09-07T18:22:03.068Z"
+      },
+      {
+        "checkpoint": "D.permission",
+        "status": "pass",
+        "driver": "cua_repl",
+        "observations": [
+          "After real owned-file chmod000, native folder Preview failed with the exact guidance: Restore read access to the folder and its files, then retry. Nothing was imported. No size-limit message appeared; prior ready source and captured citation remained intact."
+        ],
+        "finished_at": "2026-09-07T18:22:36.706Z"
+      },
+      {
+        "checkpoint": "D.retry",
+        "status": "pass",
+        "driver": "cua_repl",
+        "observations": [
+          "After read access restoration, actual native Preview retry completed with one unchanged note and cleared warning. Connection and source remained Ready; original captured citation still showed the identical passage. No source or generation replacement occurred."
+        ],
+        "finished_at": "2026-09-07T18:23:10.346Z"
+      },
+      {
+        "checkpoint": "D.webdav",
+        "status": "pass",
+        "driver": "cua_repl",
+        "observations": [
+          "Created secure native DAV connection, previewed three files and imported only readme.md. Password-stored label visible. Actual history shows Apply Completed followed by Manual Completed after exact DAV Refresh control; folder Watch remains enabled separately."
+        ],
+        "finished_at": "2026-09-07T18:24:55.784Z"
+      },
+      {
+        "checkpoint": "E.research",
+        "status": "pass",
+        "driver": "cua_repl",
+        "observations": [
+          "Created five typed comparison columns with legal empty-scope Start disabled, attached nine supported corpus documents, generated/reordered/edited/saved three-step plan. Native run persisted across leave/reopen/reload while active with9evidence and pendingsteps, then terminal45cells. Inspected actual PDF/page/text/OCR locators, explicit missing cells and quotedEverline15000 invalid. Read-only fixture verification checked40manifest values plus5scanned gaps."
+        ],
+        "finished_at": "2026-09-07T18:27:58.037Z"
+      },
+      {
+        "checkpoint": "E.rerun",
+        "status": "pass",
+        "driver": "cua_repl",
+        "observations": [
+          "Native corrections persisted across reload while machine originals stayed intact; exported tableCSV/evidence manifest. SelectedEverlinePrice rerun preserved inherited correction and showed new supported machinevalue/45changedcells. Started another real run and cancelled with9evidence/1modelrequest; cancelled publication blocked. Separate9source memo had supported/conflicting/unsupported claims; accepted supported, rejected unsupported and saved conflict note. Reviewed workbench retained cited12000/13500conflict and gaps, omitted4600 with rejectiondisclosure, then published/exportedMarkdownZIP."
+        ],
+        "finished_at": "2026-09-07T18:31:49.240Z"
+      },
+      {
+        "checkpoint": "F.approve",
+        "status": "pass",
+        "driver": "cua_repl",
+        "observations": [
+          "Created weeklyMonday09Europe/Berlin brief pinned to analysisr2/monthJune/fourstaticinputs with next three localUTC times and localinboxnotificationsenabled. Actual firstpipeline awaitedreview with fourgeneration1receipts and no-baseline disclosure. Inspected exactdraft summary/freshness/provenance and evidenceverifiedorigin, approved reviewedrevision and observed committedpublication plus read-onlyapprovalledger."
+        ],
+        "finished_at": "2026-09-07T18:33:32.669Z"
+      },
+      {
+        "checkpoint": "F.brief",
+        "status": "pass",
+        "driver": "cua_repl",
+        "observations": [
+          "Second native brief review showed exhaustive category0added/0removed/0changed and deterministic unchanged baseline. Rejected with note while prior approved publication remains. Generic first-draft local event was explicitly markedread/dismissed, Nothingnew remained and no unchanged-run duplicate appeared. Returned to Libraries with actual watchednotesReady/Watchenabled; OAuth postexpiry secure rotation proof retained."
+        ],
+        "finished_at": "2026-09-07T18:34:58.268Z"
+      },
+      {
+        "checkpoint": "quit",
+        "status": "pass",
+        "driver": "cua_repl",
+        "observations": [
+          "Read-only actual scheduled watched-folder row was active with embedding_held1 and hold_expired0 at18:35:06.395Z. Immediately issued native Cmd+Q with no manual release. Main process exited; stopped ledger shows same latest scheduled refresh cancelled at18:35:15.578Z, provider held0/active0/expired0. Normal shutdown cancelled actual held ingestion rather than allowing natural completion."
+        ],
+        "finished_at": "2026-09-07T18:35:44.077Z"
+      }
+    ],
+    "cleanup": {
+      "workspace_removed": true,
+      "kept_path": null,
+      "pids_gone": true,
+      "problems": []
+    },
+    "profile_quit_verified": true,
+    "active_work_quit": {
+      "requested_by": "scheduled",
+      "watch_enabled": true,
+      "embedding_response_held": true,
+      "embedding_hold_expired": 0,
+      "embedding_requests_after_exit": 0,
+      "observed_active_before_exit_ms": 511,
+      "final_status": "cancelled",
+      "finished_at": "2026-09-07T18:35:15.578Z",
+      "active_refreshes_after_exit": 0,
+      "pid_gone": true,
+      "locks_released": true
+    },
+    "oauth_refresh_evidence": "/tmp/borealis-v1-native-final-evidence-5/artifacts/native-oauth-refresh.json"
   },
   "harness_tests": {
     "protocol_fixture_checks": 82,
@@ -402,7 +625,7 @@
   "documentation": {
     "markdown_files_reviewed": 130,
     "missing_local_targets": 0,
-    "local_links": 565,
+    "local_links": 570,
     "anchor_links": 18
   },
   "visual_exports": {
@@ -437,7 +660,7 @@
         "/tmp/borealis-v1-native-final-evidence-3/artifacts/native-exports/Native June finance report-v2.zip": "366398fa955c71e468ca00618ca28ec5c76c51f38ee04ca08b21319202a39bd3",
         "/tmp/borealis-v1-native-final-evidence-3/artifacts/native-exports/Native June finance report-v2.docx": "307bf72cf771299ca927de80997792482e05775c742e0ad08aeebdab9a50d1be"
       },
-      "scope": "Intermediate native3 package; final4 exports await native acceptance."
+      "scope": "Historical native3 package; final native5 exports independently rendered and inspected below."
     },
     "final_browser": {
       "runtime_source_commit": "1e56b21d66d119bfb4535e58a5b3535b0586b3c3",
@@ -466,8 +689,8 @@
       "pdf_pages": 2,
       "docx_pages": 1,
       "rendered_paths": [
-        "/tmp/borealis-v1-native4-export-review/pdf",
-        "/tmp/borealis-v1-native4-export-review/docx"
+        "/tmp/borealis-v1-native5-export-review/pdf",
+        "/tmp/borealis-v1-native5-export-review/docx"
       ],
       "observations": [
         "Both native PDF pages and the complete DOCX page inspected.",
@@ -475,9 +698,10 @@
         "Unverified manual claims remain explicitly disclosed."
       ],
       "sha256": {
-        "/tmp/borealis-v1-native4-export-review/inputs/report.docx": "71817dce21f5da4457136b2c10164c9908ee747c1eab132bc90ac75a91ca31ca",
-        "/tmp/borealis-v1-native4-export-review/inputs/report.pdf": "dfdd4e7d9ca3908d8ae2ff2dca0e0ab39316a83208fe1367b69798e8ba4010e5"
-      }
+        "/tmp/borealis-v1-native5-export-review/inputs/report.docx": "cddd9a4c5013f34366dc2ea242ac13d6466b4992319e2a86aa67152554b04da0",
+        "/tmp/borealis-v1-native5-export-review/inputs/report.pdf": "6b9f38ea7acf53b158bff84ac7b9bea5f74227031a116ea67deb2d7ed2948126"
+      },
+      "native_attempt": 5
     }
   },
   "process_lifecycle": {
@@ -630,8 +854,8 @@
   "initial_runtime_source_commit": "9fd294421b771864ee322dd2445d9d58df63fa14",
   "ci": {
     "status": "linux_pass_macos_enforcement_blocked",
-    "current_run": 34145341263,
-    "current_source_commit": "1e56b21d66d119bfb4535e58a5b3535b0586b3c3",
+    "current_run": 34150633648,
+    "current_source_commit": "3a1695dd5fb3afe6d38a996b30a93ad5f55ca8a1",
     "linux": {
       "passed": true,
       "tasks": 16,
@@ -639,7 +863,7 @@
       "server_integration": 433,
       "web": 493,
       "desktop": 34,
-      "log": "/tmp/borealis-v1-ci-1e56-linux-pass.log"
+      "log": "/tmp/borealis-v1-ci-3a1695d-linux-pass.log"
     },
     "macos": {
       "passed": false,
@@ -650,10 +874,13 @@
       "sip": "disabled",
       "main_and_helper_signatures": "exact",
       "without_library_validation": "unexpected genuine success",
-      "log": "/tmp/borealis-v1-ci-1e56-macos26.log",
+      "log": "/tmp/borealis-v1-ci-3a1695d-macos26.log",
       "rejected_experiment": "Explicit library flag uniformly applied broke retained-pair control; not adopted."
     },
-    "final_head_followup": {
+    "functional_goal_blocker": false,
+    "scope_note": "The functional-wave contract requires the strict packaged entitlement command on supported Apple Silicon macOS, which passed on the final local package. It does not require provisioning a hosted CI runner. The hosted macOS failure remains an infrastructure follow-up and is not recorded as passing.",
+    "infrastructure_followup": "Provide a SIP-enabled Apple Silicon CI runner; repository currently has no registered runners. Strict entitlement checks remain enforced.",
+    "previous_documentation_head": {
       "source_commit": "bc53e4377cc8cfa60ecd75ebbf3024f43c065e81",
       "run": 34146252673,
       "linux_passed": true,
@@ -663,10 +890,7 @@
         "linux": "/tmp/borealis-v1-ci-bc53-linux-pass.log",
         "macos": "/tmp/borealis-v1-ci-bc53-macos26.log"
       }
-    },
-    "functional_goal_blocker": false,
-    "scope_note": "The functional-wave contract requires the strict packaged entitlement command on supported Apple Silicon macOS, which passed on the final local package. It does not require provisioning a hosted CI runner. The hosted macOS failure remains an infrastructure follow-up and is not recorded as passing.",
-    "infrastructure_followup": "Provide a SIP-enabled Apple Silicon CI runner; repository currently has no registered runners. Strict entitlement checks remain enforced."
+    }
   },
   "permission_recovery": {
     "source_commit": "1e56b21d66d119bfb4535e58a5b3535b0586b3c3",
@@ -679,5 +903,6 @@
       "Automatic watch admission pauses until a successful manual retry clears the failure.",
       "UI exact-target reconciliation clears recovered rows including continuation-page entries."
     ]
-  }
+  },
+  "acceptance_harness_commit": "3a1695dd5fb3afe6d38a996b30a93ad5f55ca8a1"
 }

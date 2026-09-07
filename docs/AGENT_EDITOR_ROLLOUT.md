@@ -1,5 +1,11 @@
 # Rich agent editor rollout
 
+**Functional-wave acceptance completed 2026-09-07.** The connected-agent and
+job extensions passed final browser and packaged native validation, including
+secure OAuth refresh and frozen selected-tool execution. Current proof is in
+[EXECUTION.md](../milestones/EXECUTION.md); the sequencing and dated records
+below explain how this completed baseline was built.
+
 The September 5 sequencing decision placed the agent editor at v13 ahead of
 the remediation migrations. Those migrations subsequently shipped at v14–v16,
 followed by MCP and the functional wave at v17–v28. Applied history is unchanged.

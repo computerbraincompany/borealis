@@ -168,6 +168,8 @@ and no refresh remains active in the stopped ledger. A cancelled row allows
 up to 30 seconds for orderly process drain. A naturally completed row cannot
 prove active-work cancellation. Missing, manual, old, or unfinished
 work cannot pass. Content-free proof is retained in `native-watch-quit.json`.
+Its `embedding_requests_after_exit` field counts outstanding responses at exit,
+not historical calls; both active and held counts are asserted to be zero.
 The native history can lag a background refresh. A fresh read-only observation
 of the exact scheduled active row together with `embedding_held > 0` and no
 expired hold is valid active-work evidence immediately before the real CUA Cmd+Q; do not wait for a

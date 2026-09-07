@@ -40,10 +40,16 @@ connections and OAuth, reusable agents and jobs, saved parameterized analyses,
 editable documents with four export formats, folder/WebDAV libraries and source
 search, local research and comparison tables, and calendar briefs with a review
 inbox. The [API reference](docs/API.md) describes their current contracts.
-The [execution ledger](milestones/EXECUTION.md) records browser, packaged desktop,
-and live-model acceptance separately from implementation; an implemented feature
-is not a claim that every required acceptance gate has passed. Coding agents
-should start with the [development handoff](docs/DEVELOPMENT_HANDOFF.md).
+The functional v1 wave completed its required acceptance on 2026-09-07:
+repository and desktop gates, browser A–F, live local inference, storage and
+lifecycle checks, and all 17 checkpoints in the freshly packaged native app.
+The [execution ledger](milestones/EXECUTION.md) records the final runtime,
+package identity, commands and evidence. Hosted macOS CI still fails its strict
+entitlement negative control on a SIP-disabled runner; the same required check
+passed on the supported local Mac. A compatible CI runner is a separate
+infrastructure follow-up, and the failed hosted check is not reported as green.
+Coding agents should start with the completed [development handoff](docs/DEVELOPMENT_HANDOFF.md)
+and preserve its contracts.
 
 ## Architecture
 

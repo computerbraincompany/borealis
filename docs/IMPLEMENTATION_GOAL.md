@@ -1,9 +1,15 @@
 # Functional-wave completion goal
 
-The implementation is present. Start from the current
-`milestones/EXECUTION.md` evidence and open checks; preserve completed work.
-The original full-scope goal below remains the completion boundary and does
-not authorize repeating implemented milestones or replacing required checks.
+**Completed 2026-09-07.** All six functional slices and required integrated
+acceptance passed on runtime `1e56b21d66d119bfb4535e58a5b3535b0586b3c3`, including
+the complete 17-checkpoint packaged native run. Preserve the completed work and
+[evidence](../milestones/EXECUTION.md). The strict local entitlement matrix passed;
+the SIP-disabled hosted macOS CI runner remains a separate infrastructure
+follow-up, not an unimplemented functional requirement.
+
+The original full-scope goal below is retained as the completed scope and
+maintenance boundary. It does not authorize restarting the wave or replacing
+required regression checks.
 
 Implement the complete Borealis functional development wave defined in
 `docs/DEVELOPMENT_HANDOFF.md`. Read `AGENTS.md`, the current README/API/desktop

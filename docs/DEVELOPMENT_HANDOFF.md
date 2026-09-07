@@ -1,10 +1,13 @@
 # Development handoff — the complete functional wave
 
-**Selected:** 2026-09-06. **Original baseline:** `e2e6a78`. The six functional
-slices and prerequisite migrations are implemented. This remains the scope
-and maintenance contract for completing their acceptance and preserving the
-result. Consult [EXECUTION.md](../milestones/EXECUTION.md) for current evidence
-and open checks before doing work; do not restart the wave from its old baseline.
+**Completed:** 2026-09-07. **Selected:** 2026-09-06. **Original baseline:**
+`e2e6a78`. All six functional slices, prerequisite migrations and required
+acceptance are complete on runtime `1e56b21d66d119bfb4535e58a5b3535b0586b3c3`,
+including all 17 final packaged native checkpoints. This remains the scope and
+maintenance contract for preserving the result. Consult
+[EXECUTION.md](../milestones/EXECUTION.md) for final evidence and the separate
+SIP-disabled hosted macOS CI infrastructure follow-up; do not restart the wave
+from its old baseline. The required strict entitlement command passed locally.
 
 ## Start here and read in order
 

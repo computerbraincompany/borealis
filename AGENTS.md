@@ -679,8 +679,12 @@ clean utility-process shutdown.
 The selected September 6 functional wave is specified in
 [docs/DEVELOPMENT_HANDOFF.md](docs/DEVELOPMENT_HANDOFF.md),
 [docs/MCP_CONNECTIONS.md](docs/MCP_CONNECTIONS.md), and milestones M12–M16.
+The functional wave completed its required integrated acceptance on 2026-09-07,
+including browser/live-model checks and all 17 final packaged native checkpoints.
 The runtime implements these contracts across schema v17–v28 after the real
-v14–v16 prerequisite migrations. The handoff records that scope, coordination
+v14–v16 prerequisite migrations. Preserve this completed baseline; the separate
+SIP-disabled hosted macOS CI follow-up does not change the recorded strict local
+entitlement pass. The handoff records the scope, coordination
 rules, and the narrow desktop capability boundaries. Keep
 [milestones/EXECUTION.md](milestones/EXECUTION.md) and
 [docs/END_TO_END_ACCEPTANCE.md](docs/END_TO_END_ACCEPTANCE.md) aligned with actual
