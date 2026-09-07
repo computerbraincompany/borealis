@@ -28,13 +28,18 @@ import { Skeleton } from "@/components/ui/skeleton";
 
 /**
  * Reviewed-brief recipe wizard (M16 slice 4). One form for create and CAS
- * edit: pick a saved analysis (the server pins the current definition
- * revision at write), fill typed parameter values validated against the bound
- * revision's declarations, keep report title + instruction within bounds,
- * mirror the bound revision's exact source membership (membership equality is
- * a server rule — the picker enforces it and mirrors the server error), bind
- * per-source refreshes, and choose a civil calendar schedule with the
- * server-resolved next three run times and the running-app caveat.
+ * edit: pick a saved analysis — selection loads the current definition
+ * revision detail (loading skeleton; an in-dialog error with a retry
+ * affordance gates create/save until it resolves, and a null-schema detail is
+ * treated as a failed fetch rather than dereferenced) — and typed parameter
+ * inputs, the membership mirror, and every submitted value derive only from
+ * that revision, never from the catalog summary or a nullable run shape. Fill
+ * typed parameter values validated against the bound revision's declarations,
+ * keep report title + instruction within bounds, mirror the bound revision's
+ * exact source membership (membership equality is a server rule — the picker
+ * enforces it and mirrors the server error), bind per-source refreshes, and
+ * choose a civil calendar schedule with the server-resolved next three run
+ * times and the running-app caveat.
  */
 
 const CALENDAR_CAVEAT = "The app/server must be running for schedules to fire — there is no OS scheduler.";
@@ -224,6 +229,11 @@ export function BriefRecipeWizard({
         // surface (e.g. `active_run: null`) are never read for parameters.
         const detail = await analysesApi.get(id, signal);
         if (detailRequestRef.current !== requestId || signal.aborted || !mountedRef.current) return;
+        // Fail closed on a null-schema response: dereferencing it is exactly
+        // the journey-F crash signature ("Cannot read properties of null
+        // (reading 'parameters')"). Treat it as a failed fetch so the in-
+        // dialog error + retry path owns it instead of the render tree.
+        if (!detail) throw new Error("analysis revision detail is unavailable");
         setAnalysis(detail);
         const draft: Record<string, string> = {};
         for (const declaration of detail.parameters) draft[declaration.name] = paramDraftValue(declaration);
@@ -524,10 +534,21 @@ export function BriefRecipeWizard({
               </Button>
             )}
             {analysisLoading ? <Skeleton className="h-16 w-full" /> : null}
-            {analysisError && (
-              <p className="text-xs text-destructive" role="alert">
-                {analysisError}
-              </p>
+            {analysisError && !analysisLoading && (
+              <div className="flex items-center gap-2">
+                <p className="text-xs text-destructive" role="alert">
+                  {analysisError}
+                </p>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  aria-label="Retry loading the saved analysis"
+                  onClick={refreshMembership}
+                >
+                  <RefreshCw className="h-3.5 w-3.5" /> Retry
+                </Button>
+              </div>
             )}
             {analysis && !analysisLoading && (
               <div className="rounded-md border bg-secondary/30 px-3 py-2 text-xs">
