@@ -3,7 +3,7 @@
 ## Status and execution contract
 
 - **Status:** IMPLEMENTED — browser, live-model and repository acceptance pass;
-  final native packaged UI acceptance awaits macOS Keychain approval.
+  final native packaged UI acceptance awaits Keychain approval for the rebuilt app.
   [EXECUTION.md](EXECUTION.md) records current gates and retained evidence.
   Baseline descriptions and dated execution records below are historical
   context; they do not supersede the current API or acceptance status.

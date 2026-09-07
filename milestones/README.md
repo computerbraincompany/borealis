@@ -1,8 +1,8 @@
 # Milestone ledger
 
 **Ledger reviewed:** 2026-09-07. M01–M11 form the completed baseline;
-connected agents and M12–M16 are implemented and undergoing final native
-v1 acceptance. [EXECUTION.md](EXECUTION.md) is the current evidence authority.
+connected agents and M12–M16 are implemented; final native v1 acceptance awaits
+Keychain approval for the rebuilt app. [EXECUTION.md](EXECUTION.md) is the current evidence authority.
 
 The M05 extension includes identity, Markdown skills, atomic configuration
 revisions, built-in tool allowlists, MCP/OAuth and reusable job setup. The
@@ -111,12 +111,12 @@ calendar. Detailed rationale and dated competitive evidence live in the
 
 | Order | Functional slice | First useful outcome | Status / dependency |
 | ----- | ---------------- | -------------------- | ------------------- |
-| 1 | [Connected agents](../docs/MCP_CONNECTIONS.md), M05 extension | HTTP/stdio MCP, OAuth, selected tools and reusable job setup | Implemented; native approval pending |
-| 2 | [M12 saved analyses](M12-saved-analyses.md) | Parameterized SQL, preserved results, comparison and export outside chat | Implemented; native approval pending |
-| 3 | [M13 report/document workbench](M13-report-workbench.md) | Edit/rewrite, review changes and export a new evidence-bearing version | Implemented; native approval pending |
-| 4 | [M14 living libraries/search](M14-living-libraries.md) | Selected folders, watch/refresh, indexed WebDAV, source search/inspection | Implemented; native approval pending |
-| 5 | [M15 local research](M15-local-research.md) | Question plan, dossier, cited memo and reviewed comparison table | Implemented; native approval pending |
-| 6 | [M16 reviewed briefs](M16-reviewed-briefs.md) | Refresh, wait, analyze, compare, draft and review on a calendar schedule | Implemented; native approval pending |
+| 1 | [Connected agents](../docs/MCP_CONNECTIONS.md), M05 extension | HTTP/stdio MCP, OAuth, selected tools and reusable job setup | Implemented; final native approval pending |
+| 2 | [M12 saved analyses](M12-saved-analyses.md) | Parameterized SQL, preserved results, comparison and export outside chat | Implemented; final native approval pending |
+| 3 | [M13 report/document workbench](M13-report-workbench.md) | Edit/rewrite, review changes and export a new evidence-bearing version | Implemented; final native approval pending |
+| 4 | [M14 living libraries/search](M14-living-libraries.md) | Selected folders, watch/refresh, indexed WebDAV, source search/inspection | Implemented; final native approval pending |
+| 5 | [M15 local research](M15-local-research.md) | Question plan, dossier, cited memo and reviewed comparison table | Implemented; final native approval pending |
+| 6 | [M16 reviewed briefs](M16-reviewed-briefs.md) | Refresh, wait, analyze, compare, draft and review on a calendar schedule | Implemented; final native approval pending |
 
 MCP is an integration mechanism; each connection still needs a useful end-to-end
 job. It does not by itself create indexed sources, a research mode, or a

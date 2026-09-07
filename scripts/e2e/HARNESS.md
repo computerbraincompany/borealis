@@ -207,7 +207,7 @@ The root scripts are implemented:
 
 ```bash
 pnpm test:e2e:product
-pnpm test:e2e:product:desktop
+pnpm test:e2e:product:desktop --native-driver=external
 pnpm test:e2e:product:live
 ```
 

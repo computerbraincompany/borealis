@@ -560,7 +560,7 @@ generic message.
 | --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `POST /api/knowledge-connections`             | Creates a `desktop_folder` connection strictly from a consumed grant (a WebDAV form may not name a local path) or a `webdav` connection whose password goes straight to shared custody. Returns `201` with the metadata DTO. |
 | `GET /api/knowledge-connections`              | Endpoint-bound keyset catalog `{items,next_cursor}`, default 25, max 100.                                                                                     |
-| `PATCH /api/knowledge-connections/:id`        | Version-checked (`expected_revision`) name edit, `watch_enabled` toggle, and optional WebDAV credential replacement (`credentials: {password}` or `null`).     |
+| `PATCH /api/knowledge-connections/:id`        | Version-checked (`expected_revision`) name edit, `watch_enabled` toggle (folders only), and optional WebDAV credential replacement (`credentials: {password}` or `null`).     |
 | `DELETE /api/knowledge-connections/:id`       | Requests cancellation of the connection's active refresh, removes the mapping/custody record/watch state, and returns `{"ok":true}`. Sources, library membership, and every artifact are retained. |
 | `POST /api/knowledge-connections/:id/previews`| Starts the durable bounded scan; returns `202 {preview, run_id}` while the pending row is polled below.                                                       |
 | `GET /api/knowledge-previews/:id`             | The exact-account diff with per-entry selection tokens (`{preview, entries}`). Uncommitted previews expire after 10 minutes.                                  |
@@ -580,7 +580,9 @@ actionable disconnected state, and archive restore records
 `KNOWLEDGE_FOLDER_RESELECT_REQUIRED` (desktop folder) after a cross-machine
 restore — the Web UI renders exactly those reconnect/reselect states.
 
-Desktop watch is durable ledger state (`watch_enabled`, off by default), but
+Watch is supported only for `desktop_folder` connections; enabling it on WebDAV
+returns `400 KNOWLEDGE_CONNECTION_CONFIG_INVALID`. Desktop watch is durable
+ledger state (`watch_enabled`, off by default), but
 the periodic scan pump runs only inside the trusted desktop composition: 2
 seconds of debounce, a 30-second minimum scan interval, and a 5-minute full
 reconciliation pass, with every timer cleared on shutdown. Browser mode

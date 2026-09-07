@@ -1,8 +1,8 @@
 {
   "date": "2026-09-07",
   "scope": "Borealis functional v1",
-  "runtime_source_commit": "9fd294421b771864ee322dd2445d9d58df63fa14",
-  "completion": "blocked_native_keychain_approval",
+  "runtime_source_commit": "ec63c5ed9773920f8e0d90035145d591e9914269",
+  "completion": "native_keychain_approval_pending",
   "platform": {
     "os": "macOS 26.6.2",
     "arch": "arm64",
@@ -13,11 +13,11 @@
     "command": "pnpm verify",
     "passed": true,
     "tasks": 16,
-    "server_unit_tests": 1307,
-    "server_integration_tests": 413,
+    "server_unit_tests": 1314,
+    "server_integration_tests": 414,
     "web_tests": 485,
     "desktop_tests": 29,
-    "log": "/tmp/borealis-v1-final-verify-5.log"
+    "log": "/tmp/borealis-v1-final-verify-lifecycle.log"
   },
   "desktop_gates": {
     "verify": true,
@@ -25,7 +25,13 @@
     "packaged_native_smoke": true,
     "entitlement_matrix": true,
     "negative_entitlement_removals": 2,
-    "package_asar_sha256": "12678bd58a9bba68b9bedb595f2e2495455ed94a0303e1287083b29a69d888d9"
+    "package_asar_sha256": "77cc92964d4882213f36093644a2b7ae9eed79ab8909282abdd73da983633605",
+    "logs": {
+      "verify": "/tmp/borealis-v1-final-desktop-verify-lifecycle.log",
+      "package": "/tmp/borealis-v1-final-package-lifecycle.log",
+      "native": "/tmp/borealis-v1-final-packaged-native-lifecycle.log",
+      "entitlements": "/tmp/borealis-v1-final-entitlements-lifecycle.log"
+    }
   },
   "browser": {
     "entry": "run-product",
@@ -33,7 +39,7 @@
       {
         "journey": "A",
         "status": "pass",
-        "duration_ms": 19964,
+        "duration_ms": 21015,
         "artifacts": [
           "shot-001.png",
           "shot-002.png",
@@ -54,7 +60,7 @@
       {
         "journey": "B",
         "status": "pass",
-        "duration_ms": 11279,
+        "duration_ms": 12456,
         "artifacts": [
           "shot-001.png",
           "shot-002.png",
@@ -74,7 +80,7 @@
       {
         "journey": "C",
         "status": "pass",
-        "duration_ms": 19640,
+        "duration_ms": 23014,
         "artifacts": [
           "shot-001.png",
           "shot-002.png",
@@ -99,7 +105,7 @@
       {
         "journey": "D",
         "status": "pass",
-        "duration_ms": 61434,
+        "duration_ms": 61814,
         "artifacts": [
           "shot-001.png",
           "shot-002.png",
@@ -118,7 +124,7 @@
       {
         "journey": "E",
         "status": "pass",
-        "duration_ms": 68681,
+        "duration_ms": 69755,
         "artifacts": [
           "shot-001.png",
           "shot-002.png",
@@ -143,7 +149,7 @@
       {
         "journey": "F",
         "status": "pass",
-        "duration_ms": 23028,
+        "duration_ms": 22392,
         "artifacts": [
           "shot-001.png",
           "shot-002.png",
@@ -161,7 +167,7 @@
       }
     ],
     "passed": true,
-    "started_at": "2026-09-07T14:39:49.935Z",
+    "started_at": "2026-09-07T15:43:53.987Z",
     "cleanup": {
       "workspace_removed": true,
       "kept_path": null,
@@ -169,7 +175,7 @@
       "pids_gone": true,
       "problems": []
     },
-    "finished_at": "2026-09-07T14:43:15.652Z"
+    "finished_at": "2026-09-07T15:47:27.057Z"
   },
   "live": {
     "entry": "run-product-live",
@@ -240,7 +246,7 @@
   },
   "storage": {
     "entry": "run-product-storage",
-    "started_at": "2026-09-07T14:12:08.900Z",
+    "started_at": "2026-09-07T15:47:16.073Z",
     "runtime": "v22.22.3",
     "schema": 28,
     "checks": [
@@ -290,7 +296,7 @@
       }
     ],
     "passed": true,
-    "finished_at": "2026-09-07T14:12:15.195Z",
+    "finished_at": "2026-09-07T15:47:23.375Z",
     "cleanup": {
       "workspace_removed": true
     }
@@ -298,19 +304,28 @@
   "native_ui": {
     "status": "blocked",
     "passed_checkpoints": 0,
-    "reason": "Owned packaged main process blocked in macOS Keychain before renderer bootstrap. Protected SecurityAgent UI cannot be automated; user approval requested.",
-    "pending_run": "/tmp/borealis-v1-native-final",
-    "cleanup": "Not claimed: run remains pending so the user can approve the prompt.",
-    "next_action": "Complete macOS Keychain approval, then restart the native harness with its reviewed final checks and drive A-F through the normal UI."
+    "pending_run": "/tmp/borealis-v1-native-final-3",
+    "package_asar_sha256": "77cc92964d4882213f36093644a2b7ae9eed79ab8909282abdd73da983633605",
+    "blocker": "Newly rebuilt package waiting inside macOS Keychain access before native renderer bootstrap. Protected SecurityAgent is not automated or bypassed.",
+    "next_action": "User approves the macOS Keychain prompt; resume the same runner for all A-F and active watched-folder quit.",
+    "intermediate_evidence": "/tmp/borealis-v1-native-final-evidence-2/summary.json",
+    "intermediate_passed_journeys": [
+      "A",
+      "B",
+      "C"
+    ],
+    "intermediate_cleanup": "Normal Cmd+Q; children/process/profile/workspace-lock cleanup clean. This intermediate package does not certify final acceptance."
   },
   "harness_tests": {
     "protocol_fixture_checks": 82,
-    "native_driver_regressions": 6,
+    "native_driver_regressions": 8,
     "skips": 0
   },
   "documentation": {
-    "markdown_files_reviewed": 129,
-    "missing_local_targets": 0
+    "markdown_files_reviewed": 130,
+    "missing_local_targets": 0,
+    "local_links": 565,
+    "anchor_links": 17
   },
   "visual_exports": {
     "passed": true,
@@ -330,5 +345,220 @@
       "/tmp/borealis-v1-browser-final2-20260907/artifacts/C/exports/docR-v2.zip": "81c1b6c2321fb06b57690d60badfc50ce3a77077e7f0bbfa2afe4b883be7508a",
       "/tmp/borealis-v1-browser-final2-20260907/artifacts/C/exports/docT-v2.zip": "92f3c4ddec0d83233819cde552cd73d26bab9b2ebc764cd5bf3b8e4ccadf28de"
     }
-  }
+  },
+  "process_lifecycle": {
+    "entry": "run-product-lifecycle",
+    "started_at": "2026-09-07T15:37:31.751Z",
+    "checks": [
+      {
+        "kind": "research-crash",
+        "signal": "SIGKILL",
+        "real_process_reopened": true,
+        "previously_committed_cells": 1,
+        "final_cells": 2,
+        "evidence_preserved": true,
+        "no_automatic_artifacts": true,
+        "explicit_draft_count": 1
+      },
+      {
+        "kind": "rewrite-and-research",
+        "signal": "SIGTERM",
+        "active_before_signal": true,
+        "clean_exit": true,
+        "lock_released": true
+      },
+      {
+        "kind": "rewrite-and-research-reopen",
+        "rewrite_failed_without_replay": true,
+        "original_revision_preserved": true,
+        "research_resumed": true
+      },
+      {
+        "kind": "chat-mcp-child",
+        "signal": "SIGTERM",
+        "active_before_signal": true,
+        "clean_exit": true,
+        "lock_released": true
+      },
+      {
+        "kind": "chat-mcp-reopen",
+        "child_exit_proven": true,
+        "external_dispatch_count": 1,
+        "automatic_replay": false
+      },
+      {
+        "kind": "analysis-query",
+        "signal": "SIGTERM",
+        "active_before_signal": true,
+        "clean_exit": true,
+        "lock_released": true
+      },
+      {
+        "kind": "document-rendering",
+        "signal": "SIGTERM",
+        "active_before_signal": true,
+        "clean_exit": true,
+        "lock_released": true
+      },
+      {
+        "kind": "render-reopen",
+        "interrupted_outcome": "failed",
+        "explicit_retry_after_failure": true,
+        "exactly_one_publication": true,
+        "renderer_children_gone": true,
+        "pdf_preserved": true
+      },
+      {
+        "kind": "knowledge-webdav-refresh",
+        "signal": "SIGTERM",
+        "active_before_signal": true,
+        "clean_exit": true,
+        "lock_released": true
+      },
+      {
+        "kind": "knowledge-reopen",
+        "aborted_transport_closed": true,
+        "prior_ready_source_preserved": true,
+        "no_automatic_replay": true
+      },
+      {
+        "kind": "brief-narrative",
+        "signal": "SIGTERM",
+        "active_before_signal": true,
+        "clean_exit": true,
+        "lock_released": true
+      },
+      {
+        "kind": "brief-reopen",
+        "actual_narrative_active_before_sigterm": true,
+        "shutdown_preserved_drafting_and_analysis": true,
+        "same_run_resumed_to_review": true,
+        "analysis_and_result_reused": true,
+        "exactly_one_draft_revision": true,
+        "exactly_one_notification": true,
+        "no_automatic_publication": true,
+        "operation_replay_deduplicated": true,
+        "second_process_reopen_deduplicated": true
+      },
+      {
+        "kind": "closed-across-due-time",
+        "real_wall_clock": true,
+        "process_absent_when_due": true,
+        "exactly_one_scheduled_catch_up": true,
+        "next_cursor_advanced": true,
+        "second_reopen_deduplicated": true
+      }
+    ],
+    "passed": true,
+    "scope": "all",
+    "required_cases": [
+      "research",
+      "rewrite",
+      "mcp",
+      "analysis",
+      "render",
+      "knowledge",
+      "brief"
+    ],
+    "completed_cases": [
+      "research",
+      "rewrite",
+      "mcp",
+      "analysis",
+      "render",
+      "knowledge",
+      "brief"
+    ],
+    "runtime_files_sha256": {
+      "server/dist/index.js": "e1815f5df14ba2c4e8d103bd0368425f1b90f1529218b3076d286cd39a93561f",
+      "server/dist/serverApp.js": "2547b0ae7ae0ff12b0d673169a558e65ab83735b30430e232a7d19e564227c64",
+      "server/dist/briefRunner.js": "adc9d42bc7b47db69cf1f45e6ae2f4f8f9bd9acf70db8767d29bdcfd46f6f4f1",
+      "server/dist/knowledgeRefresh.js": "f857b692e9ee02f261999766231986aed70ae5af4c78b642a2919e6bcd5c81a3",
+      "server/dist/knowledgeWatch.js": "e284c924965fc831ff7f900f4b693d9aeb1918c98c7dac48cab2ad508f23f628",
+      "server/dist/routes/knowledge.js": "f55e49c152bd0313d34ae8eb8613089fba9cd8356df6caddd51d5a8adb5ab598"
+    },
+    "cleanup": {
+      "removed": true,
+      "kept": false,
+      "lockReleased": true,
+      "pidsGone": true,
+      "problems": []
+    },
+    "finished_at": "2026-09-07T15:39:02.675Z",
+    "evidence_path": "/tmp/borealis-v1-lifecycle-final-evidence-v3/summary.json",
+    "fixed_defects": [
+      "Late-idle HTTP keep-alive socket prevented shutdown",
+      "Knowledge background abort finalization escaped or outlived store closure",
+      "SDK narrative abort failed a resumable brief during shutdown"
+    ]
+  },
+  "initial_runtime_source_commit": "9fd294421b771864ee322dd2445d9d58df63fa14",
+  "live_previous_shutdown_revision": {
+    "entry": "run-product-live",
+    "started_at": "2026-09-07T15:32:29.836Z",
+    "finished_at": "2026-09-07T15:47:58.798Z",
+    "chat_model": "qwen/qwen3.6-35b-a3b",
+    "embed_model": "text-embedding-nomic-embed-text-v1.5",
+    "embed_dim": 768,
+    "checks": [
+      {
+        "check": "provider-reachable",
+        "status": "pass",
+        "duration_ms": 24,
+        "chat_model": "qwen/qwen3.6-35b-a3b",
+        "embed_model": "text-embedding-nomic-embed-text-v1.5"
+      },
+      {
+        "check": "chat-model-tool-capable",
+        "status": "pass",
+        "duration_ms": 26581,
+        "attempts": 2
+      },
+      {
+        "check": "finance-upload-ingest",
+        "status": "pass",
+        "duration_ms": 1075,
+        "sources": 4
+      },
+      {
+        "check": "live-chat-tool-turn",
+        "status": "pass",
+        "duration_ms": 64433,
+        "query_receipts": 3
+      },
+      {
+        "check": "finance-analysis-parameterized-rerun",
+        "status": "pass",
+        "duration_ms": 1044,
+        "rows": 14,
+        "checked": 14
+      },
+      {
+        "check": "finance-exports",
+        "status": "pass",
+        "duration_ms": 9,
+        "csv_bytes": 762
+      },
+      {
+        "check": "research-import-and-run",
+        "status": "pass",
+        "duration_ms": 834175,
+        "evidence": 3,
+        "rows": 3,
+        "run_status": "needs_review",
+        "ui_created_planned_started_and_inspected": true,
+        "supported_typed_facts": 12,
+        "missing_exceptions_preserved": true
+      }
+    ],
+    "passed": true,
+    "cleanup": {
+      "workspace_removed": true,
+      "kept": false,
+      "lock_released": true,
+      "pids_gone": true,
+      "problems": []
+    }
+  },
+  "live_final_pending_path": "/tmp/borealis-v1-ec63-live-final/summary.json"
 }
