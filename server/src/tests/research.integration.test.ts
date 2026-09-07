@@ -139,8 +139,23 @@ const CEDAR_DOC = [
   "Compute and storage are metered monthly.",
 ].join("\n");
 
+// The exact bytes of these three bodies are the committed fixture of
+// `data/e2e/supplier-research-expected.mjs`, used by the standalone
+// `scripts/e2e-local-research.mjs` proof. These pinned digests keep the two
+// copies honest: drifting either one fails a suite.
+const COMMITTED_DOC_SHA256 = {
+  "acme-proposal.md": "d778afb6b082399c0c8e2b4e21b39a711a8ead64494bda11cf134839e156e6c5",
+  "blueriver-proposal.md": "70247e7784567139a1a19e9d2b6abe2df11fa9bb7552e6ac579a3549987fe36f",
+  "cedarcloud-proposal.md": "5c7157c004b31e0c3566f6799829cc25c9671e278b1d383a7cddf1bf606f06d2",
+} as const;
+
 function sha256(text: string): string {
   return createHash("sha256").update(text, "utf8").digest("hex");
+}
+
+/** Exactly the ingestion normalization (`chunkText` collapse + trim). */
+function normalizedText(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
 }
 
 function planSteps(entries: readonly (readonly [string, readonly string[]])[]) {
@@ -347,6 +362,10 @@ describe("M15 complete research job (real FTS + real LanceDB + scripted provider
     "memo and comparison over the three-supplier corpus: locators, conflict, missing fact, exports, artifact, cross-account",
     { timeout: 240_000 },
     async () => {
+      // Fixture bytes must equal the committed standalone-proof bytes.
+      expect(sha256(ACME_DOC)).toBe(COMMITTED_DOC_SHA256["acme-proposal.md"]);
+      expect(sha256(BLUERIVER_DOC)).toBe(COMMITTED_DOC_SHA256["blueriver-proposal.md"]);
+      expect(sha256(CEDAR_DOC)).toBe(COMMITTED_DOC_SHA256["cedarcloud-proposal.md"]);
       const directory = await bootWorkspace();
       const acme = await ingestSupplierDoc(directory, "acme-proposal.md", ACME_DOC);
       const blue = await ingestSupplierDoc(directory, "blueriver-proposal.md", BLUERIVER_DOC);
@@ -438,18 +457,48 @@ describe("M15 complete research job (real FTS + real LanceDB + scripted provider
       expect(memoRun.status).toBe("completed");
       expect(memoRun.error_code).toBeNull();
 
-      // Dossier: real typed locators and real content hashes.
+      // Dossier: real typed locators and real content hashes. The locators
+      // are M14 text offsets into the normalized extracted text, and the
+      // heading is the actually-seen ATX Markdown heading, so every slice
+      // must line up with the independently normalized source bytes.
       const memoEvidence = await dossierOf(memoRunId);
       expect(memoEvidence.length).toBeGreaterThan(0);
+      const normalizedBySource = new Map([
+        [acme, normalizedText(ACME_DOC)],
+        [blue, normalizedText(BLUERIVER_DOC)],
+        [cedar, normalizedText(CEDAR_DOC)],
+      ]);
       for (const item of memoEvidence) {
         expect(item.contentHash).toBe(sha256(item.excerpt));
         expect(item.generation).toBe(1);
         expect(item.label).toBeTruthy();
+        const normalized = normalizedBySource.get(item.sourceId);
+        expect(normalized, "evidence maps to a pinned source").toBeDefined();
+        expect(normalized!.includes(item.excerpt)).toBe(true);
+        expect(item.locators.length).toBeGreaterThan(0);
+        for (const locator of item.locators) {
+          expect(locator.kind).toBe("text_span");
+          if (locator.kind !== "text_span") continue;
+          expect(Number.isInteger(locator.char_start)).toBe(true);
+          expect(Number.isInteger(locator.char_len)).toBe(true);
+          expect(locator.char_start).toBeGreaterThanOrEqual(0);
+          expect(locator.char_len).toBeGreaterThan(0);
+          expect(locator.char_start + locator.char_len).toBeLessThanOrEqual(normalized!.length);
+          expect(normalized!.slice(locator.char_start, locator.char_start + locator.char_len).length).toBe(
+            locator.char_len
+          );
+        }
       }
-      const located = memoEvidence.filter(
-        (item) => item.locators.length > 0 && item.locators.every((locator) => locator.kind === "text_span")
-      );
-      expect(located.length).toBe(memoEvidence.length);
+      // Real heading capture: the fee statements sit under each proposal's
+      // own ATX heading, and the runner preserved that heading locator.
+      const headingOf = (sourceId: string, heading: string) =>
+        memoEvidence.filter(
+          (item) =>
+            item.sourceId === sourceId &&
+            item.locators.some((locator) => locator.kind === "text_span" && locator.heading === heading)
+        ).length;
+      expect(headingOf(acme, "Acme Logistics proposal")).toBeGreaterThan(0);
+      expect(headingOf(blue, "BlueRiver Analytics proposal")).toBeGreaterThan(0);
 
       // Claims: conflict requires two differing excerpts; foreign refs dropped.
       const claims = memoRun.claims as any[];
