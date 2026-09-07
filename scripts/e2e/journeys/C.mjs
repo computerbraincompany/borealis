@@ -1202,8 +1202,8 @@ export async function run(ctx) {
     for (const value of juneNets) {
       assert(t2DocXml.includes(netText(value)), "DOC_T_DOCX_TABLE_VALUE", netText(value));
     }
-    const t2DocxMedia = [...t2DocxZip.keys()].filter((name) => name.startsWith("word/media/"));
-    assert(t2DocxMedia.length >= 1 && PNG_MAGIC.equals(t2DocxZip.get(t2DocxMedia[0]).subarray(0, 8)), "DOC_T_DOCX_MEDIA_PNG");
+    const t2DocxMedia = [...t2DocxZip.keys()].filter((name) => /^word\/media\/[^/]+\.png$/i.test(name));
+    assert(t2DocxMedia.length >= 1 && PNG_MAGIC.equals(t2DocxZip.get(t2DocxMedia[0]).subarray(0, 8)), "DOC_T_DOCX_MEDIA_PNG", t2DocxMedia[0]);
     const t2Rels = [...t2DocxZip.keys()].filter((name) => name.endsWith(".rels")).map((name) => t2DocxZip.get(name).toString("utf8"));
     assert(
       !t2Rels.some((rels) => /TargetMode="External"/i.test(rels) || /Target="https?:/i.test(rels)),
