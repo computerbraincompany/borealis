@@ -24,7 +24,15 @@
  *    published through the documents API, verified by %PDF magic bytes and
  *    self-contained HTML;
  * 4. workspace proofs: a second backend boot against the same locked
- *    workspace must fail closed while the primary pid stays healthy.
+ *    workspace must fail closed while the primary pid stays healthy, and the
+ *    disposable workspace must be gone at the end.
+ *
+ * All fixture bytes, corpus facts, scripted invalid/override values, plan
+ * steps, and export fragments are asserted against the committed
+ * `data/e2e/supplier-research-expected.mjs` module — the anti-tautology
+ * guard: the script verifies the module's own internal consistency
+ * (`verifyCommittedExpected`) before it runs, then asserts every runtime
+ * outcome against those committed expectations.
  *
  * Output contract: exactly one content-free JSON summary line on stdout.
  * Exit `0` only when every assertion held; `1` otherwise (never a silent
@@ -43,6 +51,12 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import {
+  COMMITTED_EXPECTED,
+  SUPPLIER_DOCS,
+  verifyCommittedExpected,
+} from "../data/e2e/supplier-research-expected.mjs";
+
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const SERVER_ENTRY = path.join(REPO_ROOT, "server", "dist", "index.js");
 
@@ -59,72 +73,31 @@ if (process.argv.slice(2).some((flag) => !["--keep-on-failure"].includes(flag)))
 }
 
 // -- The milestone's synthetic three-supplier corpus ---------------------------
-// Differing dates, amounts and terms; a contradiction (900 vs 950 USD shared
-// onboarding fee across two suppliers); one fact stated nowhere (the
-// termination notice period). BlueRiver's body is padded so its two renewal
-// statements land in different 900-character chunks (a real cell-level
-// conflict over two captured excerpts).
-const BLUE_FILLER = "Delivery cadence is weekly with a monthly steering call. ".repeat(12);
-const SUPPLIER_DOCS = [
-  {
-    name: "acme-proposal.md",
-    body: [
-      "# Acme Logistics proposal",
-      "Supplier: Acme Logistics",
-      "Price: 12000 USD",
-      "Effective: 2026-01-15",
-      "Renewal: automatic on the anniversary date",
-      "Tier: premium",
-      "Exceptions: =volume discounts above 500 shipments per quarter",
-      "The shared platform onboarding fee is 900 USD one time.",
-      "Payment terms are net 30 days.",
-      "Regional freight and last-mile delivery are covered.",
-    ].join("\n"),
-  },
-  {
-    name: "blueriver-proposal.md",
-    body: [
-      "# BlueRiver Analytics proposal",
-      "Supplier: BlueRiver Analytics",
-      "Price: 8750 USD",
-      "Effective: 2025-11-01",
-      "Renewal: manual written approval",
-      "Tier: standard",
-      "Exceptions: none stated",
-      "The shared platform onboarding fee is 950 USD one time.",
-      "Payment terms are net 45 days.",
-      BLUE_FILLER,
-      "Renewal addendum: the renewal quote allows automatic renewal.",
-      "Data feeds are provisioned within five business days.",
-    ].join("\n"),
-  },
-  {
-    name: "cedarcloud-proposal.md",
-    body: [
-      "# CedarCloud Hosting proposal",
-      "Supplier: CedarCloud Hosting",
-      "Price: 21000 USD",
-      "Effective: 2026-03-01",
-      "Tier: enterprise",
-      "Exceptions: EU data residency add-on excluded",
-      "Payment terms are net 60 days.",
-      "Compute and storage are metered monthly.",
-    ].join("\n"),
-  },
-];
-
+// The committed fixture bytes and every expected corpus fact (differing
+// dates/amounts/terms, the shared-onboarding-fee contradiction, the
+// never-stated termination notice period, the scripted invalid verbatims,
+// the correction/rerun values, plan steps, and export fragments) come from
+// `data/e2e/supplier-research-expected.mjs`. Everything below derives its
+// deterministic expectations from that module — no fact is restated inline.
+const EXPECTED = COMMITTED_EXPECTED;
+const ACME = EXPECTED.suppliers["Acme Logistics"];
+const BLURIVER = EXPECTED.suppliers["BlueRiver Analytics"];
+const CEDAR = EXPECTED.suppliers["CedarCloud Hosting"];
+const SUPPLIER_BY_NAME = { "Acme Logistics": ACME, "BlueRiver Analytics": BLURIVER, "CedarCloud Hosting": CEDAR };
+const [ACME_NAME, BLURIVER_NAME, CEDAR_NAME] = Object.keys(SUPPLIER_BY_NAME);
+// The committed excerpt fragment already carries the currency token.
+const feeExcerpt = (fee) => `${fee} ${EXPECTED.conflict.excerpt_fragment}`;
+const priceExcerpt = (supplier) => `${supplier.price} ${supplier.currency}`;
 const MEMO_PLAN = {
-  steps: [
-    { objective: "Find the shared onboarding fee statements", questions: ["onboarding"] },
-    { objective: "Establish the termination notice period", questions: ["termination"] },
-  ],
+  steps: EXPECTED.memo_plan_steps.map((step) => ({ objective: step.objective, questions: [...step.questions] })),
 };
 const COMPARISON_PLAN = {
-  steps: [
-    { objective: "Establish which suppliers renew and how", questions: ["renewal"] },
-    { objective: "Capture the priced terms for every supplier", questions: ["payment"] },
-  ],
+  steps: EXPECTED.comparison_plan_steps.map((step) => ({ objective: step.objective, questions: [...step.questions] })),
 };
+
+function sha256(buffer) {
+  return crypto.createHash("sha256").update(buffer).digest("hex");
+}
 
 // -- Failure plumbing -----------------------------------------------------------
 class StageFailure extends Error {
@@ -198,10 +171,11 @@ function evidencePairs(userContent) {
 function memoSynthesisAnswer(userContent) {
   const pairs = evidencePairs(userContent);
   const pick = (token) => pairs.find((pair) => pair.excerpt.includes(token))?.id ?? null;
-  const fee900 = pick("900 USD one time");
-  const fee950 = pick("950 USD one time");
-  const price12000 = pick("12000 USD");
-  if (!fee900 || !fee950 || !price12000) {
+  const [feeLow, feeHigh] = EXPECTED.conflict.values;
+  const feeLowId = pick(feeExcerpt(feeLow));
+  const feeHighId = pick(feeExcerpt(feeHigh));
+  const priceId = pick(priceExcerpt(ACME));
+  if (!feeLowId || !feeHighId || !priceId) {
     // Honest degenerate transcript: gaps only, never a fabricated citation.
     return JSON.stringify({
       claims: [],
@@ -211,19 +185,19 @@ function memoSynthesisAnswer(userContent) {
   return JSON.stringify({
     claims: [
       {
-        text: "The suppliers state different one-time onboarding fees.",
+        text: `The suppliers state different one-time ${EXPECTED.conflict.fact}s.`,
         classification: "conflicting",
         // The trailing foreign id must be dropped by the server, never
         // resolved to another run's evidence.
-        evidence_ids: [fee900, fee950, crypto.randomUUID()],
+        evidence_ids: [feeLowId, feeHighId, crypto.randomUUID()],
       },
       {
-        text: "Acme lists 12000 USD as the annual price.",
+        text: `${ACME_NAME} lists ${priceExcerpt(ACME)} as the annual price.`,
         classification: "supported",
-        evidence_ids: [price12000, crypto.randomUUID()],
+        evidence_ids: [priceId, crypto.randomUUID()],
       },
     ],
-    gaps: ["The termination notice period is not found in selected evidence."],
+    gaps: [`The ${EXPECTED.missing_fact.name} is ${EXPECTED.missing_fact.gap_phrase}.`],
   });
 }
 
@@ -249,38 +223,42 @@ function comparisonColumnAnswer(userContent) {
   const rows = extractionRows(userContent);
   const rowSupplier = (row) => {
     const text = row.pairs.map((pair) => pair.excerpt).join(" ");
-    if (text.includes("Acme Logistics")) return "acme";
-    if (text.includes("BlueRiver Analytics")) return "blue";
-    if (text.includes("CedarCloud Hosting")) return "cedar";
-    return "unknown";
+    for (const name of Object.keys(SUPPLIER_BY_NAME)) if (text.includes(name)) return name;
+    return null;
   };
   const cells = [];
-  const singleRowPriceRerun = column === "Price" && rows.length === 1;
+  const [priceColumn, effectiveColumn, renewalColumn, tierColumn, exceptionsColumn] = EXPECTED.columns.map(
+    (column) => column.label
+  );
+  const singleRowPriceRerun = column === priceColumn && rows.length === 1;
   for (const row of rows) {
-    const supplier = rowSupplier(row);
+    const supplierName = rowSupplier(row);
+    const supplier = supplierName === null ? null : SUPPLIER_BY_NAME[supplierName];
     const idFor = (token) => row.pairs.find((pair) => pair.excerpt.includes(token))?.id ?? null;
     const ref = (id, extra = {}) => ({
       source_id: row.sourceId,
       ...(id ? { evidence_ids: [id] } : {}),
-      explanation: `Extracted from the ${supplier} proposal.`,
+      explanation: `Extracted from the ${supplierName ?? "unknown"} proposal.`,
       ...extra,
     });
-    if (column === "Price") {
+    if (column === priceColumn) {
       if (singleRowPriceRerun) {
-        cells.push({ ...ref(idFor("8750"), { value: 9000 }), explanation: "Refreshed quote supersedes the prior rate." });
+        cells.push({
+          ...ref(idFor(String(BLURIVER.price)), { value: EXPECTED.review.rerun_blue_price }),
+          explanation: EXPECTED.review.rerun_explanation,
+        });
         continue;
       }
-      if (supplier === "acme")
-        cells.push(ref(idFor("12000 USD"), { value: "12000 dollars" })); // invalid verbatim
-      else if (supplier === "blue") cells.push(ref(idFor("8750 USD"), { value: 8750 }));
-      else if (supplier === "cedar") cells.push(ref(idFor("21000 USD"), { value: 21000 }));
-    } else if (column === "Effective") {
-      const value = supplier === "acme" ? "2026-01-15" : supplier === "blue" ? "2025-11-01" : supplier === "cedar" ? "2026-03-01" : null;
-      cells.push(ref(idFor("Effective: "), { value }));
-    } else if (column === "Renewal") {
-      if (supplier === "acme") cells.push(ref(idFor("Renewal: automatic"), { value: true }));
-      else if (supplier === "blue") {
-        const manual = idFor("manual written approval");
+      if (supplierName === ACME_NAME)
+        cells.push(ref(idFor(priceExcerpt(ACME)), { value: EXPECTED.comparison.invalid_number_verbatim })); // invalid verbatim
+      else if (supplier) cells.push(ref(idFor(priceExcerpt(supplier)), { value: supplier.price }));
+    } else if (column === effectiveColumn) {
+      cells.push(ref(idFor("Effective: "), { value: supplier?.effective_date ?? null }));
+    } else if (column === renewalColumn) {
+      if (supplier?.renewal === true) {
+        cells.push(ref(idFor(supplier.renewal_statement), { value: true }));
+      } else if (supplier?.renewal === "conflict") {
+        const manual = idFor(supplier.renewal_statement);
         const automatic = idFor("automatic renewal");
         if (manual && automatic && manual !== automatic) {
           cells.push({
@@ -293,18 +271,19 @@ function comparisonColumnAnswer(userContent) {
         } else {
           cells.push(ref(null, { value: false, explanation: "The proposal states manual renewal." }));
         }
-      } else if (supplier === "cedar") {
+      } else if (supplier?.renewal === false) {
+        cells.push(ref(idFor(supplier.renewal_statement), { value: false }));
+      } else if (supplier?.renewal === null) {
         cells.push({ source_id: row.sourceId, value: null, explanation: "The proposal does not state renewal." });
       }
-    } else if (column === "Tier") {
-      const value = supplier === "acme" ? "premium" : supplier === "blue" ? "standard" : supplier === "cedar" ? "enterprise" : null;
-      cells.push(ref(idFor("Tier: "), { value }));
-    } else if (column === "Exceptions") {
-      if (supplier === "acme")
-        cells.push(ref(idFor("=volume discounts"), { value: "=volume discounts above 500 shipments per quarter" }));
-      else if (supplier === "blue") cells.push(ref(idFor("Exceptions: "), { value: 42 })); // invalid verbatim
-      else if (supplier === "cedar")
-        cells.push(ref(idFor("EU data residency"), { value: "EU data residency add-on excluded" }));
+    } else if (column === tierColumn) {
+      cells.push(ref(idFor("Tier: "), { value: supplier?.tier ?? null }));
+    } else if (column === exceptionsColumn) {
+      if (supplierName === BLURIVER_NAME) {
+        cells.push(ref(idFor("Exceptions: "), { value: EXPECTED.comparison.invalid_text_verbatim })); // invalid verbatim
+      } else if (supplier) {
+        cells.push(ref(idFor(supplier.exceptions), { value: supplier.exceptions }));
+      }
     }
   }
   return JSON.stringify({ cells });
@@ -552,6 +531,15 @@ async function main() {
   const dataDir = path.join(workspace, "data");
   await fs.promises.mkdir(dataDir, { recursive: true });
 
+  // Anti-tautology gate: the committed module must be internally consistent
+  // (fixture bytes hash to the pinned digests, regex-recovered facts match
+  // the committed table, the missing fact is nowhere) before anything runs.
+  stage = "FIXTURES";
+  const docHashes = {};
+  for (const doc of SUPPLIER_DOCS) docHashes[doc.name] = sha256(Buffer.from(doc.body, "utf8"));
+  const fixtureMismatches = verifyCommittedExpected(docHashes);
+  assert(fixtureMismatches.length === 0, "FIXTURES", fixtureMismatches.join("; "));
+
   stage = "PROVIDER";
   provider = await startScriptedProvider();
 
@@ -649,10 +637,11 @@ async function main() {
     "MEMO_CONFLICT",
     "conflicting claim cites evidence this run never captured"
   );
+  const [feeLow, feeHigh] = EXPECTED.conflict.values;
   const conflictExcerpts = conflicting.evidence_refs.map((id) => evidenceById.get(id).excerpt);
   assert(
-    conflictExcerpts.some((text) => text.includes("900 USD one time")) &&
-      conflictExcerpts.some((text) => text.includes("950 USD one time")) &&
+    conflictExcerpts.some((text) => text.includes(feeExcerpt(feeLow))) &&
+      conflictExcerpts.some((text) => text.includes(feeExcerpt(feeHigh))) &&
       new Set(conflictExcerpts).size === conflictExcerpts.length,
     "MEMO_CONFLICT",
     "the two differing fee excerpts are not both shown"
@@ -661,7 +650,11 @@ async function main() {
   assert(supportedMemo?.evidence_refs.length === 1, "MEMO_CITATION", "foreign citation ids were not dropped");
   const memoGaps = finishedMemo.claims.filter((claim) => claim.kind === "gap");
   assert(
-    memoGaps.some((gap) => gap.text.includes("termination notice period") && gap.text.includes("not found")),
+    memoGaps.some(
+      (gap) =>
+        gap.text.includes(EXPECTED.missing_fact.name) &&
+        gap.text.includes(EXPECTED.missing_fact.gap_phrase.split(" ").slice(0, 2).join(" "))
+    ),
     "MEMO_GAP",
     "missing fact not recorded as an honest gap"
   );
@@ -678,7 +671,7 @@ async function main() {
   const draftPayload = JSON.stringify(draftRevision.json.payload);
   assert(draftPayload.includes("Conflicting claims"), "MEMO_ARTIFACT", "conflict disclosure section missing");
   assert(draftPayload.includes("Gaps and not-found"), "MEMO_ARTIFACT", "gap disclosure section missing");
-  assert(draftPayload.includes("termination notice period"), "MEMO_ARTIFACT", "gap text missing from draft");
+  assert(draftPayload.includes(EXPECTED.missing_fact.name), "MEMO_ARTIFACT", "gap text missing from draft");
 
   stage = "PUBLISH";
   const published = await session.request("POST", `/api/documents/${artifactDocId}/revisions/${artifactRevisionId}/publish`, {
@@ -694,24 +687,16 @@ async function main() {
   const pdf = await session.ok("PDF_MAGIC", "GET", `/api/documents/${artifactDocId}/publications/${publication.id}/export?format=pdf`, { raw: true });
   assert(pdf.buffer.subarray(0, 5).toString("latin1") === "%PDF-", "PDF_MAGIC", "exported PDF lacks the %PDF magic");
   const html = await session.ok("HTML_EXPORT", "GET", `/api/documents/${artifactDocId}/publications/${publication.id}/export?format=html`);
-  assert(html.text.includes("12000") && html.text.includes("900"), "HTML_EXPORT", "fixture numbers missing");
+  assert(
+    html.text.includes(String(ACME.price)) && html.text.includes(String(feeLow)),
+    "HTML_EXPORT",
+    "fixture numbers missing"
+  );
   assert(!/<(script|img|link|iframe)[^>]*(src|href)="https?:/i.test(html.text), "HTML_EXPORT", "exported HTML is not self-contained");
 
   stage = "COMPARISON_RUN";
-  const columns = [
-    { id: crypto.randomUUID(), label: "Price", question: "What is the annual price?", type: "number", unit: "USD", choices: null },
-    { id: crypto.randomUUID(), label: "Effective", question: "What is the effective date?", type: "date", unit: null, choices: null },
-    { id: crypto.randomUUID(), label: "Renewal", question: "Is renewal automatic?", type: "boolean", unit: null, choices: null },
-    {
-      id: crypto.randomUUID(),
-      label: "Tier",
-      question: "Which service tier is offered?",
-      type: "enum",
-      unit: null,
-      choices: ["standard", "premium", "enterprise"],
-    },
-    { id: crypto.randomUUID(), label: "Exceptions", question: "Which exceptions apply?", type: "text", unit: null, choices: null },
-  ];
+  // The five typed columns come straight from the committed contract.
+  const columns = EXPECTED.columns.map((column) => ({ id: crypto.randomUUID(), ...column }));
   const [colPrice, , colRenewal] = columns.map((column) => column.id);
   const comparisonDefinition = await session.ok("COMPARISON_CREATE", "POST", "/api/research", {
     body: {
@@ -735,7 +720,11 @@ async function main() {
     return ["completed", "needs_review", "failed", "cancelled"].includes(run.json.status) ? run.json : false;
   });
   assert(finishedComparison.status === "completed", "COMPARISON_RUN", `status ${finishedComparison.status}`);
-  assert(finishedComparison.counts.machine_cell_count === 15, "COMPARISON_CELLS", "expected 15 machine cells");
+  assert(
+    finishedComparison.counts.machine_cell_count === EXPECTED.comparison.machine_cells,
+    "COMPARISON_CELLS",
+    `expected ${EXPECTED.comparison.machine_cells} machine cells`
+  );
 
   stage = "COMPARISON_ASSERTIONS";
   const comparisonTable = await pollUntil("COMPARISON_TABLE", 20_000, async () => {
@@ -748,15 +737,52 @@ async function main() {
     return row.cells.find((cell) => cell.column_id === columnId && cell.origin === origin) ?? null;
   };
   const priceAcme = cellFor(comparisonTable, colPrice, acmeId, "machine");
-  assert(priceAcme?.status === "invalid" && priceAcme.value === "12000 dollars", "COMPARISON_TYPES", "invalid number not preserved verbatim");
-  assert(cellFor(comparisonTable, colPrice, blueId, "machine")?.value === 8750, "COMPARISON_TYPES", "exact 8750 missing");
-  assert(cellFor(comparisonTable, colPrice, cedarId, "machine")?.value === 21000, "COMPARISON_TYPES", "exact 21000 missing");
-  assert(cellFor(comparisonTable, columns[1].id, cedarId, "machine")?.value === "2026-03-01", "COMPARISON_TYPES", "exact ISO date missing");
-  assert(cellFor(comparisonTable, columns[3].id, blueId, "machine")?.value === "standard", "COMPARISON_TYPES", "enum value missing");
+  assert(
+    priceAcme?.status === "invalid" && priceAcme.value === EXPECTED.comparison.invalid_number_verbatim,
+    "COMPARISON_TYPES",
+    "invalid number not preserved verbatim"
+  );
+  assert(
+    cellFor(comparisonTable, colPrice, blueId, "machine")?.value === BLURIVER.price,
+    "COMPARISON_TYPES",
+    `exact ${BLURIVER.price} missing`
+  );
+  assert(
+    cellFor(comparisonTable, colPrice, cedarId, "machine")?.value === CEDAR.price,
+    "COMPARISON_TYPES",
+    `exact ${CEDAR.price} missing`
+  );
+  assert(
+    cellFor(comparisonTable, columns[1].id, cedarId, "machine")?.value === CEDAR.effective_date,
+    "COMPARISON_TYPES",
+    "exact ISO date missing"
+  );
+  assert(
+    cellFor(comparisonTable, columns[3].id, blueId, "machine")?.value === BLURIVER.tier,
+    "COMPARISON_TYPES",
+    "enum value missing"
+  );
   const renewalBlue = cellFor(comparisonTable, colRenewal, blueId, "machine");
   assert(renewalBlue?.status === "conflicting" && renewalBlue.evidence_refs.length >= 2, "COMPARISON_CONFLICT", "cell-level conflict missing");
   const renewalCedar = cellFor(comparisonTable, colRenewal, cedarId, "machine");
   assert(renewalCedar?.status === "not_found" && renewalCedar.value === null, "COMPARISON_GAP", "absent fact cell is not not_found/null");
+  // The second scripted invalid verbatim (a number in the text column).
+  const exceptionsBlue = cellFor(comparisonTable, columns[4].id, blueId, "machine");
+  assert(
+    exceptionsBlue?.status === "invalid" && exceptionsBlue.value === EXPECTED.comparison.invalid_text_verbatim,
+    "COMPARISON_TYPES",
+    "invalid text verbatim not preserved"
+  );
+  assert(
+    cellFor(comparisonTable, columns[4].id, acmeId, "machine")?.value === ACME.exceptions,
+    "COMPARISON_TYPES",
+    "formula-leading exception text altered"
+  );
+  assert(
+    cellFor(comparisonTable, columns[4].id, cedarId, "machine")?.value === CEDAR.exceptions,
+    "COMPARISON_TYPES",
+    "exception text missing"
+  );
 
   stage = "CORRECTION";
   const correction = await session.ok("CORRECTION", "PATCH", `/api/research-runs/${comparisonRunId}/review`, {
@@ -767,9 +793,9 @@ async function main() {
           op: "correct_cell",
           column_id: colPrice,
           row_source_id: acmeId,
-          value: 12000,
+          value: EXPECTED.review.correction_acme_price,
           status: "supported",
-          explanation: "Verified against the signed order form.",
+          explanation: EXPECTED.review.correction_explanation,
         },
       ],
     },
@@ -778,9 +804,17 @@ async function main() {
   const correctedTableResponse = await session.ok("CORRECTION", "GET", `/api/research-runs/${comparisonRunId}/table?limit=100`);
   const correctedTable = correctedTableResponse.json;
   const acmeCorrection = cellFor(correctedTable, colPrice, acmeId, "correction");
-  assert(acmeCorrection?.value === 12000 && acmeCorrection?.status === "supported", "CORRECTION", "overlay missing");
+  assert(
+    acmeCorrection?.value === EXPECTED.review.correction_acme_price && acmeCorrection?.status === "supported",
+    "CORRECTION",
+    "overlay missing"
+  );
   assert(acmeCorrection.corrected_at, "CORRECTION", "correction provenance missing");
-  assert(cellFor(correctedTable, colPrice, acmeId, "machine")?.value === "12000 dollars", "CORRECTION", "machine original was mutated");
+  assert(
+    cellFor(correctedTable, colPrice, acmeId, "machine")?.value === EXPECTED.comparison.invalid_number_verbatim,
+    "CORRECTION",
+    "machine original was mutated"
+  );
 
   stage = "EXPORT";
   // Raw bytes: `Response.text()` strips a leading BOM per the fetch spec, so
@@ -789,18 +823,19 @@ async function main() {
     raw: true,
   });
   const csvBuffer = csvResponse.buffer;
+  const [bom0, bom1, bom2] = EXPECTED.export.csv_bom;
   assert(
-    csvBuffer[0] === 0xef && csvBuffer[1] === 0xbb && csvBuffer[2] === 0xbf,
+    csvBuffer[0] === bom0 && csvBuffer[1] === bom1 && csvBuffer[2] === bom2,
     "EXPORT_CSV",
     "missing UTF-8 BOM bytes"
   );
   const csvText = csvBuffer.toString("utf8");
-  assert(csvText.includes("'=volume discounts above 500 shipments per quarter"), "EXPORT_CSV", "formula guard missing");
-  assert(csvText.includes("12000 dollars,invalid,"), "EXPORT_CSV", "invalid verbatim not exported");
-  assert(csvText.includes(",correction,12000,supported,"), "EXPORT_CSV", "correction overlay not exported");
+  assert(csvText.includes(EXPECTED.export.formula_guarded), "EXPORT_CSV", "formula guard missing");
+  assert(csvText.includes(EXPECTED.export.invalid_verbatim_row), "EXPORT_CSV", "invalid verbatim not exported");
+  assert(csvText.includes(EXPECTED.export.correction_row), "EXPORT_CSV", "correction overlay not exported");
   const manifestResponse = await session.ok("EXPORT_MANIFEST", "GET", `/api/research-runs/${comparisonRunId}/export?format=manifest`);
   const manifest = manifestResponse.json;
-  assert(manifest.artifact === "research_run_export_manifest", "EXPORT_MANIFEST", "wrong artifact kind");
+  assert(manifest.artifact === EXPECTED.export.manifest_artifact, "EXPORT_MANIFEST", "wrong artifact kind");
   const manifestCorrection = manifest.cells.find(
     (cell) => cell.origin === "correction" && cell.row_source_id === acmeId && cell.column_id === colPrice
   );
@@ -845,18 +880,23 @@ async function main() {
   });
   const carriedCorrection = cellFor(rerunTable, colPrice, acmeId, "correction");
   assert(
-    carriedCorrection?.value === 12000 && carriedCorrection?.corrected_from_run_id === comparisonRunId,
+    carriedCorrection?.value === EXPECTED.review.correction_acme_price &&
+      carriedCorrection?.corrected_from_run_id === comparisonRunId,
     "RERUN_CARRY",
     "user override was not carried visibly into the rerun"
   );
-  assert(cellFor(rerunTable, colPrice, blueId, "machine")?.value === 9000, "RERUN", "rerun machine value missing");
+  assert(
+    cellFor(rerunTable, colPrice, blueId, "machine")?.value === EXPECTED.review.rerun_blue_price,
+    "RERUN",
+    "rerun machine value missing"
+  );
   const changedPrice = rerunTable.comparison.changed_cells.find(
     (entry) => entry.row_source_id === blueId && entry.column_id === colPrice
   );
   assert(
     changedPrice?.machine_changed === true &&
-      changedPrice.before.machine.value === 8750 &&
-      changedPrice.after.machine.value === 9000,
+      changedPrice.before.machine.value === BLURIVER.price &&
+      changedPrice.after.machine.value === EXPECTED.review.rerun_blue_price,
     "RERUN_DIFF",
     "against-diff does not show the changed cell"
   );
@@ -899,7 +939,7 @@ async function main() {
     script: "e2e-local-research",
     duration_ms: Date.now() - startedAt,
     chat_calls: provider.chatCallCount(),
-    sources_ingested: 3,
+    sources_ingested: SUPPLIER_DOCS.length,
     memo: {
       status: finishedMemo.status,
       evidence: memoEvidence.length,
@@ -909,9 +949,9 @@ async function main() {
     comparison: {
       status: finishedComparison.status,
       machine_cells: finishedComparison.counts.machine_cell_count,
-      invalid_verbatim_cells: 2,
-      conflicting_cells: 1,
-      not_found_cells: 1,
+      invalid_verbatim_cells: EXPECTED.comparison.invalid_cells,
+      conflicting_cells: EXPECTED.comparison.conflicting_cells,
+      not_found_cells: EXPECTED.comparison.not_found_cells,
       correction_overlay: true,
       rerun_status: finishedRerun.status,
       rerun_changed_cells: rerunTable.comparison.changed_total,
@@ -930,7 +970,8 @@ async function main() {
       comparison_draft: true,
     },
     proofs: { duplicate_boot_refused: true, pid_alive_after_refusal: true, clean_shutdown: true },
-    workspace: "removed",
+    // Only emitted after the finally block proves the workspace is gone.
+    workspace_removed: true,
   };
 }
 
@@ -946,6 +987,11 @@ try {
       process.stderr.write(`run tree kept at ${workspace}\n`);
     } else {
       fs.rmSync(workspace, { recursive: true, force: true, maxRetries: 4 });
+      if (process.exitCode !== 1 && fs.existsSync(workspace)) {
+        process.stderr.write(`e2e-local-research FAILED at CLEANUP: workspace still present at ${workspace}\n`);
+        process.stdout.write(`${JSON.stringify({ ok: false, script: "e2e-local-research", failed_stage: "CLEANUP" })}\n`);
+        process.exitCode = 1;
+      }
     }
   }
   if (process.exitCode !== 1) {
