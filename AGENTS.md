@@ -95,7 +95,8 @@ The complete gate is `scripts/policy-check.mjs` plus Turborepo
 `native:smoke`. It requires workspace dependencies and Playwright Chromium;
 Linux CI installs it with `pnpm --filter borealis-server exec playwright install --with-deps chromium`,
 sets Electron’s `chrome-sandbox` helper to root-owned mode `4755`, and runs the
-gate under Xvfb. Keep the Electron sandbox enabled.
+gate under Xvfb with `TURBO_CONCURRENCY=2` to avoid oversubscribing the hosted
+runner. Keep the Electron sandbox enabled.
 `native:smoke` resolves isolated addon production dependencies under Node, opens
 SQLite/LanceDB/DuckDB through Electron's ABI, and loads the same addons from an
 Electron utility process. `ELECTRON_RUN_AS_NODE` alone is not enough: that path

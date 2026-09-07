@@ -41,10 +41,12 @@ jobs:
           sudo chmod 4755 "$electron_sandbox"
 
       - name: Verify repository
+        env:
+          TURBO_CONCURRENCY: "2"
         run: xvfb-run --auto-servernum pnpm verify
 
   package-macos-arm64:
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4

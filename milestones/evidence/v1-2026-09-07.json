@@ -315,7 +315,7 @@
     "status": "running",
     "pending_run": "/tmp/borealis-v1-native-final-3",
     "package_asar_sha256": "77cc92964d4882213f36093644a2b7ae9eed79ab8909282abdd73da983633605",
-    "next_action": "Complete C-F through native UI and active watched-folder quit on the same final package.",
+    "next_action": "Complete D-F through native UI and active watched-folder quit on the same final package.",
     "intermediate_evidence": "/tmp/borealis-v1-native-final-evidence-2/summary.json",
     "intermediate_passed_journeys": [
       "A",
@@ -326,7 +326,8 @@
     "bootstrap_passed": true,
     "passed_journeys": [
       "A",
-      "B"
+      "B",
+      "C"
     ]
   },
   "harness_tests": {
@@ -364,6 +365,21 @@
       "/tmp/borealis-v1-browser-final2-20260907/artifacts/C/exports/docT-v2.pdf": "d3ed028665b1f13644e24188125d1c21149da5a2ccfc443e158ad0e80cbfcaea",
       "/tmp/borealis-v1-browser-final2-20260907/artifacts/C/exports/docR-v2.zip": "81c1b6c2321fb06b57690d60badfc50ce3a77077e7f0bbfa2afe4b883be7508a",
       "/tmp/borealis-v1-browser-final2-20260907/artifacts/C/exports/docT-v2.zip": "92f3c4ddec0d83233819cde552cd73d26bab9b2ebc764cd5bf3b8e4ccadf28de"
+    },
+    "final_native": {
+      "passed": true,
+      "pdf_pages": 2,
+      "docx_pages": 1,
+      "rendered_paths": [
+        "/tmp/borealis-v1-native3-pdf-reviewed",
+        "/tmp/borealis-v1-native3-docx-reviewed"
+      ],
+      "sha256": {
+        "/tmp/borealis-v1-native-final-3/artifacts/native-exports/Native June finance report-v2.html": "b92a8cc15082f115803ba36e4c5b4a94871cc3491ef726941814d648b3d6f6ab",
+        "/tmp/borealis-v1-native-final-3/artifacts/native-exports/Native June finance report-v2.pdf": "a5df7c6e9cc18cb18cea9a3f9c86ead6e84c16f55115ca472952cd870296f343",
+        "/tmp/borealis-v1-native-final-3/artifacts/native-exports/Native June finance report-v2.zip": "366398fa955c71e468ca00618ca28ec5c76c51f38ee04ca08b21319202a39bd3",
+        "/tmp/borealis-v1-native-final-3/artifacts/native-exports/Native June finance report-v2.docx": "307bf72cf771299ca927de80997792482e05775c742e0ad08aeebdab9a50d1be"
+      }
     }
   },
   "process_lifecycle": {
@@ -514,9 +530,9 @@
   },
   "initial_runtime_source_commit": "9fd294421b771864ee322dd2445d9d58df63fa14",
   "ci": {
-    "status": "followup_fixes_awaiting_rerun",
-    "current_run": 34141950027,
-    "current_source_commit": "658468e4e325ce24b712da9306614480cfde7b2a",
+    "status": "running",
+    "current_run": 34142590015,
+    "current_source_commit": "341bc09e6e12ec796277a7817db030f3cdd617a5",
     "diagnostic_run": 34141714484,
     "linux_setup": "Electron sandbox/Xvfb setup and native utility smoke passed. Fixed browser-timezone test assumption and test-only budgets for four native storage/CLI cases; awaited two knowledge assertions.",
     "macos": "No-library-validation variant genuinely passed on hosted macos-15; strict matrix refuses acceptance. Added exact main/four-helper signatures and content-free host-policy diagnostics; security requirements unchanged."
