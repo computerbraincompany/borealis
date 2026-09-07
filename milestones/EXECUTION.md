@@ -4,8 +4,8 @@
 [the completion goal](../docs/IMPLEMENTATION_GOAL.md) and
 [acceptance contract](../docs/END_TO_END_ACCEPTANCE.md), not a signed public release.
 Runtime closure fixes are committed and pushed through `1e56b21`. The final
-local repository, desktop, package, browser, storage and process-lifecycle gates
-pass; final live-model verification is running. Linux CI also passes. Hosted
+local repository, desktop, package, browser, storage, process-lifecycle and
+live-model gates pass. Linux CI also passes. Hosted
 macOS CI cannot enforce the required library-validation negative test because
 its runners disable SIP; a SIP-enabled Apple Silicon runner is still required.
 No security gate is waived.
@@ -47,7 +47,7 @@ provider payloads or user data belong in this ledger.
 | Browser C including historical report | PASS | 14:20:41–14:21:04 UTC, `/tmp/borealis-v1-c-complete-evidence/summary.json`; actual chart copied from chat, legacy UI preview/download/copy denial, all exports. No skipped checks; clean lock/process cleanup. |
 | Protocol fixture self-test | PASS | 82 checks, including exact chart UUID echo and missing/duplicate refusal. |
 | Populated upgrade, managed migrations and offline archive | PASS | 16:56:00–16:56:07 UTC, `/tmp/borealis-v1-1e56-storage-final/storage-summary.json`; populated v13→v28, 36 product tables, both live managed embedding variants, encrypted archive create/inspect/restore/verify/live-lock refusal, 15 preserved artifact files and three reconnect/reselect states. Uses supported source TypeScript/CLI path with retained source/compiled fingerprints on `1e56b21`. |
-| Live finance and research UI | FINAL RERUN IN PROGRESS | `/tmp/borealis-v1-1e56-live-final/summary.json` is the pending final evidence. The earlier `ec63c5e` run passed 14/14 finance rows, 12 supported typed facts and missing-exception preservation with clean cleanup; it remains intermediate evidence until the new run finishes. |
+| Live finance and research UI | PASS | Final runtime `1e56b21`, 16:55:16–17:05:42 UTC, `/tmp/borealis-v1-1e56-live-final/summary.json`: live Qwen 3.6 / Nomic 768-dimensional pair qualified on the first attempt; 14/14 finance rows and 12 supported typed research facts checked, missing exceptions preserved. Research ends `needs_review`; workspace/lock/process cleanup is clean. |
 | Export visual inspection | PASS | Rendered both DOCX files and all PDF pages from browser C using bundled LibreOffice/Poppler. Long unbroken text now wraps, chart title/legend/axis labels are separate, tables and evidence readable. Final `1e56b21` browser-C exports rendered under `/tmp/borealis-v1-1e56-{pdf,docx}-reviewed`: all six stress-test PDF pages and three DOCX pages inspected; headings stay with content and long text wraps within margins. Intermediate native-C PDF (2 pages) and DOCX (1 page) rendered and inspected under `/tmp/borealis-v1-native3-{pdf,docx}-reviewed`; narration, table and chart remain readable without clipping. |
 | Focused closure regressions | PASS | Job template server21/web43, schedule preview server18/web31, report/chart/render76; meaningful ownership, immutable prompt, DST/auth, stale-preview and print geometry checks. Full gate remains authoritative. |
 | Process-boundary lifecycle closure | PASS | 16:55:39–16:57:02 UTC, `/tmp/borealis-v1-1e56-lifecycle-final/summary.json`; all seven cases and thirteen checks, no skips. Real research crash/reopen, active rewrite/research/MCP/analysis/render/WebDAV/brief shutdown, exact recovery/artifact preservation, actual closed-across-due catch-up. Workspace/process/lock cleanup clean. [Repeatable command](../scripts/e2e/LIFECYCLE.md). |
@@ -81,7 +81,7 @@ provider payloads or user data belong in this ledger.
 Machine-readable retained results are in [the v1 evidence summary](evidence/v1-2026-09-07.json).
 
 Approve the normal Keychain prompt for the currently running final package,
-then finish all 17 native checkpoints and final live-model verification.
+then finish all 17 native checkpoints on the final package.
 Provide a SIP-enabled Apple Silicon CI runner for the unchanged strict
 entitlement gate; ordinary hosted macOS 15 and 26 cannot enforce it. Then
 reconcile completion labels and commit/push the remaining documentation.

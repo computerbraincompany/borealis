@@ -180,8 +180,8 @@
   },
   "live": {
     "entry": "run-product-live",
-    "started_at": "2026-09-07T15:50:51.711Z",
-    "finished_at": "2026-09-07T16:03:00.367Z",
+    "started_at": "2026-09-07T16:55:16.231Z",
+    "finished_at": "2026-09-07T17:05:42.464Z",
     "chat_model": "qwen/qwen3.6-35b-a3b",
     "embed_model": "text-embedding-nomic-embed-text-v1.5",
     "embed_dim": 768,
@@ -189,45 +189,45 @@
       {
         "check": "provider-reachable",
         "status": "pass",
-        "duration_ms": 18,
+        "duration_ms": 22,
         "chat_model": "qwen/qwen3.6-35b-a3b",
         "embed_model": "text-embedding-nomic-embed-text-v1.5"
       },
       {
         "check": "chat-model-tool-capable",
         "status": "pass",
-        "duration_ms": 5006,
+        "duration_ms": 8837,
         "attempts": 1
       },
       {
         "check": "finance-upload-ingest",
         "status": "pass",
-        "duration_ms": 1075,
+        "duration_ms": 1083,
         "sources": 4
       },
       {
         "check": "live-chat-tool-turn",
         "status": "pass",
-        "duration_ms": 38296,
+        "duration_ms": 44298,
         "query_receipts": 1
       },
       {
         "check": "finance-analysis-parameterized-rerun",
         "status": "pass",
-        "duration_ms": 1048,
+        "duration_ms": 1059,
         "rows": 14,
         "checked": 14
       },
       {
         "check": "finance-exports",
         "status": "pass",
-        "duration_ms": 8,
+        "duration_ms": 10,
         "csv_bytes": 762
       },
       {
         "check": "research-import-and-run",
         "status": "pass",
-        "duration_ms": 681499,
+        "duration_ms": 569027,
         "evidence": 3,
         "rows": 3,
         "run_status": "needs_review",
@@ -244,9 +244,8 @@
       "pids_gone": true,
       "problems": []
     },
-    "evidence_path": "/tmp/borealis-v1-ec63-live-final/summary.json",
-    "evidence_scope": "Superseded ec63 runtime; final 1e56 live run is in progress.",
-    "pending_evidence_path": "/tmp/borealis-v1-1e56-live-final/summary.json"
+    "runtime_source_commit": "1e56b21d66d119bfb4535e58a5b3535b0586b3c3",
+    "evidence_path": "/tmp/borealis-v1-1e56-live-final/summary.json"
   },
   "storage": {
     "entry": "run-product-storage",
