@@ -118,6 +118,13 @@ capacity/authorization failures with a visible explanation. One active refresh
 per connection; repeated events coalesce. Network collection refresh is manual
 initially; M16 consumes its explicit refresh-and-wait service.
 
+Denied local reads use `KNOWLEDGE_FILE_UNREADABLE` with instructions to restore
+read access and retry, rather than an upload-size or missing-file error. Failed
+refresh items settle durably and retain the prior ready generation, including
+across timeout and recovery. Watch keeps its saved preference but pauses new
+refresh admission until a successful manual preview or refresh clears the
+permission error. The badge updates for both initial and older loaded rows.
+
 Expose a shared `refreshAndWaitReady` service (proposed in
 `server/src/knowledgeRefresh.ts`) accepting account ID, concrete connection IDs,
 expected connection revisions, an exact managed-item/source allowlist per

@@ -71,6 +71,7 @@ const SCAN_LIMIT = "KNOWLEDGE_SCAN_LIMIT";
 const FOLDER_UNAVAILABLE = "KNOWLEDGE_FOLDER_UNAVAILABLE";
 const PATH_INVALID = "KNOWLEDGE_RELATIVE_PATH_INVALID";
 const TOO_LARGE = "KNOWLEDGE_FILE_TOO_LARGE";
+const FILE_UNREADABLE = "KNOWLEDGE_FILE_UNREADABLE";
 
 function requireDesktopRoot(connection: KnowledgeConnectionRecord): string {
   if (connection.kind !== "desktop_folder") {
@@ -101,17 +102,17 @@ async function proveRealPathNoSymlink(
   let current = root;
   for (const [index, segment] of segments.entries()) {
     current = path.join(current, segment);
-    const stat = await fs.lstat(current).catch(() => null);
+    const stat = await fs.lstat(current).catch(missingUnlessPermissionDenied);
     if (!stat || stat.isSymbolicLink()) return null;
     const isLast = index === segments.length - 1;
     if (!isLast && !stat.isDirectory()) return null;
     if (isLast && requireLeafFile && !stat.isFile()) return null;
   }
-  return fs.lstat(current).catch(() => null);
+  return fs.lstat(current).catch(missingUnlessPermissionDenied);
 }
 
 async function proveRootDirectory(root: string): Promise<boolean> {
-  const stat = await fs.lstat(root).catch(() => null);
+  const stat = await fs.lstat(root).catch(missingUnlessPermissionDenied);
   return Boolean(stat && !stat.isSymbolicLink() && stat.isDirectory());
 }
 
@@ -121,6 +122,31 @@ function tooLarge(message = "a managed file exceeds the per-file upload budget")
 
 function isNodeErrorWithCode(error: unknown, code: string): boolean {
   return typeof error === "object" && error !== null && "code" in error && (error as { code?: unknown }).code === code;
+}
+
+function missingUnlessPermissionDenied(error: unknown): null {
+  if (isNodeErrorWithCode(error, "EACCES") || isNodeErrorWithCode(error, "EPERM")) {
+    throw new KnowledgeScanFailureError(FILE_UNREADABLE, "restore read access to the folder and its files, then retry");
+  }
+  return null;
+}
+
+function throwLocalReadError(error: unknown, signal: AbortSignal): never {
+  signal.throwIfAborted();
+  if (error instanceof KnowledgeScanFailureError || (error instanceof Error && error.name === "AbortError")) {
+    throw error;
+  }
+  missingUnlessPermissionDenied(error);
+  throw new KnowledgeScanFailureError(FOLDER_UNAVAILABLE, "the upstream file or folder is unavailable");
+}
+
+/** Normalize only upstream read failures, never staging-directory write failures. */
+async function* readLocalFileChunks(file: string, signal: AbortSignal): AsyncGenerator<Buffer> {
+  try {
+    yield* readFileChunks(file, signal);
+  } catch (error) {
+    throwLocalReadError(error, signal);
+  }
 }
 
 async function hashLocalFile(
@@ -176,8 +202,8 @@ export class DesktopFolderKnowledgeAdapter implements KnowledgeTransportAdapter 
     while (queue.length > 0) {
       const { dir, relative, depth } = queue.shift()!;
       signal.throwIfAborted();
-      const entries = await fs.readdir(dir, { withFileTypes: true }).catch(() => {
-        throw new KnowledgeScanFailureError(FOLDER_UNAVAILABLE, "a directory in the granted folder vanished");
+      const entries = await fs.readdir(dir, { withFileTypes: true }).catch((error: unknown) => {
+        throwLocalReadError(error, signal);
       });
       entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
       for (const entry of entries) {
@@ -215,7 +241,7 @@ export class DesktopFolderKnowledgeAdapter implements KnowledgeTransportAdapter 
           continue;
         }
         const absolute = path.join(dir, entry.name);
-        const stat = await fs.stat(absolute).catch(() => null);
+        const stat = await fs.stat(absolute).catch(missingUnlessPermissionDenied);
         if (!stat || !stat.isFile()) continue;
         if (!isSupportedSourcePath(entry.name) || stat.size > config.maxUploadBytes) {
           unsupported.push({ relative_path: entryRelative, size_bytes: stat.size });
@@ -229,8 +255,7 @@ export class DesktopFolderKnowledgeAdapter implements KnowledgeTransportAdapter 
           throw new KnowledgeScanFailureError(SCAN_LIMIT, "the scan exceeded its aggregate byte budget");
         }
         const hashed = await hashLocalFile(absolute, config.maxUploadBytes, signal).catch((error: unknown) => {
-          if (error instanceof KnowledgeScanFailureError) throw error;
-          throw tooLarge();
+          throwLocalReadError(error, signal);
         });
         files.push({
           relative_path: entryRelative,
@@ -268,9 +293,9 @@ export class DesktopFolderKnowledgeAdapter implements KnowledgeTransportAdapter 
     try {
       hashed = await hashLocalFile(path.join(root, ...segments), config.maxUploadBytes, signal);
     } catch (error) {
-      if (error instanceof KnowledgeScanFailureError) throw error;
+      signal.throwIfAborted();
       if (isNodeErrorWithCode(error, "ENOENT")) return { state: "missing" };
-      throw tooLarge();
+      throwLocalReadError(error, signal);
     }
     return Object.freeze({
       state: "present",
@@ -308,17 +333,13 @@ export class DesktopFolderKnowledgeAdapter implements KnowledgeTransportAdapter 
     try {
       digest = (await hashLocalFile(upstream, config.maxUploadBytes, signal)).hash;
     } catch (error) {
-      if (error instanceof KnowledgeScanFailureError) throw error;
-      if (isNodeErrorWithCode(error, "ENOENT")) {
-        throw new KnowledgeScanFailureError(FOLDER_UNAVAILABLE, "the upstream file is unavailable");
-      }
-      throw tooLarge();
+      throwLocalReadError(error, signal);
     }
     const directory = await ensureUploadResourceDirectory(context.accountId, sourceId);
     const staged = await writeStagedFile(
       directory,
       stagedFileBase(digest, path.basename(upstream)),
-      readFileChunks(upstream, signal),
+      readLocalFileChunks(upstream, signal),
       { signal, maxBytes: config.maxUploadBytes }
     );
     if (staged.content_hash !== digest) {

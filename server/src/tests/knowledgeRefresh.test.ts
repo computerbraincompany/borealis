@@ -152,6 +152,81 @@ function outcomeOf(result: Awaited<ReturnType<KnowledgeRefreshService["refreshAn
 }
 
 describe("knowledge refresh service", () => {
+  it("retains a durable permission pause across timeout and recovery of another pending item", async () => {
+    const h = await harness();
+    h.adapter.put("denied.md", "prior ready bytes");
+    h.adapter.put("remaining.md", "other ready bytes");
+    const imported = await importAll(h);
+    await h.service.refreshAndWaitReady({
+      accountId: h.account,
+      connections: [{ connection_id: h.connection.id, expected_connection_revision: h.connection.revision }],
+    });
+    const originalStates = await Promise.all(
+      imported.sourceIds.map((id) => h.store.sourceIngestionState(h.account, id))
+    );
+    const begun = await h.store.beginRefresh(h.account, {
+      connection_id: h.connection.id,
+      expected_connection_revision: h.connection.revision,
+      requested_by: "scheduled",
+    });
+    const denied = begun.items.find((item) => item.relative_path === "denied.md")!;
+    await h.store.resolveRefreshItem(h.account, begun.refresh.id, denied.item_id, {
+      status: "failed",
+      error_code: "KNOWLEDGE_FILE_UNREADABLE",
+    });
+    const inspect = h.adapter.inspect.bind(h.adapter);
+    h.adapter.inspect = async (_context, _request, signal) =>
+      new Promise((_, reject) => {
+        signal.throwIfAborted();
+        signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+      });
+    const newService = () =>
+      new KnowledgeRefreshService({
+        store: () => new KnowledgeStore(h.ledger),
+        adapter: () => h.adapter,
+        reingest: makeIngestionSimulator(h.ledger, h.ingestion),
+        secrets: () => absentSecrets,
+        pollIntervalMs: 10,
+      });
+    const timed = await newService().refreshAndWaitReady({
+      accountId: h.account,
+      connections: [{ connection_id: h.connection.id, expected_connection_revision: h.connection.revision }],
+      deadlineMs: 40,
+    });
+    expect(timed.refreshes[0]).toMatchObject({
+      refresh_id: begun.refresh.id,
+      status: "failed",
+      error_code: "KNOWLEDGE_REFRESH_TIMEOUT",
+    });
+    expect(await h.store.getActiveRefresh(h.account, h.connection.id)).toMatchObject({ id: begun.refresh.id });
+    expect(await h.store.getConnection(h.account, h.connection.id)).toMatchObject({
+      status: "error",
+      status_code: "KNOWLEDGE_FILE_UNREADABLE",
+    });
+    h.adapter.inspect = inspect;
+    const recovered = await newService().recoverInterrupted(h.account);
+    expect(recovered.refreshes[0]).toMatchObject({
+      refresh_id: begun.refresh.id,
+      status: "partial",
+      error_code: "KNOWLEDGE_FILE_UNREADABLE",
+    });
+    expect(recovered.refreshes[0]?.items).toContainEqual(
+      expect.objectContaining({ relative_path: "remaining.md", outcome: "unchanged" })
+    );
+    expect(await h.store.getActiveRefresh(h.account, h.connection.id)).toBeUndefined();
+    expect(await h.store.requireRefresh(h.account, begun.refresh.id)).toMatchObject({
+      status: "partial",
+      error_code: "KNOWLEDGE_FILE_UNREADABLE",
+    });
+    expect(await h.store.getConnection(h.account, h.connection.id)).toMatchObject({
+      status: "error",
+      status_code: "KNOWLEDGE_FILE_UNREADABLE",
+    });
+    expect(await Promise.all(imported.sourceIds.map((id) => h.store.sourceIngestionState(h.account, id)))).toEqual(
+      originalStates
+    );
+  });
+
   it("classifies scans by path identity, never by content", () => {
     const managed = [
       {

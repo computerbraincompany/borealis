@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { config } from "../config.js";
 import { KnowledgeStore, type KnowledgeScanBounds } from "../db/stores/knowledgeStore.js";
@@ -28,6 +28,7 @@ import { ensureUploadResourceDirectory } from "../knowledge/uploadStaging.js";
 
 const resources: { root: string; uploads: string; ledger?: TempSqliteLedger }[] = [];
 const originalUploadDir = config.uploadDir;
+const originalMaxUploadBytes = config.maxUploadBytes;
 
 let uploadRoot = "";
 
@@ -37,6 +38,8 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  vi.restoreAllMocks();
+  config.maxUploadBytes = originalMaxUploadBytes;
   for (const resource of resources.splice(0)) {
     await resource.ledger?.cleanup();
     await fs.rm(resource.root, { recursive: true, force: true });
@@ -111,8 +114,8 @@ const bounds: KnowledgeScanBounds = {
   maxAggregateBytes: 64 * 1024 * 1024,
 };
 
-async function scan(root: string, override: Partial<KnowledgeScanBounds> = {}) {
-  const context = {
+function folderContext(root: string) {
+  return {
     accountId: randomUUID(),
     connection: {
       id: randomUUID(),
@@ -130,8 +133,178 @@ async function scan(root: string, override: Partial<KnowledgeScanBounds> = {}) {
     },
     secrets: undefined,
   };
-  return desktopFolderKnowledgeAdapter.scan(context, { ...bounds, ...override }, [], new AbortController().signal);
 }
+
+async function scan(root: string, override: Partial<KnowledgeScanBounds> = {}) {
+  return desktopFolderKnowledgeAdapter.scan(
+    folderContext(root),
+    { ...bounds, ...override },
+    [],
+    new AbortController().signal
+  );
+}
+
+describe("folder read failure contracts", () => {
+  async function fixture() {
+    const root = await newRoot({ "readme.md": "original ready bytes" });
+    resources.push({ root, uploads: uploadRoot });
+    const context = folderContext(root);
+    const request = { relative_path: "readme.md", source_id: randomUUID(), source_file_path: null };
+    const adapter = new DesktopFolderKnowledgeAdapter();
+    const invoke = (operation: "scan" | "inspect" | "stage", signal = new AbortController().signal) =>
+      operation === "scan" ? adapter.scan(context, bounds, [], signal) : adapter[operation](context, request, signal);
+    return { root, context, request, invoke, target: path.join(root, "readme.md") };
+  }
+
+  for (const code of ["EACCES", "EPERM"]) {
+    it.each(["scan", "inspect", "stage"] as const)(
+      `reports ${code} as unreadable during %s without staging`,
+      async (operation) => {
+        const f = await fixture();
+        const open = fs.open;
+        vi.spyOn(fs, "open").mockImplementation(async (file, flags, mode) => {
+          if (file === f.target) throw Object.assign(new Error("private path must never become public"), { code });
+          return open(file, flags, mode);
+        });
+        await expect(f.invoke(operation)).rejects.toMatchObject({ code: "KNOWLEDGE_FILE_UNREADABLE" });
+        expect(await fs.readdir(uploadRoot)).toEqual([]);
+      }
+    );
+  }
+
+  it.each([1, 2])("does not classify permission denial on leaf stat %s as missing", async (deniedCall) => {
+    const f = await fixture();
+    const lstat = fs.lstat;
+    let leafCalls = 0;
+    vi.spyOn(fs, "lstat").mockImplementation(((
+      file: Parameters<typeof fs.lstat>[0],
+      options?: Parameters<typeof fs.lstat>[1]
+    ) => {
+      if (file === f.target && ++leafCalls === deniedCall)
+        return Promise.reject(Object.assign(new Error("denied"), { code: "EPERM" }));
+      return lstat(file, options);
+    }) as typeof fs.lstat);
+    await expect(f.invoke("inspect")).rejects.toMatchObject({ code: "KNOWLEDGE_FILE_UNREADABLE" });
+    leafCalls = 0;
+    await expect(f.invoke("stage")).rejects.toMatchObject({ code: "KNOWLEDGE_FILE_UNREADABLE" });
+  });
+
+  it("does not mislabel denied staging writes as upstream read permissions", async () => {
+    const f = await fixture();
+    const open = fs.open;
+    const denied = Object.assign(new Error("destination denied"), { code: "EACCES" });
+    vi.spyOn(fs, "open").mockImplementation(async (file, flags, mode) => {
+      if (typeof file === "string" && file.startsWith(uploadRoot + path.sep)) throw denied;
+      return open(file, flags, mode);
+    });
+    await expect(f.invoke("stage")).rejects.toBe(denied);
+  });
+
+  it("cleans a partial staged copy if permission disappears between the hash and copy reads", async () => {
+    const f = await fixture();
+    const open = fs.open;
+    let upstreamOpens = 0;
+    vi.spyOn(fs, "open").mockImplementation(async (file, flags, mode) => {
+      if (file === f.target && ++upstreamOpens === 2) throw Object.assign(new Error("denied"), { code: "EACCES" });
+      return open(file, flags, mode);
+    });
+    await expect(f.invoke("stage")).rejects.toMatchObject({ code: "KNOWLEDGE_FILE_UNREADABLE" });
+    expect(await fs.readdir(path.join(uploadRoot, f.context.accountId, f.request.source_id))).toEqual([]);
+  });
+
+  it.each(["scan", "inspect", "stage"] as const)("preserves cancellation during %s hashing", async (operation) => {
+    const f = await fixture();
+    const controller = new AbortController();
+    const open = fs.open;
+    vi.spyOn(fs, "open").mockImplementation(async (file, flags, mode) => {
+      const handle = await open(file, flags, mode);
+      if (file === f.target) controller.abort();
+      return handle;
+    });
+    await expect(f.invoke(operation, controller.signal)).rejects.toMatchObject({ name: "AbortError" });
+  });
+
+  it("keeps missing-file semantics when a file vanishes after path validation", async () => {
+    const f = await fixture();
+    const open = fs.open;
+    vi.spyOn(fs, "open").mockImplementation(async (file, flags, mode) => {
+      if (file === f.target) throw Object.assign(new Error("gone"), { code: "ENOENT" });
+      return open(file, flags, mode);
+    });
+    await expect(f.invoke("inspect")).resolves.toEqual({ state: "missing" });
+    await expect(f.invoke("scan")).rejects.toMatchObject({ code: "KNOWLEDGE_FOLDER_UNAVAILABLE" });
+    await expect(f.invoke("stage")).rejects.toMatchObject({ code: "KNOWLEDGE_FOLDER_UNAVAILABLE" });
+  });
+
+  it.each(["scan", "inspect", "stage"] as const)(
+    "enforces the actual byte budget if the file grows during %s",
+    async (operation) => {
+      const f = await fixture();
+      config.maxUploadBytes = 32;
+      const open = fs.open;
+      vi.spyOn(fs, "open").mockImplementation(async (file, flags, mode) => {
+        if (file === f.target) {
+          // Use the original handle, so this setup does not recurse through the spy.
+          const writer = await open(f.target, "w");
+          await writer.writeFile("x".repeat(33));
+          await writer.close();
+        }
+        return open(file, flags, mode);
+      });
+      await expect(f.invoke(operation)).rejects.toMatchObject({ code: "KNOWLEDGE_FILE_TOO_LARGE" });
+    }
+  );
+
+  it("fails denied previews atomically and retains an earlier ready generation through denied refresh and retry", async () => {
+    const root = await newRoot({ "readme.md": "original ready bytes" });
+    const h = await harness(root);
+    const preview = await h.service.createPreview(h.account, h.connection.id, bounds);
+    const applied = await h.service.applyPreview(h.account, preview.preview.id, {
+      expected_revision: preview.preview.revision,
+      selections: preview.entries.map((entry) => ({
+        entry_id: entry.entry_id,
+        selection_token: entry.selection_token,
+      })),
+    });
+    const refreshRequest = {
+      accountId: h.account,
+      connections: [{ connection_id: h.connection.id, expected_connection_revision: h.connection.revision }],
+    };
+    await h.service.refreshAndWaitReady(refreshRequest);
+    const sourceId = applied.items[0]!.source_id;
+    const original = await h.store.sourceIngestionState(h.account, sourceId);
+    const calls = h.ingestion.calls;
+    const open = fs.open;
+    const denied = vi.spyOn(fs, "open").mockImplementation(async (file, flags, mode) => {
+      if (file === path.join(root, "readme.md")) throw Object.assign(new Error("denied"), { code: "EACCES" });
+      return open(file, flags, mode);
+    });
+    await expect(h.service.createPreview(h.account, h.connection.id, bounds)).rejects.toMatchObject({
+      code: "KNOWLEDGE_FILE_UNREADABLE",
+    });
+    const failed = await h.service.refreshAndWaitReady(refreshRequest);
+    expect(failed.refreshes[0]).toMatchObject({ status: "failed", error_code: "KNOWLEDGE_FILE_UNREADABLE" });
+    expect(failed.refreshes[0]?.items[0]).toMatchObject({ outcome: "failed", error_code: "KNOWLEDGE_FILE_UNREADABLE" });
+    expect(await h.store.getActiveRefresh(h.account, h.connection.id)).toBeUndefined();
+    expect(await h.store.getRefresh(h.account, failed.refreshes[0]!.refresh_id!)).toMatchObject({
+      status: "failed",
+      error_code: "KNOWLEDGE_FILE_UNREADABLE",
+    });
+    expect(await h.store.sourceIngestionState(h.account, sourceId)).toEqual(original);
+    expect(h.ingestion.calls).toBe(calls);
+    const items = await h.store.listItems(h.account, h.connection.id, { limit: 100, after: null });
+    expect(items.items).toHaveLength(1);
+    expect(items.items[0]?.source_id).toBe(sourceId);
+    const previews = await h.store.listPreviews(h.account, h.connection.id, { limit: 10, after: null });
+    expect(
+      previews.items.some((row) => row.status === "failed" && row.error_code === "KNOWLEDGE_FILE_UNREADABLE")
+    ).toBe(true);
+    denied.mockRestore();
+    const retried = await h.service.refreshAndWaitReady(refreshRequest);
+    expect(retried.refreshes[0]?.items[0]?.outcome).toBe("unchanged");
+    expect(await h.store.sourceIngestionState(h.account, sourceId)).toEqual(original);
+  });
+});
 
 describe("desktop_folder transport", () => {
   it("excludes hidden dirs, symlinks, and excluded directories while reporting them as skips", async () => {

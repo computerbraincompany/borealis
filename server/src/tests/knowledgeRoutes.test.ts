@@ -3,7 +3,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { signToken } from "../auth.js";
 import { closeConnectionService, configureConnectionService } from "../connections/service.js";
@@ -15,10 +15,12 @@ import {
 import { DesktopFolderGrantUnavailableError, desktopFolderGrants } from "../knowledge/grants.js";
 import { WEBDAV_APPLICATION_PASSWORD_ENV_KEY } from "../knowledge/webdav.js";
 import {
+  KnowledgeScanFailureError,
   closeKnowledgeRefreshService,
   configureKnowledgeRefresh,
   type KnowledgeTransportAdapter,
 } from "../knowledgeRefresh.js";
+import { KnowledgeWatchPump } from "../knowledgeWatch.js";
 import { knowledgeRoutes } from "../routes/knowledge.js";
 import { installHttpBoundary } from "../httpErrors.js";
 import { closeStorageRuntime, initializeStorageRuntime, storageRuntime } from "../storageRuntime.js";
@@ -96,6 +98,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   await Promise.all(apps.splice(0).map((app) => app.close()));
+  vi.restoreAllMocks();
   closeKnowledgeRefreshService();
   closeConnectionService();
   desktopFolderGrants.clearForTesting();
@@ -701,6 +704,46 @@ describe("previews — durable bounded scan, selection tokens, and CAS apply", (
     expect(foreignRead.statusCode).toBe(404);
   });
 
+  it("returns actionable HTTP 403 if source read permission is lost after preview, before apply", async () => {
+    const app = await buildApp();
+    const folder = await createFolderConnection(app);
+    folderAdapter.put("readme.md", "fixture bytes");
+    const done = await completePreview(app, folder.id);
+    folderAdapter.stage = async () => {
+      throw new KnowledgeScanFailureError("KNOWLEDGE_FILE_UNREADABLE", "private fixture path must stay private");
+    };
+    const applied = await applyEntries(app, done);
+    expect(applied.statusCode).toBe(403);
+    expect(applied.json()).toEqual({
+      code: "KNOWLEDGE_FILE_UNREADABLE",
+      error: "restore read access to the folder and its files, then retry",
+    });
+    expect(ingestion.calls).toBe(0);
+    expect(await storageRuntime().knowledge.getActiveRefresh(OWNER, folder.id)).toBeUndefined();
+    expect((await storageRuntime().knowledge.listItems(OWNER, folder.id, { limit: 100, after: null })).items).toEqual(
+      []
+    );
+  });
+
+  it("returns a content-free durable permission failure for an unreadable folder preview", async () => {
+    const app = await buildApp();
+    const folder = await createFolderConnection(app);
+    folderAdapter.scan = async () => {
+      throw new KnowledgeScanFailureError("KNOWLEDGE_FILE_UNREADABLE", "private fixture path must stay private");
+    };
+    const previewId = await startPreview(app, folder.id);
+    const done = await waitPreview(app, previewId, ["failed"]);
+    expect(done.preview).toMatchObject({ status: "failed", error_code: "KNOWLEDGE_FILE_UNREADABLE" });
+    expect(done.entries).toEqual([]);
+    expect(JSON.stringify(done)).not.toContain("private fixture path");
+    const listed = await app.inject({ method: "GET", url: "/api/knowledge-connections", headers: ownerAuth });
+    expect(listed.statusCode).toBe(200);
+    expect(listed.json().items).toContainEqual(
+      expect.objectContaining({ id: folder.id, status: "error", status_code: "KNOWLEDGE_FILE_UNREADABLE" })
+    );
+    expect(ingestion.calls).toBe(0);
+  });
+
   it("records an actionable disconnected state when the webdav password is gone", async () => {
     const app = await buildApp();
     const webdav = await createWebdavConnection(app);
@@ -867,6 +910,63 @@ describe("refreshes — history, single active, cancellation idempotence", () =>
 });
 
 describe("watch persistence and status passthrough", () => {
+  it("pauses permission-denied watch runs until a successful manual retry", async () => {
+    const captured: { pump?: KnowledgeWatchPump } = {};
+    const start = KnowledgeWatchPump.prototype.start;
+    vi.spyOn(KnowledgeWatchPump.prototype, "start").mockImplementation(function (this: KnowledgeWatchPump) {
+      captured.pump = this;
+      start.call(this);
+    });
+    const app = await buildApp(true);
+    const folder = await createFolderConnection(app, { watch: true });
+    folderAdapter.put("readme.md", "ready bytes");
+    const imported = await importAll(app, folder.id);
+    await waitRefresh(app, imported.refreshId, ["completed"]);
+    const inspect = folderAdapter.inspect.bind(folderAdapter);
+    let deniedCalls = 0;
+    folderAdapter.inspect = async () => {
+      deniedCalls += 1;
+      throw new KnowledgeScanFailureError("KNOWLEDGE_FILE_UNREADABLE", "permission denied");
+    };
+    expect(captured.pump).toBeDefined();
+    await captured.pump!.reconcile();
+    expect(deniedCalls).toBe(1);
+    expect(await storageRuntime().knowledge.getConnection(OWNER, folder.id)).toMatchObject({
+      watch_enabled: true,
+      status: "error",
+      status_code: "KNOWLEDGE_FILE_UNREADABLE",
+    });
+    expect(await storageRuntime().knowledge.getActiveRefresh(OWNER, folder.id)).toBeUndefined();
+    const before = await storageRuntime().ledger.all(
+      "SELECT id FROM knowledge_refreshes WHERE connection_id=? ORDER BY id",
+      [folder.id]
+    );
+    await captured.pump!.reconcile();
+    expect(deniedCalls).toBe(1);
+    expect(
+      await storageRuntime().ledger.all("SELECT id FROM knowledge_refreshes WHERE connection_id=? ORDER BY id", [
+        folder.id,
+      ])
+    ).toEqual(before);
+    folderAdapter.inspect = inspect;
+    const retry = await app.inject({
+      method: "POST",
+      url: `/api/knowledge-connections/${folder.id}/refreshes`,
+      headers: ownerAuth,
+      body: { expected_connection_revision: folder.revision },
+    });
+    expect(retry.statusCode).toBe(202);
+    await waitRefresh(app, retry.json().refresh.id, ["completed"]);
+    expect(await storageRuntime().knowledge.getConnection(OWNER, folder.id)).toMatchObject({
+      watch_enabled: true,
+      status: "ready",
+      status_code: null,
+    });
+    const callsBeforeResume = folderAdapter.inspectCount;
+    await captured.pump!.reconcile();
+    expect(folderAdapter.inspectCount).toBe(callsBeforeResume + 1);
+  });
+
   it("persists watch on folder connections and lists them for the desktop pump", async () => {
     const app = await buildApp(true);
     const folder = await createFolderConnection(app, { watch: true });

@@ -29,6 +29,8 @@ import { ConfirmDialog } from "@/components/ConfirmDialog";
  * reach this surface).
  */
 
+const FILE_UNREADABLE_MESSAGE = "Restore read access to the folder and its files, then retry.";
+
 export function knowledgeStatusPresentation(
   status: KnowledgeConnection["status"],
   code: string | null,
@@ -45,6 +47,8 @@ export function knowledgeStatusPresentation(
         return { label: "Credentials rejected — replace the application password", tone: "destructive" };
       case "KNOWLEDGE_CREDENTIALS_MISSING":
         return { label: "Application password missing", tone: "destructive" };
+      case "KNOWLEDGE_FILE_UNREADABLE":
+        return { label: FILE_UNREADABLE_MESSAGE, tone: "destructive" };
       case "KNOWLEDGE_FOLDER_UNAVAILABLE":
         return { label: "The granted folder is unavailable", tone: "destructive" };
       default:
@@ -219,9 +223,28 @@ export function KnowledgeConnectionsPanel({ libraries }: Props) {
         entries,
         error:
           preview.status === "failed"
-            ? `The scan failed (${preview.error_code ?? "unknown"}). Nothing was imported.`
+            ? `${preview.error_code === "KNOWLEDGE_FILE_UNREADABLE" ? FILE_UNREADABLE_MESSAGE : `The scan failed (${preview.error_code ?? "unknown"}).`} Nothing was imported.`
             : null,
       });
+      // The visible target may be on an older catalog page. Apply only this
+      // scan's permission transition to the same connection revision; the
+      // guarded completion cannot recreate a deleted row or update a new target.
+      setConnections((current) =>
+        current.map((row) => {
+          if (row.id !== connection.id || row.revision !== connection.revision) return row;
+          if (preview.status === "failed" && preview.error_code === "KNOWLEDGE_FILE_UNREADABLE") {
+            return { ...row, status: "error", status_code: preview.error_code };
+          }
+          if (preview.status === "complete" && row.status_code === "KNOWLEDGE_FILE_UNREADABLE") {
+            return { ...row, status: "ready", status_code: null };
+          }
+          return row;
+        }),
+      );
+      // The terminal scan also changes the connection's status (including
+      // clearing a permission pause). Reconcile only for this live preview;
+      // load owns the catalog's independent request generation and abort.
+      void load();
     } catch (error: unknown) {
       if (mountedRef.current && requestId === previewRequestRef.current && !abort.signal.aborted) {
         setPreviewState({
@@ -294,6 +317,23 @@ export function KnowledgeConnectionsPanel({ libraries }: Props) {
       }
       if (!mountedRef.current || requestId !== refreshRequestRef.current || abort.signal.aborted) return;
       setActiveRefresh({ connectionId: connection.id, refresh });
+      // Keep permission status current for visible continuation rows too;
+      // the authoritative catalog reload below refreshes the first page.
+      setConnections((current) =>
+        current.map((row) => {
+          if (row.id !== connection.id || row.revision !== connection.revision) return row;
+          if (
+            (refresh.status === "failed" || refresh.status === "partial") &&
+            refresh.error_code === "KNOWLEDGE_FILE_UNREADABLE"
+          ) {
+            return { ...row, status: "error", status_code: refresh.error_code };
+          }
+          if (refresh.status === "completed" && row.status_code === "KNOWLEDGE_FILE_UNREADABLE") {
+            return { ...row, status: "ready", status_code: null };
+          }
+          return row;
+        }),
+      );
       void load();
     } catch (error: unknown) {
       if (mountedRef.current && requestId === refreshRequestRef.current && !abort.signal.aborted) {
@@ -432,6 +472,11 @@ export function KnowledgeConnectionsPanel({ libraries }: Props) {
                       : connection.label}
                     {connection.credential_configured ? " · password stored" : ""}
                   </div>
+                  {connection.watch_enabled && connection.status_code === "KNOWLEDGE_FILE_UNREADABLE" && (
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      Watching is paused until a manual preview or refresh succeeds.
+                    </p>
+                  )}
                 </div>
                 <label
                   className={cn(
@@ -908,7 +953,11 @@ function RefreshHistory({ connection }: { connection: KnowledgeConnection }) {
           {row.cancel_requested && row.status === "active" && (
             <span className="text-xs text-muted-foreground">cancelling…</span>
           )}
-          {row.error_code && <span className="text-xs text-muted-foreground">{row.error_code}</span>}
+          {row.error_code && (
+            <span className="text-xs text-muted-foreground">
+              {row.error_code === "KNOWLEDGE_FILE_UNREADABLE" ? FILE_UNREADABLE_MESSAGE : row.error_code}
+            </span>
+          )}
           <span className="ml-auto text-xs text-muted-foreground">{new Date(row.created_at).toLocaleString()}</span>
         </li>
       ))}

@@ -820,8 +820,16 @@ export class KnowledgeRefreshService {
           // Transport cancellation must reach the loop's durable finalizer.
           // That branch distinguishes a resumable deadline from caller abort;
           // letting an aborted socket reject here would leave an active row.
-          if (!signal.aborted) throw error;
-          break;
+          if (signal.aborted) break;
+          if (error instanceof KnowledgeScanFailureError && error.code === "KNOWLEDGE_FILE_UNREADABLE") {
+            await this.store.resolveRefreshItem(accountId, refresh.id, item.item_id, {
+              status: "failed",
+              error_code: error.code,
+            });
+            lastErrorCode = error.code;
+            continue;
+          }
+          throw error;
         }
       }
       const afterStep = await this.store.listRefreshItems(accountId, refresh.id);
@@ -839,6 +847,12 @@ export class KnowledgeRefreshService {
     }
     let finalRefresh = await this.store.requireRefresh(accountId, refresh.id);
     const finalItems = [...(await this.store.listRefreshItems(accountId, refresh.id))];
+    // Recovery skips settled items, so permission priority must come from the
+    // durable outcomes, including when a different remaining item times out.
+    const unreadable = finalItems.some(
+      (item) => item.status === "failed" && item.error_code === "KNOWLEDGE_FILE_UNREADABLE"
+    );
+    if (unreadable) lastErrorCode = "KNOWLEDGE_FILE_UNREADABLE";
     if (!timeoutExit && finalRefresh.status === "active") {
       const derived = deriveStatus(finalItems);
       try {
@@ -858,6 +872,10 @@ export class KnowledgeRefreshService {
     const errorCode = timeoutExit ? "KNOWLEDGE_REFRESH_TIMEOUT" : finalRefresh.error_code;
     if (status === "completed") {
       await this.store.recordConnectionStatus(accountId, connection.id, "ready", null).catch(() => undefined);
+    } else if (unreadable) {
+      await this.store
+        .recordConnectionStatus(accountId, connection.id, "error", "KNOWLEDGE_FILE_UNREADABLE")
+        .catch(() => undefined);
     } else if (authIssue) {
       await this.store
         .recordConnectionStatus(accountId, connection.id, "disconnected", "KNOWLEDGE_UPSTREAM_UNAUTHORIZED")

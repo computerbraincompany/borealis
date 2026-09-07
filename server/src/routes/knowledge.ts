@@ -116,6 +116,7 @@ const KNOWLEDGE_PUBLIC_MESSAGES: Readonly<Record<string, string>> = Object.freez
   KNOWLEDGE_FOLDER_UNAVAILABLE: "the granted folder is unavailable",
   KNOWLEDGE_FOLDER_RESELECT_REQUIRED: "the granted folder must be selected again in the desktop app",
   KNOWLEDGE_FILE_TOO_LARGE: "a managed file exceeds the per-file upload budget",
+  KNOWLEDGE_FILE_UNREADABLE: "restore read access to the folder and its files, then retry",
   CONNECTION_CONFIG_INVALID: "connection credentials are invalid",
   CONNECTION_CUSTODY_UNAVAILABLE: "stored connection credentials are unavailable",
 });
@@ -124,6 +125,7 @@ const KNOWLEDGE_PUBLIC_MESSAGES: Readonly<Record<string, string>> = Object.freez
 const KNOWLEDGE_STATUS_OVERRIDES: Readonly<Record<string, number>> = Object.freeze({
   KNOWLEDGE_SCAN_LIMIT: 413,
   KNOWLEDGE_FILE_TOO_LARGE: 413,
+  KNOWLEDGE_FILE_UNREADABLE: 403,
   KNOWLEDGE_UPSTREAM_TIMEOUT: 504,
   KNOWLEDGE_CREDENTIALS_MISSING: 409,
   KNOWLEDGE_UPSTREAM_NOT_FOUND: 404,
@@ -374,6 +376,9 @@ export async function knowledgeRoutes(app: FastifyInstance, options: KnowledgeRo
         const ledger = store();
         const connection = await ledger.getConnection(target.accountId, target.connectionId);
         if (!connection || !connection.watch_enabled) return;
+        // Permission failures pause background retries. A successful manual
+        // preview/refresh clears the status code after the user restores access.
+        if (connection.status_code === "KNOWLEDGE_FILE_UNREADABLE") return;
         // One durable scheduled refresh per pass; a competing active refresh
         // is coalesced by the shared service rather than competed with.
         try {

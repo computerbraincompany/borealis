@@ -573,7 +573,15 @@ generic message.
 Preview and refresh scans run on per-app background drives, never as open-ended
 HTTP requests. Orderly shutdown aborts and joins those drives, including watch
 catalog scans and refresh cancellation finalizers, before closing storage;
-previously ready sources remain intact. The `status_code` values
+previously ready sources remain intact. Denied folder/file reads (`EACCES` or
+`EPERM`) record `KNOWLEDGE_FILE_UNREADABLE`, with instructions to restore read
+access and retry; they never masquerade as a file-size limit or missing content.
+A failed preview imports nothing, and failed refreshes retain earlier ready
+generations. Folder watching pauses while this code is present, preserving its
+enabled preference; a successful manual preview or refresh clears the code and
+resumes watching. Synchronous permission errors use HTTP 403; background preview and
+refresh polling returns the durable error code in its normal status response.
+The `status_code` values
 `KNOWLEDGE_UPSTREAM_UNAUTHORIZED` and `KNOWLEDGE_CREDENTIALS_MISSING` record an
 actionable disconnected state, and archive restore records
 `KNOWLEDGE_RESTORE_RECONNECT_REQUIRED` (WebDAV) or

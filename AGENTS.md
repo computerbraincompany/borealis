@@ -289,6 +289,12 @@ runtime startup alone republishes that matching marker.
   shared SSRF policy, DNS pinning, identity encoding, bounded redirects/time,
   and immutable version-cache files. Activation is exact-location
   compare-and-swap; cleanup never keys on table name alone.
+- Managed-folder permission failures use `KNOWLEDGE_FILE_UNREADABLE` with
+  instructions to restore read access and retry; never report them as size
+  limits or missing files. Failed refresh items settle durably while retaining
+  the prior ready generation. Watch keeps the saved preference but suspends
+  refresh admission until a successful manual preview/refresh clears the error;
+  source-read failures must not relabel staging-directory write failures.
 - File reads and deletions must prove lexical and real paths belong to the exact
   UUID-scoped account/resource directory, with no symlink component. Never build
   a recursive deletion target from an unvalidated stored path or filename.

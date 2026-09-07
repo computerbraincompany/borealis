@@ -711,6 +711,158 @@ describe("LibrariesView — knowledge connections", () => {
     expect(screen.getByText(/available only in the desktop app/i)).toBeInTheDocument();
   });
 
+  it("explains denied folder reads in the connection badge and preview without offering an import", async () => {
+    apiMocks.knowledgeList.mockResolvedValue({
+      items: [
+        { ...knowledgeConnection, watch_enabled: true, status: "error", status_code: "KNOWLEDGE_FILE_UNREADABLE" },
+      ],
+      next_cursor: null,
+    });
+    apiMocks.createPreview.mockResolvedValue({
+      preview: { ...completedPreview.preview, status: "failed", error_code: "KNOWLEDGE_FILE_UNREADABLE" },
+      run_id: "pv-1",
+    });
+    render(<LibrariesView />);
+    expect(await screen.findByText("Restore read access to the folder and its files, then retry.")).toBeInTheDocument();
+    expect(screen.getByText("Watching is paused until a manual preview or refresh succeeds.")).toBeInTheDocument();
+    fireEvent.click(await screen.findByRole("button", { name: /Preview/i }));
+    expect(
+      await screen.findByText("Restore read access to the folder and its files, then retry. Nothing was imported."),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Import selected/i })).not.toBeInTheDocument();
+    expect(apiMocks.applyPreview).not.toHaveBeenCalled();
+    expect(screen.queryByText(/upload budget/i)).not.toBeInTheDocument();
+  });
+
+  it.each([true, false])(
+    "reconciles the watch badge after a terminal preview (recovered=%s) without importing",
+    async (recovered) => {
+      const ready = { ...knowledgeConnection, watch_enabled: true, status: "ready", status_code: null };
+      const denied = { ...ready, status: "error", status_code: "KNOWLEDGE_FILE_UNREADABLE" };
+      apiMocks.knowledgeList
+        .mockResolvedValueOnce({ items: [recovered ? denied : ready], next_cursor: null })
+        .mockResolvedValue({ items: [recovered ? ready : denied], next_cursor: null });
+      apiMocks.createPreview.mockResolvedValue({
+        preview: {
+          ...completedPreview.preview,
+          status: recovered ? "complete" : "failed",
+          error_code: recovered ? null : "KNOWLEDGE_FILE_UNREADABLE",
+        },
+        run_id: "pv-1",
+      });
+      render(<LibrariesView />);
+      await screen.findByText("Research drive");
+      expect(Boolean(screen.queryByText("Watching is paused until a manual preview or refresh succeeds."))).toBe(
+        recovered,
+      );
+      fireEvent.click(screen.getByRole("button", { name: /Preview/i }));
+      await waitFor(() => expect(apiMocks.knowledgeList).toHaveBeenCalledTimes(2));
+      await waitFor(() =>
+        expect(Boolean(screen.queryByText("Watching is paused until a manual preview or refresh succeeds."))).toBe(
+          !recovered,
+        ),
+      );
+      expect(apiMocks.applyPreview).not.toHaveBeenCalled();
+    },
+  );
+
+  it("clears the permission pause for a recovered connection loaded beyond the catalog head", async () => {
+    const head = { ...knowledgeConnection, id: "newer", name: "Newer folder" };
+    const denied = {
+      ...knowledgeConnection,
+      watch_enabled: true,
+      status: "error",
+      status_code: "KNOWLEDGE_FILE_UNREADABLE",
+    };
+    apiMocks.knowledgeList
+      .mockResolvedValueOnce({ items: [head], next_cursor: "older" })
+      .mockResolvedValueOnce({ items: [denied], next_cursor: null })
+      .mockResolvedValue({ items: [head], next_cursor: "older" });
+    apiMocks.createPreview.mockResolvedValue({
+      preview: { ...completedPreview.preview, status: "complete", error_code: null },
+      run_id: "pv-1",
+    });
+    render(<LibrariesView />);
+    fireEvent.click(await screen.findByRole("button", { name: "Load older connections" }));
+    const name = await screen.findByText("Research drive");
+    const card = name.closest(".p-4")!;
+    expect(
+      within(card as HTMLElement).getByText("Watching is paused until a manual preview or refresh succeeds."),
+    ).toBeInTheDocument();
+    fireEvent.click(within(card as HTMLElement).getByRole("button", { name: /Preview/i }));
+    await waitFor(() => expect(apiMocks.knowledgeList).toHaveBeenCalledTimes(3));
+    await waitFor(() =>
+      expect(
+        screen.queryByText("Watching is paused until a manual preview or refresh succeeds."),
+      ).not.toBeInTheDocument(),
+    );
+    expect(screen.getByText("Research drive")).toBeInTheDocument();
+    expect(apiMocks.applyPreview).not.toHaveBeenCalled();
+  });
+
+  it.each(["completed", "failed", "partial"])(
+    "reconciles an older connection permission badge after a %s manual refresh",
+    async (status) => {
+      const recovered = status === "completed";
+      const head = { ...knowledgeConnection, id: "newer", name: "Newer folder" };
+      const older = {
+        ...knowledgeConnection,
+        watch_enabled: true,
+        status: recovered ? "error" : "ready",
+        status_code: recovered ? "KNOWLEDGE_FILE_UNREADABLE" : null,
+      };
+      apiMocks.knowledgeList
+        .mockResolvedValueOnce({ items: [head], next_cursor: "older" })
+        .mockResolvedValueOnce({ items: [older], next_cursor: null })
+        .mockResolvedValue({ items: [head], next_cursor: "older" });
+      apiMocks.startRefresh.mockResolvedValue({
+        refresh: {
+          id: "rf-1",
+          connection_id: older.id,
+          requested_by: "manual",
+          expected_connection_revision: older.revision,
+          status,
+          cancel_requested: false,
+          error_code: recovered ? null : "KNOWLEDGE_FILE_UNREADABLE",
+          created_at: "2026-01-01T00:00:00Z",
+          started_at: "2026-01-01T00:00:00Z",
+          finished_at: "2026-01-01T00:00:01Z",
+        },
+      });
+      render(<LibrariesView />);
+      fireEvent.click(await screen.findByRole("button", { name: "Load older connections" }));
+      const name = await screen.findByText("Research drive");
+      const card = name.closest(".p-4") as HTMLElement;
+      expect(Boolean(within(card).queryByText("Watching is paused until a manual preview or refresh succeeds."))).toBe(
+        recovered,
+      );
+      fireEvent.click(within(card).getByRole("button", { name: "Refresh" }));
+      await waitFor(() => expect(apiMocks.knowledgeList).toHaveBeenCalledTimes(3));
+      await waitFor(() =>
+        expect(Boolean(screen.queryByText("Watching is paused until a manual preview or refresh succeeds."))).toBe(
+          !recovered,
+        ),
+      );
+      expect(screen.getByText("Research drive")).toBeInTheDocument();
+    },
+  );
+
+  it("does not reconcile connection status from a preview response that arrives after its dialog closes", async () => {
+    const preview = deferred<unknown>();
+    apiMocks.createPreview.mockImplementation(() => preview.promise);
+    render(<LibrariesView />);
+    fireEvent.click(await screen.findByRole("button", { name: /Preview/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Close dialog" }));
+    await act(async () => {
+      preview.resolve({
+        preview: { ...completedPreview.preview, status: "failed", error_code: "KNOWLEDGE_FILE_UNREADABLE" },
+        run_id: "pv-1",
+      });
+    });
+    expect(apiMocks.knowledgeList).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText(/Nothing was imported/)).not.toBeInTheDocument();
+  });
+
   it("renders restore-reconnect status codes as actionable badge copy", async () => {
     apiMocks.knowledgeList.mockResolvedValue({
       items: [
