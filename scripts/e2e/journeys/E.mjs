@@ -764,8 +764,11 @@ export async function run(ctx) {
     const downloadPromise = session.page.waitForEvent("download", { timeout: 20_000 });
     await session.page.getByRole("button", { name: /Export CSV/ }).first().click();
     const download = await downloadPromise;
+    // The anchor download attribute names the file client-side
+    // (`${title.slice(0, 40)}.csv`); the server's Content-Disposition slug
+    // was already asserted against the API response above.
     assert(
-      download.suggestedFilename() === `${slug}-${run1.slice(0, 8)}.csv`,
+      download.suggestedFilename() === `${TITLE_C.slice(0, 40)}.csv`,
       "CSV_DOWNLOAD_NAME",
       download.suggestedFilename().slice(0, 48)
     );
