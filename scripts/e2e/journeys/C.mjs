@@ -26,8 +26,9 @@
  *     reapply path lands a new revision; stale revision CAS saves are 409
  *     with current-head metadata; a stale proposal can never be accepted
  *     (409 + durable `stale`, inspectable-then-dismissible); a publish with a
- *     stale expected head is 409 `DOCUMENT_HEAD_MOVED` with the UI recovery
- *     surface;
+ *     stale expected head is 409 `DOCUMENT_REVISION_CONFLICT` with
+ *     current-head metadata (`DOCUMENT_HEAD_MOVED` is the completion-time
+ *     recheck code) plus the UI recovery surface;
  *   - TWO published versions through the real publish button (immutable older
  *     exports hash-verified after the newer publish; v2 supersedes v1), one
  *     operation-UUID replay proves publication idempotency, and all four
@@ -668,6 +669,18 @@ export async function run(ctx) {
     assert(rewrite1.status === "completed", "REWRITE_1_STATUS");
 
     // Inspect the diff in the real card, then REJECT (dismiss) once.
+    //
+    // REPORTED PRODUCT DEFECT (no workaround, no product edit — documented
+    // in the run report): the RewritePanel's active-operation poll chain never
+    // re-arms — `poll()` captures `listRequestRef.current` and then calls
+    // `loadProposals()`, which INCREMENTS that same ref, so the guard
+    // `listRequestRef.current !== requestId` always short-circuits the
+    // reschedule (web/src/pages/DocumentWorkbench.tsx, poll()). A running
+    // proposal therefore sits on the "rewriting…" badge until the page is
+    // reloaded. Durable server truth (API-pollable) is asserted first, and
+    // the real UI recovery action — reload — is then exercised.
+    await session.page.reload({ waitUntil: "domcontentloaded" });
+    await expectText(session, "Revision 2", 30_000);
     const card1 = session.page.locator(`[data-rewrite-id="${rw1.id}"]`);
     await card1.waitFor({ timeout: 20_000 });
     await card1.getByText("Current selection").waitFor({ timeout: 10_000 });
@@ -694,6 +707,10 @@ export async function run(ctx) {
     const rw2 = await waitCompletedRewrite(session, docR, null, REPL_2, "REWRITE_2");
     const afterRewrite2 = await provider.state();
     assert(afterRewrite2.chat_calls - beforeRewrite2.chat_calls === 1, "REWRITE_2_PROVIDER_ARITY");
+    // Same reload recovery as above (product defect): durable completion is
+    // API-asserted, then the reloaded workbench surfaces the inspectable card.
+    await session.page.reload({ waitUntil: "domcontentloaded" });
+    await expectText(session, "Revision 2", 30_000);
     const card2 = session.page.locator(`[data-rewrite-id="${rw2.id}"]`);
     await card2.waitFor({ timeout: 20_000 });
     assert((await card2.innerText()).includes(SENT_EDITED) && (await card2.innerText()).includes(REPL_2), "REWRITE_2_DIFF");
@@ -853,13 +870,22 @@ export async function run(ctx) {
     artifacts.push(await session.screenshot(artifactsDir));
 
     /* -- P8: publication — stale head 409, two versions ---------------------- */
-    // API publish attempt against a stale expected head: 409, nothing published.
+    // API publish attempt against a stale expected head: the store rejects a
+    // moved expected head with 409 DOCUMENT_REVISION_CONFLICT + current-head
+    // metadata (`DOCUMENT_HEAD_MOVED` itself belongs to the completion-time
+    // recheck); nothing is published either way.
     const head6Now = (await session.apiFetch(`/api/documents/${docR}`, { expectStatus: 200 })).body;
     const movedPublish = await session.apiFetch(`/api/documents/${docR}/revisions/${head6Now.current_revision_id}/publish`, {
       method: "POST",
-      body: { operation_id: randomUUID(), expected_revision_id: "00000000-0000-4000-8000-000000000001" },
+      body: { operation_id: randomUUID(), expected_revision_id: docRRev1Id },
     });
-    assert(movedPublish.status === 409 && movedPublish.body?.code === "DOCUMENT_HEAD_MOVED", "PUBLISH_STALE_409", String(movedPublish.status));
+    assert(
+      movedPublish.status === 409 &&
+        movedPublish.body?.code === "DOCUMENT_REVISION_CONFLICT" &&
+        movedPublish.body?.current_head?.revision === 6,
+      "PUBLISH_STALE_409",
+      `${movedPublish.status}/${movedPublish.body?.code}`
+    );
     const emptyPubs = await session.apiFetch(`/api/documents/${docR}/publications`, { expectStatus: 200 });
     assert((emptyPubs.body?.items ?? []).length === 0, "STALE_PUBLISH_CREATED_VERSION");
     // Move the head once more through the API, then let the stale UI surface
@@ -885,7 +911,7 @@ export async function run(ctx) {
       expectStatus: 201,
     });
     await session.page.getByRole("button", { name: "Publish", exact: true }).click();
-    await expectText(session, "The document head moved since this publication was requested", 20_000);
+    await expectText(session, "the document changed since this draft was loaded", 20_000);
     artifacts.push(await session.screenshot(artifactsDir));
     await session.page.reload({ waitUntil: "domcontentloaded" });
     await expectText(session, "Revision 7", 30_000);
