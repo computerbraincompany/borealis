@@ -249,16 +249,19 @@ async function downloadVia(session, click, destinationPath) {
 }
 
 /**
- * Real textarea selection: focus, native range, and the native `select`
- * event the rewrite panel mirrors (its badge must show the passage length).
+ * Real keyboard selection of the last `chars` characters of the textarea's
+ * (single logical-line) content. Keyboard-driven selection is what fires the
+ * rewrite panel's React `onSelect` mirror (a programmatically dispatched
+ * `select` event does not — proven against the built UI).
  */
-async function selectInTextarea(locator, start, end) {
-  await locator.evaluate((el, [s, e]) => {
-    el.focus();
-    el.setSelectionRange(s, e);
-    el.dispatchEvent(new Event("select", { bubbles: true }));
-  }, [start, end]);
+async function selectTailViaKeyboard(session, locator, chars) {
+  await locator.click();
+  await session.page.keyboard.press("End");
+  await session.page.keyboard.down("Shift");
+  for (let i = 0; i < chars; i += 1) await session.page.keyboard.press("ArrowLeft");
+  await session.page.keyboard.up("Shift");
 }
+
 
 /** No external `src`/`href` targets (data:/anchor targets are allowed). */
 function assertSelfContainedHtml(html, code) {
@@ -563,10 +566,8 @@ export async function run(ctx) {
     await expectText(session, "Revision 1");
     const sectionOne = () => session.page.getByLabel("Markdown of section 1");
     const overviewHead = await sectionOne().inputValue();
-    const sentStart = overviewHead.indexOf(SENT_ORIGINAL);
-    assert(sentStart >= 0, "SENTENCE_NOT_IN_UI");
-    await sectionOne().click();
-    await selectInTextarea(sectionOne(), sentStart, sentStart + SENT_ORIGINAL.length);
+    assert(overviewHead.endsWith(SENT_ORIGINAL), "SENTENCE_NOT_AT_TAIL");
+    await selectTailViaKeyboard(session, sectionOne(), SENT_ORIGINAL.length);
     await session.page.keyboard.type(SENT_EDITED, { delay: 4 });
     await expectText(session, "Unsaved changes", 10_000);
     const providerBeforeManual = await provider.state();
@@ -582,6 +583,11 @@ export async function run(ctx) {
     checks.manual_edit_provider_calls = 0;
 
     const rev2 = await revisionPayload(session, docR, head2.current_revision_id);
+    assert(
+      rev2.sections[0].markdown === overviewHead.replace(SENT_ORIGINAL, SENT_EDITED),
+      "MANUAL_EDIT_MISPLACED",
+      "the keyboard selection did not replace exactly the original sentence"
+    );
     const rev1Again = await revisionPayload(session, docR, docRRev1Id);
     assert(
       rev1Again.sections[0].markdown.includes(SENT_ORIGINAL) && !rev1Again.sections[0].markdown.includes(SENT_EDITED),
@@ -624,13 +630,12 @@ export async function run(ctx) {
     /* -- P6: selected-passage rewrite: reject once, then accept ------------- */
     session.allowStatuses([409, 404]);
     const overviewNow = await sectionOne().inputValue();
-    const targetStart = overviewNow.indexOf(SENT_EDITED);
-    assert(targetStart >= 0, "REWRITE_TARGET_NOT_IN_UI");
+    assert(overviewNow.endsWith(SENT_EDITED), "REWRITE_TARGET_NOT_AT_TAIL");
 
     await provider.setScript({ steps: [{ type: "slow", delay_ms: 6000, pieces: [REPL_1] }], onExhausted: "fail" });
     const beforeRewrite1 = await provider.state();
     await session.page.getByRole("button", { name: "Request rewrite" }).waitFor({ timeout: 10_000 });
-    await selectInTextarea(sectionOne(), targetStart, targetStart + SENT_EDITED.length);
+    await selectTailViaKeyboard(session, sectionOne(), SENT_EDITED.length);
     await expectText(session, `${SENT_EDITED.length} selected characters`, 10_000);
     await session.page.getByLabel("Rewrite instruction").fill(REWRITE_INSTRUCTION);
     await session.page.getByRole("button", { name: "Request rewrite", exact: true }).click();
@@ -682,7 +687,8 @@ export async function run(ctx) {
     // Request again with the second scripted proposal, inspect, then ACCEPT.
     await provider.setScript({ steps: [textStep([REPL_2])], onExhausted: "fail" });
     const beforeRewrite2 = await provider.state();
-    await selectInTextarea(sectionOne(), targetStart, targetStart + SENT_EDITED.length);
+    await selectTailViaKeyboard(session, sectionOne(), SENT_EDITED.length);
+    await expectText(session, `${SENT_EDITED.length} selected characters`, 10_000);
     await session.page.getByLabel("Rewrite instruction").fill(REWRITE_INSTRUCTION);
     await session.page.getByRole("button", { name: "Request rewrite", exact: true }).click();
     const rw2 = await waitCompletedRewrite(session, docR, null, REPL_2, "REWRITE_2");
@@ -701,7 +707,11 @@ export async function run(ctx) {
       accepted.body.applied_revision_id === head3.current_revision_id && accepted.body.status === "completed",
       "REWRITE_APPLIED_LINK"
     );
-    assert(rev3.sections[0].markdown.includes(REPL_2) && !rev3.sections[0].markdown.includes(SENT_EDITED), "REWRITE_NOT_APPLIED");
+    assert(
+      rev3.sections[0].markdown === overviewNow.replace(SENT_EDITED, REPL_2),
+      "REWRITE_APPLY_MISPLACED",
+      "the accepted replacement did not land exactly on the selected passage"
+    );
     assert(
       JSON.stringify(rev3.sections.slice(1)) === JSON.stringify(rev2.sections.slice(1)),
       "REWRITE_TOUCHED_OTHER_SECTIONS"
@@ -718,8 +728,9 @@ export async function run(ctx) {
     /* -- P6b: a proposal cannot overwrite a newer head ---------------------- */
     await provider.setScript({ steps: [textStep([REPL_3])], onExhausted: "fail" });
     const overview3 = await sectionOne().inputValue();
-    const staleStart = overview3.indexOf(REPL_2);
-    await selectInTextarea(sectionOne(), staleStart, staleStart + REPL_2.length);
+    assert(overview3.endsWith(REPL_2), "REPL_2_NOT_AT_TAIL");
+    await selectTailViaKeyboard(session, sectionOne(), REPL_2.length);
+    await expectText(session, `${REPL_2.length} selected characters`, 10_000);
     await session.page.getByLabel("Rewrite instruction").fill("Another tightening pass against revision 3.");
     await session.page.getByRole("button", { name: "Request rewrite", exact: true }).click();
     const rw3 = await waitCompletedRewrite(session, docR, rw2.id, REPL_3, "REWRITE_3");
@@ -774,6 +785,7 @@ export async function run(ctx) {
     await expectText(session, "Revision 4");
     const sectionThree = () => session.page.getByLabel("Markdown of section 3");
     await sectionThree().click();
+    await session.page.keyboard.press("End");
     await session.page.keyboard.type(` ${SENT_CONFLICT}`, { delay: 4 });
     await expectText(session, "Unsaved changes", 10_000);
     // A second writer appends through the API while the UI draft is pending.
@@ -896,6 +908,7 @@ export async function run(ctx) {
     const ta2 = session.page.getByLabel("Markdown of section 2");
     await ta2.waitFor({ timeout: 10_000 });
     await ta2.click();
+    await session.page.keyboard.press("End");
     await session.page.keyboard.type(` ${SENT_V2}`, { delay: 4 });
     await session.page.getByRole("button", { name: "Save revision", exact: true }).click();
     await waitHead(session, docR, 8, "V2_EDIT_HEAD");
@@ -957,10 +970,12 @@ export async function run(ctx) {
     artifacts.push(await session.screenshot(artifactsDir));
 
     // Rewrite bounds: the honest 8,000-char UI gate + the server contract.
+    // Picking the Appendix in the rewrite section selector (no explicit
+    // range) makes the passage the whole 8,203-char section — over the bound
+    // — and the UI must say so and refuse to submit.
     session.allowStatuses([400]);
     await session.page.locator("#rewrite-section").selectOption({ value: docTPayload.sections[2].id });
-    const appendixSection = session.page.getByLabel("Markdown of section 3");
-    await selectInTextarea(appendixSection, 0, appendixLong.length);
+    await expectText(session, `whole section (${appendixLong.length} characters)`, 10_000);
     await expectText(session, "exceeds the 8,000-character bound", 10_000);
     assert(
       await session.page.getByRole("button", { name: "Request rewrite" }).isDisabled(),
