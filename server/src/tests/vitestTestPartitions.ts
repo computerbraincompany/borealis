@@ -34,6 +34,7 @@ export const INTEGRATION_TEST_FILES = Object.freeze([
   "src/tests/knowledgeStore.test.ts",
   "src/tests/knowledgeWebdav.test.ts",
   "src/tests/researchEvidence.test.ts",
+  "src/tests/research.integration.test.ts",
   "src/tests/researchRunner.test.ts",
   "src/tests/researchStore.test.ts",
   "src/tests/runStore.test.ts",
