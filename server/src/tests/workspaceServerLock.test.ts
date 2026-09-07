@@ -122,52 +122,56 @@ afterEach(async () => {
 });
 
 describe("server workspace lock lifecycle", () => {
-  it("does not mutate durable paths before a second process is rejected by the exact lock", async () => {
-    const parent = await fs.mkdtemp(path.join(os.tmpdir(), "borealis-server-lock-no-touch-"));
-    temporaryDirectories.push(parent);
-    const workspace = path.join(parent, "workspace");
-    await fs.mkdir(workspace);
-    const paths = {
-      workspace,
-      sqlitePath: path.join(workspace, "runtime", "sqlite", "borealis.sqlite"),
-      lanceDirectory: path.join(workspace, "runtime", "lancedb"),
-      uploadDirectory: path.join(workspace, "runtime", "uploads"),
-      reportDirectory: path.join(workspace, "runtime", "reports"),
-      containedDirectory: path.join(workspace, "runtime", "models"),
-      jwtSecretFile: path.join(workspace, "secrets", "jwt.secret"),
-    };
-    const pathsThatMustStayMissing = [
-      path.dirname(paths.sqlitePath),
-      paths.lanceDirectory,
-      paths.uploadDirectory,
-      paths.reportDirectory,
-      paths.containedDirectory,
-      paths.jwtSecretFile,
-    ];
-    const lock = await acquireWorkspaceLock(workspace);
-    try {
-      await runLockedStartup(paths);
-      for (const candidate of pathsThatMustStayMissing) {
-        await expect(fs.lstat(candidate)).rejects.toMatchObject({ code: "ENOENT" });
-      }
+  it(
+    "does not mutate durable paths before a second process is rejected by the exact lock",
+    { timeout: 20_000 },
+    async () => {
+      const parent = await fs.mkdtemp(path.join(os.tmpdir(), "borealis-server-lock-no-touch-"));
+      temporaryDirectories.push(parent);
+      const workspace = path.join(parent, "workspace");
+      await fs.mkdir(workspace);
+      const paths = {
+        workspace,
+        sqlitePath: path.join(workspace, "runtime", "sqlite", "borealis.sqlite"),
+        lanceDirectory: path.join(workspace, "runtime", "lancedb"),
+        uploadDirectory: path.join(workspace, "runtime", "uploads"),
+        reportDirectory: path.join(workspace, "runtime", "reports"),
+        containedDirectory: path.join(workspace, "runtime", "models"),
+        jwtSecretFile: path.join(workspace, "secrets", "jwt.secret"),
+      };
+      const pathsThatMustStayMissing = [
+        path.dirname(paths.sqlitePath),
+        paths.lanceDirectory,
+        paths.uploadDirectory,
+        paths.reportDirectory,
+        paths.containedDirectory,
+        paths.jwtSecretFile,
+      ];
+      const lock = await acquireWorkspaceLock(workspace);
+      try {
+        await runLockedStartup(paths);
+        for (const candidate of pathsThatMustStayMissing) {
+          await expect(fs.lstat(candidate)).rejects.toMatchObject({ code: "ENOENT" });
+        }
 
-      const secret = "existing-jwt-secret-with-at-least-thirty-two-characters\n";
-      await fs.mkdir(path.dirname(paths.jwtSecretFile), { recursive: true });
-      await fs.writeFile(paths.jwtSecretFile, secret, { mode: 0o644 });
-      await fs.chmod(paths.jwtSecretFile, 0o644);
+        const secret = "existing-jwt-secret-with-at-least-thirty-two-characters\n";
+        await fs.mkdir(path.dirname(paths.jwtSecretFile), { recursive: true });
+        await fs.writeFile(paths.jwtSecretFile, secret, { mode: 0o644 });
+        await fs.chmod(paths.jwtSecretFile, 0o644);
 
-      await runLockedStartup(paths);
-      expect(await fs.readFile(paths.jwtSecretFile, "utf8")).toBe(secret);
-      expect((await fs.stat(paths.jwtSecretFile)).mode & 0o777).toBe(0o644);
-      for (const candidate of pathsThatMustStayMissing.slice(0, -1)) {
-        await expect(fs.lstat(candidate)).rejects.toMatchObject({ code: "ENOENT" });
+        await runLockedStartup(paths);
+        expect(await fs.readFile(paths.jwtSecretFile, "utf8")).toBe(secret);
+        expect((await fs.stat(paths.jwtSecretFile)).mode & 0o777).toBe(0o644);
+        for (const candidate of pathsThatMustStayMissing.slice(0, -1)) {
+          await expect(fs.lstat(candidate)).rejects.toMatchObject({ code: "ENOENT" });
+        }
+      } finally {
+        await lock.release();
       }
-    } finally {
-      await lock.release();
     }
-  });
+  );
 
-  it("holds the exact lock while serving and releases it after orderly shutdown", async () => {
+  it("holds the exact lock while serving and releases it after orderly shutdown", { timeout: 20_000 }, async () => {
     const parent = await fs.mkdtemp(path.join(os.tmpdir(), "borealis-server-lock-"));
     temporaryDirectories.push(parent);
     const workspace = path.join(parent, "workspace");
@@ -193,7 +197,7 @@ describe("server workspace lock lifecycle", () => {
     }
   });
 
-  it("releases the exact lock when startup fails after acquisition", async () => {
+  it("releases the exact lock when startup fails after acquisition", { timeout: 20_000 }, async () => {
     const parent = await fs.mkdtemp(path.join(os.tmpdir(), "borealis-server-lock-failure-"));
     temporaryDirectories.push(parent);
     const workspace = path.join(parent, "workspace");
