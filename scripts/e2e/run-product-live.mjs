@@ -133,7 +133,10 @@ async function main() {
   const cfg = parseArgsLocal(process.argv.slice(2));
   const checks = [];
   const startedAt = new Date().toISOString();
-  const workspace = workspaceMod.createIsolatedWorkspace("borealis-e2e-live");
+  const workspace = workspaceMod.createIsolatedWorkspace({
+    repoRoot: REPO_ROOT,
+    runId: "live",
+  });
   let failure = null;
   let blocked = null;
 
@@ -154,6 +157,9 @@ async function main() {
         status: "fail",
         duration_ms: Math.round(performance.now() - start),
         reason: String(error && error.code ? error.code : error).slice(0, 120),
+        detail: String(
+          (error && error.detail) || (error && error.message) || error,
+        ).slice(0, 200),
       });
       throw error;
     }
@@ -161,7 +167,7 @@ async function main() {
 
   try {
     /* -- preflight: the model pair must be configured and tool-capable ----- */
-        await check("provider-reachable", async () => {
+    await check("provider-reachable", async () => {
       let list;
       try {
         list = await fetchJson(`${cfg.provider}/v1/models`);
@@ -188,59 +194,72 @@ async function main() {
     });
 
     await check("chat-model-tool-capable", async () => {
-      const smoke = await fetchJson(
-        `${cfg.provider}/v1/chat/completions`,
-        {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            model: cfg.chatModel,
-            stream: false,
-            messages: [
-              {
-                role: "system",
-                content:
-                  "You must call the provided tool exactly once; never answer in prose.",
-              },
-              {
-                role: "user",
-                content: "Add the numbers 7 and 35 using the tool.",
-              },
-            ],
-            tools: [
-              {
-                type: "function",
-                function: {
-                  name: "add",
-                  description: "Add two numbers",
-                  parameters: {
-                    type: "object",
-                    properties: {
-                      a: { type: "number" },
-                      b: { type: "number" },
+      // Live models are non-deterministic: even a tool-capable model can emit
+      // prose on a given sampling. Retry a bounded number of times, still
+      // requiring a correct tool call to pass — never auto-pass.
+      let lastReason = "TOOL_SMOKE_NO_TOOL_CALL";
+      for (let attempt = 1; attempt <= 3; attempt += 1) {
+        const smoke = await fetchJson(
+          `${cfg.provider}/v1/chat/completions`,
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              model: cfg.chatModel,
+              stream: false,
+              messages: [
+                {
+                  role: "system",
+                  content:
+                    "You must call the provided tool exactly once; never answer in prose.",
+                },
+                {
+                  role: "user",
+                  content: "Add the numbers 7 and 35 using the tool.",
+                },
+              ],
+              tools: [
+                {
+                  type: "function",
+                  function: {
+                    name: "add",
+                    description: "Add two numbers",
+                    parameters: {
+                      type: "object",
+                      properties: {
+                        a: { type: "number" },
+                        b: { type: "number" },
+                      },
+                      required: ["a", "b"],
                     },
-                    required: ["a", "b"],
                   },
                 },
-              },
-            ],
-            tool_choice: "required",
-            max_tokens: 300,
-          }),
-        },
-        180_000,
-      );
-      assert(smoke.status === 200, "TOOL_SMOKE_HTTP", String(smoke.status));
-      const message = smoke.body?.choices?.[0]?.message;
-      const call = message?.tool_calls?.[0];
-      assert(call?.function?.name === "add", "TOOL_SMOKE_NO_TOOL_CALL");
-      const args = JSON.parse(call.function.arguments || "{}");
-      assert(
-        Number(args.a) + Number(args.b) === 42,
-        "TOOL_SMOKE_BAD_ARGS",
-        `${args.a}+${args.b}`,
-      );
-      return {};
+              ],
+              tool_choice: "required",
+              // Reasoning models spend visible thinking budget before the
+              // structured call; leave room for both.
+              max_tokens: 2048,
+            }),
+          },
+          180_000,
+        );
+        if (smoke.status !== 200) {
+          lastReason = `TOOL_SMOKE_HTTP_${smoke.status}`;
+          continue;
+        }
+        const call = smoke.body?.choices?.[0]?.message?.tool_calls?.[0];
+        if (call?.function?.name !== "add") {
+          lastReason = "TOOL_SMOKE_NO_TOOL_CALL";
+          continue;
+        }
+        const args = JSON.parse(call.function.arguments || "{}");
+        if (Number(args.a) + Number(args.b) !== 42) {
+          lastReason = `TOOL_SMOKE_BAD_ARGS ${args.a}+${args.b}`;
+          continue;
+        }
+        return { attempts: attempt };
+      }
+      throw new HarnessError(lastReason);
     });
 
     if (!cfg.skipBuild) {
@@ -263,15 +282,25 @@ async function main() {
         embedDim: cfg.embedDim,
       },
     });
+    workspace.onCleanup(() => server.stop());
+    await server.waitBaseline();
     const browser = await browserMod.launchBrowser({
       workspace,
       repoRoot: REPO_ROOT,
     });
+    workspace.onCleanup(() => browser.close());
     const artifactsDir = path.join(workspace.artifactsDir, "live");
     fs.mkdirSync(artifactsDir, { recursive: true, mode: 0o700 });
 
     /* -- finance scope ------------------------------------------------------ */
-    const sampleDir = path.join(workspace.inputsDir, "sample");
+    const inputsDir = workspace.assertOwnedPath(
+      path.join(workspace.root, "inputs"),
+    );
+    fs.mkdirSync(path.join(inputsDir, "sample"), {
+      recursive: true,
+      mode: 0o700,
+    });
+    const sampleDir = path.join(inputsDir, "sample");
     const generator = spawnSync(
       "pnpm",
       [
@@ -485,11 +514,11 @@ async function main() {
         }
         assert(
           result.rows.some((row) =>
-            String(
-              row.find((cell) => String(cell).startsWith("'=")) ?? "",
-            ).includes("Borealis-E2E"),
+            row.some((cell) =>
+              String(cell).startsWith("=2025-06|Borealis-E2E"),
+            ),
           ),
-          "FORMULA_GUARD",
+          "PROBE_STORED_RAW",
         );
         return {
           rows: result.rows.length,
@@ -505,18 +534,17 @@ async function main() {
         `/api/analyses/${analysis.analysis_id}/results/${analysis.result_id}/export?format=csv`,
         { expectStatus: 200 },
       );
-      const bytes = Buffer.from(csv.body);
-      assert(bytes.subarray(0, 3).toString("hex") === "efbbbf", "CSV_BOM");
-      assert(csv.body.includes("'="), "CSV_FORMULA_GUARD");
+      assert(csv.hasBom === true, "CSV_BOM");
+      assert(csv.text.includes("'="), "CSV_FORMULA_GUARD");
       const manifest = await session.apiFetch(
         `/api/analyses/${analysis.analysis_id}/results/${analysis.result_id}/export?format=manifest`,
         { expectStatus: 200 },
       );
       assert(
-        manifest.body?.analysis_id === analysis.analysis_id,
+        manifest.body?.exported_result?.analysis_id === analysis.analysis_id,
         "MANIFEST_IDENTITY",
       );
-      return { csv_bytes: bytes.length };
+      return { csv_bytes: csv.byteLength };
     });
 
     /* -- research scope (documents, live embeddings + live model) ---------- */
@@ -532,9 +560,9 @@ async function main() {
       for (const name of researchDocs) {
         const res = await uploadFile(session, path.join(corpusDir, name), name);
         assert(
-          res.status === 201,
+          (res.status === 200 || res.status === 201) && typeof res.body?.id === "string",
           "RESEARCH_UPLOAD_STATUS",
-          `${name} → ${res.status}`,
+          `${name} → ${res.status} ${JSON.stringify(res.body?.code ?? res.body?.error ?? "")}`,
         );
         sourceIds.push(res.body?.id);
       }
@@ -678,8 +706,6 @@ async function main() {
     });
 
     await session.close?.();
-    await browser.close();
-    await server.close();
   } catch (error) {
     failure = String(error && error.code ? error.code : error).slice(0, 160);
   } finally {
@@ -707,14 +733,14 @@ async function main() {
     } catch {
       /* the summary line already carries the result */
     }
-    const cleanup = workspace.cleanup({
+    const cleanup = await workspace.cleanup({
       keep: Boolean((failure || blocked) && cfg.keepOnFailure),
     });
     summary.cleanup = {
       workspace_removed: cleanup.removed,
-      kept_path: cleanup.keptPath,
-      lock_released: cleanup.proofs?.lock_released ?? true,
-      pids_gone: cleanup.proofs?.pids_gone ?? true,
+      kept: cleanup.kept,
+      lock_released: cleanup.lockReleased,
+      pids_gone: cleanup.pidsGone,
       problems: cleanup.problems,
     };
     emit(summary);
