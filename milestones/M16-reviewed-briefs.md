@@ -9,10 +9,16 @@
 
 ## Status and dependencies
 
-- **Status:** IN PROGRESS — stages 1–4 are merged on `main` (schema
-  v26–v28; journey F browser acceptance passes 3×; the review-inbox head-
-  revision decision defect is fixed in `930addf`). Remaining acceptance
-  evidence is tracked in [EXECUTION.md](EXECUTION.md).
+- **Status:** DONE — stages 1–4 are merged on `main` (schema v26–v28);
+  journey F browser acceptance passes repeatedly (final integrated A–F run
+  on `59d1a64`), the review-inbox head-revision decision defect is fixed
+  (`930addf`) and re-proved through the REAL UI button (`1483893`), and the
+  complete gate chain (root verify, desktop verify, packaging, packaged
+  smokes) is green on the final commit. Disclosed open items: a cosmetic
+  `coalesced_count=1` label on fresh manual runs (reported, journey
+  documents it without asserting), and the brief UI is not separately
+  exercised inside the packaged app (identical bundled web surface; the
+  packaged-app proof ran journey B). See [EXECUTION.md](EXECUTION.md).
 - **Baseline:** `e2e6a78`, 2026-09-06.
 - **Priority / effort / functional risk:** P2 / XL / high (recovery and calendar semantics).
 - **Depends on:** [M12 saved analyses](M12-saved-analyses.md),

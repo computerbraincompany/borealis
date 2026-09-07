@@ -2,13 +2,15 @@
 
 ## Status and execution contract
 
-- **Status:** IN PROGRESS — stages 1–4 plus the registry-hydration fix are
-  merged on `main` (schema v18; journey B browser acceptance passes; the
-  live-model gate executes a real parameterized saved-analysis rerun with
-  numeric cell checks and byte-parsed exports). Isolated-profile packaged-app
-  exercise and the final root gates are the open items; evidence is tracked in
-  [EXECUTION.md](EXECUTION.md). No runtime functionality was claimed by this
-  document at the approved-handoff baseline.
+- **Status:** DONE — stages 1–4 plus the registry-hydration fix are merged on
+  `main` (schema v18); journey B browser acceptance passes; the real-model
+  live gate executes the parameterized saved-analysis rerun with numeric cell
+  checks and byte-parsed exports; the same journey runs against the REAL
+  packaged app on an isolated absolute `--user-data-dir`; the result's
+  canonical chart copy is verified numerically against independently computed
+  fixtures; all required gates were green on the final commit `59d1a64`
+  (2026-09-07, see the final acceptance record below). No runtime
+  functionality was claimed by this document at the approved-handoff baseline.
 - **Priority / effort / risk:** P1 / L (multiple days, including integration) /
   high: durable dataset identity and worker execution change.
 - **Baseline:** `e2e6a78`, inspected 2026-09-06.
@@ -391,3 +393,65 @@ final integrated state. Root verify was not run in this environment; the
 server/web sub-gates above were run individually and all exit 0. Status stays
 TODO: the deterministic fixture model proves protocol behavior; it is not
 genuine local-model evidence.
+
+## Execution record 2026-09-07 (final acceptance — DONE)
+
+All commands run on Apple Silicon macOS (darwin 26.6.2, arm64), Node 22.22.3,
+pnpm 10.x, on final commit `59d1a64` (supersedes the stage-4 "Status stays
+TODO" paragraph above).
+
+Required gates, all exit 0 on the identical tree:
+
+- `pnpm verify` → `ALL GATES GREEN` (16/16 tasks).
+- `pnpm --filter borealis-desktop verify` → green incl. the Electron
+  hidden-renderer PNG/PDF smoke (`ok:true`, network_hits 0,
+  blocked_unsafe_requests 2).
+- `pnpm package:unsigned` → 5/5 tasks; fresh `mac-arm64/Borealis.app` + DMG/ZIP.
+- `pnpm --filter borealis-desktop package:native:smoke` → fuses/ASAR/integrity
+  + Electron-ABI native load in Node and the utility process.
+- `pnpm --filter borealis-desktop package:entitlements:smoke` → retained
+  `allow-jit` + `disable-library-validation` pair proven; both negative
+  removals fail as required.
+
+Browser acceptance (`node scripts/e2e/run-product.mjs --journey=B
+--skip-build`): pass, plus the integrated `--journey=all` run with A–F all
+`pass` and `passed:true`; cleanup `lock_released/pids_gone`, `problems:[]`.
+Coverage gained since stage 4: the canonical chart copy of the SAME stored
+result (journey B P9b) — categories from the fixtures, series exactly
+`[tx_count, net_amount]`, every numeric cell verified against the committed
+expected values (M12 "chart from that same result and verify its numbers").
+
+Packaged-app exercise (isolated absolute `--user-data-dir` under the
+disposable run tree, real unsigned bundle):
+`node scripts/e2e/run-product-desktop.mjs --journey=B` — journey B end to
+end against the REAL packaged app: origin derived from the app's own
+`Borealis server listening` log line; accounts via the PUBLIC register route
++ real login form (the desktop one-shot preload bootstrap is unavailable to
+Playwright); the scripted provider wired through authenticated
+`PATCH /api/settings` (loopback, so no egress gate; embedding identity never
+sent because Settings must reject it — the fixture answers as the app's
+default `text-embedding-nomic-embed-text-v1.5` @ 768); restart = quiesce on
+`/api/health`, SIGTERM owned pid (escalation disclosed, `escalated:false` in
+the passing runs), relaunch on the same profile with a new port, durable
+`jwt.secret` proven (pre-restart JWT authenticates), session re-established
+through the real login form. Greens: agent ×3 + coordinator re-runs ×2 + the
+final-chain run, all `passed:true` with `restart_disclosures` recorded and
+clean lock/pid cleanup. The lifecycle default run (launch, single-instance,
+orderly quit via `--borealis-packaged-shutdown-smoke`) also passes on the
+final package.
+
+Genuine local-model evidence (`pnpm test:e2e:product:live`, models
+`qwen/qwen3.6-35b-a3b` + `text-embedding-nomic-embed-text-v1.5` @ 768):
+`passed:true`, exit 0 — provider reachable, tool-capability qualification
+(1 attempt), 4-source ingest, a real `query_data` tool round (3 query
+receipts), the parameterized saved-analysis rerun with per-cell numeric
+expectations (14/14), CSV BOM/formula-guard + manifest identity byte checks,
+workspace removed / lock released / pids gone. Disclosed boundary: the live
+research exercise runs through the API path, not the research UI; the
+packaged-app brief/research UIs are not separately exercised (the identical
+web surface is bundled in the package, proven via journey B's UI flow).
+
+Fixture identifiers and expectations are unchanged from the stage-4 record
+(seed-42, June 14 groups, Groceries `-518.65` → `-568.65` after the marker
+replacement, etc.). No credentials, private source text, or provider raw
+output are recorded here.

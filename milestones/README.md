@@ -61,9 +61,12 @@ receipts. M06 closed its remaining Settings-panel and hardening work on
 `contained.json` uses same-directory atomic replacement preserving mode
 `0600`, and spawn failures enter the bounded engine state machine with
 deterministic path diagnostics. The other written milestones are complete.
-M12–M16 now specify the selected new product scope. The pending connected-agent
-work remains the M05 extension with its own complete implementation spec.
-These selections do not reopen completed M01–M11 or claim any new feature ships.
+M12–M16 are the selected product wave: as of 2026-09-07 their implementation
+stages are merged on `main` and per-milestone acceptance evidence is tracked in
+[EXECUTION.md](EXECUTION.md). The connected-agent (MCP) extension of the M05
+contract completed stages 1–6 and its journey A passes; the connected-tool
+rollout row flipped to DONE on the same evidence date.
+These selections do not reopen completed M01–M11.
 Remediation may close the existing milestone that owns the contract.
 The operator-selected product slices in advisor plans 034–037 now ship as
 bounded extensions of existing contracts: synthetic model-pair qualification,
@@ -100,9 +103,10 @@ Completed sequencing notes:
 ## Selected functional wave
 
 The selected direction is **repeatable, evidence-backed work over a living
-corpus**. All six slices are now specified for implementation. The MCP rollout
-remains pending and saved analyses is M12. This is a dependency order, not a
-delivery calendar. Detailed rationale and dated competitive evidence live in the
+corpus**. All six slices passed through implementation in the 2026-09-06/07
+wave; remaining acceptance evidence and open items are tracked in
+[EXECUTION.md](EXECUTION.md). This was a dependency order, not a delivery
+calendar. Detailed rationale and dated competitive evidence live in the
 [September product review](../docs/PRODUCT_REVIEW.md).
 
 | Order | Functional slice | First useful outcome | Status / dependency |
