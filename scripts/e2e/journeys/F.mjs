@@ -168,7 +168,7 @@ export async function run(ctx) {
   assert(expectedV1 === 100 && expectedV2 === 125, "FIXTURE_SUMS", `${expectedV1}/${expectedV2}`);
 
   /* -- P0: seed the WebDAV tree with ONE finance CSV, launch the fixture ---- */
-  const davRoot = workspace.assertOwnedPath(path.join(workspace.root, "webdav-tree"));
+  const davRoot = workspace.assertOwnedPath(path.join(workspace.root, "webdav-tree-F"));
   fs.mkdirSync(davRoot, { recursive: true, mode: 0o700 });
   fs.writeFileSync(path.join(davRoot, "finance.csv"), CSV_V1, "utf8");
   const webdavPass = `F-WEBDAV-PASS-${randomUUID()}`;
@@ -351,76 +351,22 @@ export async function run(ctx) {
     // the create form defers the resolved preview to the saved detail.
     await expectIn(wizard, CALENDAR_CAVEAT);
     await expectIn(wizard, "After saving, the recipe detail shows the server's next three run times");
-    await wizard.getByRole("button", { name: "Create brief", exact: true }).click();
-
-    /* -- SHIPPED PRODUCT DEFECT (asserted loudly, not silently worked around)
-     * BriefRecipeWizard.buildBody always sends explicit JSON nulls
-     * (`connector_id: null` on knowledge bindings, `connection_id: null` on
-     * connector bindings, and `schedule.weekday`/`schedule.day_of_month: null`
-     * for the unused calendar fields), but routes/briefs.ts declares those as
-     * `{type:"string", pattern:UUID}` / `{type:"integer"}` — no nullability.
-     * The real wizard's create therefore ALWAYS fails schema validation with
-     * a 400 (httpErrors.ts masks the AJV detail into "invalid request"), and
-     * the dialog alert sits scrolled out of the viewport so the user sees a
-     * stuck "Create brief" button with a generic line.
-     * Repro: the wizard's POST /api/briefs is asserted 400 here; the exact
-     * masked detail "body/refresh_bindings/0/connector_id must match pattern
-     * ^[0-9a-f]{8}-…" was reproduced offline against the identical Fastify
-     * schema during journey development (schedule null fields fail the same
-     * way; the same body with nulls omitted is schema-valid).
-     * No product edits are in this journey's scope, so after ASSERTING the
-     * defect the journey creates the equivalent recipe through the API with
-     * the same browser session's token (nulls omitted, which the schema
-     * accepts) and continues through every other real UI surface. */
-    session.allowStatuses([400]);
+    /* -- Wizard create (the shipped defect BRIEF_WIZARD_NULL_SCHEMA was
+     * fixed in d805b4a: the wire body omits unused keys). This journey now
+     * exercises the REAL wizard path end to end: one click, a schema-valid
+     * POST, 201, and the dialog closing — no API-side workaround. */
     const wizardCreateResponse = session.page
-      .waitForResponse((res) => res.url().endsWith("/api/briefs") && res.request().method() === "POST", { timeout: 20_000 })
+      .waitForResponse((res) => res.url().endsWith("/api/briefs") && res.request().method() === "POST", {
+        timeout: 20_000,
+      })
       .catch(() => null);
     await wizard.getByRole("button", { name: "Create brief", exact: true }).click();
     const wizardCreate = await wizardCreateResponse;
     assert(wizardCreate !== null, "WIZARD_CREATE_REQUEST_MISSING");
     const wizardStatus = wizardCreate.status();
-    const wizardBody = await wizardCreate.json().catch(() => null);
-    assert(
-      wizardStatus === 400 && wizardBody?.error === "invalid request" && typeof wizardBody?.request_id === "string",
-      "WIZARD_CREATE_UNEXPECTED_FAILURE",
-      `${wizardStatus} ${JSON.stringify(wizardBody ?? {}).slice(0, 160)}`
-    );
-    // (httpErrors.ts masks schema detail into the generic envelope above; the
-    // exact AJV violation for this exact wizard payload was reproduced offline
-    // against the same Fastify schema during journey development:
-    // "body/refresh_bindings/0/connector_id must match pattern ^[0-9a-f]{8}-…"
-    // — the same body with nulls omitted is schema-valid, which the API
-    // create below proves.)
-    const wizardAlert = session.page.getByRole("alert");
-    await wizardAlert.waitFor({ timeout: 15_000 });
-    const wizardErrorText = await wizardAlert.first().innerText();
-    assert(/invalid request/i.test(wizardErrorText), "WIZARD_ALERT_UNEXPECTED", wizardErrorText.slice(0, 140));
-    artifacts.push(await session.screenshot(artifactsDir));
-    checks.defect_wizard_create = {
-      code: "BRIEF_WIZARD_NULL_SCHEMA",
-      detail: "wizard sends explicit nulls; routes/briefs.ts rejects non-nullable — create attempt 400s (masked as 'invalid request')",
-      status: wizardStatus,
-      user_alert: wizardErrorText.slice(0, 60),
-    };
-    await session.page.keyboard.press("Escape");
-
-    // The wizard's intended recipe content, created through the API with the
-    // same browser session (nulls omitted — the schema-valid equivalent).
-    const recipeCreate = await session.apiFetch("/api/briefs", {
-      method: "POST",
-      expectStatus: 201,
-      body: {
-        name: RECIPE_NAME,
-        analysis_id: analysisId,
-        parameter_values: { label: "total" },
-        report_title: REPORT_TITLE,
-        report_instruction: "Summarize the weekly total with the keyed comparison against last week (E2E-F).",
-        source_ids: [financeSourceId],
-        refresh_bindings: [{ source_id: financeSourceId, kind: "knowledge", connection_id: connectionRow.id }],
-        schedule: { kind: "weekly", weekday: 1, hour: 9, minute: 0, time_zone: TIME_ZONE },
-      },
-    });
+    assert(wizardStatus === 201, "WIZARD_CREATE_FAILED", String(wizardStatus));
+    await wizard.waitFor({ state: "hidden", timeout: 15_000 });
+    const recipeCreate = { body: await wizardCreate.json() };
     assert(recipeCreate.body?.id, "RECIPE_NOT_CREATED");
     const recipe = { id: recipeCreate.body.id, ...recipeCreate.body };
     const detail = (await session.apiFetch(`/api/briefs/${recipe.id}`, { expectStatus: 200 })).body;
