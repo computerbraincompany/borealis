@@ -492,9 +492,11 @@ refreshable knowledge connections: a folder you select in the desktop app (or a
 read-only WebDAV collection with an application password) keeps its managed
 files in sync through bounded previews and durable refreshes — preview shows
 new/changed/unchanged/missing before you import, refreshing reuses the same
-sources, deleting a connection never removes your sources, and watch (desktop
-only) rescans while the app runs. The Libraries surface also gains inspectable
-library search: on-device keyword search by default, explicit semantic search
+sources, deleting a connection never removes your sources, and folder watch
+(desktop only) rescans while the app runs. If a file becomes unreadable, the
+app explains how to restore read access and retains its last ready content.
+Watching pauses until a manual preview or refresh succeeds. Libraries also offer
+inspectable search: on-device keyword search by default, explicit semantic search
 under the same remote-egress consent as chat, ranked passages with honest
 page/section/row locators, and a passage panel with neighboring text.
 **Settings → Connections** manages MCP connections — a Streamable HTTP
@@ -585,7 +587,9 @@ unpacked JXA helper and macOS PDFKit/Vision.
 For a disposable ad-hoc hardened-runtime matrix over that packaged app, run
 `pnpm --filter borealis-desktop package:entitlements:smoke`; the retained
 `allow-jit`/`disable-library-validation` pair must pass, and removing either one
-must fail the same packaged native/OCR smoke.
+must fail the same packaged native/OCR smoke. This negative-control gate needs
+a SIP-enabled host that enforces normal hardened-runtime policy; see the
+[desktop verification guidance](desktop/README.md#runtime-boundary).
 
 The gate uses fixtures and provider mocks; it does not run live-model analysis,
 desktop first-launch interaction, or a signed release check. Perform the manual

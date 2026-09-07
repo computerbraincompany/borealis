@@ -130,11 +130,12 @@ editor, then add richer document export and reviewable extraction tables. A
 general spreadsheet editor, a visual automation graph, broad implicit memory,
 and general computer control are later options, not the next milestones.
 
-The cross-cutting remediation ledger remains separate. Schema v13 ships;
-v14–v16 stay reserved for the existing remediation work. The
-[handoff prerequisite gate](../docs/DEVELOPMENT_HANDOFF.md#resolve-the-reserved-schema-sequence-first)
-lists the exact dependency closure required before product migrations v17+.
-No skipped versions, placeholders, renumbering, or assumed remediation completion.
+The cross-cutting remediation ledger remains separate. Agent configuration
+ships at schema v13; the prerequisite consent, automation ownership, and
+connector repair migrations shipped at v14–v16 before product schemas v17–v28.
+The [handoff prerequisite gate](../docs/DEVELOPMENT_HANDOFF.md#resolve-the-reserved-schema-sequence-first)
+records that completed dependency closure. Preserve the applied sequence: no
+skipped versions, placeholders, reuse, or renumbering.
 
 Suggested release proof: use the personal-finance fixtures to save a monthly
 analysis, revise its report, refresh the inputs, and produce a second version
@@ -142,7 +143,8 @@ whose changed numbers and evidence can be inspected. Add a second proof using
 a small document corpus and a cited comparison table. Measure whether users can
 repeat those jobs without reconstructing chat history, not how many new pages
 or integrations were added. These scenarios are required by the acceptance
-matrix; they were not executed in this documentation review.
+matrix; actual runs and remaining platform gates are recorded in
+[EXECUTION.md](EXECUTION.md).
 
 ## Verification record
 

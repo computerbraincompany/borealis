@@ -56,7 +56,15 @@ export const NATIVE_CHECKPOINTS = Object.freeze({
     ],
     [
       "watch",
-      "The harness has edited notes.md after watch was enabled. Without clicking Refresh, observe the new ready generation; inspect source keyword/semantic search and page/section details. Preview rename/remove/unreadable changes and verify source retention policy and frozen earlier evidence.",
+      "The harness has edited notes.md after watch was enabled. Without clicking Refresh, observe the new ready generation; inspect source keyword/semantic search and section details. Capture a real cited chat answer with only notes.md selected. Preview a temporary upstream rename/removal without importing a duplicate, restore its original name, and verify source retention and the captured citation.",
+    ],
+    [
+      "permission",
+      "The harness removed read access only from the owned notes.md fixture. Open this folder connection's Preview through the native UI. Require the visible instruction: Restore read access to the folder and its files, then retry. Confirm nothing was imported and the prior source and citation remain. Leave permissions unchanged until this checkpoint passes; the read-only guard requires KNOWLEDGE_FILE_UNREADABLE in the exact watched connection and failed preview.",
+    ],
+    [
+      "retry",
+      "The harness restored read access to the owned notes.md fixture. Retry Preview through the native UI, require a successful unchanged-file scan and cleared permission status, then reopen the prior source/citation unchanged. Do not reselect the folder or replace the source to hide a recovery failure.",
     ],
     [
       "webdav",
@@ -188,6 +196,36 @@ export function nativeState(repoRoot, profileDir) {
         "kind = 'webdav' AND status = 'ready' AND credential_configured = 1",
       ),
       refreshes: count("knowledge_refreshes", "status = 'completed'"),
+      folder_permission_blocked: count(
+        "knowledge_connections",
+        "kind='desktop_folder' AND watch_enabled=1 AND status_code='KNOWLEDGE_FILE_UNREADABLE'",
+      ),
+      folder_permission_previews: db
+        .prepare(
+          "SELECT count(*) n FROM knowledge_previews p JOIN knowledge_connections c ON c.id=p.connection_id AND c.account_id=p.account_id WHERE p.account_id=? AND c.kind='desktop_folder' AND c.watch_enabled=1 AND p.status='failed' AND p.error_code='KNOWLEDGE_FILE_UNREADABLE'",
+        )
+        .get(user.id).n,
+      folder_complete_previews: db
+        .prepare(
+          "SELECT count(*) n FROM knowledge_previews p JOIN knowledge_connections c ON c.id=p.connection_id AND c.account_id=p.account_id WHERE p.account_id=? AND c.kind='desktop_folder' AND c.watch_enabled=1 AND p.status='complete' AND p.error_code IS NULL",
+        )
+        .get(user.id).n,
+      watched_source_hash: createHash("sha256")
+        .update(
+          JSON.stringify(
+            db
+              .prepare(
+                "SELECT i.source_id,i.ingested_hash,s.ready_generation,s.status FROM knowledge_items i JOIN knowledge_connections c ON c.id=i.connection_id AND c.account_id=i.account_id JOIN sources s ON s.id=i.source_id AND s.account_id=i.account_id WHERE i.account_id=? AND c.kind='desktop_folder' AND c.watch_enabled=1 ORDER BY i.id",
+              )
+              .all(user.id),
+          ),
+        )
+        .digest("hex"),
+      captured_note_answers: db
+        .prepare(
+          "SELECT count(DISTINCT m.id) n FROM messages m JOIN chats chat ON chat.id=m.chat_id JOIN json_each(m.meta,'$.evidence') e JOIN knowledge_items i ON i.source_id=json_extract(e.value,'$.source_id') AND i.account_id=chat.account_id JOIN knowledge_connections c ON c.id=i.connection_id AND c.account_id=i.account_id WHERE chat.account_id=? AND m.role='assistant' AND c.kind='desktop_folder' AND c.watch_enabled=1",
+        )
+        .get(user.id).n,
       research_runs: count(
         "research_runs",
         "status IN ('completed','needs_review')",
@@ -344,6 +382,15 @@ function immutableState(repoRoot, profileDir) {
       .prepare("SELECT id FROM users WHERE email = 'local@borealis.app'")
       .get().id;
     const snapshot = {};
+    for (const row of db
+      .prepare(
+        "SELECT m.id,m.content,m.meta FROM messages m JOIN chats c ON c.id=m.chat_id WHERE c.account_id=? AND m.role='assistant' AND json_array_length(m.meta,'$.evidence')>0",
+      )
+      .all(account)) {
+      snapshot[`captured_chat:${row.id}`] = createHash("sha256")
+        .update(JSON.stringify(row))
+        .digest("hex");
+    }
     for (const table of [
       "analysis_results",
       "document_revisions",
@@ -460,7 +507,20 @@ export function checkNativeState(checkpoint, state, baseline) {
       state.documents >= 1 && state.rewrites >= 1 && state.publications >= 2,
     "D.folder": state.folders >= 1 && state.ready_sources >= 1,
     "D.watch":
-      state.refreshes > baseline.refreshes && state.folder_changed >= 1,
+      state.refreshes > baseline.refreshes &&
+      state.folder_changed >= 1 &&
+      state.captured_note_answers >= 1,
+    "D.permission":
+      state.folder_permission_blocked >= 1 &&
+      state.folder_permission_previews > baseline.folder_permission_previews &&
+      state.watched_source_hash === baseline.watched_source_hash &&
+      state.captured_note_answers >= 1,
+    "D.retry":
+      state.folder_permission_blocked === 0 &&
+      state.folders >= 1 &&
+      state.folder_complete_previews > baseline.folder_complete_previews &&
+      state.watched_source_hash === baseline.watched_source_hash &&
+      state.captured_note_answers >= 1,
     "D.webdav":
       state.webdav >= 1 && state.custody && state.browser_custody_absent,
     "E.research": state.research_comparisons >= 1,
@@ -545,6 +605,16 @@ export function validateNativeResponse(response, request) {
     throw new HarnessError(
       `NATIVE_DRIVER_${response.status.toUpperCase()}:${request.checkpoint}`,
     );
+  if (request.checkpoint === "D.permission") {
+    assert(
+      response.observations.some((observation) =>
+        observation.includes(
+          "Restore read access to the folder and its files, then retry.",
+        ),
+      ),
+      "NATIVE_PERMISSION_GUIDANCE_UNVERIFIED",
+    );
+  }
 }
 
 /** Manual CRC32 (ZIP member integrity), independent of runtime version. */
@@ -905,6 +975,17 @@ export async function runNativeJourneys({
       immutable = nextImmutable;
       if (name === "B.capture" || name === "B.analysis")
         verifyFinanceResults(repoRoot, app.profileDir, name === "B.analysis");
+      if (name === "E.research") {
+        execFileSync(
+          process.execPath,
+          [
+            path.join(repoRoot, "scripts/e2e/native-research-fixture.mjs"),
+            workspace.root,
+            "verify-facts",
+          ],
+          { timeout: 15000, stdio: "pipe" },
+        );
+      }
       if (name === "C.publish")
         initialDocumentPublication = latestNativePublication(
           repoRoot,
@@ -956,6 +1037,15 @@ export async function runNativeJourneys({
   for (const id of ids) {
     const started = Date.now();
     for (const [step, instruction] of NATIVE_CHECKPOINTS[id]) {
+      if (id === "D" && (step === "permission" || step === "retry")) {
+        const fixture = path.join(folder, "notes.md");
+        const stat = fs.lstatSync(fixture);
+        assert(
+          stat.isFile() && !stat.isSymbolicLink(),
+          "NATIVE_FOLDER_FIXTURE_UNSAFE",
+        );
+        fs.chmodSync(fixture, step === "permission" ? 0 : 0o600);
+      }
       if (id === "D" && step === "watch")
         fs.writeFileSync(
           path.join(folder, "notes.md"),
@@ -1008,6 +1098,27 @@ export async function runNativeJourneys({
               type: "text",
               pieces: [
                 "Native finance query complete. Save the query as an analysis.",
+              ],
+            },
+          ],
+          onExhausted: "repeat-last",
+        });
+      }
+      if (id === "D" && step === "watch") {
+        await provider.setScript({
+          steps: [
+            {
+              type: "tool_call",
+              id: "native_notes_retrieve",
+              name_pieces: ["retrieve"],
+              argument_pieces: [
+                JSON.stringify({ query: "NATIVE_FOLDER_CHANGED_260907" }),
+              ],
+            },
+            {
+              type: "text",
+              pieces: [
+                "The managed note contains NATIVE_FOLDER_CHANGED_260907 [1].",
               ],
             },
           ],

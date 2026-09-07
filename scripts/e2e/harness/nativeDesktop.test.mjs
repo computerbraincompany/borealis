@@ -179,8 +179,74 @@ test("watch acceptance requires changed fixture content, not merely completed re
   );
   checkNativeState(
     "D.watch",
-    { refreshes: 2, folder_changed: 1 },
+    { refreshes: 2, folder_changed: 1, captured_note_answers: 1 },
     { refreshes: 1 },
+  );
+});
+
+test("native folder permission proof rejects false size errors and requires real retained-source recovery", () => {
+  const baseline = {
+    folder_permission_previews: 0,
+    folder_complete_previews: 1,
+    watched_source_hash: "same-source-and-generation",
+  };
+  const failed = {
+    ...baseline,
+    folder_permission_blocked: 1,
+    folder_permission_previews: 1,
+    captured_note_answers: 1,
+  };
+  checkNativeState("D.permission", failed, baseline);
+  assert.throws(
+    () =>
+      checkNativeState(
+        "D.permission",
+        { ...failed, folder_permission_blocked: 0 },
+        baseline,
+      ),
+    /NATIVE_STATE_UNVERIFIED/,
+  );
+  assert.throws(
+    () =>
+      checkNativeState(
+        "D.permission",
+        { ...failed, folder_permission_previews: 0 },
+        baseline,
+      ),
+    /NATIVE_STATE_UNVERIFIED/,
+  );
+  const recovered = {
+    ...failed,
+    folder_permission_blocked: 0,
+    folder_complete_previews: 2,
+    folders: 1,
+  };
+  checkNativeState("D.retry", recovered, failed);
+  for (const change of [
+    { watched_source_hash: "replacement" },
+    { folder_complete_previews: 1 },
+    { captured_note_answers: 0 },
+    { folder_permission_blocked: 1 },
+  ]) {
+    assert.throws(
+      () => checkNativeState("D.retry", { ...recovered, ...change }, failed),
+      /NATIVE_STATE_UNVERIFIED/,
+    );
+  }
+  const permissionRequest = { ...request, checkpoint: "D.permission" };
+  const permissionResponse = { ...response, ...permissionRequest };
+  assert.throws(
+    () => validateNativeResponse(permissionResponse, permissionRequest),
+    /NATIVE_PERMISSION_GUIDANCE_UNVERIFIED/,
+  );
+  validateNativeResponse(
+    {
+      ...permissionResponse,
+      observations: [
+        "Native Preview: Restore read access to the folder and its files, then retry. Nothing was imported.",
+      ],
+    },
+    permissionRequest,
   );
 });
 

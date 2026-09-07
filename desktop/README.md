@@ -251,6 +251,14 @@ setup errors, timeouts, output overflow and cleanup failures cannot
 count as successful negative checks. Repeat the same inspection for a Developer
 ID release candidate before distribution.
 
+The negative entitlement checks require a host enforcing normal hardened-runtime
+policy. The 2026-09-07 GitHub-hosted macOS 15 and 26 runs both reported SIP
+disabled and allowed the no-library-validation variant to run despite correct
+main/helper signatures; the strict matrix correctly failed. Use a SIP-enabled
+Apple Silicon runner for this gate. Do not bypass the failure or force the
+explicit `library` signing flag: the latter also broke the retained-pair control.
+See [current acceptance evidence](../milestones/EXECUTION.md).
+
 The application does not bundle model weights or a model-server binary. In
 contained mode, Borealis streams a requested model into a resumable `.part`
 file below `models/` and promotes it to a complete model only after mandatory

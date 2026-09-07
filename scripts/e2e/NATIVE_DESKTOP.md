@@ -89,9 +89,61 @@ string `month` parameter; first run `2025-06`, then `2025-05`. The harness freez
 saved result/provenance, document revision/publication and review-decision
 hashes and verifies they remain unchanged across later checkpoints. Folder
 watch must ingest the exact changed fixture digest, not just complete a scan.
+Journey D also captures a cited chat answer with only the managed `notes.md`
+selected. Its original assistant message and evidence metadata are hashed and
+must survive later checkpoints unchanged. During `D.permission`, the harness
+temporarily sets only that owned fixture's mode to `000`. Open its native
+Preview and observe **Restore read access to the folder and its files, then
+retry.** The response observations must include that exact sentence. Read-only
+checks require `KNOWLEDGE_FILE_UNREADABLE` in the watched connection and failed
+preview; a generic failure or false size-limit error cannot pass. Leave the
+fixture unreadable until the checkpoint is acknowledged. The harness restores
+mode `0600` for `D.retry`; retry Preview and inspect a successful unchanged-file
+scan, cleared permission state, the same source/generation and the old citation.
+Do not reselect the folder or replace its source as a recovery shortcut.
 The four document downloads must land under the provided exports directory:
 HTML, PDF, Markdown ZIP and DOCX. ZIP members are decoded with size/CRC checks;
 the driver additionally inspects rendered/exported layout.
+
+Journey E uses the committed supplier corpus through a native folder preview.
+Import the nine supported numbered documents; inspect the unsupported RTF and
+leave `manifest.json` unselected. Create a comparison with these columns in order:
+Price (number, USD), Effective date (date), Renewal (boolean), Tier (enum with
+Basic/Pro/Premium/Standard/Enterprise), and Exceptions (text). Keep a selected-empty
+draft to inspect its disabled Start guard, then attach the supplier library.
+
+The tracked response helper uses only the local fixture provider and the owned
+ledger opened read-only. It never creates application data or sessions. Supply
+the absolute run root printed by the desktop entry (the parent of `native-driver`):
+
+```sh
+node scripts/e2e/native-research-fixture.mjs /tmp/owned-native-run plan
+# In the native UI: Generate plan proposal; move step 3 up, edit its objective,
+# then save the three-step plan before starting.
+node scripts/e2e/native-research-fixture.mjs /tmp/owned-native-run arm
+# While the helper waits: press native Start, navigate away, return and reload.
+```
+
+The helper waits for both a new run's real captured evidence and its first
+in-flight model request, then installs typed responses referencing those actual
+evidence UUIDs. It has a three-minute polling deadline and five-second transport
+deadlines. The `E.research` guard independently verifies all 45 machine cells:
+40 fixture values, five explicit scanned-invoice gaps, and the deliberately
+off-type Everline price preserved as invalid. Proof is content-free in
+`native-research-facts.json`.
+
+Review the Everline price as numeric 15000/supported and the Acme renewal price
+as an explicit supersession conflict. Export the table CSV/evidence manifest,
+reload and reopen the result, then select only the Everline row and Price column.
+Start `arm-rerun` instead of `arm` before pressing **Rerun selected rows/columns**;
+inspect the carried corrections and revision diff. The `cancel` action installs
+a silent fixture response: press native Start and Cancel to verify retained
+partial captures and publication refusal. For a separate nine-source memo,
+use `plan-memo`, Generate/save its one-step plan, then start `arm-memo` before
+native Start. Accept the supported claim, reject the unsupported claim, note
+the price conflict, and create/export a reviewed draft with conflict/gap
+disclosures and the rejected fabrication excluded. Helper commands do not
+acknowledge any checkpoint; all review, execution and export actions remain native.
 
 Immediately before the final checkpoint, the runner activates eight seconds
 of fixture embedding latency and edits the owned watched `notes.md` file.
@@ -107,6 +159,10 @@ and no refresh remains active in the stopped ledger. A cancelled row allows
 up to 30 seconds for orderly process drain. A naturally completed row cannot
 prove active-work cancellation. Missing, manual, old, or unfinished
 work cannot pass. Content-free proof is retained in `native-watch-quit.json`.
+The native history can lag a background refresh. A fresh read-only observation
+of the exact scheduled active row together with `embedding_active > 0` is valid
+active-work evidence immediately before the real CUA Cmd+Q; do not wait for a
+delayed history repaint and then claim a naturally completed scan was interrupted.
 Diagnostic journey subsets that exclude D retain ordinary quit verification
 and explicitly report `active_watched_quit: "not_selected"`; the full A–F gate
 always requires the active watched-refresh proof.

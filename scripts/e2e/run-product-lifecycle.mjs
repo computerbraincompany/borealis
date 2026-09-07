@@ -64,6 +64,7 @@ const summary = {
       "server/dist/briefRunner.js",
       "server/dist/knowledgeRefresh.js",
       "server/dist/knowledgeWatch.js",
+      "server/dist/knowledge/folder.js",
       "server/dist/routes/knowledge.js",
     ].map((file) => [file, sha(fs.readFileSync(path.join(repoRoot, file)))]),
   ),

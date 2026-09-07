@@ -1,8 +1,8 @@
 {
   "date": "2026-09-07",
   "scope": "Borealis functional v1",
-  "runtime_source_commit": "ec63c5ed9773920f8e0d90035145d591e9914269",
-  "completion": "native_acceptance_and_ci_running",
+  "runtime_source_commit": "1e56b21d66d119bfb4535e58a5b3535b0586b3c3",
+  "completion": "final_native_keychain_approval_and_sip_enabled_ci_runner_pending",
   "platform": {
     "os": "macOS 26.6.2",
     "arch": "arm64",
@@ -10,14 +10,14 @@
     "pnpm": "10.34.5"
   },
   "repository_gate": {
-    "command": "pnpm verify",
+    "command": "TURBO_CONCURRENCY=2 pnpm verify",
     "passed": true,
     "tasks": 16,
-    "server_unit_tests": 1314,
-    "server_integration_tests": 414,
-    "web_tests": 485,
-    "desktop_tests": 29,
-    "log": "/tmp/borealis-v1-final-verify-lifecycle.log"
+    "server_unit_tests": 1317,
+    "server_integration_tests": 433,
+    "web_tests": 493,
+    "desktop_tests": 34,
+    "log": "/tmp/borealis-v1-permission-verify-final.log"
   },
   "desktop_gates": {
     "verify": true,
@@ -25,21 +25,12 @@
     "packaged_native_smoke": true,
     "entitlement_matrix": true,
     "negative_entitlement_removals": 2,
-    "package_asar_sha256": "77cc92964d4882213f36093644a2b7ae9eed79ab8909282abdd73da983633605",
+    "package_asar_sha256": "7e80766679d6744e8e7c18abaaa10901087ec4733701e2f196267eb8e1bc5b8d",
     "logs": {
-      "verify": "/tmp/borealis-v1-final-desktop-verify-lifecycle.log",
-      "package": "/tmp/borealis-v1-final-package-lifecycle.log",
-      "native": "/tmp/borealis-v1-final-packaged-native-lifecycle.log",
-      "entitlements": "/tmp/borealis-v1-final-entitlements-lifecycle.log"
-    },
-    "host_harness_followup": {
-      "log": "/tmp/borealis-v1-entitlement-duration-local.log",
-      "passed": true,
-      "runtime_package_unchanged": true,
-      "retained_pair_ms": 2987,
-      "without_jit_ms": 2206,
-      "without_library_validation_ms": 1891,
-      "negative_internal_timeouts_rejected": true
+      "verify": "/tmp/borealis-v1-permission-desktop-verify.log",
+      "package": "/tmp/borealis-v1-permission-package.log",
+      "native": "/tmp/borealis-v1-permission-packaged-native.log",
+      "entitlements": "/tmp/borealis-v1-permission-entitlements.log"
     }
   },
   "browser": {
@@ -48,7 +39,7 @@
       {
         "journey": "A",
         "status": "pass",
-        "duration_ms": 21015,
+        "duration_ms": 20293,
         "artifacts": [
           "shot-001.png",
           "shot-002.png",
@@ -69,7 +60,7 @@
       {
         "journey": "B",
         "status": "pass",
-        "duration_ms": 12456,
+        "duration_ms": 11875,
         "artifacts": [
           "shot-001.png",
           "shot-002.png",
@@ -89,7 +80,7 @@
       {
         "journey": "C",
         "status": "pass",
-        "duration_ms": 23014,
+        "duration_ms": 24489,
         "artifacts": [
           "shot-001.png",
           "shot-002.png",
@@ -114,7 +105,7 @@
       {
         "journey": "D",
         "status": "pass",
-        "duration_ms": 61814,
+        "duration_ms": 61310,
         "artifacts": [
           "shot-001.png",
           "shot-002.png",
@@ -133,7 +124,7 @@
       {
         "journey": "E",
         "status": "pass",
-        "duration_ms": 69755,
+        "duration_ms": 70160,
         "artifacts": [
           "shot-001.png",
           "shot-002.png",
@@ -158,7 +149,7 @@
       {
         "journey": "F",
         "status": "pass",
-        "duration_ms": 22392,
+        "duration_ms": 37106,
         "artifacts": [
           "shot-001.png",
           "shot-002.png",
@@ -176,7 +167,7 @@
       }
     ],
     "passed": true,
-    "started_at": "2026-09-07T15:43:53.987Z",
+    "started_at": "2026-09-07T16:55:15.052Z",
     "cleanup": {
       "workspace_removed": true,
       "kept_path": null,
@@ -184,7 +175,8 @@
       "pids_gone": true,
       "problems": []
     },
-    "finished_at": "2026-09-07T15:47:27.057Z"
+    "finished_at": "2026-09-07T16:59:01.926Z",
+    "evidence_path": "/tmp/borealis-v1-1e56-browser-final/summary.json"
   },
   "live": {
     "entry": "run-product-live",
@@ -252,11 +244,13 @@
       "pids_gone": true,
       "problems": []
     },
-    "evidence_path": "/tmp/borealis-v1-ec63-live-final/summary.json"
+    "evidence_path": "/tmp/borealis-v1-ec63-live-final/summary.json",
+    "evidence_scope": "Superseded ec63 runtime; final 1e56 live run is in progress.",
+    "pending_evidence_path": "/tmp/borealis-v1-1e56-live-final/summary.json"
   },
   "storage": {
     "entry": "run-product-storage",
-    "started_at": "2026-09-07T15:47:16.073Z",
+    "started_at": "2026-09-07T16:56:00.158Z",
     "runtime": "v22.22.3",
     "schema": 28,
     "checks": [
@@ -306,33 +300,38 @@
       }
     ],
     "passed": true,
-    "finished_at": "2026-09-07T15:47:23.375Z",
+    "finished_at": "2026-09-07T16:56:07.346Z",
     "cleanup": {
       "workspace_removed": true
-    }
+    },
+    "evidence_path": "/tmp/borealis-v1-1e56-storage-final/storage-summary.json",
+    "runtime_fingerprints": "/tmp/borealis-v1-1e56-storage-final/runtime-fingerprints.json",
+    "execution": "Supported source TypeScript runner and pnpm workspace:archive CLI on exact runtime source; no build."
   },
   "native_ui": {
-    "status": "running",
-    "pending_run": "/tmp/borealis-v1-native-final-3",
-    "package_asar_sha256": "77cc92964d4882213f36093644a2b7ae9eed79ab8909282abdd73da983633605",
-    "next_action": "Complete D-F through native UI and active watched-folder quit on the same final package.",
-    "intermediate_evidence": "/tmp/borealis-v1-native-final-evidence-2/summary.json",
+    "status": "waiting_for_macos_keychain_approval",
+    "pending_run": "/tmp/borealis-v1-native-final-4",
+    "pending_evidence": "/tmp/borealis-v1-native-final-evidence-4/summary.json",
+    "required_checkpoints": 17,
+    "package_asar_sha256": "7e80766679d6744e8e7c18abaaa10901087ec4733701e2f196267eb8e1bc5b8d",
+    "next_action": "Approve the actual macOS Keychain prompt for the normal packaged app; complete all A\u2013F checkpoints including exact unreadable-file guidance/retry and active watched-refresh Cmd+Q.",
+    "intermediate_evidence": "/tmp/borealis-v1-native-final-evidence-3/summary.json",
     "intermediate_passed_journeys": [
       "A",
       "B",
-      "C"
+      "C",
+      "D",
+      "E",
+      "F"
     ],
-    "intermediate_cleanup": "Normal Cmd+Q; children/process/profile/workspace-lock cleanup clean. This intermediate package does not certify final acceptance.",
-    "bootstrap_passed": true,
-    "passed_journeys": [
-      "A",
-      "B",
-      "C"
-    ]
+    "intermediate_checkpoints": 15,
+    "intermediate_package_asar_sha256": "77cc92964d4882213f36093644a2b7ae9eed79ab8909282abdd73da983633605",
+    "intermediate_cleanup": "Actual scheduled embedding was active immediately before native Cmd+Q; same refresh cancelled, no active work, all owned children/processes/locks gone and workspace removed. This earlier package does not certify final acceptance.",
+    "fixed_defect": "Permission failures now return actionable KNOWLEDGE_FILE_UNREADABLE, settle durable refresh work, pause watched retries and recover without replacing sources or citations."
   },
   "harness_tests": {
     "protocol_fixture_checks": 82,
-    "native_driver_regressions": 8,
+    "native_driver_regressions": 9,
     "skips": 0,
     "packaged_smoke_regressions": 5,
     "desktop_combined_tests": 34,
@@ -340,13 +339,15 @@
     "automation_timezone_tests": {
       "UTC": 27,
       "Europe/Berlin": 27
-    }
+    },
+    "protocol_fixture_log": "/tmp/borealis-v1-1e56-fixtures-final.log",
+    "native_driver_log": "/tmp/borealis-v1-1e56-native-harness-final.log"
   },
   "documentation": {
     "markdown_files_reviewed": 130,
     "missing_local_targets": 0,
     "local_links": 565,
-    "anchor_links": 17
+    "anchor_links": 18
   },
   "visual_exports": {
     "passed": true,
@@ -366,7 +367,7 @@
       "/tmp/borealis-v1-browser-final2-20260907/artifacts/C/exports/docR-v2.zip": "81c1b6c2321fb06b57690d60badfc50ce3a77077e7f0bbfa2afe4b883be7508a",
       "/tmp/borealis-v1-browser-final2-20260907/artifacts/C/exports/docT-v2.zip": "92f3c4ddec0d83233819cde552cd73d26bab9b2ebc764cd5bf3b8e4ccadf28de"
     },
-    "final_native": {
+    "intermediate_native": {
       "passed": true,
       "pdf_pages": 2,
       "docx_pages": 1,
@@ -375,16 +376,38 @@
         "/tmp/borealis-v1-native3-docx-reviewed"
       ],
       "sha256": {
-        "/tmp/borealis-v1-native-final-3/artifacts/native-exports/Native June finance report-v2.html": "b92a8cc15082f115803ba36e4c5b4a94871cc3491ef726941814d648b3d6f6ab",
-        "/tmp/borealis-v1-native-final-3/artifacts/native-exports/Native June finance report-v2.pdf": "a5df7c6e9cc18cb18cea9a3f9c86ead6e84c16f55115ca472952cd870296f343",
-        "/tmp/borealis-v1-native-final-3/artifacts/native-exports/Native June finance report-v2.zip": "366398fa955c71e468ca00618ca28ec5c76c51f38ee04ca08b21319202a39bd3",
-        "/tmp/borealis-v1-native-final-3/artifacts/native-exports/Native June finance report-v2.docx": "307bf72cf771299ca927de80997792482e05775c742e0ad08aeebdab9a50d1be"
+        "/tmp/borealis-v1-native-final-evidence-3/artifacts/native-exports/Native June finance report-v2.html": "b92a8cc15082f115803ba36e4c5b4a94871cc3491ef726941814d648b3d6f6ab",
+        "/tmp/borealis-v1-native-final-evidence-3/artifacts/native-exports/Native June finance report-v2.pdf": "a5df7c6e9cc18cb18cea9a3f9c86ead6e84c16f55115ca472952cd870296f343",
+        "/tmp/borealis-v1-native-final-evidence-3/artifacts/native-exports/Native June finance report-v2.zip": "366398fa955c71e468ca00618ca28ec5c76c51f38ee04ca08b21319202a39bd3",
+        "/tmp/borealis-v1-native-final-evidence-3/artifacts/native-exports/Native June finance report-v2.docx": "307bf72cf771299ca927de80997792482e05775c742e0ad08aeebdab9a50d1be"
+      },
+      "scope": "Intermediate native3 package; final4 exports await native acceptance."
+    },
+    "final_browser": {
+      "runtime_source_commit": "1e56b21d66d119bfb4535e58a5b3535b0586b3c3",
+      "passed": true,
+      "pdf_pages": 6,
+      "docx_pages": 3,
+      "rendered_paths": [
+        "/tmp/borealis-v1-1e56-pdf-reviewed",
+        "/tmp/borealis-v1-1e56-docx-reviewed"
+      ],
+      "observations": [
+        "All six stress-test PDF pages and three DOCX pages inspected.",
+        "Long unbroken text wraps within margins; headings stay with their content.",
+        "Chart title, legend and axes remain separate; table and evidence remain readable."
+      ],
+      "sha256": {
+        "/tmp/borealis-v1-1e56-browser-final/artifacts/C/exports/docT-v2.docx": "4f0efeffc80ef3eb3df3b1e2befd1420c97301d72bfafb3e20e2c511ff6ae7e4",
+        "/tmp/borealis-v1-1e56-browser-final/artifacts/C/exports/docT-v2.html": "09d737f1ca314e2dd465ab692d98903ba2a056115dfb3fc46314ede97991e975",
+        "/tmp/borealis-v1-1e56-browser-final/artifacts/C/exports/docT-v2.pdf": "51beea87421b59e631814f6e3bdc2e9bef685ec35acacdad50910a8d9d92c51d",
+        "/tmp/borealis-v1-1e56-browser-final/artifacts/C/exports/docT-v2.zip": "00a1893126ddae80230b3abebf45beac2cf2a04e0b5725051406bb4d1a74c2a5"
       }
     }
   },
   "process_lifecycle": {
     "entry": "run-product-lifecycle",
-    "started_at": "2026-09-07T15:37:31.751Z",
+    "started_at": "2026-09-07T16:55:39.124Z",
     "checks": [
       {
         "kind": "research-crash",
@@ -509,9 +532,10 @@
       "server/dist/index.js": "e1815f5df14ba2c4e8d103bd0368425f1b90f1529218b3076d286cd39a93561f",
       "server/dist/serverApp.js": "2547b0ae7ae0ff12b0d673169a558e65ab83735b30430e232a7d19e564227c64",
       "server/dist/briefRunner.js": "adc9d42bc7b47db69cf1f45e6ae2f4f8f9bd9acf70db8767d29bdcfd46f6f4f1",
-      "server/dist/knowledgeRefresh.js": "f857b692e9ee02f261999766231986aed70ae5af4c78b642a2919e6bcd5c81a3",
+      "server/dist/knowledgeRefresh.js": "86621fecd427e7ee703dd572fc26827d409256411fcf28b41aee80cdfee76316",
       "server/dist/knowledgeWatch.js": "e284c924965fc831ff7f900f4b693d9aeb1918c98c7dac48cab2ad508f23f628",
-      "server/dist/routes/knowledge.js": "f55e49c152bd0313d34ae8eb8613089fba9cd8356df6caddd51d5a8adb5ab598"
+      "server/dist/knowledge/folder.js": "af945bc642e78ee88bfe5e376fc0538316d870c78fe09c66800e93978d51f746",
+      "server/dist/routes/knowledge.js": "929b24d29a42204bca969204560d95139ca594cd509e80104e537a763f7260f7"
     },
     "cleanup": {
       "removed": true,
@@ -520,8 +544,8 @@
       "pidsGone": true,
       "problems": []
     },
-    "finished_at": "2026-09-07T15:39:02.675Z",
-    "evidence_path": "/tmp/borealis-v1-lifecycle-final-evidence-v3/summary.json",
+    "finished_at": "2026-09-07T16:57:02.614Z",
+    "evidence_path": "/tmp/borealis-v1-1e56-lifecycle-final/summary.json",
     "fixed_defects": [
       "Late-idle HTTP keep-alive socket prevented shutdown",
       "Knowledge background abort finalization escaped or outlived store closure",
@@ -530,11 +554,42 @@
   },
   "initial_runtime_source_commit": "9fd294421b771864ee322dd2445d9d58df63fa14",
   "ci": {
-    "status": "running",
-    "current_run": 34142590015,
-    "current_source_commit": "341bc09e6e12ec796277a7817db030f3cdd617a5",
-    "diagnostic_run": 34141714484,
-    "linux_setup": "Electron sandbox/Xvfb setup and native utility smoke passed. Fixed browser-timezone test assumption and test-only budgets for four native storage/CLI cases; awaited two knowledge assertions.",
-    "macos": "No-library-validation variant genuinely passed on hosted macos-15; strict matrix refuses acceptance. Added exact main/four-helper signatures and content-free host-policy diagnostics; security requirements unchanged."
+    "status": "linux_pass_macos_enforcement_blocked",
+    "current_run": 34145341263,
+    "current_source_commit": "1e56b21d66d119bfb4535e58a5b3535b0586b3c3",
+    "linux": {
+      "passed": true,
+      "tasks": 16,
+      "server_unit": 1317,
+      "server_integration": 433,
+      "web": 493,
+      "desktop": 34,
+      "log": "/tmp/borealis-v1-ci-1e56-linux-pass.log"
+    },
+    "macos": {
+      "passed": false,
+      "tested_images": [
+        "macos-15",
+        "macos-26"
+      ],
+      "sip": "disabled",
+      "main_and_helper_signatures": "exact",
+      "without_library_validation": "unexpected genuine success",
+      "log": "/tmp/borealis-v1-ci-1e56-macos26.log",
+      "rejected_experiment": "Explicit library flag uniformly applied broke retained-pair control; not adopted."
+    },
+    "required_action": "Provide a SIP-enabled Apple Silicon CI runner; repository currently has no registered runners. Strict entitlement checks remain enforced."
+  },
+  "permission_recovery": {
+    "source_commit": "1e56b21d66d119bfb4535e58a5b3535b0586b3c3",
+    "focused_folder_refresh_integration_tests": 42,
+    "focused_knowledge_route_tests": 23,
+    "focused_libraries_ui_tests": 47,
+    "invariants": [
+      "Actual EACCES/EPERM preserve prior ready generation and captured citations.",
+      "Failed refresh items settle durably with permission priority preserved on resume.",
+      "Automatic watch admission pauses until a successful manual retry clears the failure.",
+      "UI exact-target reconciliation clears recovered rows including continuation-page entries."
+    ]
   }
 }
