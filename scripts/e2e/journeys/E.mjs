@@ -1146,11 +1146,24 @@ export async function run(ctx) {
     await session.page.getByRole("link", { name: /Open in document workbench/ }).click();
     await session.page.waitForURL(/#\/documents\//, { timeout: 20_000 });
     const docId = (await session.page.evaluate(() => window.location.hash)).split("/").pop();
-    await expectVisible(session, "Conflicting claims", 30_000);
-    await expectVisible(session, "Gaps and not-found");
-    await expectVisible(session, "12000");
-    await expectVisible(session, "13500");
-    await expectVisible(session, /user-rejected claim\(s\) excluded/);
+    // Revision 1 lands in the workbench editor: the disclosures live in the
+    // section heading inputs and markdown textareas (the read view is a
+    // publish-flow concern); assert them in the controls, not the hidden
+    // rewrite-picker options.
+    await session.page
+      .getByLabel("Heading of section 1", { exact: true })
+      .first()
+      .waitFor({ timeout: 30_000 });
+    const workbenchText = await session.page.evaluate(() =>
+      [...document.querySelectorAll("input, textarea")].map((el) => el.value).join("\n")
+    );
+    assert(
+      workbenchText.includes("Conflicting claims") && workbenchText.includes("Gaps and not-found"),
+      "WORKBENCH_DISCLOSURE_SECTIONS"
+    );
+    assert(workbenchText.includes("12000") && workbenchText.includes("13500"), "WORKBENCH_CONFLICT_EXCERPTS");
+    assert(/\[\d+\]/.test(workbenchText), "WORKBENCH_CITATION_MARKERS");
+    assert(workbenchText.includes("user-rejected claim(s) excluded"), "WORKBENCH_REJECTED_DISCLOSURE");
     const bodyText = await session.page.evaluate(() => document.body.innerText);
     // Strip opaque hex ids before the value check: a uuid can legitimately
     // contain the four hex characters "4600".
