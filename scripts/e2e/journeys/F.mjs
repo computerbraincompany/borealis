@@ -38,13 +38,14 @@
  * out of the legacy report version chain). The coordinator's "/reports"
  * shorthand maps to this Documents-publication surface in the shipped product.
  *
- * Noted shipped-UI limitation (loud, asserted, not worked around silently):
- * the review inbox's "Approve this revision" button always sends the RUN's
- * draft-revision pointer (`row.document_revision_id`), so after a workbench
- * edit the UI approve conflicts (409 + refresh guidance) and no UI control
- * offers the moved head revision. The server contract accepts an explicit
- * head-revision decision, which the journey then performs API-with-session to
- * finish approving the edited revision it actually reviewed.
+ * Review-decision contract (fixed defect, asserted both sides): a decision
+ * CAS-approves only the CURRENT document head revision. The UI's "Approve
+ * this revision" button therefore sends `document_head_revision_id` when
+ * `head_moved` (fixed in 930addf; previously it always sent the stale run
+ * pointer and 409ed permanently after a workbench edit). The journey asserts
+ * the server contract on the stale pointer via an API decision (409, no
+ * write), then finishes the approval through the REAL UI button on the
+ * refreshed row — the published artifact must carry the edited head.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -78,8 +79,6 @@ const CSV_V2 = "month,category,amount\n2026-09,rent,60\n2026-09,groceries,40\n20
 const MEMBERSHIP_NOTE =
   "Recipe membership must equal the bound analysis revision's selected source set.";
 const CALENDAR_CAVEAT = "The app/server must be running for schedules to fire — there is no OS scheduler.";
-const CONFLICT_GUIDANCE =
-  "Refresh the inbox and decide again on the current revision";
 
 /* ------------------------------------------------------------------ helpers */
 
@@ -683,31 +682,33 @@ export async function run(ctx) {
     assert(Boolean(headAfterEdit), "DRAFT_EDIT_NOT_PERSISTED");
     checks.run2_edit = { head_moved: true };
 
-    // Stale-pointer decision: the shipped UI approve always sends the RUN's
-    // draft revision, so after the edit it must conflict with refresh
-    // guidance — and the UI never offers the moved head revision (documented
-    // shipped limitation; the server contract is exercised next via API).
+    // Stale-pointer decision (server contract): a decision carrying the run's
+    // FROZEN draft pointer must 409 with no write — unseen content is never
+    // approved. This is what the UI used to send until 930addf.
+    session.allowStatuses([409]);
+    const staleDecision = await session.apiFetch(`/api/brief-reviews/${run2.run.id}/decision`, {
+      method: "POST",
+      expectStatus: 409,
+      body: { decision: "approve", document_revision_id: run2Final.document_revision_id },
+    });
+    assert(staleDecision.body?.code === "BRIEF_REVIEW_REVISION_CONFLICT", "STALE_DECISION_CODE", JSON.stringify(staleDecision.body));
+    const stillAwaiting = (await session.apiFetch(`/api/briefs/${recipe.id}/runs/${run2.run.id}`, { expectStatus: 200 })).body;
+    assert(stillAwaiting.stage === "awaiting_review" && stillAwaiting.reviewed_revision_id === null, "STALE_DECISION_WROTE", stillAwaiting.stage);
+    checks.failure_matrix.push("stale-pointer-decision-409-BRIEF_REVIEW_REVISION_CONFLICT-no-write");
+
+    // Fixed-UI decision: the refreshed inbox row shows the head-moved
+    // guidance, and the REAL "Approve this revision" button now records the
+    // decision against the current head revision (930addf). The approval
+    // then publishes exactly that edited head.
     await goHash(session, "/reviews");
     const row2b = reviewRow().filter({ hasText: run2.run.id.slice(0, 8) }).first();
     await row2b.waitFor({ timeout: 45_000 });
-    await expectIn(row2b, /the draft was edited after this pointer/);
-    await row2b.getByRole("button", { name: "Approve this revision", exact: true }).click();
-    const row2c = reviewRow().filter({ hasText: run2.run.id.slice(0, 8) }).first();
-    await expectIn(row2c, new RegExp(CONFLICT_GUIDANCE.split(" ").join("\\s")));
-    const stillAwaiting = (await session.apiFetch(`/api/briefs/${recipe.id}/runs/${run2.run.id}`, { expectStatus: 200 })).body;
-    assert(stillAwaiting.stage === "awaiting_review" && stillAwaiting.reviewed_revision_id === null, "STALE_DECISION_WROTE", stillAwaiting.stage);
-    checks.failure_matrix.push("stale-pointer-approve-409-BRIEF_REVIEW_REVISION_CONFLICT-with-refresh-guidance");
-
-    // Approve the exact edited head revision through the server contract.
+    await expectIn(row2b, /the draft was edited after this run/);
     const headRow = await findReviewRow(run2.run.id);
     assert(headRow.head_moved === true, "HEAD_MOVED_FLAG");
     assert(headRow.document_head_revision_id === headAfterEdit.current_revision_id, "HEAD_ROW_POINTER");
-    const decision2 = await session.apiFetch(`/api/brief-reviews/${run2.run.id}/decision`, {
-      method: "POST",
-      expectStatus: 202,
-      body: { decision: "approve", document_revision_id: headAfterEdit.current_revision_id },
-    });
-    assert(decision2.body?.status === "publishing", "RUN2_DECISION_STATUS", JSON.stringify(decision2.body));
+    await row2b.getByRole("button", { name: "Approve this revision", exact: true }).click();
+    checks.failure_matrix.push("post-edit-UI-approve-records-current-head");
     const run2Approved = await pollRun(run2.run.id, ["approved"], "RUN2_APPROVED");
     assert(run2Approved.reviewed_revision_id === headAfterEdit.current_revision_id, "RUN2_REVIEWED_HEAD");
     const publications2 = await pollUntil(
