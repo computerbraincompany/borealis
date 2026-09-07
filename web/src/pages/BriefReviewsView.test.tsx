@@ -146,11 +146,60 @@ describe("BriefReviewsView", () => {
   });
 
   it("warns when the draft head moved past the review pointer", async () => {
-    reviewMocks.list.mockResolvedValue({ items: [reviewRow({ head_moved: true })], next_cursor: null });
+    reviewMocks.list.mockResolvedValue({
+      items: [reviewRow({ head_moved: true, document_head_revision_id: "draft-rev-2" })],
+      next_cursor: null,
+    });
     render(<BriefReviewsView />);
 
-    expect(await screen.findByText(/edited after this pointer/)).toBeInTheDocument();
-    expect(screen.getByText(/Approving will conflict until the inbox is refreshed/)).toBeInTheDocument();
+    expect(
+      await screen.findByText("the draft was edited after this run — decisions apply to the head revision"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "The draft was edited after this run; your decision is recorded against the current head revision.",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("decides against the CURRENT head revision after the draft was edited, not the stale pointer", async () => {
+    reviewMocks.list.mockResolvedValue({
+      items: [
+        reviewRow({
+          head_moved: true,
+          document_revision_id: "draft-rev-1",
+          document_head_revision_id: "draft-rev-2",
+        }),
+      ],
+      next_cursor: null,
+    });
+    reviewMocks.decide.mockResolvedValue({
+      status: "rejected",
+      replayed: false,
+      status_path: "/api/briefs/brief-1/runs/run-1",
+      run: { id: "run-1", stage: "rejected" },
+    });
+    render(<BriefReviewsView />);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // The head badge is the one on screen; the stale run pointer is not shown
+    // as the decidable revision.
+    expect(screen.getByText("head rev ", { exact: false })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /Reject…/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Reject \(keeps the run and draft\)/ }));
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(reviewMocks.decide).toHaveBeenCalledWith("run-1", {
+      decision: "reject",
+      document_revision_id: "draft-rev-2",
+    });
   });
 
   it("approves the exact revision, accepts 202 publishing, and confirms approved only after polling the commit", async () => {

@@ -118,9 +118,21 @@ export function BriefReviewsView() {
     setRows((current) => current.map((row) => (row.id === runId ? { ...row, stage } : row)));
   };
 
+  /**
+   * The server CAS-approves only the CURRENT document head revision
+   * ("decide again on the current revision; never approves unseen content").
+   * After a workbench edit the run's frozen pointer is stale and the
+   * authoritative revision arrives on refresh as `document_head_revision_id`
+   * with `head_moved: true`; deciding against the stale pointer would 409
+   * forever.
+   */
+  const decidableRevision = (row: BriefReviewRow): string | null =>
+    row.head_moved ? row.document_head_revision_id : row.document_revision_id;
+
   const decide = async (row: BriefReviewRow, decision: "approve" | "reject") => {
     if (busyId === row.id) return;
-    if (!row.document_revision_id) {
+    const revisionId = decidableRevision(row);
+    if (!revisionId) {
       setRowGuidance((current) => ({ ...current, [row.id]: "This run carries no draft revision to decide on." }));
       return;
     }
@@ -130,7 +142,7 @@ export function BriefReviewsView() {
     try {
       const result = await briefReviewsApi.decide(row.id, {
         decision,
-        document_revision_id: row.document_revision_id,
+        document_revision_id: revisionId,
         ...(decision === "reject" && rejectNote.trim() ? { note: rejectNote.trim() } : {}),
       });
       if (!mountedRef.current || requestId !== decisionRequestRef.current) return;
@@ -357,7 +369,8 @@ function ReviewRow({
 }) {
   const busy = busyId === row.id;
   const decided = row.review !== null || row.stage === "approved" || row.stage === "rejected";
-  const canDecide = row.stage === "awaiting_review" && Boolean(row.document_revision_id);
+  const decidableRevision = row.head_moved ? row.document_head_revision_id : row.document_revision_id;
+  const canDecide = row.stage === "awaiting_review" && Boolean(decidableRevision);
   return (
     <Card className="space-y-3 p-4" aria-label={`Review for ${row.recipe_name}`}>
       <div className="flex flex-wrap items-center gap-2">
@@ -407,11 +420,18 @@ function ReviewRow({
           >
             Open draft in the workbench
           </a>
-          {row.document_revision_id && (
+          {row.head_moved && row.document_head_revision_id && (
+            <span className="font-mono text-muted-foreground">
+              head rev {row.document_head_revision_id.slice(0, 8)}
+            </span>
+          )}
+          {!row.head_moved && row.document_revision_id && (
             <span className="font-mono text-muted-foreground">rev {row.document_revision_id.slice(0, 8)}</span>
           )}
           {row.head_moved && (
-            <span className="text-warning">the draft was edited after this pointer — refresh before deciding</span>
+            <span className="text-warning">
+              the draft was edited after this run — decisions apply to the head revision
+            </span>
           )}
         </div>
       )}
@@ -460,7 +480,7 @@ function ReviewRow({
           )}
           {row.head_moved && (
             <p className="text-[11px] text-warning">
-              Approving will conflict until the inbox is refreshed to the edited head.
+              The draft was edited after this run; your decision is recorded against the current head revision.
             </p>
           )}
         </div>
