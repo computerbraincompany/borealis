@@ -28,7 +28,12 @@ async function installedVersion(packageDirectory, name) {
   // @modelcontextprotocol/sdk → dist/cjs/package.json) would otherwise yield
   // a subpackage manifest without a version field.
   const candidates = [
-    path.join(packageDirectory, "node_modules", ...name.split("/"), "package.json"),
+    path.join(
+      packageDirectory,
+      "node_modules",
+      ...name.split("/"),
+      "package.json",
+    ),
   ];
   const require = createRequire(path.join(packageDirectory, "package.json"));
   try {
