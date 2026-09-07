@@ -200,7 +200,7 @@ export async function run(ctx) {
       },
       { deadlineMs: 15_000, intervalMs: 200 }
     );
-    assert(library !== null, "LIBRARY_NOT_CREATED");
+    assert(Boolean(library), "LIBRARY_NOT_CREATED");
 
     const knowledge = session.page.locator('section[aria-label="Knowledge connections"]');
     await knowledge.getByRole("button", { name: "WebDAV", exact: true }).click();
@@ -229,7 +229,7 @@ export async function run(ctx) {
       },
       { deadlineMs: 150_000, intervalMs: 400 }
     );
-    assert(member !== null, "FINANCE_MEMBER_NOT_READY");
+    assert(Boolean(member), "FINANCE_MEMBER_NOT_READY");
     const financeSourceId = member.id;
     const generationV1 = member.ready_generation;
     assert(typeof generationV1 === "number" && generationV1 >= 1, "FINANCE_GENERATION");
@@ -243,7 +243,7 @@ export async function run(ctx) {
       },
       { deadlineMs: 60_000, intervalMs: 300 }
     );
-    assert(sourceRow !== null, "FINANCE_NOT_TABULAR");
+    assert(Boolean(sourceRow), "FINANCE_NOT_TABULAR");
     const table = sourceRow.tabular.table;
     checks.source = { id_head: financeSourceId.slice(0, 8), table, generation: generationV1 };
     artifacts.push(await session.screenshot(artifactsDir));
@@ -288,7 +288,7 @@ export async function run(ctx) {
       async () => (await session.apiFetch(`/api/analyses/${analysisId}/results`, { expectStatus: 200 })).body?.items?.[0] ?? null,
       { deadlineMs: 15_000, intervalMs: 250 }
     );
-    assert(baselineResult !== null, "BASELINE_RESULT");
+    assert(Boolean(baselineResult), "BASELINE_RESULT");
     const baselineFull = (await session.apiFetch(`/api/analyses/${analysisId}/results/${baselineResult.id}`, { expectStatus: 200 })).body;
     assert(baselineFull.rows.length === 1 && baselineFull.rows[0][0] === "total", "BASELINE_ROW_SHAPE", JSON.stringify(baselineFull.rows));
     assert(numericAgrees(baselineFull.rows[0][1], expectedV1), "BASELINE_SUM", JSON.stringify(baselineFull.rows));
@@ -339,7 +339,7 @@ export async function run(ctx) {
       },
       { deadlineMs: 15_000, intervalMs: 200 }
     );
-    assert(connectionRow !== null, "CONNECTION_ROW_MISSING");
+    assert(Boolean(connectionRow), "CONNECTION_ROW_MISSING");
     await wizard.getByLabel("Knowledge connection for finance.csv").selectOption(connectionRow.id);
     // Civil weekly schedule: Mondays 09:00 in an explicit IANA zone.
     await wizard.getByLabel("Schedule kind").selectOption("weekly");
@@ -506,7 +506,7 @@ export async function run(ctx) {
         },
         { deadlineMs: 30_000, intervalMs: 200 }
       );
-      assert(fresh !== null, "RUN_NOW_NOT_ACCEPTED");
+      assert(Boolean(fresh), "RUN_NOW_NOT_ACCEPTED");
       return { run: fresh, panel, runNow };
     };
     const pollRun = async (runId, wanted, code, deadlineMs = 180_000) => {
@@ -531,7 +531,7 @@ export async function run(ctx) {
         },
         { deadlineMs: 30_000, intervalMs: 300 }
       );
-      assert(rows !== null, "REVIEW_ROW_MISSING", runId);
+      assert(Boolean(rows), "REVIEW_ROW_MISSING", runId);
       return rows;
     };
     const notifications = async () =>
@@ -610,7 +610,7 @@ export async function run(ctx) {
       },
       { deadlineMs: 180_000, intervalMs: 400 }
     );
-    assert(publications1 !== null, "RUN1_PUBLICATION_MISSING");
+    assert(Boolean(publications1), "RUN1_PUBLICATION_MISSING");
     assert(publications1[0].version === 1, "RUN1_PUBLICATION_VERSION");
     assert(publications1[0].revision_id === run1Final.document_revision_id, "RUN1_PUBLICATION_REVISION");
     checks.run1_publish = { publication: "v1", document: doc1Id.slice(0, 8) };
@@ -734,7 +734,7 @@ export async function run(ctx) {
       },
       { deadlineMs: 20_000, intervalMs: 250 }
     );
-    assert(headAfterEdit !== null, "DRAFT_EDIT_NOT_PERSISTED");
+    assert(Boolean(headAfterEdit), "DRAFT_EDIT_NOT_PERSISTED");
     checks.run2_edit = { head_moved: true };
 
     // Stale-pointer decision: the shipped UI approve always sends the RUN's
@@ -772,7 +772,7 @@ export async function run(ctx) {
       },
       { deadlineMs: 180_000, intervalMs: 400 }
     );
-    assert(publications2 !== null && publications2[0].revision_id === headAfterEdit.current_revision_id, "RUN2_PUBLICATION_REVISION");
+    assert(Boolean(publications2) && publications2[0].revision_id === headAfterEdit.current_revision_id, "RUN2_PUBLICATION_REVISION");
     const html2Path = await downloadPublication(doc2Id, "HTML", "run2.html");
     const pdf2Path = await downloadPublication(doc2Id, "PDF", "run2.pdf");
     const html2 = fs.readFileSync(html2Path, "utf8");
@@ -875,7 +875,7 @@ export async function run(ctx) {
       },
       { deadlineMs: 15_000, intervalMs: 250 }
     );
-    assert(readRow !== null, "NOTIFICATION_READ_NOT_LISTED");
+    assert(Boolean(readRow), "NOTIFICATION_READ_NOT_LISTED");
     const dismissTarget = (await notifications()).find((item) => item.kind === "meaningful_change");
     const dismissButton = tray.locator("div.rounded-md.border").filter({ hasText: "Result changed" }).first().getByRole("button", { name: "Dismiss", exact: true });
     await dismissButton.click();
@@ -887,7 +887,7 @@ export async function run(ctx) {
       },
       { deadlineMs: 15_000, intervalMs: 250 }
     );
-    assert(dismissedRow !== null, "NOTIFICATION_DISMISS_NOT_PERSISTED");
+    assert(Boolean(dismissedRow), "NOTIFICATION_DISMISS_NOT_PERSISTED");
     // Dismissed events stay durable but leave the tray list.
     const visibleTexts = await tray.innerText();
     assert(!visibleTexts.includes("Result changed"), "DISMISSED_STILL_IN_TRAY");
@@ -904,7 +904,7 @@ export async function run(ctx) {
       },
       { deadlineMs: 20_000, intervalMs: 250 }
     );
-    assert(pausedRecipe !== null, "PAUSE_NOT_PERSISTED");
+    assert(Boolean(pausedRecipe), "PAUSE_NOT_PERSISTED");
     await goHash(session, "/automations");
     await expectText(session, RECIPE_NAME);
     const pausedCard = session.page.locator("div.p-4").filter({ hasText: RECIPE_NAME }).first();
@@ -918,7 +918,7 @@ export async function run(ctx) {
       },
       { deadlineMs: 20_000, intervalMs: 250 }
     );
-    assert(resumedRecipe !== null, "RESUME_NOT_PERSISTED");
+    assert(Boolean(resumedRecipe), "RESUME_NOT_PERSISTED");
     // Close the manage dialog before touching the cards behind the overlay.
     await session.page.keyboard.press("Escape");
     checks.pause_resume = { paused: true, resumed: true };
