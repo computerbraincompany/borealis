@@ -34,7 +34,9 @@ import {
 } from "./util.mjs";
 
 const START_TIMEOUT_MS = 45_000;
-const SMOKE_TIMEOUT_MS = 180_000;
+// Must exceed the in-app smoke deadline (240 s), which itself covers the
+// measured ~215 s cold first-launch of a freshly built bundle.
+const SMOKE_TIMEOUT_MS = 330_000;
 
 /**
  * Consume the app's stdout into the run log. Without a reader the kernel pipe

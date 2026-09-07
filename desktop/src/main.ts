@@ -66,7 +66,13 @@ const PACKAGED_SHUTDOWN_SMOKE_SWITCH = "borealis-packaged-shutdown-smoke";
 const PACKAGED_SHUTDOWN_SMOKE_SUCCESS = "BOREALIS_PACKAGED_SHUTDOWN_SMOKE_OK";
 const PACKAGED_SHUTDOWN_SMOKE_FAILED =
   "BOREALIS_PACKAGED_SHUTDOWN_SMOKE_FAILED";
-const PACKAGED_SHUTDOWN_SMOKE_TIMEOUT_MS = 120_000;
+// Measured: the FIRST launch of a freshly built ad-hoc-signed bundle can
+// take ~215 s on cold hardware/Gatekeeper-assessment load (warm relaunches
+// finish in seconds). The deadline must exceed that measured worst case, and
+// the harness-side window must exceed this one, or a healthy-but-slow app
+// reads as a hang (one observed run: smoke self-exit attempt did not land
+// within a 180 s harness window; cleanup killed the owned pid).
+const PACKAGED_SHUTDOWN_SMOKE_TIMEOUT_MS = 240_000;
 const packagedShutdownSmoke =
   app.isPackaged && app.commandLine.hasSwitch(PACKAGED_SHUTDOWN_SMOKE_SWITCH);
 

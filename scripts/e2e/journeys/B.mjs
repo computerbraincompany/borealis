@@ -15,7 +15,10 @@
  *   the UI; edit it to add a typed month parameter + comparison key; rerun
  *   outside chat from the Analyses page for two periods; keyed comparison
  *   with numeric totals; CSV/JSON/manifest export bytes parsed and compared
- *   to the stored snapshot (formula guard + quoting); provenance fields;
+ *   to the stored snapshot (formula guard + quoting); provenance fields; the
+ *   canonical chart copy of the SAME stored result has its categories and
+ *   numeric series (tx_count exact, net_amount tolerance) verified against the
+ *   independently computed fixtures;
  *   browser reload mid-flow and a FULL BACKEND RESTART prove durability;
  *   cancellation of an active run; selected-empty never widens (fails on
  *   referenced tables, succeeds for a table-free query); foreign-account
@@ -684,6 +687,47 @@ export async function run(ctx) {
     );
     assert(manifest.schema_fingerprint === june.full.schema_fingerprint, "MANIFEST_FINGERPRINT");
     checks.export_bytes_checked = ["csv", "json", "manifest"];
+
+    /* -- P9b: the canonical chart copy of the SAME stored result ------------- */
+    const chartRes = await session.apiFetch(
+      `/api/analyses/${analysisId}/results/${june.summary.id}/chart`,
+      { expectStatus: 200 }
+    );
+    assert(chartRes.body?.result_id === june.summary.id, "CHART_RESULT_ID");
+    const chart = chartRes.body?.spec;
+    assert(chart?.type === "bar" && chart?.title === ANALYSIS_TITLE, "CHART_HEADER");
+    assert(
+      JSON.stringify(chart?.subtitle) === JSON.stringify(`Saved analysis result ${june.summary.id}`),
+      "CHART_SUBTITLE"
+    );
+    assert(
+      JSON.stringify(chart?.categories) === JSON.stringify(expectedJune.map((row) => row[0])),
+      "CHART_CATEGORIES"
+    );
+    // Series come ONLY from the stored typed numbers: tx_count integer and
+    // net_amount tolerance-checked, against independently computed fixtures.
+    assert(
+      JSON.stringify((chart?.series ?? []).map((entry) => entry.name)) ===
+        JSON.stringify(["tx_count", "net_amount"]),
+      "CHART_SERIES_NAMES",
+      JSON.stringify((chart?.series ?? []).map((entry) => entry.name))
+    );
+    for (const [nameIndex, seriesName] of ["tx_count", "net_amount"].entries()) {
+      const expectedColumn = nameIndex === 0 ? 2 : 3;
+      const series = chart.series[nameIndex];
+      assert(series.name === seriesName, "CHART_SERIES_ORDER");
+      for (let rowIndex = 0; rowIndex < expectedJune.length; rowIndex += 1) {
+        assert(
+          numericCellAgrees(series.data[rowIndex], expectedJune[rowIndex][expectedColumn]),
+          "CHART_SERIES_CELL",
+          `${seriesName}#${rowIndex}: ${series.data[rowIndex]}`
+        );
+      }
+    }
+    checks.result_chart = {
+      categories: chart.categories.length,
+      series: chart.series.map((entry) => entry.name),
+    };
 
     /* -- P10: cancellation path on a dedicated slow analysis ----------------- */
     await session.page.getByRole("button", { name: "All analyses" }).click();
