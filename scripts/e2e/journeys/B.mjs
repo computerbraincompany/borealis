@@ -27,6 +27,22 @@
  *
  * Screenshots use the harness's content-free sequential names. Numeric
  * expectations come only from `fixtures/lib/finance-expected.mjs`.
+ *
+ * This journey runs against a small "target" object so the exact same
+ * assertions can drive either product surface:
+ *   - default (no `ctx.target`): the browser-mode harness server — the
+ *     original path, byte-for-byte the same calls (register through the UI,
+ *     same-port in-place restart, page reload, `/api/health` quiescence);
+ *   - `ctx.target` from the packaged-desktop entry: the real unsigned app
+ *     launched with an isolated `--user-data-dir`. Accounts register through
+ *     the PUBLIC `/api/register` route (the desktop one-shot preload
+ *     bootstrap is unavailable to Playwright) and log in through the real
+ *     UI form; the restart step relaunches the app as a NEW process on a
+ *     NEW loopback port and proves the durable `jwt.secret` (a pre-restart
+ *     JWT authenticates on the new process) before the UI session is
+ *     re-established through the real login form. No assertion below is
+ *     weakened for the packaged surface; quiescence uses the same
+ *     `/api/health` product gate on that origin.
  */
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -187,8 +203,28 @@ async function waitForRun(session, analysisId, runId, wanted, { deadlineMs = 60_
 
 /* ------------------------------------------------------------------- journey */
 
+/**
+ * Default browser-mode target: exactly the coupling this journey had before
+ * the packaged-desktop stage. Every method reproduces the original call.
+ */
+function defaultTarget(ctx) {
+  const { server } = ctx;
+  return {
+    kind: "browser",
+    get origin() {
+      return server.origin;
+    },
+    pid: () => server.pid,
+    registerAccount: (session, credentials) => session.register(credentials),
+    restart: ({ token }) => server.restart({ token }),
+    resumeAfterRestart: (session) => session.page.reload({ waitUntil: "domcontentloaded" }),
+    quiesceWorkers: (options) => server.quiesceWorkers(options),
+  };
+}
+
 export async function run(ctx) {
-  const { server, provider, browser, workspace, artifactsDir, repoRoot } = ctx;
+  const { provider, browser, workspace, artifactsDir, repoRoot } = ctx;
+  const target = ctx.target ?? defaultTarget(ctx);
   const artifacts = [];
   const checks = {};
   const sqlV1 = paddedCaptureSql();
@@ -233,10 +269,10 @@ export async function run(ctx) {
   await writeFile(modifiedUploadPath, withMarker(transactionsText), "utf8");
 
   /* -- P1: account + the four uploads through the real chat picker --------- */
-  const session = await browser.newSession({ origin: server.origin });
+  const session = await browser.newSession({ origin: target.origin });
   let sessionB = null;
   try {
-    await session.register({ email: EMAIL_A, password: PASSWORD });
+    await target.registerAccount(session, { email: EMAIL_A, password: PASSWORD });
     artifacts.push(await session.screenshot(artifactsDir));
 
     const fileInput = () => session.page.locator('input[aria-label="Upload a source file"]');
@@ -498,13 +534,20 @@ export async function run(ctx) {
 
     /* -- P7: full backend restart against the same workspace ---------------- */
     const token = await session.token();
-    const pidBeforeRestart = server.pid;
-    const restartInfo = await server.restart({ token });
+    const pidBeforeRestart = target.pid();
+    const restartInfo = await target.restart({ token, session });
     assert(restartInfo.pid !== pidBeforeRestart, "RESTART_PID_CHANGED");
-    assert(server.origin === session.origin, "RESTART_ORIGIN_MOVED");
-    await session.page.reload({ waitUntil: "domcontentloaded" });
+    assert(target.origin === session.origin, "RESTART_ORIGIN_MOVED");
+    await target.resumeAfterRestart(session);
     await goHash(session, "/analyses");
     await expectText(session, ANALYSIS_TITLE, 30_000);
+    // Disclosure (packaged surface only): whether the owned SIGTERM had to
+    // escalate to SIGKILL. This is cleanup disclosure, never a quit-contract
+    // claim; the browser surface asserts non-escalation inside its own
+    // restart and leaves `escalated` undefined here.
+    if (restartInfo.escalated !== undefined) {
+      checks.restart_escalated_to_sigkill = restartInfo.escalated === true;
+    }
     const afterRestartDetail = (await session.apiFetch(`/api/analyses/${analysisId}`, { expectStatus: 200 })).body;
     assert(afterRestartDetail.sql === sqlV2 && afterRestartDetail.current_revision === 2, "RESTART_DEFINITION");
     const afterRestartResult = (
@@ -695,8 +738,8 @@ export async function run(ctx) {
     const afterStale = (await session.apiFetch(`/api/analyses/${analysisId}`, { expectStatus: 200 })).body;
     assert(afterStale.current_revision === 2 && afterStale.title === ANALYSIS_TITLE, "STALE_CAS_NO_WRITE");
 
-    sessionB = await browser.newSession({ origin: server.origin });
-    await sessionB.register({ email: EMAIL_B, password: `${PASSWORD}-b` });
+    sessionB = await browser.newSession({ origin: target.origin });
+    await target.registerAccount(sessionB, { email: EMAIL_B, password: `${PASSWORD}-b` });
     sessionB.allowStatuses([404]);
     const foreignList = await sessionB.apiFetch("/api/analyses", { expectStatus: 200 });
     assert((foreignList.body?.items ?? []).length === 0, "FOREIGN_CATALOG_EMPTY");
@@ -907,7 +950,7 @@ export async function run(ctx) {
     };
 
     /* -- wrap up ------------------------------------------------------------- */
-    await server.quiesceWorkers({ token: await session.token() });
+    await target.quiesceWorkers({ token: await session.token() });
     session.assertClean();
     sessionB.assertClean();
 

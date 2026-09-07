@@ -90,6 +90,23 @@ async function createSession({ browser, origin, workspace }) {
     context,
     origin,
 
+    /**
+     * Move the session to a new loopback origin. Only the packaged-desktop
+     * journey target needs this: a relaunched packaged app binds a NEW
+     * OS-assigned loopback port, so the same-origin helpers (`gotoHash`,
+     * `logout`, relative `apiFetch`) must follow the app. Loopback-only and
+     * exact-port only; the browser-mode path never calls it.
+     */
+    setOrigin(nextOrigin) {
+      assert(
+        /^http:\/\/127\.0\.0\.1:\d+$/.test(String(nextOrigin)),
+        "SESSION_ORIGIN_INVALID",
+        String(nextOrigin)
+      );
+      origin = nextOrigin;
+      session.origin = nextOrigin;
+    },
+
     setAuthBootstrap(value) {
       authBootstrap = Boolean(value);
     },
