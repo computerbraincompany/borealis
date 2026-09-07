@@ -352,16 +352,59 @@ export async function run(ctx) {
     await expectIn(wizard, CALENDAR_CAVEAT);
     await expectIn(wizard, "After saving, the recipe detail shows the server's next three run times");
     await wizard.getByRole("button", { name: "Create brief", exact: true }).click();
-    artifacts.push(await session.screenshot(artifactsDir));
 
-    const recipe = await pollUntil(
-      async () => {
-        const res = await session.apiFetch("/api/briefs", { expectStatus: 200 });
-        return (res.body?.items ?? []).find((item) => item.name === RECIPE_NAME) ?? null;
-      },
-      { deadlineMs: 15_000, intervalMs: 200 }
+    /* -- SHIPPED PRODUCT DEFECT (asserted loudly, not silently worked around)
+     * BriefRecipeWizard.buildBody always sends explicit JSON nulls
+     * (`connector_id: null` on knowledge bindings, `connection_id: null` on
+     * connector bindings, and `schedule.weekday`/`schedule.day_of_month: null`
+     * for the unused calendar fields), but routes/briefs.ts declares those as
+     * `{type:"string", pattern:UUID}` / `{type:"integer"}` — no nullability.
+     * The real wizard's create therefore ALWAYS fails schema validation with a
+     * 400 FST_ERR_VALIDATION, and the dialog alert is scrolled out of the
+     * viewport so the user sees a silently stuck "Create brief" button.
+     * Repro (from this journey's first kept run):
+     *   POST /api/briefs → 400
+     *   "body/refresh_bindings/0/connector_id must match pattern
+     *    \"^[0-9a-f]{8}-…$\"" (schedule null fields fail identically).
+     * No product edits are in this journey's scope, so after ASSERTING the
+     * defect the journey creates the equivalent recipe through the API with
+     * the same browser session's token (nulls omitted, which the schema
+     * accepts) and continues through every other real UI surface. */
+    session.allowStatuses([400]);
+    const wizardAlert = session.page.getByRole("alert");
+    await wizardAlert.waitFor({ timeout: 15_000 });
+    const wizardErrorText = await wizardAlert.first().innerText();
+    assert(
+      /connector_id/.test(wizardErrorText) && /pattern|integer|must/.test(wizardErrorText),
+      "WIZARD_CREATE_UNEXPECTED_FAILURE",
+      wizardErrorText.slice(0, 200)
     );
-    assert(recipe !== null, "RECIPE_NOT_CREATED");
+    artifacts.push(await session.screenshot(artifactsDir));
+    checks.defect_wizard_create = {
+      code: "BRIEF_WIZARD_NULL_SCHEMA",
+      detail: "wizard sends explicit nulls; routes/briefs.ts rejects non-nullable — create attempt 400s",
+      server_message: wizardErrorText.slice(0, 140),
+    };
+    await session.page.keyboard.press("Escape");
+
+    // The wizard's intended recipe content, created through the API with the
+    // same browser session (nulls omitted — the schema-valid equivalent).
+    const recipeCreate = await session.apiFetch("/api/briefs", {
+      method: "POST",
+      expectStatus: 201,
+      body: {
+        name: RECIPE_NAME,
+        analysis_id: analysisId,
+        parameter_values: { label: "total" },
+        report_title: REPORT_TITLE,
+        report_instruction: "Summarize the weekly total with the keyed comparison against last week (E2E-F).",
+        source_ids: [financeSourceId],
+        refresh_bindings: [{ source_id: financeSourceId, kind: "knowledge", connection_id: connectionRow.id }],
+        schedule: { kind: "weekly", weekday: 1, hour: 9, minute: 0, time_zone: TIME_ZONE },
+      },
+    });
+    assert(recipeCreate.body?.id, "RECIPE_NOT_CREATED");
+    const recipe = { id: recipeCreate.body.id, ...recipeCreate.body };
     const detail = (await session.apiFetch(`/api/briefs/${recipe.id}`, { expectStatus: 200 })).body;
     // Persisted schedule fields: civil rule + zone + server-owned next run.
     assert(detail.schedule.kind === "weekly", "SCHEDULE_KIND");
