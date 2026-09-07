@@ -23,6 +23,7 @@ import { BriefRecipeStore } from "../db/stores/briefRecipeStore.js";
 import { DocumentRevisionConflictError } from "../db/stores/documentStore.js";
 import { BriefRunStore, deriveBriefPublicationOperationId } from "../db/stores/briefRunStore.js";
 import { appendDocumentRevision, createDocumentDraft, setDocumentRenderersForTests } from "../documentService.js";
+import { ensureBriefPublication, reconcileBriefPublications } from "../briefReviewService.js";
 import type { DocumentRenderers } from "../data/documents.js";
 import type { DocumentTreeInput } from "../documentTypes.js";
 import type { StoredBriefRun } from "../db/stores/briefRunStore.js";
@@ -213,6 +214,14 @@ async function waitForRun(
     await new Promise((resolve) => setTimeout(resolve, 4));
   }
   throw new Error(`run never reached stage ${stage}${options.indicator ? " with the indicator" : ""}`);
+}
+
+async function waitFor(condition: () => Promise<boolean>, label: string, attempts = 4_000): Promise<void> {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    if (await condition()) return;
+    await new Promise((resolve) => setTimeout(resolve, 4));
+  }
+  throw new Error(`condition never held: ${label}`);
 }
 
 async function countRows(sql: string, params: Array<string | number> = []): Promise<number> {
@@ -615,6 +624,62 @@ describe("review decisions — approval", () => {
         (error: unknown) => error
       );
     expect(tamper).not.toBeNull();
+  });
+
+  it("restart reconciliation: a publishing run whose intent failed returns to review with the indicator", async () => {
+    await buildApp();
+    setDocumentRenderersForTests({
+      renderChartPng: async () => FAKE_PNG,
+      renderReportPdf: async () => Buffer.from("NOT-A-PDF"),
+    });
+    const seeded = await seedAwaitingReview("restart-failed");
+    // One honest failed attempt leaves the durable intent failed.
+    const failed = await storageRuntime().briefRuns.recordReviewDecision(OWNER, seeded.run.id, {
+      decision: "approve",
+      documentRevisionId: seeded.revisionId,
+    });
+    await ensureBriefPublication(OWNER, failed.run);
+    await waitFor(async () => {
+      const live = await storageRuntime().briefRuns.getRun(OWNER, seeded.run.id);
+      return live.stage === "awaiting_review" && live.publicationErrorCode !== null;
+    }, "indicator recorded");
+    // Simulate the crash window: the durable row sits in `publishing` while
+    // the same intent is already failed (startup repair has run).
+    await storageRuntime().ledger.run("UPDATE brief_runs SET stage='publishing' WHERE id=?", [seeded.run.id]);
+    const reconciled = await reconcileBriefPublications();
+    expect(reconciled).toMatchObject({ attempted: 1, approved: 0, returnedToReview: 1 });
+    const live = await storageRuntime().briefRuns.getRun(OWNER, seeded.run.id);
+    expect(live.stage).toBe("awaiting_review");
+    expect(live.publicationErrorCode).toBe("PUBLICATION_PDF_FAILED");
+    expect(await publicationCount(seeded.documentId)).toBe(0);
+  });
+
+  it("an approval retry against a publishing run with a failed intent reconciles the same op-UUID", async () => {
+    const app = await buildApp();
+    setDocumentRenderersForTests({
+      renderChartPng: async () => FAKE_PNG,
+      renderReportPdf: async () => Buffer.from("NOT-A-PDF"),
+    });
+    const seeded = await seedAwaitingReview("retry-publishing");
+    expect((await approve(app, seeded.run.id, seeded.revisionId)).statusCode).toBe(202);
+    await waitFor(async () => {
+      const live = await storageRuntime().briefRuns.getRun(OWNER, seeded.run.id);
+      return live.stage === "awaiting_review" && live.publicationErrorCode !== null;
+    }, "first failure finalized");
+    // Crash window: the row is durable `publishing` while its intent failed.
+    await storageRuntime().ledger.run("UPDATE brief_runs SET stage='publishing' WHERE id=?", [seeded.run.id]);
+    setDocumentRenderersForTests(workingRenderers());
+    const retry = await approve(app, seeded.run.id, seeded.revisionId);
+    expect(retry.statusCode).toBe(202);
+    expect((retry.json() as { run: Record<string, unknown> }).run.publication_operation_id).toBe(
+      deriveBriefPublicationOperationId(seeded.run.id, seeded.revisionId)
+    );
+    await waitForRun(app, seeded.recipeId, seeded.run.id, "approved");
+    // The same intent was re-armed — never a second intent, never a second
+    // publication — and each accepted decision is on the immutable ledger.
+    expect(await intentCount(seeded.documentId)).toBe(1);
+    expect(await publicationCount(seeded.documentId)).toBe(1);
+    expect(await reviewEventCount(seeded.run.id)).toBe(2);
   });
 });
 
