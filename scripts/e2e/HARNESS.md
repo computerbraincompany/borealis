@@ -156,6 +156,19 @@ reports `not_implemented`), `--workspace=DIR`, and `--keep-on-failure`.
 - Assertions must verify persisted state and exported bytes, not screenshots
   alone; keep waits bounded with explicit deadlines — no arbitrary sleeps,
   and never `wait: 'networkidle'`-style races.
+- Real browser downloads: click the UI control while awaiting
+  `page.waitForEvent('download')`, then `download.saveAs()` under a
+  `workspace.assertOwnedPath()` directory and parse the saved bytes in Node
+  (journey C's ZIP/OOXML readers are the reference). Chromium gates automatic
+  downloads per DOCUMENT: the 11th automatic download on one document never
+  fires without a user prompt, so a journey that exports more than ~10 files
+  must navigate with a real document reload (hash route + `page.reload()`),
+  which resets the per-document allowance — journey C does this between its
+  two document-export phases.
+- React surfaces that mirror DOM selection (the workbench rewrite panel) do
+  not update from programmatically dispatched `select` events; drive real
+  keyboard selection (`End`/`Shift+ArrowLeft`, `Home`/`Shift+End`) like a
+  user, and assert the mirrored badge before using the selection.
 
 ## Root `package.json` wiring (for the coordinator — not applied by this stage)
 
