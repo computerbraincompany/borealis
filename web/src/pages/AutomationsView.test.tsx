@@ -678,6 +678,159 @@ describe("AutomationsView", () => {
       expect(await screen.findByText("Monday brief")).toBeInTheDocument();
     });
 
+    it("renders typed parameters from the bound revision when payloads carry a nullable active_run, and creates a schema-valid body", async () => {
+      // Journey-F regression: the analysis surface payload carries
+      // `active_run: null` (a nullable runtime shape). The wizard must derive
+      // typed parameter declarations and the membership mirror exclusively
+      // from the bound definition revision, and the create body must satisfy
+      // the server schema in server/src/routes/briefs.ts, which rejects
+      // explicit JSON nulls on weekday/day_of_month/connector_id/
+      // connection_id with a masked 400.
+      apiMocks.analysesList.mockResolvedValue({
+        items: [
+          {
+            id: "analysis-1",
+            title: "Monthly spend",
+            description: "",
+            current_revision: 2,
+            source_count: 1,
+            unavailable_source_count: 0,
+            active_run: null,
+            created_at: "2026-09-01T00:00:00Z",
+            updated_at: "2026-09-01T00:00:00Z",
+          },
+        ],
+        next_cursor: null,
+      });
+      apiMocks.analysesGet.mockResolvedValue({
+        ...analysisFixture,
+        active_run: null,
+        parameters: [
+          { name: "label", type: "string", required: true, nullable: false, default: "total", label: "Metric label" },
+          { name: "include_credits", type: "boolean", required: false, nullable: true, default: false },
+        ],
+      });
+      apiMocks.knowledgeList.mockResolvedValue({
+        items: [{ id: "know-1", name: "Finance folder" }],
+        next_cursor: null,
+      });
+      apiMocks.briefsCreate.mockResolvedValue({ ...briefRecipe, id: "brief-2", name: "Monday brief" });
+      render(<AutomationsView />);
+
+      fireEvent.click(await screen.findByRole("button", { name: "New brief" }));
+      fireEvent.change(screen.getByLabelText("Brief name"), { target: { value: "Monday brief" } });
+      await screen.findByRole("option", { name: "Monthly spend (rev 2)" });
+      fireEvent.change(screen.getByLabelText("Saved analysis"), { target: { value: "analysis-1" } });
+
+      // Typed inputs render from the revision declarations (no crash on the
+      // active_run:null payload), seeded from the declaration defaults.
+      expect(await screen.findByLabelText("Parameter label")).toHaveValue("total");
+      expect(screen.getByLabelText("Parameter include_credits")).toHaveValue("false");
+      const membershipCheckbox = screen.getByRole("checkbox", { name: "Source ledger.csv" });
+      expect(membershipCheckbox).toBeChecked();
+      expect(membershipCheckbox).toBeDisabled();
+
+      fireEvent.change(screen.getByLabelText("Report title"), { target: { value: "Monday summary" } });
+      fireEvent.change(screen.getByLabelText("Draft instruction"), { target: { value: "Sum it up." } });
+      fireEvent.change(screen.getByLabelText("Refresh mode for ledger.csv"), { target: { value: "knowledge" } });
+      fireEvent.change(screen.getByLabelText("Knowledge connection for ledger.csv"), { target: { value: "know-1" } });
+
+      const createButton = screen.getByRole("button", { name: "Create brief" });
+      expect(createButton).toBeEnabled();
+      fireEvent.click(createButton);
+      await waitFor(() => expect(apiMocks.briefsCreate).toHaveBeenCalledTimes(1));
+
+      const [body] = apiMocks.briefsCreate.mock.calls[0];
+      expect(body.name).toBe("Monday brief");
+      expect(body.analysis_id).toBe("analysis-1");
+      expect(body.source_ids).toEqual(["src-a"]);
+      expect(body.parameter_values).toEqual({ label: "total", include_credits: false });
+      // Unused calendar/binding fields are omitted, never sent as null.
+      expect(body.schedule).toEqual({ kind: "weekly", weekday: 1, hour: 9, minute: 0, time_zone: "Europe/Berlin" });
+      expect(body.refresh_bindings).toEqual([{ source_id: "src-a", kind: "knowledge", connection_id: "know-1" }]);
+
+      expect(await screen.findByText("Monday brief")).toBeInTheDocument();
+      expect(screen.queryByRole("heading", { name: "New reviewed brief" })).not.toBeInTheDocument();
+    });
+
+    it("keeps create disabled until the bound revision schema loads and mirrors a schema 400 in-dialog without wedging busy", async () => {
+      const detail = deferred<typeof analysisFixture>();
+      apiMocks.analysesGet.mockReturnValue(detail.promise);
+      apiMocks.briefsCreate.mockRejectedValueOnce(briefApiError("invalid request", "FVT_SCHEMA_VALIDATION", 400));
+      render(<AutomationsView />);
+
+      fireEvent.click(await screen.findByRole("button", { name: "New brief" }));
+      fireEvent.change(screen.getByLabelText("Brief name"), { target: { value: "Monday brief" } });
+      await screen.findByRole("option", { name: "Monthly spend (rev 2)" });
+      fireEvent.change(screen.getByLabelText("Saved analysis"), { target: { value: "analysis-1" } });
+      fireEvent.change(screen.getByLabelText("Report title"), { target: { value: "Monday summary" } });
+      fireEvent.change(screen.getByLabelText("Draft instruction"), { target: { value: "Sum it up." } });
+
+      // The revision schema is still loading → create must not be clickable.
+      expect(screen.getByRole("button", { name: "Create brief" })).toBeDisabled();
+
+      await act(async () => detail.resolve(analysisFixture));
+      await screen.findByRole("checkbox", { name: "Source ledger.csv" });
+      const createButton = screen.getByRole("button", { name: "Create brief" });
+      expect(createButton).toBeEnabled();
+      fireEvent.click(createButton);
+      await waitFor(() => expect(apiMocks.briefsCreate).toHaveBeenCalledTimes(1));
+
+      // The masked schema rejection stays inside the open dialog and the
+      // button recovers — no wedged busy state, no dialog-losing toast.
+      expect(await screen.findByRole("alert")).toHaveTextContent("invalid request");
+      expect(screen.getByRole("heading", { name: "New reviewed brief" })).toBeInTheDocument();
+      expect(createButton).toBeEnabled();
+
+      apiMocks.briefsCreate.mockResolvedValue({ ...briefRecipe, id: "brief-2", name: "Monday brief" });
+      fireEvent.click(createButton);
+      await waitFor(() => expect(apiMocks.briefsCreate).toHaveBeenCalledTimes(2));
+      expect(await screen.findByText("Monday brief")).toBeInTheDocument();
+    });
+
+    it("keeps the edit dialog busy during save, preserves stored parameter values, and surfaces a stale-revision CAS conflict in-dialog", async () => {
+      apiMocks.briefsGet.mockResolvedValue({
+        ...briefRecipeDetail,
+        parameter_values: [{ name: "label", type: "string", value: "march" }],
+      });
+      apiMocks.analysesGet.mockResolvedValue({
+        ...analysisFixture,
+        parameters: [{ name: "label", type: "string", required: true, nullable: false, default: "total" }],
+      });
+      const save = deferred<unknown>();
+      apiMocks.briefsUpdate.mockReturnValueOnce(save.promise);
+      render(<AutomationsView />);
+
+      fireEvent.click(await screen.findByRole("button", { name: "Manage" }));
+      fireEvent.click(await screen.findByRole("button", { name: /Edit/ }));
+      await screen.findByRole("checkbox", { name: "Source ledger.csv" });
+
+      // The stored recipe value wins over the declaration default on edit.
+      expect(screen.getByLabelText("Parameter label")).toHaveValue("march");
+
+      fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+      await waitFor(() =>
+        expect(apiMocks.briefsUpdate).toHaveBeenCalledWith(
+          "brief-1",
+          expect.objectContaining({
+            expected_revision: 4,
+            parameter_values: { label: "march" },
+            // Edit uses the same null-omission wire rule as create.
+            schedule: { kind: "weekly", weekday: 1, hour: 9, minute: 0, time_zone: "Europe/Berlin" },
+          }),
+          expect.any(AbortSignal),
+        ),
+      );
+      expect(screen.getByRole("button", { name: /Save changes/ })).toBeDisabled();
+
+      await act(async () =>
+        save.reject(briefApiError("brief recipe revision conflict", "BRIEF_REVISION_CONFLICT", 409)),
+      );
+      expect(await screen.findByText(/This recipe changed since you opened it/)).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /Save changes/ })).toBeEnabled();
+      expect(screen.getByRole("heading", { name: "Edit “Weekly finance”" })).toBeInTheDocument();
+    });
+
     it("reuses the same client-generated idempotency key when Run now is retried after a lost response", async () => {
       const pending = deferred<{ items: Array<typeof briefRun>; next_cursor: null }>();
       apiMocks.briefsListRuns.mockReturnValue(pending.promise);

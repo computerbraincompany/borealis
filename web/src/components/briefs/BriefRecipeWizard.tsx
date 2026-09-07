@@ -14,7 +14,6 @@ import {
   type BriefOccurrencePreview,
   type BriefRecipe,
   type BriefRecipeCreateBody,
-  type BriefRefreshBinding,
   type AnalysisSummaryItem,
   type Connector,
   type KnowledgeConnection,
@@ -67,6 +66,44 @@ function timeZoneChoices(): string[] {
   return [...choices];
 }
 
+/**
+ * Wire shapes accepted by the brief create/patch routes. The server schemas in
+ * `server/src/routes/briefs.ts` declare `weekday`, `day_of_month`,
+ * `connector_id`, and `connection_id` as non-nullable, so an explicit JSON
+ * `null` for an unused field is a masked `400 invalid request` (the defect
+ * journey F asserted — the wizard's create could never succeed). Unused fields
+ * are therefore omitted from the body instead of sent as null. The shared
+ * response-DTO types in `@/lib/api` model those fields as required nullables,
+ * so `toApiBody` is the single boundary that reconciles the request wire shape
+ * with the response model.
+ */
+interface ScheduleWireBody {
+  kind: BriefCalendarSchedule["kind"];
+  hour: number;
+  minute: number;
+  time_zone: string;
+  weekday?: number;
+  day_of_month?: number;
+}
+
+interface RefreshBindingWireBody {
+  source_id: string;
+  kind: "connector" | "knowledge";
+  connector_id?: string;
+  connection_id?: string;
+}
+
+type RecipeCreateWireBody = Omit<BriefRecipeCreateBody, "schedule" | "refresh_bindings"> & {
+  schedule: ScheduleWireBody;
+  refresh_bindings: RefreshBindingWireBody[];
+};
+
+function toApiBody(wire: RecipeCreateWireBody): BriefRecipeCreateBody {
+  // See the wire-shape note above: omitted keys satisfy the server schema while
+  // the response DTO types require the null variant.
+  return wire as unknown as BriefRecipeCreateBody;
+}
+
 function parseScheduleInput(input: {
   kind: BriefCalendarSchedule["kind"];
   weekdayDraft: string;
@@ -74,19 +111,12 @@ function parseScheduleInput(input: {
   hourDraft: string;
   minuteDraft: string;
   timeZone: string;
-}): { schedule?: BriefCalendarSchedule; error?: string } {
+}): { schedule?: ScheduleWireBody; error?: string } {
   const hour = Number.parseInt(input.hourDraft, 10);
   const minute = Number.parseInt(input.minuteDraft, 10);
   if (!Number.isInteger(hour) || hour < 0 || hour > 23) return { error: "Hour must be between 0 and 23." };
   if (!Number.isInteger(minute) || minute < 0 || minute > 59) return { error: "Minute must be between 0 and 59." };
-  const schedule: BriefCalendarSchedule = {
-    kind: input.kind,
-    weekday: null,
-    day_of_month: null,
-    hour,
-    minute,
-    time_zone: input.timeZone,
-  };
+  const schedule: ScheduleWireBody = { kind: input.kind, hour, minute, time_zone: input.timeZone };
   if (input.kind === "weekly") {
     const weekday = Number.parseInt(input.weekdayDraft, 10);
     if (!Number.isInteger(weekday) || weekday < 0 || weekday > 6) return { error: "Pick a weekday (Sunday–Saturday)." };
@@ -183,25 +213,34 @@ export function BriefRecipeWizard({
   const sourceNames = useMemo(() => new Map(sources.map((source) => [source.id, source.display_name])), [sources]);
   const boundSourceIds = analysis?.source_ids ?? recipe?.source_ids ?? [];
 
-  const loadAnalysis = useCallback(async (id: string, requestId: number, signal: AbortSignal) => {
-    setAnalysisLoading(true);
-    setAnalysisError(null);
-    try {
-      const detail = await analysesApi.get(id, signal);
-      if (detailRequestRef.current !== requestId || signal.aborted || !mountedRef.current) return;
-      setAnalysis(detail);
-      const draft: Record<string, string> = {};
-      for (const declaration of detail.parameters) draft[declaration.name] = paramDraftValue(declaration);
-      setParamDraft(draft);
-      setParamErrors({});
-    } catch (failure: unknown) {
-      if (detailRequestRef.current === requestId && !signal.aborted && mountedRef.current) {
-        setAnalysisError(formatApiError(failure, "Could not load the saved analysis"));
+  const loadAnalysis = useCallback(
+    async (id: string, requestId: number, signal: AbortSignal, seedValues?: Record<string, string>) => {
+      setAnalysisLoading(true);
+      setAnalysisError(null);
+      try {
+        // The detail DTO is the bound definition's CURRENT revision: its typed
+        // parameter declarations and selected source set are the only schema
+        // source for this wizard. Nullable runtime shapes on the analysis
+        // surface (e.g. `active_run: null`) are never read for parameters.
+        const detail = await analysesApi.get(id, signal);
+        if (detailRequestRef.current !== requestId || signal.aborted || !mountedRef.current) return;
+        setAnalysis(detail);
+        const draft: Record<string, string> = {};
+        for (const declaration of detail.parameters) draft[declaration.name] = paramDraftValue(declaration);
+        // An edit keeps the recipe's stored values where they exist; creation
+        // and re-syncs fall back to the revision declaration defaults.
+        setParamDraft(seedValues ? { ...draft, ...seedValues } : draft);
+        setParamErrors({});
+      } catch (failure: unknown) {
+        if (detailRequestRef.current === requestId && !signal.aborted && mountedRef.current) {
+          setAnalysisError(formatApiError(failure, "Could not load the saved analysis"));
+        }
+      } finally {
+        if (detailRequestRef.current === requestId && !signal.aborted && mountedRef.current) setAnalysisLoading(false);
       }
-    } finally {
-      if (detailRequestRef.current === requestId && !signal.aborted && mountedRef.current) setAnalysisLoading(false);
-    }
-  }, []);
+    },
+    [],
+  );
 
   useEffect(() => {
     mountedRef.current = true;
@@ -280,12 +319,13 @@ export function BriefRecipeWizard({
     for (const binding of recipe.parameter_values)
       paramSeed[binding.name] = binding.value === null ? "" : String(binding.value);
     setParamDraft(paramSeed);
+    const storedValues = Object.fromEntries(Object.entries(paramSeed).filter(([, value]) => value !== ""));
     void (async () => {
       try {
         const detail = await briefsApi.get(recipe.id, abort.signal);
         if (detailRequestRef.current !== requestId || abort.signal.aborted || !mountedRef.current) return;
         setPreview(detail.next_occurrences ?? []);
-        await loadAnalysis(detail.analysis_id, requestId, abort.signal);
+        await loadAnalysis(detail.analysis_id, requestId, abort.signal, storedValues);
       } catch (failure: unknown) {
         if (detailRequestRef.current === requestId && !abort.signal.aborted && mountedRef.current) {
           setAnalysisError(formatApiError(failure, "Could not load the recipe detail"));
@@ -320,7 +360,7 @@ export function BriefRecipeWizard({
     void loadAnalysis(analysisId, requestId, abort.signal);
   };
 
-  const buildBody = (): { body?: BriefRecipeCreateBody; error?: string } => {
+  const buildBody = (): { body?: RecipeCreateWireBody; error?: string } => {
     const trimmedName = name.trim();
     if (!trimmedName || trimmedName.length > 80) return { error: "Name must be 1–80 characters." };
     if (!reportTitle.trim()) return { error: "Report title is required (max 200 characters)." };
@@ -356,26 +396,18 @@ export function BriefRecipeWizard({
     });
     if (!schedule) return { error: scheduleError ?? "Invalid schedule." };
 
-    const refreshBindings: BriefRefreshBinding[] = [];
+    // The server binding schema rejects explicit nulls: each kind carries only
+    // its own id key, and the other key is omitted entirely.
+    const refreshBindings: RefreshBindingWireBody[] = [];
     for (const sourceId of boundSourceIds) {
       const binding = bindings[sourceId] ?? emptyBinding();
       if (binding.mode === "none") continue;
       if (binding.mode === "connector") {
         if (!binding.connectorId) return { error: "Pick a connector for every connector-refresh source." };
-        refreshBindings.push({
-          source_id: sourceId,
-          kind: "connector",
-          connector_id: binding.connectorId,
-          connection_id: null,
-        });
+        refreshBindings.push({ source_id: sourceId, kind: "connector", connector_id: binding.connectorId });
       } else {
         if (!binding.connectionId) return { error: "Pick a knowledge connection for every folder-refresh source." };
-        refreshBindings.push({
-          source_id: sourceId,
-          kind: "knowledge",
-          connector_id: null,
-          connection_id: binding.connectionId,
-        });
+        refreshBindings.push({ source_id: sourceId, kind: "knowledge", connection_id: binding.connectionId });
       }
     }
     return {
@@ -407,8 +439,8 @@ export function BriefRecipeWizard({
     setDialogError(null);
     try {
       const saved = recipe
-        ? await briefsApi.update(recipe.id, { expected_revision: recipe.revision, ...body }, abort.signal)
-        : await briefsApi.create(body, abort.signal);
+        ? await briefsApi.update(recipe.id, { expected_revision: recipe.revision, ...toApiBody(body) }, abort.signal)
+        : await briefsApi.create(toApiBody(body), abort.signal);
       if (saveRequestRef.current !== requestId || abort.signal.aborted || !mountedRef.current) return;
       saveAbortRef.current = null;
       onSaved(saved);
@@ -770,7 +802,11 @@ export function BriefRecipeWizard({
             <Button type="button" variant="ghost" size="sm" disabled={busy} onClick={onClose}>
               Cancel
             </Button>
-            <Button type="submit" size="sm" disabled={busy || !name.trim() || !analysisId}>
+            <Button
+              type="submit"
+              size="sm"
+              disabled={busy || !name.trim() || !analysisId || analysis === null || analysisLoading}
+            >
               {busy && <Loader2 className="h-4 w-4 animate-spin" />}
               {recipe ? "Save changes" : "Create brief"}
             </Button>
