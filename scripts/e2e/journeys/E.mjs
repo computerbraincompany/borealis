@@ -421,11 +421,13 @@ export async function run(ctx) {
       { deadlineMs: 20_000, intervalMs: 200 }
     );
     assert(Boolean(definition), "PLAN_SAVE_NOT_DURABLE");
+    // After "Move step 3 up", the edited step (renewal|effective) sits at
+    // index 1 and the compare step (exceptions|supersedes) at index 2.
     assert(
       definition.plan.steps.length === 3 &&
         definition.plan.steps[1].objective === editedObjective &&
-        definition.plan.steps[1].questions.join("|") === "exceptions|supersedes" &&
-        definition.plan.steps[2].questions.join("|") === "renewal|effective",
+        definition.plan.steps[1].questions.join("|") === "renewal|effective" &&
+        definition.plan.steps[2].questions.join("|") === "exceptions|supersedes",
       "PLAN_NOT_PERSISTED",
       JSON.stringify(definition.plan.steps.map((s) => [s.objective.slice(0, 24), s.questions]))
     );
