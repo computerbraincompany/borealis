@@ -23,23 +23,31 @@ async function requireDirectory(directory, label) {
 }
 
 async function installedVersion(packageDirectory, name) {
+  // Read the package ROOT manifest directly first: packages whose exports map
+  // routes "./package.json" to a build-variant marker (e.g.
+  // @modelcontextprotocol/sdk → dist/cjs/package.json) would otherwise yield
+  // a subpackage manifest without a version field.
+  const candidates = [
+    path.join(packageDirectory, "node_modules", ...name.split("/"), "package.json"),
+  ];
   const require = createRequire(path.join(packageDirectory, "package.json"));
-  let packageJsonPath;
   try {
-    packageJsonPath = require.resolve(`${name}/package.json`);
+    candidates.push(require.resolve(`${name}/package.json`));
   } catch {
-    packageJsonPath = path.join(
-      packageDirectory,
-      "node_modules",
-      ...name.split("/"),
-      "package.json",
-    );
+    // fall through to the direct candidate only
   }
-  const installed = JSON.parse(await readFile(packageJsonPath, "utf8"));
-  if (typeof installed.version !== "string" || installed.version.length === 0) {
-    throw new Error(`Could not resolve installed version for ${name}`);
+  for (const packageJsonPath of candidates) {
+    let installed;
+    try {
+      installed = JSON.parse(await readFile(packageJsonPath, "utf8"));
+    } catch {
+      continue;
+    }
+    if (typeof installed.version === "string" && installed.version.length > 0) {
+      return installed.version;
+    }
   }
-  return installed.version;
+  throw new Error(`Could not resolve installed version for ${name}`);
 }
 
 async function verifyCopiedWebManifest() {
