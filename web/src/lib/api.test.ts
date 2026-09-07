@@ -18,6 +18,9 @@ import {
   parseSourceListPayload,
   preferencesApi,
   reportsApi,
+  researchActiveRunId,
+  researchApi,
+  researchUnreadySourceIds,
   settingsApi,
   sourcesApi,
   streamAgentChat,
@@ -731,5 +734,197 @@ describe("M14 living-library typed clients", () => {
     const passage = await sourcesApi.passage("s1", "c1");
     expect(fetchMock.mock.calls[1][0]).toBe("/api/sources/s1/passages/c1");
     expect(passage.chunk.locators?.[0]?.kind).toBe("pdf_page");
+  });
+});
+
+describe("M15 research typed client", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  function json(payload: unknown, status = 200) {
+    return new Response(JSON.stringify(payload), {
+      status,
+      headers: { "content-type": "application/json" },
+    });
+  }
+
+  const definitionPayload = {
+    id: "d1",
+    title: "Supplier terms",
+    question: "Compare renewal terms",
+    output_kind: "memo",
+    current_revision: 2,
+    source_ids: ["s1"],
+    library_ids: [],
+    chat_model: "chat-model",
+    columns: [],
+    plan: { steps: [] },
+    sources: [{ source_id: "s1", availability: "ready", ready_generation: 3 }],
+    active_run: null,
+    revision_created_at: "2026-01-01T00:00:00Z",
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+  };
+
+  it("lists definitions through the keyset envelope", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      json({
+        items: [
+          {
+            id: "d1",
+            title: "t",
+            output_kind: "memo",
+            current_revision: 1,
+            source_count: 2,
+            created_at: "",
+            updated_at: "",
+          },
+        ],
+        next_cursor: "abc_-1",
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const page = await researchApi.list({ cursor: "c1", limit: 25 });
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/research?cursor=c1&limit=25");
+    expect(page.items[0]?.id).toBe("d1");
+    expect(page.next_cursor).toBe("abc_-1");
+  });
+
+  it("rejects a malformed catalog envelope instead of widening the page", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(json({ items: [], next_cursor: "bad cursor!" })));
+    await expect(researchApi.list()).rejects.toThrow("invalid catalog response");
+  });
+
+  it("sends the create and CAS-patch bodies exactly", async () => {
+    const fetchMock = vi.fn().mockImplementation(async () => json(definitionPayload, 201));
+    vi.stubGlobal("fetch", fetchMock);
+    await researchApi.create({
+      title: "Supplier terms",
+      question: "Compare renewal terms",
+      output_kind: "comparison",
+      source_ids: ["s1"],
+      library_ids: ["l1"],
+      chat_model: "chat-model",
+      columns: [{ id: "c1", label: "Price", question: "price?", type: "number", unit: "USD", choices: null }],
+    });
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/research");
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1].body))).toMatchObject({
+      output_kind: "comparison",
+      source_ids: ["s1"],
+    });
+
+    await researchApi.update("d1", { expected_revision: 2, title: "Renamed" });
+    expect(fetchMock.mock.calls[1][0]).toBe("/api/research/d1");
+    expect(JSON.parse(String(fetchMock.mock.calls[1][1].body))).toEqual({ expected_revision: 2, title: "Renamed" });
+  });
+
+  it("sends the plan-proposal revision guard and never implies a start", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      json({
+        definition_id: "d1",
+        base_revision: 2,
+        model: "m",
+        model_used: true,
+        fallback: false,
+        error_code: null,
+        plan: { steps: [] },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const proposal = await researchApi.proposePlan("d1", 2);
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/research/d1/plan");
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1].body))).toEqual({ expected_revision: 2 });
+    expect(proposal.fallback).toBe(false);
+  });
+
+  it("starts pinned rerun runs and carries the rerun selection", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(json({ id: "r1", status: "queued", definition_id: "d1" }, 201));
+    vi.stubGlobal("fetch", fetchMock);
+    await researchApi.start("d1", {
+      expected_revision: 3,
+      definition_revision: 3,
+      rerun_of: "r0",
+      rerun_selection: { row_source_ids: ["s1"], column_ids: ["c1"] },
+    });
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/research/d1/runs");
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1].body))).toEqual({
+      expected_revision: 3,
+      definition_revision: 3,
+      rerun_of: "r0",
+      rerun_selection: { row_source_ids: ["s1"], column_ids: ["c1"] },
+    });
+  });
+
+  it("builds table view options and the diff target into the query", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      json({
+        run_id: "r1",
+        columns: [],
+        items: [],
+        next_cursor: null,
+        limit_state: { serialized_bytes: 0, limit_bytes: 1048576, at_limit: false },
+        view_state: {
+          sort_applied: true,
+          filter_applied: false,
+          basis: "row_source_id_keyset",
+          sort_column_id: "c1",
+          sort_dir: "asc",
+          sort_view: "machine",
+        },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const view = await researchApi.getTable("r1", {
+      sortColumn: "c1",
+      sortDir: "asc",
+      sortView: "machine",
+      filterStatus: "not_found",
+      filterText: "cash",
+      against: "r0",
+    });
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      "/api/research-runs/r1/table?sort_column=c1&sort_dir=asc&sort_view=machine&filter_status=not_found&filter_text=cash&against=r0",
+    );
+    expect(view.view_state.sort_applied).toBe(true);
+  });
+
+  it("reviews with a CAS revision and creates artifacts without a payload", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(json({ review_revision: 4, ops_applied: 1, run: { id: "r1", status: "running" } }))
+      .mockResolvedValueOnce(
+        json(
+          {
+            run_id: "r1",
+            document_id: "doc-1",
+            document_revision_id: "rev-1",
+            document_revision: 1,
+            projection: { labels: ["comparison"], omitted: { rows: [], claims: 0, gaps: 0, evidence: 0 } },
+          },
+          201,
+        ),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await researchApi.review("r1", {
+      expected_revision: 3,
+      ops: [{ op: "accept_claim", claim_id: "cl1" }],
+    });
+    expect(fetchMock.mock.calls[0][1].method).toBe("PATCH");
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1].body))).toEqual({
+      expected_revision: 3,
+      ops: [{ op: "accept_claim", claim_id: "cl1" }],
+    });
+    expect(result.review_revision).toBe(4);
+    await researchApi.createArtifact("r1");
+    expect(fetchMock.mock.calls[1][0]).toBe("/api/research-runs/r1/artifacts");
+    expect(JSON.parse(String(fetchMock.mock.calls[1][1].body))).toEqual({});
+    expect(researchApi.exportPath("r1", "csv")).toBe("/api/research-runs/r1/export?format=csv");
+  });
+
+  it("surfaces the active-run identity and precise readiness ids from conflicts", async () => {
+    const active = new ApiError(409, "active", { code: "RESEARCH_ACTIVE_RUN", existing_run_id: "r9" });
+    expect(researchActiveRunId(active)).toBe("r9");
+    expect(researchActiveRunId(new ApiError(409, "x", { code: "RESEARCH_QUEUE_FULL" }))).toBeNull();
+    const ready = new ApiError(409, "not ready", { code: "RESEARCH_INPUTS_NOT_READY", unready_source_ids: ["s1", 5] });
+    expect(researchUnreadySourceIds(ready)).toEqual(["s1"]);
   });
 });
