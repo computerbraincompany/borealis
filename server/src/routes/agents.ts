@@ -46,10 +46,18 @@ const jobSetupSchema = {
       items: { type: "string", minLength: 1, maxLength: 2_000 },
     },
     output_template: {
-      // Discriminated reference: only the bounded instruction variant ships;
-      // M13's document-template catalog adds its variant to this codec.
+      // Custom template ownership and prompt budgets are checked in the store.
       oneOf: [
         { type: "null" },
+        {
+          type: "object",
+          required: ["kind", "template_id"],
+          additionalProperties: false,
+          properties: {
+            kind: { type: "string", const: "template_id" },
+            template_id: { type: "string", format: "uuid" },
+          },
+        },
         {
           type: "object",
           required: ["kind", "instruction"],

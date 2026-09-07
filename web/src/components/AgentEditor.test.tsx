@@ -10,6 +10,7 @@ const editorApiMocks = vi.hoisted(() => ({
   connectionsGet: vi.fn(),
   librariesList: vi.fn(),
   jobsList: vi.fn(),
+  templatesList: vi.fn(),
 }));
 
 vi.mock("@/lib/api", async () => {
@@ -29,6 +30,7 @@ vi.mock("@/lib/api", async () => {
     },
     librariesApi: { ...actual.librariesApi, list: editorApiMocks.librariesList },
     jobsApi: { list: editorApiMocks.jobsList },
+    documentTemplatesApi: { ...actual.documentTemplatesApi, list: editorApiMocks.templatesList },
   };
 });
 
@@ -79,6 +81,7 @@ describe("AgentEditor connected tools and job setup", () => {
       next_cursor: null,
     });
     editorApiMocks.jobsList.mockResolvedValue([]);
+    editorApiMocks.templatesList.mockResolvedValue({ items: [], next_cursor: null });
     editorApiMocks.agentsCreate.mockResolvedValue({ id: "agent-new", name: "Ops agent" });
   });
 
@@ -263,5 +266,37 @@ describe("AgentEditor connected tools and job setup", () => {
     fireEvent.change(screen.getByLabelText("Agent name"), { target: { value: "My finance analyst" } });
     await user.click(screen.getByRole("tab", { name: "Job" }));
     expect(screen.getByLabelText("Starter prompt 1")).toHaveValue("Summarize my spending");
+  });
+
+  it("saves a catalog document-template reference without copying source data into the job", async () => {
+    const user = userEvent.setup();
+    const templateId = "b0000000-0000-4000-8000-000000000002";
+    editorApiMocks.templatesList.mockResolvedValue({
+      items: [
+        {
+          id: templateId,
+          name: "Evidence memo",
+          built_in: true,
+          snapshot: { title: "Evidence memo", sections: [{ heading: "Evidence", markdown: "Review support." }] },
+        },
+      ],
+      next_cursor: null,
+    });
+    render(<AgentEditor onClose={() => undefined} onSaved={() => undefined} />);
+    fillIdentity();
+    await user.click(await screen.findByRole("tab", { name: "Job" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Apply an output template" }));
+    await user.selectOptions(screen.getByLabelText("Output template kind"), "template_id");
+    fireEvent.click(screen.getByRole("button", { name: "Create agent" }));
+    expect(editorApiMocks.agentsCreate).not.toHaveBeenCalled();
+    expect(await screen.findByRole("alert")).toHaveTextContent("Choose a document template");
+    await screen.findByRole("option", { name: "Evidence memo" });
+    await user.selectOptions(screen.getByLabelText("Output document template"), templateId);
+    fireEvent.click(screen.getByRole("button", { name: "Create agent" }));
+    await waitFor(() => expect(editorApiMocks.agentsCreate).toHaveBeenCalledTimes(1));
+    expect(editorApiMocks.agentsCreate.mock.calls[0][2].job_setup.output_template).toEqual({
+      kind: "template_id",
+      template_id: templateId,
+    });
   });
 });

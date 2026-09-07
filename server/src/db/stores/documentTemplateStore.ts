@@ -145,7 +145,7 @@ function decodeTemplate(row: TemplateRow): StoredDocumentTemplate {
 // ---------------------------------------------------------------------------
 
 /**
- * Owner-scoped custom template catalog (schema v21, M13 stage 2).
+ * Owner-scoped custom template catalog (schema v22, M13 stage 2).
  *
  * - Snapshots arrive normalized through the `documentTemplates.ts` codec, so
  *   the durable row can only ever contain structure — never excerpts, table

@@ -113,7 +113,11 @@ export function JobConfirmationCard({
       {job.output_template && (
         <p className="mt-3 rounded-lg bg-muted/40 p-3 text-xs leading-relaxed text-muted-foreground">
           <span className="font-medium text-foreground">Output template:</span>{" "}
-          <span className="line-clamp-3 whitespace-pre-wrap break-words">{job.output_template.instruction}</span>
+          <span className="line-clamp-3 whitespace-pre-wrap break-words">
+            {job.output_template.kind === "instruction"
+              ? job.output_template.instruction
+              : "Uses the document template selected in this agent’s Job tab. Its structure is captured when you send a message."}
+          </span>
         </p>
       )}
 

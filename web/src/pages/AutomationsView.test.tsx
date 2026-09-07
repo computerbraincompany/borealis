@@ -11,6 +11,7 @@ const apiMocks = vi.hoisted(() => ({
   briefsList: vi.fn(),
   briefsGet: vi.fn(),
   briefsCreate: vi.fn(),
+  briefsPreview: vi.fn(),
   briefsUpdate: vi.fn(),
   briefsPause: vi.fn(),
   briefsResume: vi.fn(),
@@ -45,6 +46,7 @@ vi.mock("@/lib/api", () => ({
     ["queued", "refreshing", "waiting_ready", "analyzing", "drafting", "publishing"].includes(stage),
   BRIEF_PIPELINE_STAGES: ["queued", "refreshing", "waiting_ready", "analyzing", "drafting", "awaiting_review"],
   briefsApi: {
+    previewSchedule: apiMocks.briefsPreview,
     list: apiMocks.briefsList,
     get: apiMocks.briefsGet,
     create: apiMocks.briefsCreate,
@@ -536,6 +538,7 @@ describe("AutomationsView", () => {
     beforeEach(() => {
       apiMocks.briefsList.mockResolvedValue({ items: [briefRecipe], next_cursor: null });
       apiMocks.briefsGet.mockResolvedValue(briefRecipeDetail);
+      apiMocks.briefsPreview.mockResolvedValue({ next_occurrences: briefRecipeDetail.next_occurrences });
       apiMocks.briefsListRuns.mockResolvedValue({ items: [], next_cursor: null });
       apiMocks.analysesList.mockResolvedValue({
         items: [

@@ -1,5 +1,5 @@
 /**
- * Durable local research resource routes (M15 stage 1).
+ * Durable local research resource routes (M15).
  *
  * Store-backed surface: definition CRUD with optimistic revision CAS, Start
  * admission (exact revision + concrete ready source/generation pinning in one
@@ -8,7 +8,7 @@
  * keyset dossier and table reads (25 default; evidence max 50, others max
  * 100), idempotent cancellation, and revision-CAS review batches.
  *
- * Stage 2 adds bounded, editable plan-proposal generation
+ * The planner provides bounded, editable plan-proposal generation
  * (`POST /:id/plan`) and durable execution: a started run is dispatched to the
  * registered research runner (fire-and-forget; the durable `queued` row is the
  * contract, so a missing runner just defers to the next startup resume). Plan
@@ -16,8 +16,7 @@
  * proposal is returned for review and becomes durable only via an explicit
  * CAS `PATCH`.
  *
- * Stage 3 replaces the reserved endpoints with the real comparison/output
- * surface, all implemented over the stored ledger rows in
+ * The comparison/output surface uses stored ledger rows through
  * `researchComparison.ts`:
  * - `GET /:id/table` gains bounded page-local sort/filter view options and an
  *   optional `against` run for the changed-cell diff between revisions

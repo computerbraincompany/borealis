@@ -357,7 +357,7 @@ document.querySelectorAll('.chart-block').forEach(function(el){
   --brand:#6366F1; --brand-soft:#EEF2FF; --teal:#14B8A6; --radius:14px;
 }
 * { box-sizing: border-box; }
-body { margin:0; background:var(--bg); color:var(--ink);
+body { margin:0; background:var(--bg); color:var(--ink); overflow-wrap:anywhere;
   font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
   -webkit-font-smoothing:antialiased; }
 .page { max-width:960px; margin:0 auto; padding:40px 24px 80px; }
@@ -389,6 +389,15 @@ pre, code { background:#F1F5F9; border-radius:6px; }
 pre { padding:12px; overflow-x:auto; }
 code { padding:2px 5px; }
 blockquote { margin:10px 0; padding:2px 16px; border-left:3px solid var(--brand); color:#475569; }
+@media print {
+  .page { max-width:100%; padding:16px 12px; }
+  pre { white-space:pre-wrap; overflow:visible; }
+  .data-table { overflow:visible; }
+  table { table-layout:fixed; width:100%; }
+  tr { break-inside:avoid; }
+  h2, h3, h4 { break-after:avoid; }
+  .chart-block { break-inside:avoid; }
+}
 </style>
 ${echartsScript}
 </head>

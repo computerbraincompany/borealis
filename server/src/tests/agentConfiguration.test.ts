@@ -104,9 +104,24 @@ describe("agent configuration codec — job_setup", () => {
     ).toThrow();
     expect(() => agentConfiguration({ job_setup: { library_ids: ["nope"] } })).toThrow();
     expect(() => agentConfiguration({ job_setup: { starter_prompts: ["a", "a"] } })).not.toThrow(); // dupes allowed (prompts are free text)
-    // Unknown template variants (the M13 `template_id` seam) fail closed now.
+    // Invalid identifiers and extra keys fail closed for document references.
     expect(() =>
       agentConfiguration({ job_setup: { output_template: { kind: "template_id", template_id: "t" } } })
+    ).toThrow();
+    expect(
+      agentConfiguration({ job_setup: { output_template: { kind: "template_id", template_id: CONNECTION } } }).job_setup
+        .output_template
+    ).toEqual({ kind: "template_id", template_id: CONNECTION });
+    expect(() =>
+      agentConfiguration({
+        job_setup: {
+          output_template: {
+            kind: "template_id",
+            template_id: CONNECTION,
+            instruction: "hidden override",
+          },
+        },
+      })
     ).toThrow();
     expect(() =>
       agentConfiguration({ job_setup: { output_template: { kind: "instruction", instruction: "" } } })

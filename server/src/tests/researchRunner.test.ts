@@ -899,3 +899,80 @@ describe("research runner (vertical)", () => {
     }
   );
 });
+
+describe("research extraction output contract", () => {
+  it("requires same-row evidence for non-null cells and retains unsupported output as invalid", async () => {
+    await bootWorkspace();
+    const source = await insertSource("supplier.md");
+    const frames = Array.from({ length: 3 }, () => assistantTextChunks(CHAT_MODEL, ["placeholder"]));
+    let runId = "";
+    const provider = await startScriptedOpenAiServer(CHAT_MODEL, frames, {
+      models: [CHAT_MODEL],
+      onCall: async (index, body) => {
+        expect((body as any).max_tokens).toBe(8192);
+        if (index === 0) {
+          frames[index] = assistantTextChunks(CHAT_MODEL, ["Captured the listed annual price."]);
+          return;
+        }
+        expect(JSON.stringify((body as any).messages)).toContain("evidence_ids");
+        const evidence = await storageRuntime().research.listResearchEvidence(OWNER_ID, runId, {
+          limit: 50,
+          after: null,
+        });
+        const reply = JSON.stringify({
+          cells: [
+            { source_id: source, value: 12000, evidence_ids: index === 1 ? [randomUUID()] : [evidence.items[0]!.id] },
+          ],
+        });
+        const replacement = assistantTextChunks(CHAT_MODEL, [reply]);
+        frames[index]!.splice(0, frames[index]!.length, ...replacement);
+      },
+    });
+    providers.push(provider);
+    await pointProviderAt(provider);
+    const search = scriptedSearch({
+      hits: (scopes) =>
+        resultWith(
+          scopes.map((scope) => readyScope(scope.sourceId, scope.generation)),
+          [hit(source, 1, "aaaaaaaa-1111-4111-8111-111111111111", "supplier.md", "The annual price is 12000 USD.")]
+        ),
+    });
+    ownRunner(search.search);
+    const app = await buildApp();
+    const columns = ["Uncited price", "Cited price"].map((label) => ({
+      id: randomUUID(),
+      label,
+      question: "What is the annual price?",
+      type: "number",
+      unit: "USD",
+    }));
+    const definition = await createDefinition(
+      app,
+      memoBody([source], steps(["Find price", ["price"]]), {
+        output_kind: "comparison",
+        columns,
+      })
+    );
+    const started = await app.inject({
+      method: "POST",
+      url: `/api/research/${definition.id}/runs`,
+      headers: ownerAuth,
+      body: {},
+    });
+    expect(started.statusCode).toBe(201);
+    runId = started.json().id;
+    const run = await waitForRunStatus(app, runId, ["needs_review", "completed", "failed"]);
+    expect(run.status).toBe("needs_review");
+    const cells = await storageRuntime().ledger.all<{
+      column_id: string;
+      status: string;
+      value: string;
+      evidence_refs: string;
+    }>("SELECT column_id,status,value,evidence_refs FROM research_table_cells WHERE run_id=?", [runId]);
+    const uncited = cells.find((cell) => cell.column_id === columns[0]!.id)!;
+    const cited = cells.find((cell) => cell.column_id === columns[1]!.id)!;
+    expect(uncited).toMatchObject({ status: "invalid", value: "12000", evidence_refs: "[]" });
+    expect(cited).toMatchObject({ status: "supported", value: "12000" });
+    expect(JSON.parse(cited.evidence_refs)).toHaveLength(1);
+  });
+});

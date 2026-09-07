@@ -1,9 +1,10 @@
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 const apiMocks = vi.hoisted(() => ({
   analysesList: vi.fn(),
   analysesGet: vi.fn(),
   briefsCreate: vi.fn(),
+  briefsPreview: vi.fn(),
   sourcesList: vi.fn(),
   connectorsList: vi.fn(),
   knowledgeList: vi.fn(),
@@ -13,7 +14,7 @@ vi.mock("@/lib/api", () => ({
   formatApiError: (error: unknown, fallback: string) =>
     error instanceof Error && error.name === "ApiError" ? error.message : fallback,
   analysesApi: { list: apiMocks.analysesList, get: apiMocks.analysesGet },
-  briefsApi: { create: apiMocks.briefsCreate },
+  briefsApi: { create: apiMocks.briefsCreate, previewSchedule: apiMocks.briefsPreview },
   sourcesApi: { list: apiMocks.sourcesList },
   connectorsApi: { list: apiMocks.connectorsList },
   knowledgeApi: { list: apiMocks.knowledgeList },
@@ -116,10 +117,55 @@ describe("BriefRecipeWizard (create path)", () => {
     Object.values(apiMocks).forEach((mock) => mock.mockReset());
     apiMocks.analysesList.mockResolvedValue({ items: [summaryItem], next_cursor: null });
     apiMocks.analysesGet.mockResolvedValue(revisionDetail);
+    apiMocks.briefsPreview.mockResolvedValue({
+      next_occurrences: [1, 2, 3].map((n) => ({
+        occurrence_key: `2026-09-${n}T09:00`,
+        civil: `2026-09-${n}T09:00`,
+        utc_at: `2026-09-0${n}T07:00:00.000Z`,
+      })),
+    });
     apiMocks.briefsCreate.mockResolvedValue({ id: "brief-1", name: "Monday brief" });
     apiMocks.sourcesList.mockResolvedValue({ items: sources, next_cursor: null });
     apiMocks.connectorsList.mockResolvedValue({ items: [], next_cursor: null });
     apiMocks.knowledgeList.mockResolvedValue({ items: [], next_cursor: null });
+  });
+
+  it("discards an older preview while a changed schedule is pending, and retries failures", async () => {
+    await renderWizard();
+    await selectAnalysis();
+    fireEvent.change(screen.getByLabelText("Brief name"), { target: { value: "Preview brief" } });
+    let resolveOld!: (value: unknown) => void;
+    let rejectNew!: (reason: unknown) => void;
+    apiMocks.briefsPreview.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveOld = resolve;
+        }),
+    );
+    fireEvent.change(screen.getByLabelText("Hour (0-23)"), { target: { value: "10" } });
+    const oldSignal = apiMocks.briefsPreview.mock.calls.at(-1)![1] as AbortSignal;
+    apiMocks.briefsPreview.mockImplementationOnce(
+      () =>
+        new Promise((_resolve, reject) => {
+          rejectNew = reject;
+        }),
+    );
+    fireEvent.change(screen.getByLabelText("Hour (0-23)"), { target: { value: "11" } });
+    expect(oldSignal.aborted).toBe(true);
+    const button = screen.getByRole("button", { name: "Create brief" });
+    expect(button).toBeDisabled();
+    await act(async () =>
+      resolveOld({
+        next_occurrences: [1, 2, 3].map((n) => ({ occurrence_key: `old-${n}`, civil: `OLD ${n}`, utc_at: `OLD ${n}` })),
+      }),
+    );
+    expect(screen.queryByText("OLD 1")).not.toBeInTheDocument();
+    expect(button).toBeDisabled();
+    await act(async () => rejectNew(apiError("Preview unavailable")));
+    expect(screen.getByText("Preview unavailable")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Retry schedule preview" }));
+    await waitFor(() => expect(button).toBeEnabled());
+    expect(apiMocks.briefsPreview.mock.calls.at(-1)![0].hour).toBe(11);
   });
 
   it("derives typed parameter inputs and the membership mirror from the fetched revision, not the active_run:null summary", async () => {

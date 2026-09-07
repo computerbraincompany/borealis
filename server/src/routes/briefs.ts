@@ -29,7 +29,12 @@ import {
   type StoredBriefRun,
 } from "../db/stores/briefRunStore.js";
 import { requestBriefReviewDecision } from "../briefReviewService.js";
-import { nextOccurrences, CALENDAR_MAX_PREVIEW } from "../calendarSchedule.js";
+import {
+  nextOccurrences,
+  CALENDAR_MAX_PREVIEW,
+  normalizeCalendarSchedule,
+  CalendarScheduleError,
+} from "../calendarSchedule.js";
 import { defaultBriefRunner } from "../briefRunner.js";
 import { enforceRemoteEgressConsent } from "../egressPolicy.js";
 import { storageRuntime } from "../storageRuntime.js";
@@ -377,6 +382,32 @@ function schedulePreviews(recipe: StoredBriefRecipe) {
 }
 
 export async function briefRoutes(app: FastifyInstance): Promise<void> {
+  app.post(
+    "/api/briefs/schedule-preview",
+    {
+      onRequest: requireAuth,
+      bodyLimit: COMPACT_JSON_BODY_LIMIT_BYTES,
+      schema: {
+        body: {
+          type: "object",
+          required: ["schedule"],
+          additionalProperties: false,
+          properties: { schedule: SCHEDULE_BODY_SCHEMA },
+        },
+      },
+    },
+    async (req, reply) => {
+      try {
+        const schedule = normalizeCalendarSchedule((req.body as { schedule: unknown }).schedule);
+        return reply.send({ next_occurrences: nextOccurrences(schedule, Date.now(), CALENDAR_MAX_PREVIEW) });
+      } catch (error) {
+        if (error instanceof CalendarScheduleError)
+          return reply.code(400).send({ error: error.message, code: error.code });
+        throw error;
+      }
+    }
+  );
+
   app.get(
     "/api/briefs",
     { onRequest: requireAuth, schema: { querystring: catalogPageQuerySchema } },

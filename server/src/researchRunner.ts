@@ -77,9 +77,12 @@ const CANCEL_POLL_INTERVAL_MS = 400;
 const CLAIM_INTERVAL_MS = 30_000;
 const CLAIM_BATCH_LIMIT = 50;
 
-const STEP_MAX_OUTPUT_TOKENS = 900;
-const SYNTHESIS_MAX_OUTPUT_TOKENS = 2_400;
-const COLUMN_MAX_OUTPUT_TOKENS = 1_500;
+// Hidden reasoning consumes provider output tokens too. Match the ordinary
+// agent's bounded allocation while retaining 40 requests/run, 15 minutes, and
+// the transport's independent content/reasoning character caps.
+const STEP_MAX_OUTPUT_TOKENS = 8_192;
+const SYNTHESIS_MAX_OUTPUT_TOKENS = 8_192;
+const COLUMN_MAX_OUTPUT_TOKENS = 8_192;
 /** Bounded evidence context for one step/synthesis/column prompt. */
 const PROMPT_EVIDENCE_TOTAL_CHARS = 24_000;
 const PROMPT_STEP_EXCERPT_CHARS = 600;
@@ -516,7 +519,7 @@ export function createResearchRunner(dependencies: ResearchRunnerDependencies) {
         {
           role: "system",
           content:
-            "You summarize captured research evidence for one planned step. Use only the listed evidence; state plainly when it is insufficient. Never add facts, numbers, or sources that are not listed. Keep the summary under 2000 characters.",
+            "You summarize captured research evidence for one planned step. Use only the listed evidence; state plainly when it is insufficient. Never add facts, numbers, or sources that are not listed. Keep internal reasoning concise and reserve output space for the final summary. Keep the summary under 2000 characters.",
         },
         {
           role: "user",
@@ -527,6 +530,7 @@ export function createResearchRunner(dependencies: ResearchRunnerDependencies) {
       ],
       STEP_MAX_OUTPUT_TOKENS
     );
+    if (!summary) state.synthesisRejected = true;
     await settleStep(accountId, runId, step.ordinal, "done", summary || "the model returned no usable summary");
     return { stopRun: false };
   }
@@ -566,7 +570,7 @@ export function createResearchRunner(dependencies: ResearchRunnerDependencies) {
         },
         {
           role: "user",
-          content: `Research question: ${revision.question}\n\nCaptured evidence (id, then excerpt):\n${block}\nWrite the JSON now.`,
+          content: `Research question: ${revision.question}\n\nCaptured evidence (id, then excerpt):\n${block}\nKeep internal reasoning concise and reserve output space for the complete JSON. Write the JSON now.`,
         },
       ],
       SYNTHESIS_MAX_OUTPUT_TOKENS
@@ -667,7 +671,7 @@ export function createResearchRunner(dependencies: ResearchRunnerDependencies) {
           {
             role: "system",
             content:
-              'You extract one typed value per document row from the listed evidence and return one JSON object only: {"cells":[{"source_id":"...","value":<typed value or null>,"explanation":"..."}]}. Rules: "value" must exactly match the column type — a number is a JSON number (never a quoted string), a date is a JSON string in exact YYYY-MM-DD ISO calendar form, a boolean is a JSON true/false, an enum value is one of the allowed exact strings, text is a JSON string under 2000 characters. If the evidence does not state the value, omit the row or set value to null — never guess or coerce. One cell per row at most.',
+              'You extract one typed value per document row from the listed evidence and return one JSON object only: {"cells":[{"source_id":"...","value":<typed value or null>,"evidence_ids":["..."],"status":"supported|conflicting|not_found","explanation":"..."}]}. Every non-null value must cite 1–5 bracketed evidence ids from that same source row; copy the exact ids, never source ids or invented ids. Use conflicting only when at least two cited excerpts materially disagree. Rules: "value" must exactly match the column type — a number is a JSON number (never a quoted string), a date is a JSON string in exact YYYY-MM-DD ISO calendar form, a boolean is a JSON true/false, an enum value is one of the allowed exact strings, text is a JSON string under 2000 characters. If the evidence does not state the value, omit the row or set value to null with status not_found and an empty evidence_ids array — never guess or coerce. One cell per row at most. Keep internal reasoning concise; reserve output space for the complete JSON object.',
           },
           {
             role: "user",
@@ -708,14 +712,22 @@ export function createResearchRunner(dependencies: ResearchRunnerDependencies) {
           typeof record?.explanation === "string" ? clip(record.explanation.trim(), CELL_EXPLANATION_MAX_CHARS) : null;
         const distinctExcerpts = new Set(refs.map((ref) => dossier.get(ref)!.excerpt));
         const assertConflicting = record?.status === "conflicting" && refs.length >= 2 && distinctExcerpts.size >= 2;
+        const unsupportedValue = rawValue !== null && refs.length === 0;
+        if (unsupportedValue) state.synthesisRejected = true;
         try {
           await store.recordResearchMachineCell(accountId, runId, {
             columnId: column.id,
             rowSourceId: row.sourceId,
-            ...(assertConflicting ? { assertedStatus: "conflicting" as const } : {}),
+            ...(unsupportedValue
+              ? { assertedStatus: "invalid" as const }
+              : assertConflicting
+                ? { assertedStatus: "conflicting" as const }
+                : {}),
             rawValue,
             evidenceRefs: refs,
-            explanation,
+            explanation: unsupportedValue
+              ? "The model value has no valid captured evidence for this source row."
+              : explanation,
           });
         } catch (error) {
           if (error instanceof ResearchTableLimitError) {
@@ -836,7 +848,8 @@ export function createResearchRunner(dependencies: ResearchRunnerDependencies) {
     if (state.sourceChanged)
       gaps.push("a pinned source generation changed mid-run; the affected step stopped and later steps were skipped");
     if (state.tableLimitReached) gaps.push("comparison table limit reached: later cells were not written");
-    if (state.synthesisRejected) gaps.push("synthesis output was not usable: no claims were recorded");
+    if (state.synthesisRejected)
+      gaps.push("synthesis output was not fully supported or usable: review the retained claims and cells");
     if (state.zeroEvidence)
       gaps.push("not found in selected evidence: the planned searches captured no passages in the pinned scope");
     for (const gap of gaps) {

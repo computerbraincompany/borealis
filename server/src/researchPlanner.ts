@@ -33,7 +33,10 @@ import {
 } from "./researchSchemas.js";
 import { storageRuntime } from "./storageRuntime.js";
 
-export const RESEARCH_PLAN_MAX_OUTPUT_TOKENS = 1_200;
+// Same bounded per-call allocation as ordinary agent turns. Reasoning-capable
+// providers count hidden reasoning against this allowance; small 900–2400
+// allocations can exhaust it before emitting any usable answer or JSON.
+export const RESEARCH_PLAN_MAX_OUTPUT_TOKENS = 8_192;
 const PLAN_SOURCE_LABELS_MAX = 100;
 const PLAN_SOURCE_LABEL_CHARS = 80;
 const PLAN_QUESTION_CLIP = RESEARCH_STEP_QUESTION_MAX_CHARS - 16;
@@ -230,7 +233,7 @@ export async function generateResearchPlanProposal(input: {
             `Research question: ${revision.question.slice(0, RESEARCH_QUESTION_MAX_CHARS)}\n` +
             `Output kind: ${revision.outputKind}${columnHint}\n` +
             `Selected sources (${revision.sourceIds.length}): ${labels.join(", ") || "(unlabeled)"}\n` +
-            "Produce the plan JSON now.",
+            "Keep internal reasoning concise and reserve output space for the complete plan JSON. Produce the plan JSON now.",
         },
       ],
       {

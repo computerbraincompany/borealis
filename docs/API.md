@@ -1293,7 +1293,7 @@ chat-creation-from-job confirmation, and the packaged-desktop custody variant
 where Electron main owns the `safeStorage`-sealed key and verifies one-time
 system-browser open intents (the loopback callback listener stays
 backend-owned on both platforms). This section documents the shipped contract;
-later stages extend it in place.
+journey A in the product acceptance harness exercises this integration.
 
 Transport behavior: HTTP connections accept a full endpoint path, require HTTPS
 except explicitly configured loopback/`.local` development targets, pin the
@@ -1348,7 +1348,7 @@ cleared and the client registration retained for reconnect).
 | `POST /api/connections` | `{name,kind,config,enabled?,credentials?}`; validates and stores configuration and credentials only — it never discovers or executes tools. Name 1–80 characters, unique per account; maximum 20 connections per account; returns `201` with the redacted detail. |
 | `GET /api/connections/:id` | Redacted detail including the current discovery's `tools`; never includes credential material. |
 | `PATCH /api/connections/:id` | Requires `expected_revision` (a stale value returns `409 CONNECTION_REVISION_CONFLICT`). Optional `name`, `config`, `enabled`, and `credentials`: an object fully replaces stored credentials, `null` removes them, omission leaves them untouched. A name or config edit increments `revision` and resets the bounded status to `untested`; an `enabled` toggle never changes the revision. |
-| `DELETE /api/connections/:id` | Disconnects (removes the credential record), deletes the connection, cascades its tool snapshots, and runs the agent-binding cascade hook so agent bindings become visibly unavailable in later stages. |
+| `DELETE /api/connections/:id` | Disconnects (removes the credential record), deletes the connection, cascades its tool snapshots, and runs the agent-binding cascade hook so agent bindings become visibly unavailable. |
 | `POST /api/connections/:id/test` | One bounded initialize/list-tools probe; no content-bearing tool call. Returns the refreshed detail with `status: "ready"` on success. |
 | `POST /api/connections/:id/discover` | Same bounded probe, then publishes the validated tool snapshot and returns the detail with the new `discovery_revision` and `tools`. |
 | `POST /api/connections/:id/authorize` | Starts one expiring (`expires_at`, five minutes) one-use PKCE sign-in session and returns `{authorize_url,expires_at}` for the validated sign-in action. `mcp_http` connections with OAuth-capable issuers only; others get the actionable `501 CONNECTION_AUTH_UNSUPPORTED`, and an unreachable issuer metadata endpoint is `502 CONNECTION_AUTH_DISCOVERY_FAILED` — never a fake success. A pending session is replaced (silently) by a newer `authorize`. |
@@ -1356,7 +1356,7 @@ cleared and the client registration retained for reconnect).
 
 All routes authenticate in `onRequest` before body parsing and are strictly
 account-scoped (a foreign or unknown ID is `404`). `kind` is `mcp_http` or
-`mcp_stdio`; the webdav adapter reserved for M14 registers through the same
+`mcp_stdio`; the implemented M14 WebDAV adapter registers through the same
 kind-adapter seam with its own migration. `config` is validated against a strict
 kind-specific shape and holds only non-secret material: `mcp_http` accepts exactly
 `{url}` (a full endpoint path is allowed; HTTPS is required except for explicitly
@@ -1465,11 +1465,18 @@ only fails interrupted runs.
 The same agent configuration carries an optional `job_setup` block:
 `{starter_prompts: string[] (≤5, 2,000 characters each), output_template:
 {kind:"instruction", instruction: ≤8,000 characters} | null, library_ids:
-string[] (≤10 owned UUIDs)}`. The output template is a discriminated
-reference; only the bounded `instruction` variant ships now, and the M13
-document-template catalog will add its variant to this codec (unknown
-variants fail closed today). Job setup changes follow agent revision
-semantics: they affect the NEXT accepted turn only.
+string[] (≤10 owned UUIDs)}`. `output_template` also accepts
+`{kind:"template_id", template_id: UUID}` for a built-in or account-owned M13
+document template. Selection is validated in the agent save transaction. On
+message acceptance, the server resolves the template’s title, subtitle, headings,
+and instruction text into the frozen agent prompt; no charts, data tables,
+evidence envelope, or source bindings are copied. The rendered structure must
+fit the 8,000-character template budget and the combined instructions/skills/
+template prompt must fit 32,000 characters. Missing, deleted, or foreign templates
+fail with an actionable agent-configuration error before a message/run is written.
+Existing instruction variants remain supported and are captured the same way.
+Job edits affect the next accepted turn only; no template is read during a run.
+Template selection does not create or publish a document automatically.
 
 | Endpoint       | Contract                                                                                   |
 | -------------- | ------------------------------------------------------------------------------------------ |
@@ -1583,7 +1590,7 @@ worker established the total.
 ### Documents, rewrites, publication, exports, and templates (M13)
 
 Owner-scoped editable documents with immutable, append-only revisions
-(schema v20/v21/v23). All routes require authentication; every identifier is a
+(schema v20/v22/v23). All routes require authentication; every identifier is a
 UUID and every catalog uses keyset pagination. Responses never include
 filesystem paths.
 
@@ -1683,7 +1690,7 @@ unverified draft with new section UUIDs and no attachments.
 ### Local research (shipped in the M15 wave)
 
 Owner-scoped durable research definitions, runs, evidence dossiers, and typed
-comparison tables (schema v25). Stages 1–3 ship the persistence, Start
+comparison tables (schema v25), with a dedicated Research workspace. The API provides persistence, Start
 admission, bounded editable plan proposals, durable execution, dossier reads,
 review (including per-cell corrections with overlay provenance and rerun
 selection), the changed-cell revision diff, page-local sort/filter view
@@ -1693,6 +1700,17 @@ before parsing, use keyset pagination with endpoint-bound cursors (`research`,
 `research_runs`, `research_evidence`, `research_table`), default to a page of 25
 (evidence max 50, the others max 100), and expose stable `code` values on
 failures. Responses never include the captured provider origin.
+
+Planner, step-summary, memo, and typed-column calls each have the same bounded
+8,192-token provider allocation as ordinary agent turns. This leaves room for
+reasoning-capable providers to produce their final output; internal reasoning
+is still discarded. The run remains capped at 40 model requests and 15 minutes,
+with the streaming transport's separate 32,000-character content/reasoning caps.
+Every non-null extracted cell must carry valid evidence from its own captured
+source row. An uncited value is retained as `invalid`, with an explicit
+missing-evidence explanation, and the run requires review. A missing step summary
+also prevents a clean completion. These conditions never become invented facts
+or silently coerced values.
 
 Execution is one owned executor registered on the application runtime (like the
 saved-analysis and rewrite runners). It claims resumable runs in acceptance
@@ -1755,19 +1773,19 @@ the row-label column), 1,000 cells, and ≤100 evidence references with
 every omission, shortening, and preview truncation labeled and stable
 evidence ids/hashes preserved.
 
-### Reviewed briefs (M16 — stages 1–3: store, calendar, recipe API, durable execution pipeline, and review/notification surfaces)
+### Reviewed briefs (M16)
 
 Reviewed briefs schedule a saved analysis over an explicit source set and
-deliver a report draft into a review inbox. Stage 1 shipped the durable recipe
-ledger, the civil calendar, the run stage machine, and the recipe routes.
-Stage 2 shipped the owned execution pipeline (input refresh → generation-ready
+deliver a report draft into a review inbox. The durable recipe ledger, civil
+calendar, run stage machine, and recipe routes feed the owned execution pipeline (input refresh → generation-ready
 wait → analysis → draft creation → `awaiting_review`) plus bounded run detail
 and idempotent cancellation; manual `POST /api/briefs/:id/runs` and scheduled
 claims now execute through it (without a live executor the durable `queued`
-row simply waits for the next startup resume). Stage 3 ships the account-scoped
+row simply waits for the next startup resume). The account-scoped
 review inbox, the exact-revision decision with durable publication-intent
-approval over M13's `publishDocumentRevision` service, and the local
-notification read/dismiss surfaces. Every read and mutation is scoped to the
+approval over M13's `publishDocumentRevision` service, and local
+notification read/dismiss surfaces are implemented. The Automations wizard,
+run-history panel, Reviews page, and notification bell expose these workflows. Every read and mutation is scoped to the
 authenticated account; a foreign `id` answers `404` exactly like a missing one.
 
 A recipe binds exactly one saved analysis at its current definition revision.
@@ -1821,6 +1839,7 @@ survives recipe deletion through each run's immutable recipe snapshot.
 | `POST /api/briefs/:id/resume`     | Resumes with `active` state and a fresh cursor.                                                                                                     |
 | `DELETE /api/briefs/:id`          | Removes the recipe head and revision snapshots. Existing runs/reviews survive through their snapshots. `{"ok":true}`.                              |
 | `POST /api/briefs/:id/runs`       | Run-now with body `{operation_id}` (UUID idempotency key). The remote-egress consent gate answers `403 REMOTE_EGRESS_CONSENT_REQUIRED` under an unacknowledged remote provider before persistence (no run row is created; acknowledgment unblocks without a restart). `202 {"run":{...},"replayed":bool}` with the durable `queued` run (executed by the owned pipeline through the same stages as scheduled claims); a retried key replays the original run; an active run answers `409 BRIEF_ACTIVE_RUN`. |
+| `POST /api/briefs/schedule-preview` | Authenticated calculation over `{schedule}` using the create-route calendar shape (omit inactive weekday/day-of-month fields). Returns `{next_occurrences}` with the next three civil/local and UTC times from the server clock, before a recipe is saved; no ledger write or provider call. Invalid calendars or zones answer `400 CALENDAR_SCHEDULE_INVALID`. The wizard uses an abortable exact-draft preview and requires a current successful preview before save. |
 | `GET /api/briefs/:id/runs`        | Keyset run history (bounded summaries: stage, deadlines, coalescing counts, artifact ids, generic failure reason).                                  |
 | `GET /api/briefs/:id/runs/:runId` | Bounded stage detail for one run: durable summary plus the server-owned refresh receipts (kind, label, intended generation), the committed source-generation snapshot, the persisted comparison summary (≤32 KiB by write-time bound), and the linked analysis/baseline/document artifact ids. |
 | `DELETE /api/briefs/:id/runs/:runId` | Requests durable cancellation (`cancel_requested=1`). Repeated calls — including after terminalization — are idempotent and return the current run. The runner observes it at stage boundaries and finalizes `cancelled`; artifacts committed up to that point are preserved. |

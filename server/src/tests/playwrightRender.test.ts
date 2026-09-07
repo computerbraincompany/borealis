@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { chromium } from "playwright";
+import { buildHtml, normalizeReport } from "../data/reports.js";
 
 import {
   __renderIsolatedHtmlPdfForTests,
@@ -23,6 +25,36 @@ const CHART_SPEC = {
 };
 
 describe("isolated Playwright rendering", () => {
+  it("keeps long prose, code and table cells inside the printable page", async () => {
+    const token = "unbroken".repeat(100);
+    const report = normalizeReport({
+      title: "Print layout",
+      sections: [{ heading: "Long values", markdown: `${token}\n\n\`\`\`\n${token}\n\`\`\`` }],
+      tables: [{ columns: ["Value", "Label"], rows: [[token.slice(0, 500), "kept"]] }],
+    });
+    const browser = await chromium.launch({ headless: true });
+    try {
+      const page = await browser.newPage({ viewport: { width: 718, height: 1000 } });
+      await page.route("**/*", (route) => route.abort());
+      await page.emulateMedia({ media: "print" });
+      await page.setContent(buildHtml(report, { static: true }));
+      const layout: { pageWidth: number; contentWidth: number; blocks: { width: number; contentWidth: number }[] } =
+        await page.evaluate(`({
+        pageWidth: document.documentElement.clientWidth,
+        contentWidth: document.documentElement.scrollWidth,
+        blocks: [...document.querySelectorAll("p, pre, td")].map((node) => ({
+          width: node.clientWidth,
+          contentWidth: node.scrollWidth,
+        })),
+      })`);
+      expect(layout.blocks.length).toBeGreaterThan(2);
+      expect(layout.contentWidth).toBeLessThanOrEqual(layout.pageWidth);
+      for (const block of layout.blocks) expect(block.contentWidth).toBeLessThanOrEqual(block.width + 1);
+    } finally {
+      await browser.close();
+    }
+  }, 30_000);
+
   it("renders an exact 1330x728 valid PNG without external requests", async () => {
     const routes: RenderRouteEvent[] = [];
     const png = await renderChartPng(CHART_SPEC, undefined, { onRoute: (event) => routes.push(event) });

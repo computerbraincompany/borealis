@@ -315,12 +315,12 @@ export function BriefRunsPanel({ recipe }: { recipe: BriefRecipe }) {
                     <BriefStageBadge stage={run.stage} />
                     <span className="text-xs text-muted-foreground">{run.trigger}</span>
                     <span className="font-mono text-[11px] text-muted-foreground">{run.occurrence_key}</span>
-                    {run.coalesced_count > 0 && (
+                    {run.trigger === "scheduled" && run.coalesced_count > 1 && (
                       <span
                         className="text-xs text-warning"
-                        title="Missed occurrences coalesced into this catch-up run"
+                        title="Scheduled occurrences combined into this catch-up run"
                       >
-                        coalesced {run.coalesced_count} missed occurrence{run.coalesced_count === 1 ? "" : "s"}
+                        coalesced {run.coalesced_count} occurrences
                         {run.missed_through_key ? ` through ${run.missed_through_key}` : ""}
                       </span>
                     )}

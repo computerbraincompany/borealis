@@ -6,6 +6,7 @@ import {
   agentsApi,
   agentSkillsApi,
   connectionsApi,
+  documentTemplatesApi,
   formatApiError,
   jobsApi,
   librariesApi,
@@ -18,6 +19,7 @@ import {
   type AgentSkill,
   type ConnectionDetailDto,
   type ConnectionToolDto,
+  type DocumentTemplateSummary,
   type LibrarySummary,
   type StarterJobDefinition,
 } from "@/lib/api";
@@ -101,6 +103,30 @@ export function AgentEditor({
   const [libraries, setLibraries] = useState<LibrarySummary[]>([]);
   const [librariesLoading, setLibrariesLoading] = useState(true);
   const [librariesError, setLibrariesError] = useState<string | null>(null);
+  const [documentTemplates, setDocumentTemplates] = useState<DocumentTemplateSummary[]>([]);
+  const [templatesError, setTemplatesError] = useState<string | null>(null);
+  const [templatesLoading, setTemplatesLoading] = useState(false);
+  const outputTemplateKind = draft.job_setup.output_template?.kind;
+  const selectedTemplateId =
+    draft.job_setup.output_template?.kind === "template_id" ? draft.job_setup.output_template.template_id : null;
+  useEffect(() => {
+    if (outputTemplateKind !== "template_id") return;
+    const controller = new AbortController();
+    setTemplatesLoading(true);
+    setTemplatesError(null);
+    documentTemplatesApi
+      .list({ limit: 100, signal: controller.signal })
+      .then((page) => {
+        if (!controller.signal.aborted) setDocumentTemplates(page.items);
+      })
+      .catch((failure) => {
+        if (!controller.signal.aborted) setTemplatesError(formatApiError(failure, "Could not load document templates"));
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setTemplatesLoading(false);
+      });
+    return () => controller.abort();
+  }, [outputTemplateKind]);
   // Server-derived flags surfaced from selection-time validation failures:
   // write-oriented tools (per-binding allow-write acknowledgement) and
   // schemas this workspace refuses to execute (visibly non-selectable).
@@ -185,9 +211,11 @@ export function AgentEditor({
   // The instruction-template variant is required text once enabled; the
   // server codec refuses an empty one, so surface it before saving.
   const jobIssue =
-    draft.job_setup.output_template !== null && !draft.job_setup.output_template.instruction.trim()
+    draft.job_setup.output_template?.kind === "instruction" && !draft.job_setup.output_template.instruction.trim()
       ? "The output template needs its instruction text — or uncheck it to remove the template."
-      : null;
+      : draft.job_setup.output_template?.kind === "template_id" && !draft.job_setup.output_template.template_id
+        ? "Choose a document template, or remove the output template."
+        : null;
   const close = () => {
     if (busy || skillBusy) return;
     if (dirty) setConfirmClose(true);
@@ -402,7 +430,7 @@ export function AgentEditor({
                                 job_setup: {
                                   starter_prompts: [...job.job_setup.starter_prompts],
                                   output_template: job.job_setup.output_template
-                                    ? { kind: "instruction", instruction: job.job_setup.output_template.instruction }
+                                    ? { ...job.job_setup.output_template }
                                     : null,
                                   library_ids: [],
                                 },
@@ -923,9 +951,67 @@ export function AgentEditor({
                           })
                         }
                       />
-                      Output template (instruction)
+                      Output template
                     </label>
                     {draft.job_setup.output_template !== null && (
+                      <select
+                        aria-label="Output template kind"
+                        className="w-full rounded-lg border bg-background p-2 text-sm"
+                        value={draft.job_setup.output_template.kind}
+                        disabled={busy}
+                        onChange={(event) =>
+                          change("job_setup", {
+                            ...draft.job_setup,
+                            output_template:
+                              event.target.value === "template_id"
+                                ? { kind: "template_id", template_id: "" }
+                                : { kind: "instruction", instruction: "" },
+                          })
+                        }
+                      >
+                        <option value="instruction">Written instructions</option>
+                        <option value="template_id">Document template</option>
+                      </select>
+                    )}
+                    {draft.job_setup.output_template?.kind === "template_id" && (
+                      <>
+                        <select
+                          aria-label="Output document template"
+                          className="w-full rounded-lg border bg-background p-2 text-sm"
+                          value={draft.job_setup.output_template.template_id}
+                          disabled={busy || templatesLoading}
+                          onChange={(event) =>
+                            change("job_setup", {
+                              ...draft.job_setup,
+                              output_template: { kind: "template_id", template_id: event.target.value },
+                            })
+                          }
+                        >
+                          <option value="">{templatesLoading ? "Loading templates…" : "Choose a template"}</option>
+                          {draft.job_setup.output_template.template_id &&
+                            !documentTemplates.some((template) => template.id === selectedTemplateId) && (
+                              <option value={draft.job_setup.output_template.template_id}>
+                                Selected template unavailable
+                              </option>
+                            )}
+                          {documentTemplates.map((template) => (
+                            <option key={template.id} value={template.id}>
+                              {template.name}
+                            </option>
+                          ))}
+                        </select>
+                        <p className="text-xs text-muted-foreground">
+                          Uses the template’s headings and instructions. Each message captures its structure; sources
+                          and results are attached separately.
+                        </p>
+                        {templatesError && (
+                          <p role="alert" className="text-xs text-destructive">
+                            {templatesError}
+                          </p>
+                        )}
+                      </>
+                    )}
+                    {draft.job_setup.output_template?.kind === "instruction" && (
                       <>
                         <textarea
                           aria-label="Output template instruction"
@@ -943,15 +1029,15 @@ export function AgentEditor({
                         />
                         <p className="text-xs text-muted-foreground">
                           {draft.job_setup.output_template.instruction.length.toLocaleString()} /{" "}
-                          {MAX_JOB_TEMPLATE_CHARS.toLocaleString()} characters. Document templates arrive with the
-                          template catalog; until then this bounded instruction is the template contract.
+                          {MAX_JOB_TEMPLATE_CHARS.toLocaleString()} characters. The template is captured with each
+                          message.
                         </p>
-                        {jobIssue && (
-                          <p role="alert" className="text-xs text-destructive">
-                            {jobIssue}
-                          </p>
-                        )}
                       </>
+                    )}
+                    {jobIssue && (
+                      <p role="alert" className="text-xs text-destructive">
+                        {jobIssue}
+                      </p>
                     )}
                   </div>
                   <div className="space-y-2">

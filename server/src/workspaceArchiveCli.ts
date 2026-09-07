@@ -18,7 +18,9 @@ interface ParsedArguments {
 }
 
 async function main(): Promise<void> {
-  const parsed = parseArguments(process.argv.slice(2));
+  // pnpm forwards the documented `workspace:archive -- <command>` separator.
+  const arguments_ = process.argv.slice(2);
+  const parsed = parseArguments(arguments_[0] === "--" ? arguments_.slice(1) : arguments_);
   const unsafePlaintext = parsed.flags.has("unsafe-plaintext");
   const passphrase = unsafePlaintext ? undefined : await readPassphrase(parsed);
   try {

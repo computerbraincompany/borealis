@@ -1293,12 +1293,11 @@ export interface AgentMcpBindingSelection {
   allow_write?: boolean;
 }
 
-export interface AgentOutputTemplate {
-  kind: "instruction";
-  instruction: string;
-}
+export type AgentOutputTemplate =
+  | { kind: "instruction"; instruction: string }
+  | { kind: "template_id"; template_id: string };
 
-/** Versioned job setup; only the bounded instruction template ships now. */
+/** Versioned job setup with instructions or a document-template reference. */
 export interface AgentJobSetup {
   starter_prompts: string[];
   output_template: AgentOutputTemplate | null;
@@ -1346,6 +1345,14 @@ function parseJobSetup(candidate: unknown): AgentJobSetup | undefined {
       kind: "instruction",
       instruction: ((templateValue as Record<string, unknown>).instruction as string).slice(0, MAX_JOB_TEMPLATE_CHARS),
     };
+  } else if (
+    templateValue &&
+    typeof templateValue === "object" &&
+    !Array.isArray(templateValue) &&
+    (templateValue as Record<string, unknown>).kind === "template_id" &&
+    typeof (templateValue as Record<string, unknown>).template_id === "string"
+  ) {
+    template = { kind: "template_id", template_id: (templateValue as { template_id: string }).template_id };
   }
   const libraries = Array.isArray(value.library_ids)
     ? value.library_ids.filter((id): id is string => typeof id === "string").slice(0, MAX_JOB_LIBRARIES)
@@ -3624,6 +3631,15 @@ export function briefScheduleLabel(schedule: BriefCalendarSchedule): string {
 }
 
 export const briefsApi = {
+  previewSchedule: (
+    schedule: Omit<BriefCalendarSchedule, "weekday" | "day_of_month"> & { weekday?: number; day_of_month?: number },
+    signal?: AbortSignal,
+  ) =>
+    api<{ next_occurrences: BriefOccurrencePreview[] }>("/api/briefs/schedule-preview", {
+      method: "POST",
+      body: JSON.stringify({ schedule }),
+      signal,
+    }),
   list: async (options: CatalogPageOptions = {}) =>
     parseTypedCatalogEnvelope<BriefRecipe>(
       await api<unknown>(catalogPath("/api/briefs", options), { signal: options.signal }),

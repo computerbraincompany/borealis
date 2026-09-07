@@ -626,7 +626,7 @@ export async function documentRoutes(app: FastifyInstance): Promise<void> {
     }
   );
 
-  // -- Publications (stage-4 execution reserved) -----------------------------------
+  // -- Publications (frozen revision execution and exports) -----------------------------------
 
   app.get(
     "/api/documents/:id/publications",

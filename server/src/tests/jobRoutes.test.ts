@@ -145,6 +145,145 @@ describe("starter jobs", () => {
 });
 
 describe("chat creation from a job", () => {
+  it("resolves document templates into immutable accepted prompts and preserves legacy instructions", async () => {
+    const app = await buildApp();
+    const runtime = storageRuntime();
+    const template = await runtime.documentTemplates.createTemplate(OWNER, {
+      name: "Quarterly structure",
+      snapshot: {
+        title: "Quarterly Review",
+        subtitle: "Decision record",
+        sections: [{ heading: "Decisions", markdown: "Explain the evidence for each decision." }],
+      },
+    });
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/agents",
+      headers: ownerAuth,
+      payload: {
+        name: "Templated job",
+        instructions: "Analyze only attached data.",
+        job_setup: { output_template: { kind: "template_id", template_id: template.id } },
+      },
+    });
+    expect(created.statusCode).toBe(201);
+    const agentId = created.json().id as string;
+    const chat = await app.inject({
+      method: "POST",
+      url: "/api/chats",
+      headers: ownerAuth,
+      payload: {
+        model: CHAT_MODEL,
+        agent_id: agentId,
+        job: {},
+      },
+    });
+    expect(chat.json().job.output_template).toEqual({ kind: "template_id", template_id: template.id });
+    const turn = await runtime.chats.acceptChatTurn(OWNER, chat.json().id, "Review this quarter.");
+    expect(turn.sourceScope.readySourceIds).toEqual([]);
+    expect(turn.agent?.instructions).toContain("### Decisions\nExplain the evidence for each decision.");
+    const frozen = await runtime.ledger.get<{ agent_instructions: string }>(
+      "SELECT agent_instructions FROM chat_runs WHERE id=?",
+      [turn.runId]
+    );
+    await runtime.documentTemplates.deleteTemplate(OWNER, template.id, 1);
+    expect(await runtime.ledger.get("SELECT agent_instructions FROM chat_runs WHERE id=?", [turn.runId])).toEqual(
+      frozen
+    );
+    await runtime.runs.finishRun(OWNER, chat.json().id, turn.runId, "cancelled");
+    await expect(runtime.chats.acceptChatTurn(OWNER, chat.json().id, "Again.")).rejects.toThrow(
+      /template is unavailable/
+    );
+    expect(await runtime.ledger.all("SELECT id FROM messages WHERE chat_id=?", [chat.json().id])).toHaveLength(1);
+
+    const patched = await app.inject({
+      method: "PATCH",
+      url: `/api/agents/${agentId}`,
+      headers: ownerAuth,
+      payload: {
+        job_setup: { output_template: { kind: "instruction", instruction: "End with open questions." } },
+      },
+    });
+    expect(patched.statusCode).toBe(200);
+    const legacyTurn = await runtime.chats.acceptChatTurn(OWNER, chat.json().id, "Again with instructions.");
+    expect(legacyTurn.agent?.instructions).toContain("End with open questions.");
+    expect(frozen?.agent_instructions).not.toContain("End with open questions.");
+  });
+
+  it("admits built-in templates and refuses foreign, missing, oversized, and over-budget templates before saving", async () => {
+    const app = await buildApp();
+    const runtime = storageRuntime();
+    const foreign = await runtime.documentTemplates.createTemplate(FOREIGN, {
+      name: "Foreign structure",
+      snapshot: { title: "Private structure", subtitle: "", sections: [] },
+    });
+    const oversized = await runtime.documentTemplates.createTemplate(OWNER, {
+      name: "Long structure",
+      snapshot: { title: "Long", subtitle: "", sections: [{ heading: "Long", markdown: "x".repeat(8_001) }] },
+    });
+    for (const templateId of [foreign.id, randomUUID(), oversized.id]) {
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/agents",
+        headers: ownerAuth,
+        payload: {
+          name: "Rejected template",
+          instructions: "Analyze.",
+          job_setup: { output_template: { kind: "template_id", template_id: templateId } },
+        },
+      });
+      expect(response.statusCode).toBe(400);
+      expect(response.json().code).toBe("AGENT_CONFIGURATION_INVALID");
+      expect(response.body).not.toContain("Private structure");
+    }
+    expect((await runtime.agents.listAgents(OWNER)).items).toHaveLength(0);
+    const builtin = await app.inject({
+      method: "POST",
+      url: "/api/agents",
+      headers: ownerAuth,
+      payload: {
+        name: "Builtin job",
+        instructions: "Analyze.",
+        job_setup: { output_template: { kind: "template_id", template_id: "b0000000-0000-4000-8000-000000000002" } },
+      },
+    });
+    expect(builtin.statusCode).toBe(201);
+    const skillIds = [randomUUID(), randomUUID(), randomUUID()];
+    for (const [index, id] of skillIds.entries()) {
+      await runtime.ledger.run(
+        "INSERT INTO agent_skills (id,account_id,name,content,created_at,updated_at) VALUES (?,?,?,?,?,?)",
+        [id, OWNER, `Budget skill ${index}`, "s".repeat(7_000), new Date().toISOString(), new Date().toISOString()]
+      );
+    }
+    const budgetAgent = await runtime.agents.createAgent(OWNER, "Budget job", "p".repeat(7_900), {
+      skill_ids: skillIds,
+      job_setup: {
+        starter_prompts: [],
+        library_ids: [],
+        output_template: {
+          kind: "template_id",
+          template_id: "b0000000-0000-4000-8000-000000000002",
+        },
+      },
+    });
+    const budgetChat = await app.inject({
+      method: "POST",
+      url: "/api/chats",
+      headers: ownerAuth,
+      payload: {
+        model: CHAT_MODEL,
+        agent_id: budgetAgent.id,
+        job: {},
+      },
+    });
+    for (const id of skillIds)
+      await runtime.ledger.run("UPDATE agent_skills SET content=? WHERE id=?", ["s".repeat(8_000), id]);
+    await expect(
+      runtime.chats.acceptChatTurn(OWNER, budgetChat.json().id, "Exceeds the combined budget.")
+    ).rejects.toThrow(/32,000/);
+    expect(await runtime.ledger.all("SELECT id FROM messages WHERE chat_id=?", [budgetChat.json().id])).toEqual([]);
+  });
+
   it("expands suggested libraries to ready ids, stays selected-empty, and never auto-sends", async () => {
     const app = await buildApp();
     const readyA = await insertSource(OWNER, "a_ready", "A ledger");

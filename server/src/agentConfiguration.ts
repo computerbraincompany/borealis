@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { SqliteTransaction } from "./db/types.js";
 import { isMcpToolSchemaSupported } from "./mcp/client.js";
+import { getBuiltinDocumentTemplate, normalizeTemplateSnapshot } from "./documentTemplates.js";
 
 export const AGENT_ICONS = [
   "bot",
@@ -57,12 +58,12 @@ export interface AgentMcpBindingSelection {
 }
 
 /**
- * Discriminated output-template reference. Only the bounded instruction
- * variant ships now; when the M13 document-template catalog lands it adds a
- * `template_id` variant here and existing stored configurations keep
- * decoding unchanged.
+ * Backward-compatible instruction or owner-scoped document-template reference.
+ * References are resolved inside the acceptance transaction, never during a run.
  */
-export type AgentOutputTemplate = { readonly kind: "instruction"; readonly instruction: string };
+export type AgentOutputTemplate =
+  | { readonly kind: "instruction"; readonly instruction: string }
+  | { readonly kind: "template_id"; readonly template_id: string };
 
 export interface AgentJobSetup {
   readonly starter_prompts: readonly string[];
@@ -134,21 +135,28 @@ function jobSetup(value: unknown): AgentJobSetup {
 
   let outputTemplate: AgentOutputTemplate | null = null;
   if (input.output_template !== undefined && input.output_template !== null) {
-    const template = input.output_template as { kind?: unknown; instruction?: unknown };
-    if (
-      typeof template !== "object" ||
-      Array.isArray(template) ||
-      Object.keys(template).some((key) => key !== "kind" && key !== "instruction") ||
-      template.kind !== "instruction"
-    ) {
-      // A `template_id` (or any other) variant is the M13 seam and is
-      // refused until its catalog migration ships; nothing decodes blindly.
+    const template = input.output_template as { kind?: unknown; instruction?: unknown; template_id?: unknown };
+    if (typeof template !== "object" || Array.isArray(template)) {
       throw new AgentConfigurationError("Invalid agent configuration: output template.");
     }
-    outputTemplate = Object.freeze({
-      kind: "instruction",
-      instruction: boundedText(template.instruction, "output template", MAX_JOB_INSTRUCTION_TEMPLATE_CHARS),
-    });
+    if (
+      template.kind === "instruction" &&
+      Object.keys(template).every((key) => key === "kind" || key === "instruction")
+    ) {
+      outputTemplate = Object.freeze({
+        kind: "instruction",
+        instruction: boundedText(template.instruction, "output template", MAX_JOB_INSTRUCTION_TEMPLATE_CHARS),
+      });
+    } else if (
+      template.kind === "template_id" &&
+      Object.keys(template).every((key) => key === "kind" || key === "template_id") &&
+      typeof template.template_id === "string" &&
+      UUID_PATTERN.test(template.template_id.toLowerCase())
+    ) {
+      outputTemplate = Object.freeze({ kind: "template_id", template_id: template.template_id.toLowerCase() });
+    } else {
+      throw new AgentConfigurationError("Invalid agent configuration: output template.");
+    }
   }
 
   const librariesRaw = input.library_ids === undefined ? [] : input.library_ids;
@@ -270,10 +278,46 @@ export function resolveAgentSkills(
       );
     parts.push(`\n\n## Skill: ${skill.name}\n${skill.content}`);
   }
+  const outputTemplate = config.job_setup.output_template;
+  if (outputTemplate) {
+    let instruction: string;
+    if (outputTemplate.kind === "instruction") {
+      instruction = outputTemplate.instruction;
+    } else {
+      const builtin = getBuiltinDocumentTemplate(outputTemplate.template_id);
+      const row = builtin
+        ? undefined
+        : transaction.get<{ snapshot: string }>("SELECT snapshot FROM document_templates WHERE id=? AND account_id=?", [
+            outputTemplate.template_id,
+            accountId,
+          ]);
+      if (!builtin && !row) {
+        throw new AgentConfigurationError(
+          "The output document template is unavailable. Choose another template in this agent’s Job tab."
+        );
+      }
+      const snapshot = builtin?.snapshot ?? normalizeTemplateSnapshot(JSON.parse(row!.snapshot));
+      instruction = [
+        snapshot.title,
+        snapshot.subtitle,
+        ...snapshot.sections.map((section) => `### ${section.heading}\n${section.markdown}`),
+      ]
+        .filter(Boolean)
+        .join("\n\n");
+      if (instruction.length > MAX_JOB_INSTRUCTION_TEMPLATE_CHARS) {
+        throw new AgentConfigurationError(
+          "The output document template exceeds 8,000 characters. Choose a shorter template."
+        );
+      }
+    }
+    parts.push(
+      `\n\n## Job output template\nFollow this structure when relevant to the requested output. It grants no additional tools or source access.\n${instruction}`
+    );
+  }
   const combined = parts.join("");
   if (combined.length > 32_000)
     throw new AgentConfigurationError(
-      "The system prompt and selected skills exceed 32,000 characters. Remove a skill or shorten the prompt."
+      "The system prompt, selected skills, and output template exceed 32,000 characters. Remove a skill or shorten the prompt or template."
     );
   return combined;
 }

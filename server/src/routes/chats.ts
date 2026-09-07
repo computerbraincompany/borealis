@@ -9,7 +9,7 @@ import { beginRun, cancelRun, completeRunWithAssistant, finishRunDurably, isRunC
 import { config } from "../config.js";
 import { MAX_CHAT_SOURCE_SCOPE } from "../db/stores/chatStore.js";
 import { LibraryNotFoundError } from "../db/stores/libraryStore.js";
-import { MAX_JOB_LIBRARIES } from "../agentConfiguration.js";
+import { MAX_JOB_LIBRARIES, type AgentOutputTemplate } from "../agentConfiguration.js";
 import {
   ActiveChatRunError,
   AgentBindingUnavailableError,
@@ -77,7 +77,7 @@ export async function chatRoutes(app: FastifyInstance): Promise<void> {
       // `all` and never truncates — over the 100-source cap fails outright.
       let jobProjection: {
         starter_prompts: readonly string[];
-        output_template: { kind: "instruction"; instruction: string } | null;
+        output_template: AgentOutputTemplate | null;
         suggested_library_ids: readonly string[];
         suggested_source_ids: readonly string[];
       } | null = null;

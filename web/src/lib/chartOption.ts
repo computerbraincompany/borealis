@@ -53,14 +53,16 @@ export function optionFromCanonicalSpec(spec: ChartSpecRecord): ChartSpecRecord 
   return {
     title,
     tooltip: { trigger: "axis", valueFormatter: "(x) => x" },
-    legend: { top: 0, textStyle: { color: "#64748B" } },
-    grid: { left: 60, right: 24, top: 56, bottom: 56, containLabel: true },
+    legend: { type: "scroll", top: spec.subtitle ? 52 : 32, textStyle: { color: "#64748B" } },
+    grid: { left: 60, right: 24, top: spec.subtitle ? 100 : 80, bottom: 56, containLabel: true },
     xAxis: {
       type: "category",
       data: categories,
       axisLine: { lineStyle: { color: "#CBD5E1" } },
       axisLabel: { color: "#64748B" },
       name: spec.x_label || null,
+      nameLocation: "middle",
+      nameGap: 34,
     },
     yAxis: {
       type: "value",

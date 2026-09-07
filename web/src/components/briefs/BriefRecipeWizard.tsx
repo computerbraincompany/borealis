@@ -195,7 +195,13 @@ export function BriefRecipeWizard({
   const [timeZone, setTimeZone] = useState(
     recipe?.schedule.time_zone ?? Intl.DateTimeFormat().resolvedOptions().timeZone ?? "UTC",
   );
-  const [preview, setPreview] = useState<BriefOccurrencePreview[] | null>(recipe?.next_occurrences ?? null);
+  const [preview, setPreview] = useState<BriefOccurrencePreview[] | null>(null);
+  const [previewFor, setPreviewFor] = useState("");
+  const [previewError, setPreviewError] = useState<string | null>(null);
+  const [previewRetry, setPreviewRetry] = useState(0);
+  const previewRequestRef = useRef(0);
+  const scheduleKey = JSON.stringify([scheduleKind, weekdayDraft, dayDraft, hourDraft, minuteDraft, timeZone]);
+  const previewCurrent = previewFor === scheduleKey && preview?.length === 3;
   const [busy, setBusy] = useState(false);
   const [dialogError, setDialogError] = useState<string | null>(null);
   const [sources, setSources] = useState<Source[]>([]);
@@ -284,6 +290,44 @@ export function BriefRecipeWizard({
     };
   }, []);
 
+  useEffect(() => {
+    const requestId = ++previewRequestRef.current;
+    const abort = new AbortController();
+    setPreview(null);
+    setPreviewFor("");
+    setPreviewError(null);
+    const { schedule, error } = parseScheduleInput({
+      kind: scheduleKind,
+      weekdayDraft,
+      dayDraft,
+      hourDraft,
+      minuteDraft,
+      timeZone,
+    });
+    if (!schedule) {
+      setPreviewError(error ?? "Check the schedule fields.");
+      return () => {
+        abort.abort();
+      };
+    }
+    void (async () => {
+      try {
+        const result = await briefsApi.previewSchedule(schedule, abort.signal);
+        if (abort.signal.aborted || requestId !== previewRequestRef.current || !mountedRef.current) return;
+        if (result.next_occurrences.length !== 3) throw new Error("Schedule preview unavailable");
+        setPreview(result.next_occurrences);
+        setPreviewFor(scheduleKey);
+      } catch (failure: unknown) {
+        if (!abort.signal.aborted && requestId === previewRequestRef.current && mountedRef.current) {
+          setPreviewError(formatApiError(failure, "Could not preview this schedule."));
+        }
+      }
+    })();
+    return () => {
+      abort.abort();
+    };
+  }, [scheduleKey, scheduleKind, weekdayDraft, dayDraft, hourDraft, minuteDraft, timeZone, previewRetry]);
+
   const loadMoreAnalyses = async () => {
     if (!analysesNextCursor || analysesPageOwnerRef.current !== null) return;
     const requestId = ++catalogRequestRef.current;
@@ -334,7 +378,6 @@ export function BriefRecipeWizard({
       try {
         const detail = await briefsApi.get(recipe.id, abort.signal);
         if (detailRequestRef.current !== requestId || abort.signal.aborted || !mountedRef.current) return;
-        setPreview(detail.next_occurrences ?? []);
         await loadAnalysis(detail.analysis_id, requestId, abort.signal, storedValues);
       } catch (failure: unknown) {
         if (detailRequestRef.current === requestId && !abort.signal.aborted && mountedRef.current) {
@@ -371,6 +414,7 @@ export function BriefRecipeWizard({
   };
 
   const buildBody = (): { body?: RecipeCreateWireBody; error?: string } => {
+    if (!previewCurrent) return { error: "Wait for the current schedule preview before saving." };
     const trimmedName = name.trim();
     if (!trimmedName || trimmedName.length > 80) return { error: "Name must be 1–80 characters." };
     if (!reportTitle.trim()) return { error: "Report title is required (max 200 characters)." };
@@ -799,7 +843,7 @@ export function BriefRecipeWizard({
             </div>
             <p className="text-[11px] text-muted-foreground">{CALENDAR_CAVEAT}</p>
             <div aria-label="Next three run times">
-              {preview && preview.length > 0 ? (
+              {previewCurrent && preview ? (
                 <ul className="space-y-0.5 text-xs text-muted-foreground">
                   {preview.map((occurrence) => (
                     <li key={occurrence.occurrence_key}>
@@ -811,9 +855,17 @@ export function BriefRecipeWizard({
                 </ul>
               ) : (
                 <p className="text-[11px] text-muted-foreground">
-                  {recipe
-                    ? "Loading the server's next three run times…"
-                    : "After saving, the recipe detail shows the server's next three run times (DST-resolved, local and UTC)."}
+                  {previewError ?? "Loading the server's next three run times…"}
+                  {previewError && (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setPreviewRetry((value) => value + 1)}
+                    >
+                      Retry schedule preview
+                    </Button>
+                  )}
                 </p>
               )}
             </div>
@@ -826,7 +878,7 @@ export function BriefRecipeWizard({
             <Button
               type="submit"
               size="sm"
-              disabled={busy || !name.trim() || !analysisId || analysis === null || analysisLoading}
+              disabled={busy || !name.trim() || !analysisId || analysis === null || analysisLoading || !previewCurrent}
             >
               {busy && <Loader2 className="h-4 w-4 animate-spin" />}
               {recipe ? "Save changes" : "Create brief"}

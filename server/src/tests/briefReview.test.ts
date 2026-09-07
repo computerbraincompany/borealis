@@ -12,7 +12,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { signToken } from "../auth.js";
 import { config } from "../config.js";
@@ -899,5 +899,44 @@ describe("notifications", () => {
       headers: ownerAuth,
     });
     expect(bound.statusCode).toBe(400);
+  });
+});
+
+describe("draft schedule previews", () => {
+  it("resolves three future local and UTC occurrences before a recipe exists", async () => {
+    const app = await buildApp();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-03-28T12:00:00Z"));
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/briefs/schedule-preview",
+        headers: ownerAuth,
+        payload: { schedule: { kind: "daily", hour: 2, minute: 30, time_zone: "Europe/Berlin" } },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.json().next_occurrences).toEqual([
+        { occurrence_key: "2026-03-29T02:30", civil: "2026-03-29T02:30", utc_at: "2026-03-29T01:00:00.000Z" },
+        { occurrence_key: "2026-03-30T02:30", civil: "2026-03-30T02:30", utc_at: "2026-03-30T00:30:00.000Z" },
+        { occurrence_key: "2026-03-31T02:30", civil: "2026-03-31T02:30", utc_at: "2026-03-31T00:30:00.000Z" },
+      ]);
+      expect((await storageRuntime().briefRecipes.listRecipes(OWNER)).items).toHaveLength(0);
+      const invalid = await app.inject({
+        method: "POST",
+        url: "/api/briefs/schedule-preview",
+        headers: ownerAuth,
+        payload: { schedule: { kind: "daily", hour: 9, minute: 0, time_zone: "Not/A_Zone" } },
+      });
+      expect(invalid.statusCode).toBe(400);
+      expect(invalid.json().code).toBe("CALENDAR_SCHEDULE_INVALID");
+      const unauthenticated = await app.inject({
+        method: "POST",
+        url: "/api/briefs/schedule-preview",
+        headers: { "content-type": "application/json" },
+        payload: "{".repeat(100_000),
+      });
+      expect(unauthenticated.statusCode).toBe(401);
+    } finally {
+      clock.mockRestore();
+    }
   });
 });

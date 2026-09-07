@@ -12,8 +12,9 @@ destination, not a list of current features or an implementation backlog.
 
 - `server/` — Node.js 22 (TypeScript, ESM) Fastify API. It owns authentication,
   account preferences, the agent loop, durable ingestion and chat runs,
-  retrieval, libraries, agents, automations, connectors, artifact sharing and
-  audit metadata, reports, and static web hosting. Resource routes live under
+  retrieval, libraries, connected agents, analyses, documents, research, reviewed
+  briefs, automations, connectors, artifact sharing and audit metadata, reports,
+  and static web hosting. Resource routes live under
   `server/src/routes/`; data internals live under `server/src/data/`.
 - `server/src/db/` — SQLite migrations, codecs, and async store facades for the
   relational ledger and chunk text. `server/src/storageRuntime.ts` composes the
@@ -23,7 +24,8 @@ destination, not a list of current features or an implementation backlog.
 - DuckDB — analytical engine for user tabular files only, isolated in a worker
   thread. It is not the application ledger.
 - `web/` — Vite + React + TypeScript + Tailwind UI. Pages cover auth, chat,
-  sources, libraries, agents, automations, URL connectors, reports, and the
+  sources, libraries, agents, analyses, documents, research, review inbox,
+  automations, URL connectors, reports, and the
   workspace Settings modal. Browser development proxies `/api` to port 3000.
 - `desktop/` — Electron main/preload shell for Apple Silicon macOS 13+. It runs
   the compiled Fastify backend in a utility process and serves the built web UI
@@ -335,10 +337,10 @@ runtime startup alone republishes that matching marker.
   v14 ships provider-bound remote-egress consent: one nullable
   `users.remote_egress_ack_origin` column holding only the canonical bare remote
   origin, bounded by a column CHECK to the Settings endpoint ceiling, with no
-  backfill (timestamp-only rows are intentionally unacknowledged). The active
-  remediation ledger now reserves contiguous v15 and v16 for automation target
-  ownership and typed connector-refresh/repair state; do not reuse or reorder
-  those versions. Account catalogs use opaque endpoint-bound
+  backfill (timestamp-only rows are intentionally unacknowledged). Schemas v15
+  and v16 ship automation target ownership and typed connector-refresh/repair
+  state. Product migrations v17–v28 follow that contiguous applied history;
+  never reuse, reorder, or edit those migrations. Account catalogs use opaque endpoint-bound
   keyset cursors, while source/connector transition polling uses only bounded
   exact-ID status batches with non-starving round-robin reconciliation.
 - Web asynchronous surfaces must give each load/mutation an exact target plus
@@ -390,6 +392,21 @@ runtime startup alone republishes that matching marker.
   built-in tool set; instruction text never changes retrieval scope or authorization.
   Selected skill contents and tool allowlists are captured at turn acceptance,
   with a 32,000-character combined prompt budget. Instruction text is never logged.
+  Job output templates support compatible `instruction` text and a `template_id`
+  reference to a built-in or account-owned M13 template. Agent save and turn
+  acceptance resolve only the template structure inside the SQLite transaction;
+  the 8,000-character template and 32,000-character combined prompt ceilings
+  remain enforced. The accepted `agent_instructions` snapshot is immutable;
+  missing/deleted/foreign templates block later acceptance without rewriting
+  earlier runs. Template choice adds no sources, tool permissions, or publication.
+- Research (`server/src/researchRunner.ts`, schema v25) pins source generations
+  and captures evidence before synthesis. Typed non-null comparison cells must
+  cite captured evidence from the same row source; an uncited output is retained
+  as `invalid`, never presented as supported. Human corrections overlay immutable
+  machine values. Model calls receive at most 8,192 output tokens with the
+  existing separate content/reasoning caps; the run still permits at most 40
+  model requests and 15 minutes. Missing summaries, unsupported cells, and
+  exhausted budgets produce honest `needs_review` with retained partial work.
 - The OpenAI Node client defaults embeddings to base64 and decodes responses.
   Compatible local runtimes return float arrays, so `server/src/llm.ts` must
   continue sending `encoding_format: "float"` explicitly.
@@ -646,9 +663,9 @@ clean utility-process shutdown.
 The selected September 6 functional wave is specified in
 [docs/DEVELOPMENT_HANDOFF.md](docs/DEVELOPMENT_HANDOFF.md),
 [docs/MCP_CONNECTIONS.md](docs/MCP_CONNECTIONS.md), and milestones M12–M16.
-These are future implementation contracts, not shipping behavior. The handoff
-defines the prerequisite closure for reserved schema v14–v16, coordination of
-subagents, and the narrow future desktop capability additions. Keep
+The runtime implements these contracts across schema v17–v28 after the real
+v14–v16 prerequisite migrations. The handoff records that scope, coordination
+rules, and the narrow desktop capability boundaries. Keep
 [milestones/EXECUTION.md](milestones/EXECUTION.md) and
 [docs/END_TO_END_ACCEPTANCE.md](docs/END_TO_END_ACCEPTANCE.md) aligned with actual
 implementation and evidence. Do not claim completion from specification-only

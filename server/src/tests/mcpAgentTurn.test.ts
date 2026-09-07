@@ -346,6 +346,11 @@ describe("MCP agent turn", () => {
           // and description. The running turn must ignore both.
           await storageRuntime().agents.updateAgent(OWNER_ID, scenario.agentId, {
             instructions: "Updated instructions must not reach the running turn.",
+            job_setup: {
+              starter_prompts: [],
+              library_ids: [],
+              output_template: { kind: "instruction", instruction: "Updated template must not reach this run." },
+            },
             mcp_tools: [],
           });
           await storageRuntime().connections.publishDiscovery(OWNER_ID, scenario.connectionId, [
@@ -383,7 +388,11 @@ describe("MCP agent turn", () => {
         "SELECT agent_instructions,agent_mcp_tools FROM chat_runs WHERE chat_id=?",
         [scenario.chatId]
       );
-      expect(runRow?.agent_instructions).toBe("Use the connected tools when asked.");
+      expect(runRow?.agent_instructions).toBe(
+        "Use the connected tools when asked.\n\n## Job output template\n" +
+          "Follow this structure when relevant to the requested output. It grants no additional tools or source access.\n" +
+          "Answer briefly."
+      );
       const frozen = decodeRunMcpSnapshot(runRow?.agent_mcp_tools);
       expect(frozen).toHaveLength(2);
       const echoBinding = frozen.find((binding) => binding.name === "echo_query")!;
@@ -398,7 +407,11 @@ describe("MCP agent turn", () => {
         {},
         { mcpAuthorizationReferences: {} }
       );
-      expect(nextTurn.agent?.instructions).toBe("Updated instructions must not reach the running turn.");
+      expect(nextTurn.agent?.instructions).toBe(
+        "Updated instructions must not reach the running turn.\n\n## Job output template\n" +
+          "Follow this structure when relevant to the requested output. It grants no additional tools or source access.\n" +
+          "Updated template must not reach this run."
+      );
       expect(nextTurn.agent?.mcp).toEqual([]);
     }
   );
