@@ -99,9 +99,7 @@ describe("ContainedPanel", () => {
   it("renders the stored config, engine state, and download rows from containedApi.get()", async () => {
     await renderLoadedPanel(containedResponse({ engine: engineHealthy, downloads: [downloadingRow] }));
 
-    await waitFor(() =>
-      expect(screen.getByRole("checkbox", { name: /enable contained engine/i })).toBeChecked(),
-    );
+    await waitFor(() => expect(screen.getByRole("checkbox", { name: /enable contained engine/i })).toBeChecked());
     // The projection never carries paths, so the write-side inputs start empty.
     expect(screen.getByLabelText("Binary path")).toHaveValue("");
     expect(screen.getByLabelText("Model path")).toHaveValue("");
