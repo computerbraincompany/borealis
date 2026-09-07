@@ -34,6 +34,11 @@ can report selected file rows while its Open button remains disabled. Raising
 the sheet and using `Down` / `shift+Down` enabled ordinary multi-file selection
 in the native acceptance run. Refresh the accessibility state before using
 element indices; this is a focus step, not a change to file-access policy.
+If a sheet still shows a supported file selected with Open disabled after Go To,
+cancel and reopen Upload files at the remembered fixture directory, raise the
+fresh sheet, then select with Down (and shift+Down for additional files). This
+resolved the final native run's stuck selection; verify Open is enabled before
+submitting. Changing the file-type filter alone did not resolve that state.
 
 Its mode-0600 `session.json` contains the exact owned PID/profile, package
 SHA-256, observed loopback origin, disposable fixture locations and local fixture
@@ -145,11 +150,15 @@ the price conflict, and create/export a reviewed draft with conflict/gap
 disclosures and the rejected fabrication excluded. Helper commands do not
 acknowledge any checkpoint; all review, execution and export actions remain native.
 
-Immediately before the final checkpoint, the runner activates eight seconds
-of fixture embedding latency and edits the owned watched `notes.md` file.
+Immediately before the final checkpoint, the runner explicitly holds fixture
+embedding responses and edits the owned watched `notes.md` file.
 Normal runs and earlier journeys keep the fixture's default immediate embedding
-responses. The production desktop folder watch must discover and ingest that
-changed file; the harness verifies an outstanding embedding response alongside
+responses. The hold remains pending until explicit release or client cancellation;
+its thirty-second deadline returns a failure, never vectors. Any expired hold
+invalidates the quit proof, including an SDK retry after that expiry. Production
+request and shutdown deadlines are unchanged. Do not release the hold during
+this check; normal native Cmd+Q must cancel the actual request. The production
+desktop folder watch must discover and ingest that changed file; the harness verifies an outstanding embedding response alongside
 the exact scheduled active folder refresh. WebDAV watch is unsupported and is
 never used as a substitute.
 The final checkpoint requires an actual normal Cmd+Q during that scheduled
@@ -160,8 +169,8 @@ up to 30 seconds for orderly process drain. A naturally completed row cannot
 prove active-work cancellation. Missing, manual, old, or unfinished
 work cannot pass. Content-free proof is retained in `native-watch-quit.json`.
 The native history can lag a background refresh. A fresh read-only observation
-of the exact scheduled active row together with `embedding_active > 0` is valid
-active-work evidence immediately before the real CUA Cmd+Q; do not wait for a
+of the exact scheduled active row together with `embedding_held > 0` and no
+expired hold is valid active-work evidence immediately before the real CUA Cmd+Q; do not wait for a
 delayed history repaint and then claim a naturally completed scan was interrupted.
 Diagnostic journey subsets that exclude D retain ordinary quit verification
 and explicitly report `active_watched_quit: "not_selected"`; the full A–F gate

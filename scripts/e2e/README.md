@@ -54,6 +54,20 @@ env script) and resets the step pointer, so a journey can drive a
 deterministic tool-call roundtrip against the one provider instance the
 harness launched; step shape only — script content is never logged.
 
+For active-ingestion shutdown tests, `POST /fixture/embedding-delay` accepts
+`delay_ms` (integer 0–10000), or `embedding_hold` (boolean), or both. A true hold
+may also specify `hold_timeout_ms` (integer 1–30000, default 30000). All other
+keys and invalid combinations are rejected. A held embedding returns vectors
+only after an explicit `{ "embedding_hold": false }` release. Client disconnect
+cleans it up; rearming a true hold fails older held requests with 503; expiry
+returns 503 instead of successful vectors. Shutdown destroys held sockets.
+State exposes `embedding_active` until actual response close, `embedding_held`,
+`embedding_hold`, and cumulative `embedding_hold_expired`. The native quit guard
+rejects any expired hold, including a later SDK retry, and requires no held or
+active embedding response after quit. These controls affect synthetic fixtures
+only; application request and shutdown deadlines are unchanged. Run their real
+process regressions with `node --test scripts/e2e/fixtures/openai-provider.test.mjs`.
+
 ### `fixtures/mcp-server-stdio.mjs` — MCP over stdio (journey A)
 
 Spawn directly: `node scripts/e2e/fixtures/mcp-server-stdio.mjs` (stdio is

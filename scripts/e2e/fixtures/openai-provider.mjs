@@ -11,6 +11,10 @@
  *   POST /v1/embeddings         deterministic unit-length float vectors
  *   GET  /v1/models             configured chat + embed model ids
  *   GET  /fixture/state         content-free auth-header record (never values)
+ *   POST /fixture/embedding-delay {delay_ms?:0..10000,
+ *       embedding_hold?:boolean, hold_timeout_ms?:1..30000} (hold:true only)
+ *       Explicit hold release returns vectors; expiry/rearm returns 503.
+ *       State exposes held/active counts and cumulative hold expirations.
  *   POST /fixture/script        runtime script install {"steps":[...],
  *                               "on_exhausted"?:"repeat-last"|"fail"} —
  *                               replaces the script and resets the step
@@ -64,11 +68,14 @@ const embedModel = process.env.E2E_OPENAI_EMBED_MODEL || "fixture-embed-v1";
 // dimension. The ceiling follows the product's 16,384 embedding-dimension
 // bound; the default stays 64, so the browser-mode runs are unchanged.
 const embedDim = clampInt(process.env.E2E_OPENAI_EMBED_DIM, 1, 16_384, 64);
-let onExhausted = process.env.E2E_OPENAI_ON_EXHAUSTED === "fail" ? "fail" : "repeat-last";
+let onExhausted =
+  process.env.E2E_OPENAI_ON_EXHAUSTED === "fail" ? "fail" : "repeat-last";
 
 function clampInt(raw, min, max, fallback) {
   const value = Number.parseInt(raw ?? "", 10);
-  return Number.isFinite(value) && value >= min && value <= max ? value : fallback;
+  return Number.isFinite(value) && value >= min && value <= max
+    ? value
+    : fallback;
 }
 
 function loadScript() {
@@ -78,9 +85,11 @@ function loadScript() {
   }
   const text = raw.startsWith("@") ? readFileSync(raw.slice(1), "utf8") : raw;
   const parsed = JSON.parse(text);
-  if (!Array.isArray(parsed) || parsed.length === 0) throw new Error("script must be a non-empty array");
+  if (!Array.isArray(parsed) || parsed.length === 0)
+    throw new Error("script must be a non-empty array");
   for (const step of parsed) {
-    if (!step || typeof step.type !== "string") throw new Error("script step needs a type");
+    if (!step || typeof step.type !== "string")
+      throw new Error("script step needs a type");
   }
   return parsed;
 }
@@ -119,7 +128,11 @@ function chunk(model, delta, finishReason) {
 
 function textFrames(model, pieces) {
   const frames = pieces.map((piece, index) =>
-    chunk(model, index === 0 ? { role: "assistant", content: piece } : { content: piece }, null)
+    chunk(
+      model,
+      index === 0 ? { role: "assistant", content: piece } : { content: piece },
+      null,
+    ),
   );
   frames.push(chunk(model, {}, "stop"));
   return frames;
@@ -131,16 +144,39 @@ function toolCallFrames(model, id, namePieces, argumentPieces) {
       model,
       {
         role: "assistant",
-        tool_calls: [{ index: 0, id: id ?? "call_fixture_1", type: "function", function: { name: namePieces[0] ?? "", arguments: "" } }],
+        tool_calls: [
+          {
+            index: 0,
+            id: id ?? "call_fixture_1",
+            type: "function",
+            function: { name: namePieces[0] ?? "", arguments: "" },
+          },
+        ],
       },
-      null
+      null,
     ),
   ];
   for (const piece of namePieces.slice(1)) {
-    frames.push(chunk(model, { tool_calls: [{ index: 0, type: "function", function: { name: piece } }] }, null));
+    frames.push(
+      chunk(
+        model,
+        {
+          tool_calls: [
+            { index: 0, type: "function", function: { name: piece } },
+          ],
+        },
+        null,
+      ),
+    );
   }
   for (const piece of argumentPieces) {
-    frames.push(chunk(model, { tool_calls: [{ index: 0, function: { arguments: piece } }] }, null));
+    frames.push(
+      chunk(
+        model,
+        { tool_calls: [{ index: 0, function: { arguments: piece } }] },
+        null,
+      ),
+    );
   }
   frames.push(chunk(model, {}, "tool_calls"));
   return frames;
@@ -148,7 +184,9 @@ function toolCallFrames(model, id, namePieces, argumentPieces) {
 
 /** Deterministic unit vector derived from sha256(model, input, dim). */
 function embeddingVector(model, input, dim) {
-  const digest = createHash("sha256").update(`${model}\u0000${input}\u0000${dim}`, "utf8").digest();
+  const digest = createHash("sha256")
+    .update(`${model}\u0000${input}\u0000${dim}`, "utf8")
+    .digest();
   let state = digest.readUInt32BE(0) || 1;
   const floats = new Float64Array(dim);
   let sumSq = 0;
@@ -164,7 +202,8 @@ function embeddingVector(model, input, dim) {
     sumSq += value * value;
   }
   const norm = Math.sqrt(sumSq);
-  if (!Number.isFinite(norm) || norm <= 0) throw new Error("embedding-norm-invalid");
+  if (!Number.isFinite(norm) || norm <= 0)
+    throw new Error("embedding-norm-invalid");
   const out = new Array(dim);
   for (let i = 0; i < dim; i += 1) out[i] = Math.fround(floats[i] / norm);
   return out;
@@ -174,6 +213,36 @@ function embeddingVector(model, input, dim) {
 const authRecord = [];
 const counters = { chat: 0, embeddings: 0, embeddingActive: 0 };
 let embeddingDelayMs = 0;
+let embeddingHold = false;
+let embeddingHoldTimeoutMs = 30_000;
+let embeddingHoldExpired = 0;
+const embeddingHolders = new Set();
+
+function settleEmbeddingHolds(reason) {
+  for (const settle of [...embeddingHolders]) settle(reason);
+}
+
+function waitForEmbeddingRelease(res) {
+  if (res.destroyed) return Promise.resolve("closed");
+  return new Promise((resolve) => {
+    let settled = false;
+    let timer;
+    const close = () => settle("closed");
+    const settle = (reason) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      res.off("close", close);
+      embeddingHolders.delete(settle);
+      if (reason === "timeout") embeddingHoldExpired += 1;
+      if (reason === "shutdown") res.destroy();
+      resolve(reason);
+    };
+    embeddingHolders.add(settle);
+    res.once("close", close);
+    timer = setTimeout(() => settle("timeout"), embeddingHoldTimeoutMs);
+  });
+}
 
 function recordAuth(endpoint, header) {
   if (authRecord.length < 1000) {
@@ -181,7 +250,11 @@ function recordAuth(endpoint, header) {
       endpoint,
       present: typeof header === "string" && header.length > 0,
       scheme:
-        typeof header === "string" && /^Bearer\s/i.test(header) ? "bearer" : header ? "other" : null,
+        typeof header === "string" && /^Bearer\s/i.test(header)
+          ? "bearer"
+          : header
+            ? "other"
+            : null,
     });
   }
 }
@@ -206,32 +279,60 @@ const tracked = createTrackedServer(async (req, res) => {
         chat_calls: counters.chat,
         embedding_calls: counters.embeddings,
         embedding_active: counters.embeddingActive,
+        embedding_hold: embeddingHold,
+        embedding_held: embeddingHolders.size,
+        embedding_hold_expired: embeddingHoldExpired,
         auth: authRecord,
         script_remaining: script.length - nextStep,
         on_exhausted: onExhausted,
       });
       return;
     }
-    // Explicit local test control: default latency stays zero. The bounded
-    // hold proves real ingestion cancellation without changing application code.
+    // Explicit local test control: defaults preserve normal zero-latency
+    // behavior. A hold never turns into successful vectors just by waiting.
     if (req.method === "POST" && path === "/fixture/embedding-delay") {
       const body = await readBoundedBody(req, 1024);
       if (body === null) return;
-      let delay;
+      let control;
       try {
-        delay = JSON.parse(body.toString("utf8"))?.delay_ms;
+        control = JSON.parse(body.toString("utf8"));
       } catch {
         /* invalid below */
       }
-      if (!Number.isInteger(delay) || delay < 0 || delay > 10_000) {
-        sendJson(res, 400, {
-          error: {
-            message: "delay_ms must be an integer from 0 through 10000",
-          },
-        });
+      const allowed = new Set([
+        "delay_ms",
+        "embedding_hold",
+        "hold_timeout_ms",
+      ]);
+      if (
+        !control ||
+        typeof control !== "object" ||
+        Array.isArray(control) ||
+        Object.keys(control).some((key) => !allowed.has(key)) ||
+        (control.delay_ms === undefined &&
+          control.embedding_hold === undefined) ||
+        (control.delay_ms !== undefined &&
+          (!Number.isInteger(control.delay_ms) ||
+            control.delay_ms < 0 ||
+            control.delay_ms > 10_000)) ||
+        (control.embedding_hold !== undefined &&
+          typeof control.embedding_hold !== "boolean") ||
+        (control.hold_timeout_ms !== undefined &&
+          (control.embedding_hold !== true ||
+            !Number.isInteger(control.hold_timeout_ms) ||
+            control.hold_timeout_ms < 1 ||
+            control.hold_timeout_ms > 30_000))
+      ) {
+        sendJson(res, 400, { error: { message: "invalid embedding control" } });
         return;
       }
-      embeddingDelayMs = delay;
+      if (control.delay_ms !== undefined) embeddingDelayMs = control.delay_ms;
+      if (control.embedding_hold !== undefined) {
+        // Re-arming must not let requests from an old checkpoint succeed.
+        settleEmbeddingHolds(control.embedding_hold ? "rearmed" : "released");
+        embeddingHold = control.embedding_hold;
+        embeddingHoldTimeoutMs = control.hold_timeout_ms ?? 30_000;
+      }
       sendJson(res, 200, { ok: true });
       return;
     }
@@ -252,11 +353,19 @@ const tracked = createTrackedServer(async (req, res) => {
       const steps = parsed?.steps;
       const exhausted = parsed?.on_exhausted;
       if (!parsed || typeof parsed !== "object" || !validSteps(steps)) {
-        sendJson(res, 400, { error: { message: "steps must be a non-empty array of typed steps" } });
+        sendJson(res, 400, {
+          error: { message: "steps must be a non-empty array of typed steps" },
+        });
         return;
       }
-      if (exhausted !== undefined && exhausted !== "repeat-last" && exhausted !== "fail") {
-        sendJson(res, 400, { error: { message: "on_exhausted must be repeat-last or fail" } });
+      if (
+        exhausted !== undefined &&
+        exhausted !== "repeat-last" &&
+        exhausted !== "fail"
+      ) {
+        sendJson(res, 400, {
+          error: { message: "on_exhausted must be repeat-last or fail" },
+        });
         return;
       }
       script = steps;
@@ -286,13 +395,18 @@ const tracked = createTrackedServer(async (req, res) => {
         return;
       }
       const step = takeStep();
-      const model = typeof parsed.model === "string" && parsed.model ? parsed.model : chatModel;
+      const model =
+        typeof parsed.model === "string" && parsed.model
+          ? parsed.model
+          : chatModel;
       if (!step) {
         sendJson(res, 400, { error: { message: "script exhausted" } });
         return;
       }
       if (step.type === "http_error") {
-        sendJson(res, clampInt(step.status, 400, 599, 503), { error: { message: "scripted failure" } });
+        sendJson(res, clampInt(step.status, 400, 599, 503), {
+          error: { message: "scripted failure" },
+        });
         return;
       }
       // Opt-in chart echo: only this exact prior tool-call result may supply
@@ -300,23 +414,53 @@ const tracked = createTrackedServer(async (req, res) => {
       let argumentPieces = step.argument_pieces ?? ["{}"];
       if (step.echo_chart_from_tool_call_id !== undefined) {
         try {
-          if (step.type !== "tool_call" || step.name_pieces?.join("") !== "create_report" ||
-              typeof step.echo_chart_from_tool_call_id !== "string" || step.echo_chart_from_tool_call_id.length > 128) throw new Error();
-          const matches = (Array.isArray(parsed.messages) ? parsed.messages : []).filter(
-            message => message.role === "tool" && message.tool_call_id === step.echo_chart_from_tool_call_id
+          if (
+            step.type !== "tool_call" ||
+            step.name_pieces?.join("") !== "create_report" ||
+            typeof step.echo_chart_from_tool_call_id !== "string" ||
+            step.echo_chart_from_tool_call_id.length > 128
+          )
+            throw new Error();
+          const matches = (
+            Array.isArray(parsed.messages) ? parsed.messages : []
+          ).filter(
+            (message) =>
+              message.role === "tool" &&
+              message.tool_call_id === step.echo_chart_from_tool_call_id,
           );
-          if (matches.length !== 1 || typeof matches[0].content !== "string" || matches[0].content.length > 4096) throw new Error();
+          if (
+            matches.length !== 1 ||
+            typeof matches[0].content !== "string" ||
+            matches[0].content.length > 4096
+          )
+            throw new Error();
           const result = JSON.parse(matches[0].content);
-          if (result.rendered !== true || typeof result.chart_id !== "string" ||
-              !/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(result.chart_id)) throw new Error();
+          if (
+            result.rendered !== true ||
+            typeof result.chart_id !== "string" ||
+            !/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(
+              result.chart_id,
+            )
+          )
+            throw new Error();
           const raw = argumentPieces.join("");
           if (raw.length > 20000) throw new Error();
           const args = JSON.parse(raw);
-          if (!args || typeof args !== "object" || Array.isArray(args) || Object.hasOwn(args, "charts")) throw new Error();
-          argumentPieces = [JSON.stringify({ ...args, charts: [result.chart_id] })];
+          if (
+            !args ||
+            typeof args !== "object" ||
+            Array.isArray(args) ||
+            Object.hasOwn(args, "charts")
+          )
+            throw new Error();
+          argumentPieces = [
+            JSON.stringify({ ...args, charts: [result.chart_id] }),
+          ];
           if (argumentPieces[0].length > 20000) throw new Error();
         } catch {
-          sendJson(res, 400, { error: { message: "fixture chart echo unavailable" } });
+          sendJson(res, 400, {
+            error: { message: "fixture chart echo unavailable" },
+          });
           return;
         }
       }
@@ -333,7 +477,12 @@ const tracked = createTrackedServer(async (req, res) => {
           }
           break;
         case "tool_call":
-          for (const frame of toolCallFrames(model, step.id, step.name_pieces ?? ["t"], argumentPieces)) {
+          for (const frame of toolCallFrames(
+            model,
+            step.id,
+            step.name_pieces ?? ["t"],
+            argumentPieces,
+          )) {
             res.write(`data: ${JSON.stringify(frame)}\n\n`);
           }
           break;
@@ -343,7 +492,10 @@ const tracked = createTrackedServer(async (req, res) => {
         case "slow": {
           const delay = clampInt(step.delay_ms, 1, 120_000, 500);
           await new Promise((resolve) => setTimeout(resolve, delay));
-          for (const frame of textFrames(model, step.pieces ?? ["slow answer"])) {
+          for (const frame of textFrames(
+            model,
+            step.pieces ?? ["slow answer"],
+          )) {
             res.write(`data: ${JSON.stringify(frame)}\n\n`);
           }
           break;
@@ -352,7 +504,7 @@ const tracked = createTrackedServer(async (req, res) => {
           // Intentionally silent: only a client-side deadline/cancel ends this.
           return;
         default:
-          for (const frame of textFrames(model, ["unknown step"] )) {
+          for (const frame of textFrames(model, ["unknown step"])) {
             res.write(`data: ${JSON.stringify(frame)}\n\n`);
           }
           break;
@@ -372,31 +524,63 @@ const tracked = createTrackedServer(async (req, res) => {
         sendJson(res, 400, { error: { message: "invalid json" } });
         return;
       }
-      const inputs = typeof parsed?.input === "string" ? [parsed.input] : Array.isArray(parsed?.input) ? parsed.input : null;
-      if (!inputs || inputs.length === 0 || inputs.some((item) => typeof item !== "string")) {
-        sendJson(res, 400, { error: { message: "input must be a string or string array" } });
+      const inputs =
+        typeof parsed?.input === "string"
+          ? [parsed.input]
+          : Array.isArray(parsed?.input)
+            ? parsed.input
+            : null;
+      if (
+        !inputs ||
+        inputs.length === 0 ||
+        inputs.some((item) => typeof item !== "string")
+      ) {
+        sendJson(res, 400, {
+          error: { message: "input must be a string or string array" },
+        });
         return;
       }
-      const model = typeof parsed.model === "string" && parsed.model ? parsed.model : embedModel;
+      const model =
+        typeof parsed.model === "string" && parsed.model
+          ? parsed.model
+          : embedModel;
       const dim = clampInt(parsed.dimensions, 1, 16_384, embedDim);
       // Float arrays are the default; base64 is honoured only when requested.
       const asBase64 = parsed.encoding_format === "base64";
       counters.embeddings += 1;
-      if (embeddingDelayMs > 0) {
-        counters.embeddingActive += 1;
-        try {
-          await new Promise((resolveDelay) => {
-            const finish = () => {
-              clearTimeout(timer);
-              res.off("close", finish);
-              resolveDelay();
-            };
-            const timer = setTimeout(finish, embeddingDelayMs);
-            res.once("close", finish);
+      if (res.destroyed) return;
+      counters.embeddingActive += 1;
+      // Active means the real response is still open, including after release
+      // while response bytes are being written, not merely a running timer.
+      res.once("close", () => {
+        counters.embeddingActive -= 1;
+      });
+      if (embeddingHold) {
+        const outcome = await waitForEmbeddingRelease(res);
+        if (res.destroyed || outcome === "closed" || outcome === "shutdown")
+          return;
+        if (outcome !== "released") {
+          sendJson(res, 503, {
+            error: {
+              message: "embedding hold failed",
+              code:
+                outcome === "timeout"
+                  ? "FIXTURE_EMBEDDING_HOLD_TIMEOUT"
+                  : "FIXTURE_EMBEDDING_HOLD_REARMED",
+            },
           });
-        } finally {
-          counters.embeddingActive -= 1;
+          return;
         }
+      } else if (embeddingDelayMs > 0) {
+        await new Promise((resolveDelay) => {
+          const finish = () => {
+            clearTimeout(timer);
+            res.off("close", finish);
+            resolveDelay();
+          };
+          const timer = setTimeout(finish, embeddingDelayMs);
+          res.once("close", finish);
+        });
         if (res.destroyed) return;
       }
       const data = inputs.map((input, index) => {
@@ -410,18 +594,26 @@ const tracked = createTrackedServer(async (req, res) => {
         object: "list",
         model,
         data,
-        usage: { prompt_tokens: inputs.join(" ").length, total_tokens: inputs.join(" ").length },
+        usage: {
+          prompt_tokens: inputs.join(" ").length,
+          total_tokens: inputs.join(" ").length,
+        },
       });
       return;
     }
     sendJson(res, 404, { error: { message: "not found" } });
   } catch (error) {
     logError(error?.message ?? "handler-error");
-    if (!res.headersSent) sendJson(res, 500, { error: { message: "fixture error" } });
+    if (!res.headersSent)
+      sendJson(res, 500, { error: { message: "fixture error" } });
     else res.end();
   }
 });
 
 const port = await listenLoopback(tracked.server);
-installShutdown(() => tracked.close());
+installShutdown(async () => {
+  embeddingHold = false;
+  settleEmbeddingHolds("shutdown");
+  await tracked.close();
+});
 emitReady({ fixture: "openai-provider", origin: `http://127.0.0.1:${port}` });

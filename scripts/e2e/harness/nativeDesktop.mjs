@@ -140,6 +140,15 @@ export function validateNativeWatchedQuit(observation, finalState, exitedAt) {
   );
 }
 
+/** Expiry is a failed fixture hold, never evidence of shutdown cancellation. */
+export function nativeEmbeddingHoldActive(state) {
+  assert(
+    state.embedding_hold === true && state.embedding_hold_expired === 0,
+    "NATIVE_EMBEDDING_HOLD_EXPIRED_OR_DISABLED",
+  );
+  return state.embedding_held > 0 && state.embedding_active >= state.embedding_held;
+}
+
 /** Content-free counts, all restricted to the native bootstrap account. */
 export function nativeState(repoRoot, profileDir) {
   const db = openLedger(repoRoot, profileDir);
@@ -915,7 +924,8 @@ export async function runNativeJourneys({
       if (name === "quit" && requireWatchedQuit) {
         if (pidAlive(app.pid)) {
           const current = nativeWatchedRefresh(repoRoot, app.profileDir);
-          if (current && (await provider.state()).embedding_active > 0)
+          const held = nativeEmbeddingHoldActive(await provider.state());
+          if (current && held)
             activeWatch = { id: current.id, observedAt: Date.now() };
         } else exitedAt ??= Date.now();
       }
@@ -944,6 +954,13 @@ export async function runNativeJourneys({
           finalState,
           exitedAt ?? Date.now(),
         );
+        const providerAfterQuit = await provider.state();
+        assert(
+          !nativeEmbeddingHoldActive(providerAfterQuit) &&
+            providerAfterQuit.embedding_active === 0 &&
+            providerAfterQuit.embedding_held === 0,
+          "NATIVE_EMBEDDING_HOLD_NOT_RELEASED",
+        );
         fs.writeFileSync(
           path.join(workspace.artifactsDir, "native-watch-quit.json"),
           JSON.stringify(
@@ -951,6 +968,8 @@ export async function runNativeJourneys({
               requested_by: finalState.requested_by,
               watch_enabled: true,
               embedding_response_held: true,
+              embedding_hold_expired: 0,
+              embedding_requests_after_exit: 0,
               observed_active_before_exit_ms:
                 (exitedAt ?? Date.now()) - activeWatch.observedAt,
               final_status: finalState.status,
@@ -1216,13 +1235,14 @@ export async function runNativeJourneys({
     onJourney(journeys.at(-1));
   }
   if (requireWatchedQuit) {
-    const delay = await fetch(`${provider.origin}/fixture/embedding-delay`, {
+    const hold = await fetch(`${provider.origin}/fixture/embedding-delay`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ delay_ms: 8000 }),
+      body: JSON.stringify({ embedding_hold: true, hold_timeout_ms: 30000 }),
       signal: AbortSignal.timeout(5000),
     });
-    assert(delay.ok, "NATIVE_EMBEDDING_DELAY_FAILED");
+    assert(hold.ok, "NATIVE_EMBEDDING_HOLD_FAILED");
+    await hold.arrayBuffer();
     // The already-selected regular fixture file changes upstream; no app
     // store/API is mutated. The production desktop watch must ingest it.
     fs.writeFileSync(
@@ -1234,7 +1254,7 @@ export async function runNativeJourneys({
   await checkpoint(
     "quit",
     requireWatchedQuit
-      ? "The harness changed the owned watched notes.md file and now delays fixture embedding responses eight seconds. In Libraries observe its automatic scheduled folder refresh while ingestion is active; do not substitute a manual refresh. While that scheduled refresh is active, quit with Cmd+Q. Respond after the process exits. The harness independently requires a scheduled desktop-folder active row with an outstanding embedding response, that same row cancelled in the stopped ledger, and PID/children/lock cleanup. If you miss the ingestion window, edit only the owned watched notes.md fixture again to trigger another genuine watch refresh."
+      ? "The harness changed the owned watched notes.md file and explicitly holds fixture embedding responses until release or client cancellation. A thirty-second hold expiry is a failure, never a successful response. In Libraries observe its automatic scheduled folder refresh while ingestion is active; do not substitute a manual refresh. While that scheduled refresh is active, quit with Cmd+Q. Respond after the process exits. The harness independently requires a scheduled desktop-folder active row with an outstanding embedding response, that same row cancelled in the stopped ledger, and PID/children/lock cleanup. Do not release the fixture hold. Quit while the scheduled refresh is active; a timed-out hold cannot pass this gate."
       : "Quit the actual packaged app normally with Cmd+Q and respond after the process exits. This selected diagnostic subset excludes journey D and does not prove active watched-refresh shutdown; the harness checks PID/children/locks.",
   );
   return {

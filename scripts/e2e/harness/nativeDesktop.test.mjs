@@ -10,6 +10,7 @@ import {
   validateNativeResponse,
   nativePublicationFile,
   validateNativeWatchedQuit,
+  nativeEmbeddingHoldActive,
 } from "./nativeDesktop.mjs";
 
 const request = {
@@ -64,6 +65,29 @@ test("normal native quit requires a recently active scheduled watch and finalize
   assert.throws(
     () => validateNativeWatchedQuit(observation, finalState, 41_000),
     /NOT_OBSERVED/,
+  );
+});
+
+test("native quit cannot count ordinary delay or a retry after an expired hold", () => {
+  const held = {
+    embedding_hold: true,
+    embedding_hold_expired: 0,
+    embedding_active: 1,
+    embedding_held: 1,
+  };
+  assert.equal(nativeEmbeddingHoldActive(held), true);
+  assert.equal(nativeEmbeddingHoldActive({ ...held, embedding_held: 0 }), false);
+  assert.equal(
+    nativeEmbeddingHoldActive({ ...held, embedding_active: 0, embedding_held: 0 }),
+    false,
+  );
+  assert.throws(
+    () => nativeEmbeddingHoldActive({ ...held, embedding_hold_expired: 1 }),
+    /EXPIRED_OR_DISABLED/,
+  );
+  assert.throws(
+    () => nativeEmbeddingHoldActive({ ...held, embedding_hold: false }),
+    /EXPIRED_OR_DISABLED/,
   );
 });
 

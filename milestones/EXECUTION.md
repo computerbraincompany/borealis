@@ -7,15 +7,18 @@ Runtime closure fixes are committed and pushed through `1e56b21`. The final
 local repository, desktop, package, browser, storage, process-lifecycle and
 live-model gates pass. Linux CI also passes. Hosted
 macOS CI cannot enforce the required library-validation negative test because
-its runners disable SIP; a SIP-enabled Apple Silicon runner is still required.
-No security gate is waived.
+its runners disable SIP. A SIP-enabled Apple Silicon runner is an infrastructure
+follow-up; the required local entitlement command passed on the final package.
+No security gate is waived or failed hosted run presented as a pass.
 
-The previous package passed native A–F and actual watched-refresh cancellation.
-That run exposed misleading unreadable-file guidance, now repaired together
-with durable refresh settlement, paused watch retries and UI recovery. The
-fresh final package is waiting at its normal macOS Keychain prompt before a
-new 17-checkpoint native A–F pass. Earlier native evidence is retained as
-intermediate verification and does not certify the rebuilt package.
+The final package passed native A–F, including actionable unreadable-file
+recovery, frozen sources/citations and explicit post-expiry OAuth refresh. Its
+final quit missed the eight-second fixture window: embedding completed before
+Cmd+Q arrived. The full command correctly failed and that evidence is retained.
+A new complete 17-checkpoint run will use an explicit fixture hold that can end
+only by release, client cancellation or a bounded failure. An expired hold cannot
+pass, and application request/shutdown deadlines are unchanged. Package bytes
+are unchanged; no required native checkpoint is omitted.
 
 ## Implementation status
 
@@ -43,7 +46,7 @@ provider payloads or user data belong in this ledger.
 | Fresh unsigned package | PASS | `/tmp/borealis-v1-permission-package.log`, 5/5 tasks; `/tmp/borealis-v1-permission-packaged-native.log` and `/tmp/borealis-v1-permission-entitlements.log` pass, including both genuine negative entitlement removals. Final ASAR SHA-256 `7e80766679d6744e8e7c18abaaa10901087ec4733701e2f196267eb8e1bc5b8d`. |
 | Final browser A–F | PASS | 16:55:15–16:59:01 UTC, `/tmp/borealis-v1-1e56-browser-final/summary.json`; all six journeys pass, no skipped checks, clean workspace/lock/process cleanup. |
 | Hosted CI | LINUX PASS; MACOS BLOCKED | Run `34145341263` on `1e56b21`: Linux `ALL GATES GREEN`, 16/16 tasks, server 1,317 + 433, web 493, desktop 34. Hosted macOS 15 and 26 disable SIP and run successfully without the library-validation entitlement despite exact main/helper signatures. A SIP-enabled runner is required; none is registered. Strict checks remain enforced. |
-| Native packaged A–F | WAITING FOR KEYCHAIN APPROVAL | Fresh final package launched in `/tmp/borealis-v1-native-final-4`; normal secure-storage bootstrap awaits actual OS approval. The previous package passed all A–F and strict active watched-refresh cancellation in `/tmp/borealis-v1-native-final-evidence-3/summary.json` with clean process/lock/workspace cleanup. The new [17-checkpoint contract](../scripts/e2e/NATIVE_DESKTOP.md) adds exact permission guidance and recovery while preserving ready sources and citations. No final native pass claimed. |
+| Native packaged A–F | FULL RERUN PENDING | Final-package attempt four passed all six journeys and 16 checkpoints in `/tmp/borealis-v1-native-final-evidence-4/summary.json`; actual post-expiry OAuth refresh is retained separately. Its quit check failed honestly because the delayed embedding completed before Cmd+Q. Fresh attempt five will repeat the complete [17-checkpoint contract](../scripts/e2e/NATIVE_DESKTOP.md) with an explicit held response and require exact cancellation plus process/lock cleanup. |
 | Browser C including historical report | PASS | 14:20:41–14:21:04 UTC, `/tmp/borealis-v1-c-complete-evidence/summary.json`; actual chart copied from chat, legacy UI preview/download/copy denial, all exports. No skipped checks; clean lock/process cleanup. |
 | Protocol fixture self-test | PASS | 82 checks, including exact chart UUID echo and missing/duplicate refusal. |
 | Populated upgrade, managed migrations and offline archive | PASS | 16:56:00–16:56:07 UTC, `/tmp/borealis-v1-1e56-storage-final/storage-summary.json`; populated v13→v28, 36 product tables, both live managed embedding variants, encrypted archive create/inspect/restore/verify/live-lock refusal, 15 preserved artifact files and three reconnect/reselect states. Uses supported source TypeScript/CLI path with retained source/compiled fingerprints on `1e56b21`. |
@@ -51,7 +54,7 @@ provider payloads or user data belong in this ledger.
 | Export visual inspection | PASS | Rendered both DOCX files and all PDF pages from browser C using bundled LibreOffice/Poppler. Long unbroken text now wraps, chart title/legend/axis labels are separate, tables and evidence readable. Final `1e56b21` browser-C exports rendered under `/tmp/borealis-v1-1e56-{pdf,docx}-reviewed`: all six stress-test PDF pages and three DOCX pages inspected; headings stay with content and long text wraps within margins. Intermediate native-C PDF (2 pages) and DOCX (1 page) rendered and inspected under `/tmp/borealis-v1-native3-{pdf,docx}-reviewed`; narration, table and chart remain readable without clipping. |
 | Focused closure regressions | PASS | Job template server21/web43, schedule preview server18/web31, report/chart/render76; meaningful ownership, immutable prompt, DST/auth, stale-preview and print geometry checks. Full gate remains authoritative. |
 | Process-boundary lifecycle closure | PASS | 16:55:39–16:57:02 UTC, `/tmp/borealis-v1-1e56-lifecycle-final/summary.json`; all seven cases and thirteen checks, no skips. Real research crash/reopen, active rewrite/research/MCP/analysis/render/WebDAV/brief shutdown, exact recovery/artifact preservation, actual closed-across-due catch-up. Workspace/process/lock cleanup clean. [Repeatable command](../scripts/e2e/LIFECYCLE.md). |
-| Independent integrated review | PASS | Product, export, schedule, job and research changes reviewed; final lifecycle/native harness reviewed for meaningful state, retained identities, exact artifacts, cancellation and cleanup. Native harness 9/9 tests; provider fixture 20 and full protocol fixture 82 checks. All 130 Markdown files, 565 local links and 18 anchor links resolve. |
+| Independent integrated review | PASS | Product, export, schedule, job and research changes reviewed; final lifecycle/native harness reviewed for meaningful state, retained identities, exact artifacts, cancellation and cleanup. Native harness 10/10 and explicit held-embedding fixture 4/4 tests; provider fixture 20 and full protocol fixture 82 checks. All 130 Markdown files, 565 local links and 18 anchor links resolve. |
 
 ## Durable migration allocation
 
@@ -80,11 +83,19 @@ provider payloads or user data belong in this ledger.
 
 Machine-readable retained results are in [the v1 evidence summary](evidence/v1-2026-09-07.json).
 
-Approve the normal Keychain prompt for the currently running final package,
-then finish all 17 native checkpoints on the final package.
-Provide a SIP-enabled Apple Silicon CI runner for the unchanged strict
-entitlement gate; ordinary hosted macOS 15 and 26 cannot enforce it. Then
-reconcile completion labels and commit/push the remaining documentation.
+Finish all 17 native checkpoints in fresh attempt five on the unchanged final
+package. The prior attempt passed A–F but missed the active-work quit window.
+Its failed result remains visible; the new hold cannot expire into a success.
+Then reconcile completion labels and commit/push the remaining documentation.
+
+Hosted macOS CI remains an infrastructure follow-up: ordinary hosted macOS 15
+and 26 cannot enforce the unchanged strict entitlement negative control. The
+[functional goal](../docs/IMPLEMENTATION_GOAL.md) and
+[acceptance contract](../docs/END_TO_END_ACCEPTANCE.md) require that command on
+the supported local Mac, where the final package passed; they do not require
+provisioning a CI runner. Earlier blocker summaries incorrectly added that
+condition. Keep the failed hosted result visible and use a SIP-enabled runner
+when restoring the CI packaging pipeline.
 
 The previous native A–F pass and active watched-refresh Cmd+Q proof are retained
 under `/tmp/borealis-v1-native-final-evidence-3/`. Its exports were copied there

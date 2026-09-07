@@ -2,7 +2,7 @@
   "date": "2026-09-07",
   "scope": "Borealis functional v1",
   "runtime_source_commit": "1e56b21d66d119bfb4535e58a5b3535b0586b3c3",
-  "completion": "final_native_keychain_approval_and_sip_enabled_ci_runner_pending",
+  "completion": "final_native_rerun_pending",
   "platform": {
     "os": "macOS 26.6.2",
     "arch": "arm64",
@@ -308,12 +308,12 @@
     "execution": "Supported source TypeScript runner and pnpm workspace:archive CLI on exact runtime source; no build."
   },
   "native_ui": {
-    "status": "waiting_for_macos_keychain_approval",
-    "pending_run": "/tmp/borealis-v1-native-final-4",
-    "pending_evidence": "/tmp/borealis-v1-native-final-evidence-4/summary.json",
+    "status": "awaiting_full_native_rerun",
+    "pending_run": "/tmp/borealis-v1-native-final-5",
+    "pending_evidence": "/tmp/borealis-v1-native-final-evidence-5/summary.json",
     "required_checkpoints": 17,
     "package_asar_sha256": "7e80766679d6744e8e7c18abaaa10901087ec4733701e2f196267eb8e1bc5b8d",
-    "next_action": "Approve the actual macOS Keychain prompt for the normal packaged app; complete all A\u2013F checkpoints including exact unreadable-file guidance/retry and active watched-refresh Cmd+Q.",
+    "next_action": "Run all 17 native checkpoints on unchanged final package with explicit embedding hold; require same scheduled refresh cancelled, no expired hold, and clean processes/locks.",
     "intermediate_evidence": "/tmp/borealis-v1-native-final-evidence-3/summary.json",
     "intermediate_passed_journeys": [
       "A",
@@ -326,11 +326,66 @@
     "intermediate_checkpoints": 15,
     "intermediate_package_asar_sha256": "77cc92964d4882213f36093644a2b7ae9eed79ab8909282abdd73da983633605",
     "intermediate_cleanup": "Actual scheduled embedding was active immediately before native Cmd+Q; same refresh cancelled, no active work, all owned children/processes/locks gone and workspace removed. This earlier package does not certify final acceptance.",
-    "fixed_defect": "Permission failures now return actionable KNOWLEDGE_FILE_UNREADABLE, settle durable refresh work, pause watched retries and recover without replacing sources or citations."
+    "fixed_defect": "Permission failures now return actionable KNOWLEDGE_FILE_UNREADABLE, settle durable refresh work, pause watched retries and recover without replacing sources or citations.",
+    "bootstrap_passed": false,
+    "final_package_attempt_4": {
+      "entry": "run-product-desktop",
+      "started_at": "2026-09-07T16:55:24.239Z",
+      "journeys": [
+        {
+          "journey": "A",
+          "status": "pass",
+          "surface": "packaged-native-ui",
+          "duration_ms": 190514
+        },
+        {
+          "journey": "B",
+          "status": "pass",
+          "surface": "packaged-native-ui",
+          "duration_ms": 359725
+        },
+        {
+          "journey": "C",
+          "status": "pass",
+          "surface": "packaged-native-ui",
+          "duration_ms": 203607
+        },
+        {
+          "journey": "D",
+          "status": "pass",
+          "surface": "packaged-native-ui",
+          "duration_ms": 435584
+        },
+        {
+          "journey": "E",
+          "status": "pass",
+          "surface": "packaged-native-ui",
+          "duration_ms": 614970
+        },
+        {
+          "journey": "F",
+          "status": "pass",
+          "surface": "packaged-native-ui",
+          "duration_ms": 287411
+        }
+      ],
+      "failure": "NATIVE_DRIVER_FAIL:quit",
+      "cleanup": {
+        "workspace_removed": false,
+        "kept_path": "/private/tmp/borealis-v1-native-final-4",
+        "pids_gone": true,
+        "problems": []
+      },
+      "finished_at": "2026-09-07T18:03:20.016Z",
+      "evidence_path": "/tmp/borealis-v1-native-final-evidence-4/summary.json",
+      "successful_checkpoints": 16,
+      "quit_explanation": "All A\u2013F passed, but the eight-second delayed embedding completed before native quit arrived. This did not prove active cancellation and the command failed honestly.",
+      "oauth_refresh_evidence": "/tmp/borealis-v1-native-final-evidence-4/artifacts/native-oauth-refresh.json"
+    }
   },
   "harness_tests": {
     "protocol_fixture_checks": 82,
-    "native_driver_regressions": 9,
+    "native_driver_regressions": 10,
     "skips": 0,
     "packaged_smoke_regressions": 5,
     "desktop_combined_tests": 34,
@@ -339,8 +394,10 @@
       "UTC": 27,
       "Europe/Berlin": 27
     },
-    "protocol_fixture_log": "/tmp/borealis-v1-1e56-fixtures-final.log",
-    "native_driver_log": "/tmp/borealis-v1-1e56-native-harness-final.log"
+    "protocol_fixture_log": "/tmp/borealis-v1-native-hold-fixtures.log",
+    "native_driver_log": "/tmp/borealis-v1-1e56-native-harness-final.log",
+    "embedding_hold_regressions": 4,
+    "embedding_hold_log": "/tmp/borealis-v1-native-hold-tests.log"
   },
   "documentation": {
     "markdown_files_reviewed": 130,
@@ -401,6 +458,25 @@
         "/tmp/borealis-v1-1e56-browser-final/artifacts/C/exports/docT-v2.html": "09d737f1ca314e2dd465ab692d98903ba2a056115dfb3fc46314ede97991e975",
         "/tmp/borealis-v1-1e56-browser-final/artifacts/C/exports/docT-v2.pdf": "51beea87421b59e631814f6e3bdc2e9bef685ec35acacdad50910a8d9d92c51d",
         "/tmp/borealis-v1-1e56-browser-final/artifacts/C/exports/docT-v2.zip": "00a1893126ddae80230b3abebf45beac2cf2a04e0b5725051406bb4d1a74c2a5"
+      }
+    },
+    "final_native": {
+      "passed": true,
+      "package_asar_sha256": "7e80766679d6744e8e7c18abaaa10901087ec4733701e2f196267eb8e1bc5b8d",
+      "pdf_pages": 2,
+      "docx_pages": 1,
+      "rendered_paths": [
+        "/tmp/borealis-v1-native4-export-review/pdf",
+        "/tmp/borealis-v1-native4-export-review/docx"
+      ],
+      "observations": [
+        "Both native PDF pages and the complete DOCX page inspected.",
+        "Narrative, chart title/legend/axes and 14-row finance table are readable without clipping.",
+        "Unverified manual claims remain explicitly disclosed."
+      ],
+      "sha256": {
+        "/tmp/borealis-v1-native4-export-review/inputs/report.docx": "71817dce21f5da4457136b2c10164c9908ee747c1eab132bc90ac75a91ca31ca",
+        "/tmp/borealis-v1-native4-export-review/inputs/report.pdf": "dfdd4e7d9ca3908d8ae2ff2dca0e0ab39316a83208fe1367b69798e8ba4010e5"
       }
     }
   },
@@ -577,7 +653,20 @@
       "log": "/tmp/borealis-v1-ci-1e56-macos26.log",
       "rejected_experiment": "Explicit library flag uniformly applied broke retained-pair control; not adopted."
     },
-    "required_action": "Provide a SIP-enabled Apple Silicon CI runner; repository currently has no registered runners. Strict entitlement checks remain enforced."
+    "final_head_followup": {
+      "source_commit": "bc53e4377cc8cfa60ecd75ebbf3024f43c065e81",
+      "run": 34146252673,
+      "linux_passed": true,
+      "macos_failed_step": "Verify hardened-runtime entitlement matrix",
+      "host_sip": "disabled",
+      "logs": {
+        "linux": "/tmp/borealis-v1-ci-bc53-linux-pass.log",
+        "macos": "/tmp/borealis-v1-ci-bc53-macos26.log"
+      }
+    },
+    "functional_goal_blocker": false,
+    "scope_note": "The functional-wave contract requires the strict packaged entitlement command on supported Apple Silicon macOS, which passed on the final local package. It does not require provisioning a hosted CI runner. The hosted macOS failure remains an infrastructure follow-up and is not recorded as passing.",
+    "infrastructure_followup": "Provide a SIP-enabled Apple Silicon CI runner; repository currently has no registered runners. Strict entitlement checks remain enforced."
   },
   "permission_recovery": {
     "source_commit": "1e56b21d66d119bfb4535e58a5b3535b0586b3c3",
