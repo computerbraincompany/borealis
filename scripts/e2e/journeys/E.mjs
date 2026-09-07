@@ -537,12 +537,12 @@ export async function run(ctx) {
       steps: [
         {
           type: "slow",
-          delay_ms: 4_000,
+          delay_ms: 6_000,
           pieces: ["Step summary: conflicting and superseding statements compared; conflicts recorded."],
         },
         {
           type: "slow",
-          delay_ms: 4_000,
+          delay_ms: 6_000,
           pieces: ["Step summary: renewal and effective-date facts recorded; missing fields noted."],
         },
         { type: "text", pieces: [JSON.stringify(t1.price)] },
