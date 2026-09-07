@@ -701,7 +701,7 @@ async function main() {
       return {
         evidence: items.length,
         rows: rows.length,
-        status: detail.status,
+        run_status: detail.status,
       };
     });
 
