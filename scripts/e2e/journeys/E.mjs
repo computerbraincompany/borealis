@@ -1210,6 +1210,7 @@ export async function run(ctx) {
     assert((await session.page.getByRole("button", { name: "Create reviewed draft", exact: true }).first().isDisabled()) === true, "FAILED_DRAFT_NOT_DISABLED");
     const failedArtifact = await session.apiFetch(`/api/research-runs/${runFailed}/artifacts`, {
       method: "POST",
+      body: {}, // the artifact contract is an explicitly empty JSON object
       expectStatus: 409,
     });
     assert(failedArtifact.body?.code === "RESEARCH_RUN_STATE", "FAILED_ARTIFACT_CODE", String(failedArtifact.body?.code));
@@ -1241,6 +1242,7 @@ export async function run(ctx) {
     );
     const cancelledArtifact = await session.apiFetch(`/api/research-runs/${runCancelled}/artifacts`, {
       method: "POST",
+      body: {},
       expectStatus: 409,
     });
     assert(cancelledArtifact.body?.code === "RESEARCH_RUN_STATE", "CANCELLED_ARTIFACT_CODE");
