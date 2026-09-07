@@ -3674,7 +3674,12 @@ export const briefReviewsApi = {
     id: string,
     body: { decision: "approve" | "reject"; document_revision_id: string; note?: string },
     signal?: AbortSignal,
-  ) => api<BriefDecisionResult>(`/api/brief-reviews/${id}/decision`, { method: "POST", body: JSON.stringify(body), signal }),
+  ) =>
+    api<BriefDecisionResult>(`/api/brief-reviews/${id}/decision`, {
+      method: "POST",
+      body: JSON.stringify(body),
+      signal,
+    }),
 };
 
 export const notificationsApi = {

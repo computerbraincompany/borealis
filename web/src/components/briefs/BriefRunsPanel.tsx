@@ -37,9 +37,36 @@ function newOperationId(): string {
 }
 
 function summaryFromDetail(detail: BriefRunDetail): BriefRunSummary {
-  const { refresh_receipts: _receipts, source_snapshot: _snapshot, comparison_summary: _comparison, ...summary } =
-    detail;
-  return summary;
+  // Drop the detail-only payloads; the row keeps the bounded summary fields.
+  return {
+    id: detail.id,
+    recipe_id: detail.recipe_id,
+    trigger: detail.trigger,
+    operation_id: detail.operation_id,
+    occurrence_key: detail.occurrence_key,
+    recipe_revision: detail.recipe_revision,
+    stage: detail.stage,
+    stage_attempts: detail.stage_attempts,
+    cancel_requested: detail.cancel_requested,
+    deadline_at: detail.deadline_at,
+    refresh_deadline_at: detail.refresh_deadline_at,
+    coalesced_count: detail.coalesced_count,
+    missed_through_key: detail.missed_through_key,
+    analysis_run_id: detail.analysis_run_id,
+    baseline_run_id: detail.baseline_run_id,
+    analysis_succeeded: detail.analysis_succeeded,
+    document_id: detail.document_id,
+    document_revision_id: detail.document_revision_id,
+    reviewed_revision_id: detail.reviewed_revision_id,
+    publication_operation_id: detail.publication_operation_id,
+    publication_error_code: detail.publication_error_code,
+    failure_code: detail.failure_code,
+    failure_reason: detail.failure_reason,
+    created_at: detail.created_at,
+    started_at: detail.started_at,
+    stage_updated_at: detail.stage_updated_at,
+    finished_at: detail.finished_at,
+  };
 }
 
 export function BriefRunsPanel({ recipe }: { recipe: BriefRecipe }) {
@@ -245,7 +272,9 @@ export function BriefRunsPanel({ recipe }: { recipe: BriefRecipe }) {
     <div className="space-y-3" aria-label={`Runs for ${recipe.name}`} aria-busy={loading}>
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="text-xs text-muted-foreground">
-          {hasActive ? "A run is executing — status refreshes while this window is open." : "Run history and manual runs."}
+          {hasActive
+            ? "A run is executing — status refreshes while this window is open."
+            : "Run history and manual runs."}
         </p>
         <div className="flex items-center gap-2">
           {runNowError && (
@@ -287,7 +316,10 @@ export function BriefRunsPanel({ recipe }: { recipe: BriefRecipe }) {
                     <span className="text-xs text-muted-foreground">{run.trigger}</span>
                     <span className="font-mono text-[11px] text-muted-foreground">{run.occurrence_key}</span>
                     {run.coalesced_count > 0 && (
-                      <span className="text-xs text-warning" title="Missed occurrences coalesced into this catch-up run">
+                      <span
+                        className="text-xs text-warning"
+                        title="Missed occurrences coalesced into this catch-up run"
+                      >
                         coalesced {run.coalesced_count} missed occurrence{run.coalesced_count === 1 ? "" : "s"}
                         {run.missed_through_key ? ` through ${run.missed_through_key}` : ""}
                       </span>
@@ -305,7 +337,11 @@ export function BriefRunsPanel({ recipe }: { recipe: BriefRecipe }) {
                         disabled={cancelBusyId === run.id}
                         onClick={() => void cancelRun(run)}
                       >
-                        {cancelBusyId === run.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <XCircle className="h-4 w-4" />}
+                        {cancelBusyId === run.id ? (
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                        ) : (
+                          <XCircle className="h-4 w-4" />
+                        )}
                       </Button>
                     )}
                     <Button
@@ -338,7 +374,11 @@ export function BriefRunsPanel({ recipe }: { recipe: BriefRecipe }) {
                     )}
                     {detail ? (
                       <>
-                        <BriefPipeline stage={detail.stage} attempts={detail.stage_attempts} cancelRequested={detail.cancel_requested} />
+                        <BriefPipeline
+                          stage={detail.stage}
+                          attempts={detail.stage_attempts}
+                          cancelRequested={detail.cancel_requested}
+                        />
                         {detail.refresh_receipts.length > 0 && (
                           <div>
                             <p className="text-[11px] font-medium text-muted-foreground">
@@ -352,10 +392,7 @@ export function BriefRunsPanel({ recipe }: { recipe: BriefRecipe }) {
                           <BriefComparisonView summary={detail.comparison_summary} />
                         </div>
                         {detail.document_id && (
-                          <a
-                            className="text-xs text-primary underline"
-                            href={`#/documents/${detail.document_id}`}
-                          >
+                          <a className="text-xs text-primary underline" href={`#/documents/${detail.document_id}`}>
                             Open report draft
                           </a>
                         )}

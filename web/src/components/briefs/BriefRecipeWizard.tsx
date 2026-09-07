@@ -107,7 +107,7 @@ function paramDraftValue(declaration: AnalysisParameterDeclaration): string {
 
 function parseParamValue(
   declaration: AnalysisParameterDeclaration,
-  draft: string
+  draft: string,
 ): { value?: AnalysisParameterValue; error?: string } {
   if (draft === "") return {};
   if (declaration.type === "boolean") {
@@ -158,7 +158,7 @@ export function BriefRecipeWizard({
   const [hourDraft, setHourDraft] = useState(String(recipe?.schedule.hour ?? 9));
   const [minuteDraft, setMinuteDraft] = useState(String(recipe?.schedule.minute ?? 0).padStart(2, "0"));
   const [timeZone, setTimeZone] = useState(
-    recipe?.schedule.time_zone ?? Intl.DateTimeFormat().resolvedOptions().timeZone ?? "UTC"
+    recipe?.schedule.time_zone ?? Intl.DateTimeFormat().resolvedOptions().timeZone ?? "UTC",
   );
   const [preview, setPreview] = useState<BriefOccurrencePreview[] | null>(recipe?.next_occurrences ?? null);
   const [busy, setBusy] = useState(false);
@@ -328,7 +328,8 @@ export function BriefRecipeWizard({
       return { error: "Draft instruction must be 1–8,000 characters." };
     if (!analysisId) return { error: "Choose a saved analysis." };
     if (!analysis) return { error: "The saved analysis is still loading." };
-    if (boundSourceIds.length < 1) return { error: "The bound analysis revision selects no sources; edit the analysis first." };
+    if (boundSourceIds.length < 1)
+      return { error: "The bound analysis revision selects no sources; edit the analysis first." };
 
     const values: Record<string, AnalysisParameterValue> = {};
     const errors: Record<string, string> = {};
@@ -406,11 +407,7 @@ export function BriefRecipeWizard({
     setDialogError(null);
     try {
       const saved = recipe
-        ? await briefsApi.update(
-            recipe.id,
-            { expected_revision: recipe.revision, ...body },
-            abort.signal,
-          )
+        ? await briefsApi.update(recipe.id, { expected_revision: recipe.revision, ...body }, abort.signal)
         : await briefsApi.create(body, abort.signal);
       if (saveRequestRef.current !== requestId || abort.signal.aborted || !mountedRef.current) return;
       saveAbortRef.current = null;
@@ -483,7 +480,13 @@ export function BriefRecipeWizard({
               ))}
             </select>
             {analysesNextCursor && (
-              <Button type="button" variant="ghost" size="sm" onClick={() => void loadMoreAnalyses()} disabled={analysesLoadingMore}>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={() => void loadMoreAnalyses()}
+                disabled={analysesLoadingMore}
+              >
                 {analysesLoadingMore && <Loader2 className="h-4 w-4 animate-spin" />}
                 Load older analyses
               </Button>
@@ -508,7 +511,13 @@ export function BriefRecipeWizard({
                       key={sourceId}
                       className="inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-[11px]"
                     >
-                      <input type="checkbox" checked disabled aria-label={`Source ${sourceNames.get(sourceId) ?? sourceId}`} className="h-3 w-3" />
+                      <input
+                        type="checkbox"
+                        checked
+                        disabled
+                        aria-label={`Source ${sourceNames.get(sourceId) ?? sourceId}`}
+                        className="h-3 w-3"
+                      />
                       {sourceNames.get(sourceId) ?? `source ${sourceId.slice(0, 8)}`}
                     </span>
                   ))}
@@ -545,7 +554,13 @@ export function BriefRecipeWizard({
                     </select>
                   ) : (
                     <Input
-                      type={declaration.type === "date" ? "date" : declaration.type === "number" || declaration.type === "integer" ? "number" : "text"}
+                      type={
+                        declaration.type === "date"
+                          ? "date"
+                          : declaration.type === "number" || declaration.type === "integer"
+                            ? "number"
+                            : "text"
+                      }
                       step={declaration.type === "integer" ? 1 : declaration.type === "number" ? "any" : undefined}
                       aria-label={`Parameter ${declaration.name}`}
                       aria-invalid={Boolean(paramErrors[declaration.name])}
@@ -590,7 +605,9 @@ export function BriefRecipeWizard({
                 return (
                   <Card key={sourceId} className="space-y-1.5 p-2.5">
                     <div className="flex items-center justify-between gap-2 text-xs">
-                      <span className="truncate font-medium">{sourceNames.get(sourceId) ?? `source ${sourceId.slice(0, 8)}`}</span>
+                      <span className="truncate font-medium">
+                        {sourceNames.get(sourceId) ?? `source ${sourceId.slice(0, 8)}`}
+                      </span>
                       <select
                         aria-label={`Refresh mode for ${sourceNames.get(sourceId) ?? sourceId}`}
                         value={binding.mode}

@@ -1,11 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { BellOff, CalendarClock, Loader2, Pause, Pencil, Play, Plus, RefreshCw, Trash2 } from "lucide-react";
-import {
-  briefScheduleLabel,
-  briefsApi,
-  formatApiError,
-  type BriefRecipe,
-} from "@/lib/api";
+import { briefScheduleLabel, briefsApi, formatApiError, type BriefRecipe } from "@/lib/api";
 import { mergeCatalogContinuation, mergeCatalogHead } from "@/lib/catalogMerge";
 import { cn, formatDate } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
@@ -83,6 +78,7 @@ export function BriefRecipeSection() {
   }, []);
 
   useEffect(() => {
+    const rowMutationRequests = rowMutationRequestsRef.current;
     mountedRef.current = true;
     void load();
     return () => {
@@ -91,8 +87,8 @@ export function BriefRecipeSection() {
       catalogLoadingMoreOwnerRef.current = null;
       manageRequestRef.current += 1;
       manageAbortRef.current?.abort();
-      for (const request of rowMutationRequestsRef.current.values()) request.abort.abort();
-      rowMutationRequestsRef.current.clear();
+      for (const request of rowMutationRequests.values()) request.abort.abort();
+      rowMutationRequests.clear();
       deleteRequestRef.current += 1;
     };
   }, [load]);
@@ -179,7 +175,10 @@ export function BriefRecipeSection() {
     setPageError(null);
     setTogglingId(targetId);
     try {
-      const updated = recipe.state === "active" ? await briefsApi.pause(targetId, abort.signal) : await briefsApi.resume(targetId, abort.signal);
+      const updated =
+        recipe.state === "active"
+          ? await briefsApi.pause(targetId, abort.signal)
+          : await briefsApi.resume(targetId, abort.signal);
       if (rowMutationRequestsRef.current.get(targetId)?.requestId !== requestId || abort.signal.aborted) return;
       invalidateCatalog();
       replaceRecipe(updated);
@@ -238,7 +237,11 @@ export function BriefRecipeSection() {
       closeManage();
       setDeleteTarget(null);
     } catch (failure: unknown) {
-      if (deleteRequestRef.current === requestId && rowMutationRequestsRef.current.get(targetId)?.requestId === requestId && !abort.signal.aborted) {
+      if (
+        deleteRequestRef.current === requestId &&
+        rowMutationRequestsRef.current.get(targetId)?.requestId === requestId &&
+        !abort.signal.aborted
+      ) {
         setPageError(formatApiError(failure, "Could not delete the brief"));
       }
     } finally {
@@ -268,12 +271,21 @@ export function BriefRecipeSection() {
           </h2>
           <p className="mt-1 text-sm text-muted-foreground">
             Scheduled saved-analysis runs that refresh their inputs, rerun the analysis, compare results, and prepare a
-            report draft in the <a className="text-primary underline" href="#/reviews">review inbox</a>. Briefs never
-            publish or send anything before you approve the exact draft revision.
+            report draft in the{" "}
+            <a className="text-primary underline" href="#/reviews">
+              review inbox
+            </a>
+            . Briefs never publish or send anything before you approve the exact draft revision.
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <Button variant="secondary" size="sm" aria-label="Refresh briefs" onClick={() => void load()} disabled={loading}>
+          <Button
+            variant="secondary"
+            size="sm"
+            aria-label="Refresh briefs"
+            onClick={() => void load()}
+            disabled={loading}
+          >
             <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} /> Refresh
           </Button>
           <Button size="sm" onClick={() => setWizard({ recipe: null })}>
@@ -338,7 +350,9 @@ export function BriefRecipeSection() {
                 <Button
                   variant="ghost"
                   size="icon"
-                  title={togglingId === recipe.id ? "Saving…" : recipe.state === "active" ? "Pause brief" : "Resume brief"}
+                  title={
+                    togglingId === recipe.id ? "Saving…" : recipe.state === "active" ? "Pause brief" : "Resume brief"
+                  }
                   aria-label={recipe.state === "active" ? `Pause ${recipe.name}` : `Resume ${recipe.name}`}
                   aria-busy={togglingId === recipe.id}
                   className="text-muted-foreground hover:text-primary"

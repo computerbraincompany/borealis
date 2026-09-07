@@ -21,6 +21,9 @@ const DocumentWorkbench = lazy(() =>
   import("@/pages/DocumentWorkbench").then((module) => ({ default: module.DocumentWorkbench })),
 );
 const ResearchView = lazy(() => import("@/pages/ResearchView").then((module) => ({ default: module.ResearchView })));
+const BriefReviewsView = lazy(() =>
+  import("@/pages/BriefReviewsView").then((module) => ({ default: module.BriefReviewsView })),
+);
 const SettingsView = lazy(() => import("@/pages/SettingsView").then((module) => ({ default: module.SettingsView })));
 
 function RouteFallback({ label }: { label: string }) {
@@ -72,7 +75,7 @@ export default function App() {
     return <AuthPage />;
   }
 
-  // route: /chat[:/id] | /sources | /connectors | /reports | /analyses | /settings | /login
+  // route: /chat[:/id] | /sources | /connectors | /reports | /analyses | /reviews | /settings | /login
   if (route.startsWith("/login")) {
     window.location.hash = "/chat";
     return null;
@@ -99,6 +102,7 @@ export default function App() {
   else if (workspaceRoute.startsWith("/connectors")) page = <ConnectorsView />;
   else if (workspaceRoute.startsWith("/reports")) page = <ReportsView />;
   else if (workspaceRoute.startsWith("/analyses")) page = <AnalysesView />;
+  else if (workspaceRoute.startsWith("/reviews")) page = <BriefReviewsView />;
   else if (workspaceRoute.startsWith("/documents")) {
     const documentSegment = routePath.split("/")[2];
     page = <DocumentWorkbench documentId={documentSegment} />;

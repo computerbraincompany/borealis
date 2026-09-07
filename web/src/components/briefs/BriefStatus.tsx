@@ -14,21 +14,23 @@ import {
  * server owns the stage machine, comparison, and receipts.
  */
 
-const STAGE_STYLING: Record<BriefRunStage, { label: string; variant: "default" | "secondary" | "pending" | "success" | "destructive" | "outline" }> =
-  {
-    queued: { label: "queued", variant: "secondary" },
-    refreshing: { label: "refreshing inputs", variant: "pending" },
-    waiting_ready: { label: "waiting for ready inputs", variant: "pending" },
-    analyzing: { label: "analyzing", variant: "pending" },
-    drafting: { label: "drafting report", variant: "pending" },
-    awaiting_review: { label: "awaiting review", variant: "default" },
-    publishing: { label: "publishing", variant: "pending" },
-    approved: { label: "approved", variant: "success" },
-    rejected: { label: "rejected", variant: "outline" },
-    failed: { label: "failed", variant: "destructive" },
-    cancelled: { label: "cancelled", variant: "outline" },
-    skipped: { label: "skipped", variant: "pending" },
-  };
+const STAGE_STYLING: Record<
+  BriefRunStage,
+  { label: string; variant: "default" | "secondary" | "pending" | "success" | "destructive" | "outline" }
+> = {
+  queued: { label: "queued", variant: "secondary" },
+  refreshing: { label: "refreshing inputs", variant: "pending" },
+  waiting_ready: { label: "waiting for ready inputs", variant: "pending" },
+  analyzing: { label: "analyzing", variant: "pending" },
+  drafting: { label: "drafting report", variant: "pending" },
+  awaiting_review: { label: "awaiting review", variant: "default" },
+  publishing: { label: "publishing", variant: "pending" },
+  approved: { label: "approved", variant: "success" },
+  rejected: { label: "rejected", variant: "outline" },
+  failed: { label: "failed", variant: "destructive" },
+  cancelled: { label: "cancelled", variant: "outline" },
+  skipped: { label: "skipped", variant: "pending" },
+};
 
 export function BriefStageBadge({ stage }: { stage: BriefRunStage }) {
   const styling = STAGE_STYLING[stage];
@@ -74,7 +76,11 @@ export function BriefPipeline({
               >
                 {step.replaceAll("_", " ")}
               </span>
-              {index < BRIEF_PIPELINE_STAGES.length - 1 && <span aria-hidden className="text-muted-foreground/50">→</span>}
+              {index < BRIEF_PIPELINE_STAGES.length - 1 && (
+                <span aria-hidden className="text-muted-foreground/50">
+                  →
+                </span>
+              )}
             </li>
           );
         })}
@@ -155,7 +161,12 @@ export function BriefComparisonView({ summary }: { summary: BriefComparisonPaylo
           {summary.changed_sample.map((change, index) => (
             <li key={index}>
               <span className="font-mono">{change.key.map((part) => String(part)).join(" · ")}</span>{" "}
-              {change.changes.map((cell) => `${cell.column} ${cell.delta === null ? "Δ—" : `${cell.delta >= 0 ? "+" : ""}${cell.delta}`}`).join(", ")}
+              {change.changes
+                .map(
+                  (cell) =>
+                    `${cell.column} ${cell.delta === null ? "Δ—" : `${cell.delta >= 0 ? "+" : ""}${cell.delta}`}`,
+                )
+                .join(", ")}
             </li>
           ))}
         </ul>

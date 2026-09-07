@@ -21,6 +21,10 @@ vi.mock("@/components/WorkspaceStatus", () => ({
   WorkspaceStatus: () => <div data-testid="workspace-status" />,
 }));
 
+vi.mock("@/components/NotificationsPanel", () => ({
+  NotificationsPanel: () => <div data-testid="notifications-panel" />,
+}));
+
 import { Shell } from "@/components/Shell";
 
 function renderShell() {

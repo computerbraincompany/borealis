@@ -8,12 +8,14 @@ import {
   Plug,
   FileText,
   FlaskConical,
+  Inbox,
   ScanSearch,
   Sparkles,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { AccountMenu } from "@/components/AccountMenu";
 import { WorkspaceStatus } from "@/components/WorkspaceStatus";
+import { NotificationsPanel } from "@/components/NotificationsPanel";
 
 const NAV_ITEMS = [
   { href: "/chat", label: "Chat", icon: MessageSquare },
@@ -24,6 +26,7 @@ const NAV_ITEMS = [
   { href: "/connectors", label: "Connectors", icon: Plug },
   { href: "/research", label: "Research", icon: ScanSearch },
   { href: "/reports", label: "Reports", icon: FileText },
+  { href: "/reviews", label: "Reviews", icon: Inbox },
   { href: "/analyses", label: "Analyses", icon: FlaskConical },
   { href: "/documents", label: "Documents", icon: FileEdit },
 ];
@@ -74,6 +77,11 @@ export function Shell({ children }: { children: React.ReactNode }) {
             );
           })}
         </nav>
+
+        {/* local notifications (inbox only — never outbound) */}
+        <div className="border-t">
+          <NotificationsPanel />
+        </div>
 
         {/* locality */}
         <div className="border-t">
