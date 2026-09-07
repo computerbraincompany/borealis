@@ -3,6 +3,9 @@ export const SMOKE_SUCCESS_MARKER = "BOREALIS_PACKAGED_NATIVE_SMOKE_OK";
 export const SMOKE_FAILURE_MARKER = "BOREALIS_PACKAGED_NATIVE_SMOKE_FAILED";
 export const DRIVER_SUCCESS = "Packaged Electron native smoke passed.\n";
 export const DRIVER_FAILURE = "Packaged Electron native smoke failed.\n";
+// main.ts reports its own 30s deadline with the generic failure marker. The
+// host must exclude that outcome without changing the packaged smoke protocol.
+const NATIVE_SMOKE_INTERNAL_TIMEOUT_MS = 30_000;
 
 function bytes(value) {
   return Buffer.isBuffer(value) ? value : Buffer.from(value ?? "", "utf8");
@@ -26,12 +29,14 @@ export function summarizeNativeSmoke({
   timedOut = false,
   spawnError = false,
   closed = false,
+  durationMs = null,
 } = {}) {
   return {
     schema: 1,
     exit_code: code,
     signal,
     closed,
+    duration_ms: durationMs,
     timed_out: timedOut,
     spawn_error: spawnError,
     output_overflow: overflow,
@@ -86,6 +91,10 @@ export function expectedEntitlementResult(driver, native, shouldPass) {
   // is not evidence that removing an entitlement prevents native execution.
   return shouldPass
     ? nativeSmokePassed(native)
-    : (Number.isInteger(native.exit_code) && native.exit_code !== 0) ||
-        (typeof native.signal === "string" && native.signal.startsWith("SIG"));
+    : Number.isFinite(native.duration_ms) &&
+        native.duration_ms >= 0 &&
+        native.duration_ms < NATIVE_SMOKE_INTERNAL_TIMEOUT_MS &&
+        ((Number.isInteger(native.exit_code) && native.exit_code !== 0) ||
+          (typeof native.signal === "string" &&
+            native.signal.startsWith("SIG")));
 }

@@ -35,7 +35,8 @@ jobs:
         shell: bash
         run: |
           sudo apt-get install -y xvfb
-          electron_sandbox=$(pnpm --filter borealis-desktop exec node -p 'require("node:path").join(require("node:path").dirname(require.resolve("electron/package.json")), "dist", "chrome-sandbox")')
+          pnpm --filter borealis-desktop exec node -e 'require("electron")'
+          electron_sandbox=$(pnpm --filter borealis-desktop exec node -p 'require("node:path").join(require("node:path").dirname(require("electron")), "chrome-sandbox")')
           sudo chown root:root "$electron_sandbox"
           sudo chmod 4755 "$electron_sandbox"
 

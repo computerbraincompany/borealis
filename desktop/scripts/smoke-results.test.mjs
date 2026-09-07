@@ -19,6 +19,7 @@ const native = (changes = {}) => ({
   ...summarizeNativeSmoke({
     code: 1,
     closed: true,
+    durationMs: 1_000,
     stderr: "BOREALIS_PACKAGED_NATIVE_SMOKE_FAILED\n",
     ...changes,
   }),
@@ -122,4 +123,49 @@ test("diagnostics retain exit and output shape without raw contents or errors", 
     "private error",
   ])
     assert.equal(serialized.includes(secret), false);
+});
+
+test("negative evidence excludes the packaged main's internal deadline", () => {
+  for (const durationMs of [
+    null,
+    undefined,
+    -1,
+    NaN,
+    Infinity,
+    30_000,
+    30_001,
+    45_000,
+  ]) {
+    for (const outcome of [{ code: 1 }, { code: null, signal: "SIGABRT" }]) {
+      assert.equal(
+        expectedEntitlementResult(
+          driver(false),
+          native({ ...outcome, durationMs }),
+          false,
+        ),
+        false,
+      );
+    }
+  }
+  assert.equal(
+    expectedEntitlementResult(
+      driver(false),
+      native({ durationMs: 29_999 }),
+      false,
+    ),
+    true,
+  );
+  assert.equal(
+    expectedEntitlementResult(
+      driver(true),
+      native({
+        code: 0,
+        stdout: "BOREALIS_PACKAGED_NATIVE_SMOKE_OK\n",
+        stderr: "",
+        durationMs: 30_001,
+      }),
+      true,
+    ),
+    true,
+  );
 });

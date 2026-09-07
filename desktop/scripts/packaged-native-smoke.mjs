@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { chmod, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
 import {
   DRIVER_FAILURE,
@@ -71,6 +72,7 @@ async function run(profile) {
   if (!(await stat(executable)).isFile()) {
     throw new Error("the packaged application executable is unavailable");
   }
+  const launchedAt = performance.now();
   const child = spawn(
     executable,
     [
@@ -133,6 +135,7 @@ async function run(profile) {
   }).finally(() => signalGroup(child, "SIGTERM"));
   return summarizeNativeSmoke({
     ...result,
+    durationMs: Math.ceil(performance.now() - launchedAt),
     stdout,
     stderr,
     overflow,
