@@ -93,7 +93,9 @@ does not include Playwright's Chromium download.
 The complete gate is `scripts/policy-check.mjs` plus Turborepo
 `typecheck`, `lint`, `format:check`, `test`, `test:integration`, `build`, and
 `native:smoke`. It requires workspace dependencies and Playwright Chromium;
-Linux CI installs it with `pnpm --filter borealis-server exec playwright install --with-deps chromium`.
+Linux CI installs it with `pnpm --filter borealis-server exec playwright install --with-deps chromium`,
+sets Electron’s `chrome-sandbox` helper to root-owned mode `4755`, and runs the
+gate under Xvfb. Keep the Electron sandbox enabled.
 `native:smoke` resolves isolated addon production dependencies under Node, opens
 SQLite/LanceDB/DuckDB through Electron's ABI, and loads the same addons from an
 Electron utility process. `ELECTRON_RUN_AS_NODE` alone is not enough: that path

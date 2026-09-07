@@ -3,6 +3,10 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  expectedEntitlementResult,
+  summarizeSmokeDriver,
+} from "./smoke-results.mjs";
 
 if (process.platform !== "darwin")
   throw new Error("the hardened-runtime entitlement matrix requires macOS");
@@ -119,24 +123,28 @@ try {
       if (inspection.includes(key) !== expected)
         throw new Error(`unexpected ${key} state for ${entry.name}`);
     }
-    const smoke = spawnSync(process.execPath, [packagedSmoke, appCopy], {
-      encoding: "utf8",
-      timeout: 60_000,
-    });
-    const expectedStatus = entry.shouldPass ? 0 : 1;
-    const expectedStdout = entry.shouldPass
-      ? "Packaged Electron native smoke passed.\n"
-      : "";
-    const expectedStderr = entry.shouldPass
-      ? ""
-      : "Packaged Electron native smoke failed.\n";
-    if (
-      smoke.error ||
-      smoke.signal !== null ||
-      smoke.status !== expectedStatus ||
-      smoke.stdout !== expectedStdout ||
-      smoke.stderr !== expectedStderr
-    ) {
+    const resultFile = path.join(
+      temporaryDirectory,
+      `${entry.name.replaceAll(/[^a-z]+/g, "-")}.result.json`,
+    );
+    const smoke = spawnSync(
+      process.execPath,
+      [packagedSmoke, appCopy, `--result-file=${resultFile}`],
+      {
+        encoding: "utf8",
+        timeout: 60_000,
+      },
+    );
+    let native = null;
+    try {
+      native = JSON.parse(await readFile(resultFile, "utf8"));
+    } catch {
+      /* Missing or malformed evidence fails below. */
+    }
+    process.stdout.write(
+      `ENTITLEMENT_MATRIX_RESULT ${JSON.stringify({ variant: entry.name, expected_pass: entry.shouldPass, driver: summarizeSmokeDriver(smoke), native })}\n`,
+    );
+    if (!expectedEntitlementResult(smoke, native, entry.shouldPass)) {
       throw new Error(`unexpected packaged smoke result for ${entry.name}`);
     }
     const passed = smoke.status === 0 && smoke.signal === null;

@@ -4,12 +4,13 @@
 [the completion goal](../docs/IMPLEMENTATION_GOAL.md) and
 [acceptance contract](../docs/END_TO_END_ACCEPTANCE.md), not a signed public release.
 Runtime closure fixes are committed and pushed in `9fd2944` and `ec63c5e`.
-The final repository, desktop, package, browser, storage and process-lifecycle
-gates pass. The lifecycle audit found and repaired three real shutdown defects:
+The final local repository, desktop, package, browser, storage, live-model and
+process-lifecycle gates pass. Hosted CI is being repaired: Linux needs Electron
+sandbox/Xvfb setup, and macOS needs diagnosis of a differing negative entitlement
+result; neither security gate is waived. The lifecycle audit found and repaired three real shutdown defects:
 late-idle HTTP sockets, unjoined knowledge cancellation finalizers, and SDK abort
-errors incorrectly failing resumable brief narration. Final native acceptance
-awaits macOS Keychain approval for the rebuilt package; no final A–F checkpoint
-has run yet. The superseded package's native A–C pass is retained only as
+errors incorrectly failing resumable brief narration. Keychain approval has cleared and final native acceptance is running on the
+rebuilt package; completion of all A–F checkpoints is still pending. The superseded package's native A–C pass is retained only as
 intermediate evidence, not final acceptance.
 
 ## Implementation status
@@ -37,11 +38,12 @@ provider payloads or user data belong in this ledger.
 | Desktop verify and GUI renderer | PASS | `/tmp/borealis-v1-final-desktop-verify-lifecycle.log`: tests, native utility-process loads, GUI PNG/PDF smoke; zero network hits and both unsafe requests blocked. |
 | Fresh unsigned package | PASS | `/tmp/borealis-v1-final-package-lifecycle.log`, 5/5 tasks; `/tmp/borealis-v1-final-packaged-native-lifecycle.log` and `/tmp/borealis-v1-final-entitlements-lifecycle.log` pass, including both negative entitlement removals. Final ASAR SHA-256 `77cc92964d4882213f36093644a2b7ae9eed79ab8909282abdd73da983633605`. |
 | Final browser A–F | PASS | 15:43:53–15:47:27 UTC, `/tmp/borealis-v1-ec63-browser-final/summary.json`; all six journeys pass, no skipped checks, clean workspace/lock/process cleanup. |
-| Native packaged A–F | BLOCKED | Normal hardened startup in `/tmp/borealis-v1-native-final-3` is waiting in macOS Keychain before renderer bootstrap. [Native driver contract](../scripts/e2e/NATIVE_DESKTOP.md); the complete reviewed harness also requires actual scheduled folder refresh plus in-flight embedding before Cmd+Q, the same refresh cancelled, and process/lock cleanup. No final native pass claimed. |
+| Hosted CI | FIXES AWAIT RERUN | Run `34139730952`: Linux Electron SUID sandbox setup failure; macOS negative library-validation entitlement check differed from the passing local matrix. CI now supplies Xvfb and the required sandbox helper permissions; structured content-free diagnostics retain strict entitlement checks. |
+| Native packaged A–F | IN PROGRESS | Keychain approval cleared; normal hardened startup and actual renderer bootstrap passed in `/tmp/borealis-v1-native-final-3`. A–F is running through native UI. [Native driver contract](../scripts/e2e/NATIVE_DESKTOP.md); the complete reviewed harness also requires actual scheduled folder refresh plus in-flight embedding before Cmd+Q, the same refresh cancelled, and process/lock cleanup. No final native pass claimed. |
 | Browser C including historical report | PASS | 14:20:41–14:21:04 UTC, `/tmp/borealis-v1-c-complete-evidence/summary.json`; actual chart copied from chat, legacy UI preview/download/copy denial, all exports. No skipped checks; clean lock/process cleanup. |
 | Protocol fixture self-test | PASS | 82 checks, including exact chart UUID echo and missing/duplicate refusal. |
 | Populated upgrade, managed migrations and offline archive | PASS | 15:47:16–15:47:23 UTC, `/tmp/borealis-v1-ec63-storage-final/storage-summary.json`; populated v13→v28, 36 product tables, both live managed embedding variants, encrypted archive create/inspect/restore/verify/live-lock refusal, exact artifact preservation and reconnect/reselect states. |
-| Live finance and research UI | FINAL RUN IN PROGRESS | Latest completed run 15:32:29–15:47:58 UTC, `/tmp/borealis-v1-shutdown-live-final/summary.json`: 14/14 finance rows, 12/12 supported typed facts, missing exceptions preserved; final research status needs_review and clean cleanup. It began before the final brief-abort fix. Exact-final-commit rerun retains evidence in `/tmp/borealis-v1-ec63-live-final`. |
+| Live finance and research UI | PASS | Exact runtime commit `ec63c5e`, 15:50:51–16:03:00 UTC, `/tmp/borealis-v1-ec63-live-final/summary.json`: 14/14 finance rows, 12/12 supported typed facts, missing exceptions preserved; research ends needs_review and workspace/lock/process cleanup is clean. |
 | Export visual inspection | PASS | Rendered both DOCX files and all PDF pages from browser C using bundled LibreOffice/Poppler. Long unbroken text now wraps, chart title/legend/axis labels are separate, tables and evidence readable. Final browser-C PDF rerender `/tmp/borealis-v1-pdf-reviewed-T` confirms headings stay with content on all six stress-test pages. |
 | Focused closure regressions | PASS | Job template server21/web43, schedule preview server18/web31, report/chart/render76; meaningful ownership, immutable prompt, DST/auth, stale-preview and print geometry checks. Full gate remains authoritative. |
 | Process-boundary lifecycle closure | PASS | 15:37:31–15:39:02 UTC, `/tmp/borealis-v1-lifecycle-final-evidence-v3/summary.json`; all seven cases and thirteen checks, no skips. Real research crash/reopen, active rewrite/research/MCP/analysis/render/WebDAV/brief shutdown, exact recovery/artifact preservation, actual closed-across-due catch-up. Workspace/process/lock cleanup clean. [Repeatable command](../scripts/e2e/LIFECYCLE.md). |
@@ -74,12 +76,11 @@ provider payloads or user data belong in this ledger.
 
 Machine-readable retained results are in [the v1 evidence summary](evidence/v1-2026-09-07.json).
 
-Approve the macOS Keychain prompt for the rebuilt Borealis app, then resume the
-same final native runner. The app is paused before its window opens; Computer
-Use cannot inspect or operate the protected SecurityAgent surface. No custody
-or permission boundary was bypassed. Finish all native A–F checkpoints and
-actual watched-folder quit, record the final live-model result, then reconcile
-completion labels and commit/push the remaining documentation.
+Keychain approval has cleared and the same final native runner has resumed.
+The app opened normally; no custody or permission boundary was bypassed.
+Finish all native A–F checkpoints and
+actual watched-folder quit and resolve hosted CI, then reconcile completion
+labels and commit/push the remaining documentation.
 
 The earlier Keychain approval allowed the superseded package to pass native
 A–C. That app quit normally before D–F when the process audit identified the

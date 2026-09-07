@@ -2,7 +2,7 @@
 
 **Ledger reviewed:** 2026-09-07. M01–M11 form the completed baseline;
 connected agents and M12–M16 are implemented; final native v1 acceptance awaits
-Keychain approval for the rebuilt app. [EXECUTION.md](EXECUTION.md) is the current evidence authority.
+completion of native acceptance on the rebuilt app. [EXECUTION.md](EXECUTION.md) is the current evidence authority.
 
 The M05 extension includes identity, Markdown skills, atomic configuration
 revisions, built-in tool allowlists, MCP/OAuth and reusable job setup. The

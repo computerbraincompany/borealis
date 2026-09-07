@@ -12,7 +12,7 @@
     "clean": "node scripts/clean.mjs",
     "build": "node scripts/clean.mjs && tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node --test dist/*.test.js",
+    "test": "node --test dist/*.test.js scripts/smoke-results.test.mjs",
     "format": "prettier --write 'src/**/*.{ts,cts}' 'scripts/*.{mjs,cjs}' package.json tsconfig.json",
     "format:check": "prettier --check 'src/**/*.{ts,cts}' 'scripts/*.{mjs,cjs}' package.json tsconfig.json",
     "runtime:copy": "node scripts/copy-runtime.mjs",

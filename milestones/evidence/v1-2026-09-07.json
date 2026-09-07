@@ -2,7 +2,7 @@
   "date": "2026-09-07",
   "scope": "Borealis functional v1",
   "runtime_source_commit": "ec63c5ed9773920f8e0d90035145d591e9914269",
-  "completion": "native_keychain_approval_pending",
+  "completion": "native_acceptance_and_ci_running",
   "platform": {
     "os": "macOS 26.6.2",
     "arch": "arm64",
@@ -179,8 +179,8 @@
   },
   "live": {
     "entry": "run-product-live",
-    "started_at": "2026-09-07T14:26:15.759Z",
-    "finished_at": "2026-09-07T14:36:58.043Z",
+    "started_at": "2026-09-07T15:50:51.711Z",
+    "finished_at": "2026-09-07T16:03:00.367Z",
     "chat_model": "qwen/qwen3.6-35b-a3b",
     "embed_model": "text-embedding-nomic-embed-text-v1.5",
     "embed_dim": 768,
@@ -188,32 +188,32 @@
       {
         "check": "provider-reachable",
         "status": "pass",
-        "duration_ms": 23,
+        "duration_ms": 18,
         "chat_model": "qwen/qwen3.6-35b-a3b",
         "embed_model": "text-embedding-nomic-embed-text-v1.5"
       },
       {
         "check": "chat-model-tool-capable",
         "status": "pass",
-        "duration_ms": 6955,
+        "duration_ms": 5006,
         "attempts": 1
       },
       {
         "check": "finance-upload-ingest",
         "status": "pass",
-        "duration_ms": 1095,
+        "duration_ms": 1075,
         "sources": 4
       },
       {
         "check": "live-chat-tool-turn",
         "status": "pass",
-        "duration_ms": 98819,
-        "query_receipts": 3
+        "duration_ms": 38296,
+        "query_receipts": 1
       },
       {
         "check": "finance-analysis-parameterized-rerun",
         "status": "pass",
-        "duration_ms": 1052,
+        "duration_ms": 1048,
         "rows": 14,
         "checked": 14
       },
@@ -226,10 +226,10 @@
       {
         "check": "research-import-and-run",
         "status": "pass",
-        "duration_ms": 532717,
+        "duration_ms": 681499,
         "evidence": 3,
         "rows": 3,
-        "run_status": "completed",
+        "run_status": "needs_review",
         "ui_created_planned_started_and_inspected": true,
         "supported_typed_facts": 12,
         "missing_exceptions_preserved": true
@@ -242,7 +242,8 @@
       "lock_released": true,
       "pids_gone": true,
       "problems": []
-    }
+    },
+    "evidence_path": "/tmp/borealis-v1-ec63-live-final/summary.json"
   },
   "storage": {
     "entry": "run-product-storage",
@@ -302,19 +303,19 @@
     }
   },
   "native_ui": {
-    "status": "blocked",
+    "status": "running",
     "passed_checkpoints": 0,
     "pending_run": "/tmp/borealis-v1-native-final-3",
     "package_asar_sha256": "77cc92964d4882213f36093644a2b7ae9eed79ab8909282abdd73da983633605",
-    "blocker": "Newly rebuilt package waiting inside macOS Keychain access before native renderer bootstrap. Protected SecurityAgent is not automated or bypassed.",
-    "next_action": "User approves the macOS Keychain prompt; resume the same runner for all A-F and active watched-folder quit.",
+    "next_action": "Complete all A-F through native UI and active watched-folder quit on the same final package.",
     "intermediate_evidence": "/tmp/borealis-v1-native-final-evidence-2/summary.json",
     "intermediate_passed_journeys": [
       "A",
       "B",
       "C"
     ],
-    "intermediate_cleanup": "Normal Cmd+Q; children/process/profile/workspace-lock cleanup clean. This intermediate package does not certify final acceptance."
+    "intermediate_cleanup": "Normal Cmd+Q; children/process/profile/workspace-lock cleanup clean. This intermediate package does not certify final acceptance.",
+    "bootstrap_passed": true
   },
   "harness_tests": {
     "protocol_fixture_checks": 82,
@@ -493,72 +494,10 @@
     ]
   },
   "initial_runtime_source_commit": "9fd294421b771864ee322dd2445d9d58df63fa14",
-  "live_previous_shutdown_revision": {
-    "entry": "run-product-live",
-    "started_at": "2026-09-07T15:32:29.836Z",
-    "finished_at": "2026-09-07T15:47:58.798Z",
-    "chat_model": "qwen/qwen3.6-35b-a3b",
-    "embed_model": "text-embedding-nomic-embed-text-v1.5",
-    "embed_dim": 768,
-    "checks": [
-      {
-        "check": "provider-reachable",
-        "status": "pass",
-        "duration_ms": 24,
-        "chat_model": "qwen/qwen3.6-35b-a3b",
-        "embed_model": "text-embedding-nomic-embed-text-v1.5"
-      },
-      {
-        "check": "chat-model-tool-capable",
-        "status": "pass",
-        "duration_ms": 26581,
-        "attempts": 2
-      },
-      {
-        "check": "finance-upload-ingest",
-        "status": "pass",
-        "duration_ms": 1075,
-        "sources": 4
-      },
-      {
-        "check": "live-chat-tool-turn",
-        "status": "pass",
-        "duration_ms": 64433,
-        "query_receipts": 3
-      },
-      {
-        "check": "finance-analysis-parameterized-rerun",
-        "status": "pass",
-        "duration_ms": 1044,
-        "rows": 14,
-        "checked": 14
-      },
-      {
-        "check": "finance-exports",
-        "status": "pass",
-        "duration_ms": 9,
-        "csv_bytes": 762
-      },
-      {
-        "check": "research-import-and-run",
-        "status": "pass",
-        "duration_ms": 834175,
-        "evidence": 3,
-        "rows": 3,
-        "run_status": "needs_review",
-        "ui_created_planned_started_and_inspected": true,
-        "supported_typed_facts": 12,
-        "missing_exceptions_preserved": true
-      }
-    ],
-    "passed": true,
-    "cleanup": {
-      "workspace_removed": true,
-      "kept": false,
-      "lock_released": true,
-      "pids_gone": true,
-      "problems": []
-    }
-  },
-  "live_final_pending_path": "/tmp/borealis-v1-ec63-live-final/summary.json"
+  "ci": {
+    "status": "fixes_awaiting_rerun",
+    "prior_run": 34139730952,
+    "linux_failure": "Electron SUID sandbox helper setup missing; CI now installs Xvfb and assigns the required helper ownership/mode without disabling the sandbox.",
+    "macos_failure": "Negative library-validation entitlement result differed on macos-15; content-free driver diagnostics added and strict positive/negative requirements retained."
+  }
 }

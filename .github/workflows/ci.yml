@@ -31,8 +31,16 @@ jobs:
       - name: Install Playwright Chromium
         run: pnpm --filter borealis-server exec playwright install --with-deps chromium
 
+      - name: Prepare sandboxed Electron smoke
+        shell: bash
+        run: |
+          sudo apt-get install -y xvfb
+          electron_sandbox=$(pnpm --filter borealis-desktop exec node -p 'require("node:path").join(require("node:path").dirname(require.resolve("electron/package.json")), "dist", "chrome-sandbox")')
+          sudo chown root:root "$electron_sandbox"
+          sudo chmod 4755 "$electron_sandbox"
+
       - name: Verify repository
-        run: pnpm verify
+        run: xvfb-run --auto-servernum pnpm verify
 
   package-macos-arm64:
     runs-on: macos-15

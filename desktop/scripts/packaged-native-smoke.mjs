@@ -1,8 +1,14 @@
 import { spawn } from "node:child_process";
-import { chmod, mkdtemp, rm, stat } from "node:fs/promises";
+import { chmod, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  DRIVER_FAILURE,
+  DRIVER_SUCCESS,
+  nativeSmokePassed,
+  summarizeNativeSmoke,
+} from "./smoke-results.mjs";
 
 const desktopDirectory = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -13,7 +19,17 @@ const appBundle = path.resolve(
     path.join(desktopDirectory, "release", "mac-arm64", "Borealis.app"),
 );
 const executable = path.join(appBundle, "Contents", "MacOS", "Borealis");
-const SUCCESS_MARKER = "BOREALIS_PACKAGED_NATIVE_SMOKE_OK";
+const resultArgument = process.argv[3];
+const resultFile = resultArgument?.startsWith("--result-file=")
+  ? resultArgument.slice("--result-file=".length)
+  : undefined;
+if (
+  process.argv.length > 4 ||
+  (resultArgument !== undefined &&
+    (!resultFile || !path.isAbsolute(resultFile)))
+) {
+  throw new Error("invalid packaged smoke result-file argument");
+}
 const MAX_OUTPUT_BYTES = 16 * 1024;
 const TIMEOUT_MS = 45_000;
 const LAUNCH_ENVIRONMENT_KEYS = Object.freeze([
@@ -71,6 +87,8 @@ async function run(profile) {
   let stdout = Buffer.alloc(0);
   let stderr = Buffer.alloc(0);
   let overflow = false;
+  let timedOut = false;
+  let spawnError = false;
   const append = (current, chunk) => {
     const next = Buffer.concat([current, Buffer.from(chunk)]);
     if (next.length > MAX_OUTPUT_BYTES) {
@@ -87,45 +105,78 @@ async function run(profile) {
     stderr = append(stderr, chunk);
   });
 
-  const result = await new Promise((resolve, reject) => {
+  const result = await new Promise((resolve) => {
+    let hardDeadline;
     const timeout = setTimeout(() => {
+      timedOut = true;
       signalGroup(child, "SIGKILL");
-      reject(new Error("the packaged native smoke timed out"));
+      hardDeadline = setTimeout(
+        () =>
+          resolve({
+            code: child.exitCode,
+            signal: child.signalCode,
+            closed: false,
+          }),
+        5_000,
+      );
     }, TIMEOUT_MS);
-    child.once("error", (error) => {
-      clearTimeout(timeout);
-      reject(error);
+    child.once("error", () => {
+      spawnError = true;
     });
-    child.once("exit", (code, signal) => {
+    // 'exit' can precede the last stdout/stderr chunks. 'close' proves drained
+    // pipes before the exact output contract is read.
+    child.once("close", (code, signal) => {
       clearTimeout(timeout);
-      resolve({ code, signal });
+      clearTimeout(hardDeadline);
+      resolve({ code, signal, closed: true });
     });
   }).finally(() => signalGroup(child, "SIGTERM"));
-
-  if (
-    overflow ||
-    result.code !== 0 ||
-    result.signal !== null ||
-    stdout.toString("utf8").trim() !== SUCCESS_MARKER ||
-    stderr.length !== 0
-  ) {
-    throw new Error("the packaged native smoke failed");
-  }
+  return summarizeNativeSmoke({
+    ...result,
+    stdout,
+    stderr,
+    overflow,
+    timedOut,
+    spawnError,
+  });
 }
 
-const profile = await mkdtemp(
-  path.join(os.tmpdir(), "borealis-packaged-native-smoke."),
-);
+let profile;
+let result = { ...summarizeNativeSmoke(), cleanup_ok: false };
 try {
+  profile = await mkdtemp(
+    path.join(os.tmpdir(), "borealis-packaged-native-smoke."),
+  );
   await chmod(profile, 0o700);
-  if (((await stat(profile)).mode & 0o777) !== 0o700) {
+  if (((await stat(profile)).mode & 0o777) !== 0o700)
     throw new Error("the packaged smoke profile is not private");
-  }
-  await run(profile);
-  process.stdout.write("Packaged Electron native smoke passed.\n");
+  result = { ...(await run(profile)), cleanup_ok: false };
 } catch {
-  process.stderr.write("Packaged Electron native smoke failed.\n");
-  process.exitCode = 1;
+  result.setup_error = true;
 } finally {
-  await rm(profile, { recursive: true, force: true });
+  try {
+    if (profile) await rm(profile, { recursive: true, force: true });
+    result.cleanup_ok = true;
+  } catch {
+    result.cleanup_ok = false;
+  }
+}
+try {
+  if (resultFile)
+    await writeFile(resultFile, `${JSON.stringify(result)}\n`, {
+      flag: "wx",
+      mode: 0o600,
+    });
+} catch {
+  result.result_file_error = true;
+}
+if (
+  nativeSmokePassed(result) &&
+  result.cleanup_ok &&
+  !result.result_file_error
+) {
+  process.stdout.write(DRIVER_SUCCESS);
+} else {
+  process.stderr.write(DRIVER_FAILURE);
+  process.exitCode = 1;
 }
