@@ -359,31 +359,49 @@ export async function run(ctx) {
      * connector bindings, and `schedule.weekday`/`schedule.day_of_month: null`
      * for the unused calendar fields), but routes/briefs.ts declares those as
      * `{type:"string", pattern:UUID}` / `{type:"integer"}` — no nullability.
-     * The real wizard's create therefore ALWAYS fails schema validation with a
-     * 400 FST_ERR_VALIDATION, and the dialog alert is scrolled out of the
-     * viewport so the user sees a silently stuck "Create brief" button.
-     * Repro (from this journey's first kept run):
-     *   POST /api/briefs → 400
-     *   "body/refresh_bindings/0/connector_id must match pattern
-     *    \"^[0-9a-f]{8}-…$\"" (schedule null fields fail identically).
+     * The real wizard's create therefore ALWAYS fails schema validation with
+     * a 400 (httpErrors.ts masks the AJV detail into "invalid request"), and
+     * the dialog alert sits scrolled out of the viewport so the user sees a
+     * stuck "Create brief" button with a generic line.
+     * Repro: the wizard's POST /api/briefs is asserted 400 here; the exact
+     * masked detail "body/refresh_bindings/0/connector_id must match pattern
+     * ^[0-9a-f]{8}-…" was reproduced offline against the identical Fastify
+     * schema during journey development (schedule null fields fail the same
+     * way; the same body with nulls omitted is schema-valid).
      * No product edits are in this journey's scope, so after ASSERTING the
      * defect the journey creates the equivalent recipe through the API with
      * the same browser session's token (nulls omitted, which the schema
      * accepts) and continues through every other real UI surface. */
     session.allowStatuses([400]);
+    const wizardCreateResponse = session.page
+      .waitForResponse((res) => res.url().endsWith("/api/briefs") && res.request().method() === "POST", { timeout: 20_000 })
+      .catch(() => null);
+    await wizard.getByRole("button", { name: "Create brief", exact: true }).click();
+    const wizardCreate = await wizardCreateResponse;
+    assert(wizardCreate !== null, "WIZARD_CREATE_REQUEST_MISSING");
+    const wizardStatus = wizardCreate.status();
+    const wizardBody = await wizardCreate.json().catch(() => null);
+    assert(
+      wizardStatus === 400 && wizardBody?.error === "invalid request" && typeof wizardBody?.request_id === "string",
+      "WIZARD_CREATE_UNEXPECTED_FAILURE",
+      `${wizardStatus} ${JSON.stringify(wizardBody ?? {}).slice(0, 160)}`
+    );
+    // (httpErrors.ts masks schema detail into the generic envelope above; the
+    // exact AJV violation for this exact wizard payload was reproduced offline
+    // against the same Fastify schema during journey development:
+    // "body/refresh_bindings/0/connector_id must match pattern ^[0-9a-f]{8}-…"
+    // — the same body with nulls omitted is schema-valid, which the API
+    // create below proves.)
     const wizardAlert = session.page.getByRole("alert");
     await wizardAlert.waitFor({ timeout: 15_000 });
     const wizardErrorText = await wizardAlert.first().innerText();
-    assert(
-      /connector_id/.test(wizardErrorText) && /pattern|integer|must/.test(wizardErrorText),
-      "WIZARD_CREATE_UNEXPECTED_FAILURE",
-      wizardErrorText.slice(0, 200)
-    );
+    assert(/invalid request/i.test(wizardErrorText), "WIZARD_ALERT_UNEXPECTED", wizardErrorText.slice(0, 140));
     artifacts.push(await session.screenshot(artifactsDir));
     checks.defect_wizard_create = {
       code: "BRIEF_WIZARD_NULL_SCHEMA",
-      detail: "wizard sends explicit nulls; routes/briefs.ts rejects non-nullable — create attempt 400s",
-      server_message: wizardErrorText.slice(0, 140),
+      detail: "wizard sends explicit nulls; routes/briefs.ts rejects non-nullable — create attempt 400s (masked as 'invalid request')",
+      status: wizardStatus,
+      user_alert: wizardErrorText.slice(0, 60),
     };
     await session.page.keyboard.press("Escape");
 
@@ -447,7 +465,10 @@ export async function run(ctx) {
 
     const openManage = async () => {
       await goHash(session, "/automations");
-      await expectText(session, "Reviewed briefs");
+      // A fresh mount re-fetches the recipe catalog (API-side changes since
+      // the last render — creation, external runs — must be visible).
+      await session.page.reload({ waitUntil: "domcontentloaded" });
+      await expectText(session, "Reviewed briefs", 30_000);
       const card = session.page.locator("div.p-4").filter({ hasText: RECIPE_NAME }).first();
       await card.getByRole("button", { name: "Manage", exact: true }).click();
       const dialog = session.page.getByRole("dialog", { name: RECIPE_NAME }).first();
@@ -548,6 +569,10 @@ export async function run(ctx) {
 
     const run1Final = await pollRun(run1.run.id, ["awaiting_review"], "RUN1_AWAITING");
     assert(run1Final.trigger === "manual", "RUN1_TRIGGER");
+    // Cosmetic shipped defect (repro: every manual run): briefRunStore
+    // .createManualRun inserts coalesced_count=1, so the runs panel/review
+    // rows label manual runs "coalesced 1 missed occurrence". Not load-
+    // bearing; reported, not asserted, so the journey stays meaningful.
     assert(run1Final.occurrence_key === `manual:${run1.run.operation_id}`, "RUN1_OCCURRENCE_KEY");
     assert(run1Final.analysis_succeeded === true && run1Final.analysis_run_id !== null, "RUN1_ANALYSIS_COMMIT");
     assert(run1Final.baseline_run_id === null, "RUN1_BASELINE_NOT_NULL");
@@ -919,7 +944,7 @@ export async function run(ctx) {
     /* -- P9c: delete the recipe; history + publications survive ------------- */
     const card9 = session.page.locator("div.p-4").filter({ hasText: RECIPE_NAME }).first();
     await card9.getByRole("button", { name: `Delete ${RECIPE_NAME}`, exact: true }).click();
-    const confirm = session.page.getByRole("dialog").filter({ hasText: `Delete “${RECIPE_NAME}”` }).first();
+    const confirm = session.page.getByRole("alertdialog").filter({ hasText: `Delete “${RECIPE_NAME}”` }).first();
     await confirm.waitFor({ timeout: 15_000 });
     await expectIn(confirm, "Saved results and already-published reports survive");
     await expectIn(confirm, "Pending and rejected drafts are preserved (default)");
