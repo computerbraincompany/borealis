@@ -843,10 +843,13 @@ function RewritePanel({
       }, backoff);
     };
     const poll = async () => {
-      const requestId = listRequestRef.current;
+      // loadProposals owns staleness of the LISTED STATE via its own request
+      // generation; the loop itself must only stop when this activation is
+      // cancelled. Comparing against listRequestRef here would always fail
+      // because loadProposals increments that same ref (a completed proposal
+      // would stay "rewriting…" until a page reload).
       const ok = await loadProposals();
       if (cancelled) return;
-      if (listRequestRef.current !== requestId) return;
       failuresRef.current = ok ? 0 : Math.min(failuresRef.current + 1, 3);
       schedule();
     };

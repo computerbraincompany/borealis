@@ -520,10 +520,13 @@ describe("DocumentWorkbench rewrites", () => {
     );
     expect(await screen.findByText("queued", { selector: "*" })).toBeInTheDocument();
 
-    // The scripted runner completes it; the visibility-aware poll picks the
-    // completed proposal up and renders the reviewable diff.
+    // The scripted runner completes it later. The completed state must be
+    // picked up by the poll's RE-ARMED next tick — no manual refresh, no
+    // page reload (regression: the loop once compared its captured request id
+    // against a ref that its own fetch incremented, so it never re-armed and
+    // a completed proposal stayed "queued" forever).
     serverRewrite = rewriteFixture({});
-    expect(await screen.findByText("Current selection", {}, { timeout: 6000 })).toBeInTheDocument();
+    expect(await screen.findByText("Current selection", {}, { timeout: 10000 })).toBeInTheDocument();
     expect(apiMocks.acceptRewrite).not.toHaveBeenCalled();
     expect(screen.getByText("+ Spend remained stable [1].", { exact: false })).toBeInTheDocument();
 
