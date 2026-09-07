@@ -654,7 +654,7 @@ async function main() {
         expectStatus: 201,
         body: {},
       });
-      const runId = started.body?.run?.id ?? started.body?.run_id;
+      const runId = started.body?.id ?? started.body?.run?.id ?? started.body?.run_id;
       assert(typeof runId === "string", "RESEARCH_RUN_SHAPE");
       const detail = await pollUntil(
         async () => {
