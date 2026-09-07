@@ -27,7 +27,8 @@ const apiMocks = vi.hoisted(() => ({
 }));
 
 vi.mock("@/lib/api", () => ({
-  formatApiError: (_error: unknown, fallback: string) => fallback,
+  formatApiError: (error: unknown, fallback: string) =>
+    error instanceof Error && error.name === "ApiError" ? error.message : fallback,
   isRemoteEgressConsentError: () => false,
   consentApi: { get: vi.fn(), acknowledge: vi.fn() },
   automationsApi: {
@@ -438,6 +439,309 @@ describe("AutomationsView", () => {
       expect(screen.queryByText("Nightly ledger")).not.toBeInTheDocument();
     },
   );
+
+  describe("reviewed briefs section", () => {
+    const briefRecipe = {
+      id: "brief-1",
+      kind: "reviewed_brief" as const,
+      name: "Weekly finance",
+      revision: 3,
+      state: "active" as const,
+      paused_reason: null,
+      notifications_enabled: true,
+      consecutive_failures: 0,
+      analysis_id: "analysis-1",
+      analysis_revision: 2,
+      parameter_values: [],
+      report_title: "Weekly finance brief",
+      report_instruction: "Summarize weekly.",
+      source_ids: ["src-a"],
+      refresh_bindings: [],
+      schedule: {
+        kind: "weekly" as const,
+        weekday: 1,
+        day_of_month: null,
+        hour: 9,
+        minute: 0,
+        time_zone: "Europe/Berlin",
+      },
+      next_occurrence_key: "2026-09-07T09:00",
+      next_run_at: "2026-09-07T07:00:00Z",
+      last_run_at: null,
+      created_at: "2026-09-01T00:00:00Z",
+      updated_at: "2026-09-01T00:00:00Z",
+    };
+    const briefRecipeDetail = {
+      ...briefRecipe,
+      revision: 4,
+      next_occurrences: [
+        { occurrence_key: "2026-09-07T09:00", civil: "2026-09-07T09:00", utc_at: "2026-09-07T07:00:00.000Z" },
+        { occurrence_key: "2026-09-14T09:00", civil: "2026-09-14T09:00", utc_at: "2026-09-14T07:00:00.000Z" },
+        { occurrence_key: "2026-09-21T09:00", civil: "2026-09-21T09:00", utc_at: "2026-09-21T07:00:00.000Z" },
+      ],
+    };
+    const analysisFixture = {
+      id: "analysis-1",
+      current_revision: 2,
+      title: "Monthly spend",
+      description: "",
+      sql: "SELECT 1",
+      parameters: [],
+      source_ids: ["src-a"],
+      comparison_key: null,
+      origin: { chat_id: null, run_id: null, capture_id: null },
+      revision_created_at: "2026-09-01T00:00:00Z",
+      sources: [],
+      created_at: "2026-09-01T00:00:00Z",
+      updated_at: "2026-09-01T00:00:00Z",
+    };
+    const briefRun = {
+      id: "run-new",
+      recipe_id: "brief-1",
+      trigger: "manual",
+      operation_id: "op-1",
+      occurrence_key: "manual-op-1",
+      recipe_revision: 4,
+      stage: "queued",
+      stage_attempts: 1,
+      cancel_requested: false,
+      deadline_at: "2026-09-07T07:30:00Z",
+      refresh_deadline_at: null,
+      coalesced_count: 0,
+      missed_through_key: null,
+      analysis_run_id: null,
+      baseline_run_id: null,
+      analysis_succeeded: false,
+      document_id: null,
+      document_revision_id: null,
+      reviewed_revision_id: null,
+      publication_operation_id: null,
+      publication_error_code: null,
+      failure_code: null,
+      failure_reason: null,
+      created_at: "2026-09-06T07:00:00Z",
+      started_at: null,
+      stage_updated_at: "2026-09-06T07:00:00Z",
+      finished_at: null,
+    };
+
+    function briefApiError(message: string, code: string, status = 400) {
+      const error = new Error(message) as Error & { name: string; status: number; data: unknown };
+      error.name = "ApiError";
+      error.status = status;
+      error.data = { code };
+      return error;
+    }
+
+    beforeEach(() => {
+      apiMocks.briefsList.mockResolvedValue({ items: [briefRecipe], next_cursor: null });
+      apiMocks.briefsGet.mockResolvedValue(briefRecipeDetail);
+      apiMocks.briefsListRuns.mockResolvedValue({ items: [], next_cursor: null });
+      apiMocks.analysesList.mockResolvedValue({
+        items: [
+          {
+            id: "analysis-1",
+            title: "Monthly spend",
+            description: "",
+            current_revision: 2,
+            source_count: 1,
+            unavailable_source_count: 0,
+            created_at: "2026-09-01T00:00:00Z",
+            updated_at: "2026-09-01T00:00:00Z",
+          },
+        ],
+        next_cursor: null,
+      });
+      apiMocks.analysesGet.mockResolvedValue(analysisFixture);
+      apiMocks.sourcesList.mockResolvedValue({
+        items: [
+          {
+            id: "src-a",
+            name: "ledger.csv",
+            display_name: "ledger.csv",
+            kind: "tabular",
+            mime: "text/csv",
+            status: "ready",
+            created_at: "2026-09-01T00:00:00Z",
+            meta: null,
+          },
+        ],
+        next_cursor: null,
+      });
+      apiMocks.knowledgeList.mockResolvedValue({ items: [], next_cursor: null });
+    });
+
+    it("lists reviewed briefs as a distinct section beside the interval automations", async () => {
+      render(<AutomationsView />);
+
+      expect(await screen.findByText("Nightly ledger")).toBeInTheDocument();
+      expect(await screen.findByText("Weekly finance")).toBeInTheDocument();
+      expect(screen.getByRole("heading", { name: "Reviewed briefs" })).toBeInTheDocument();
+      expect(screen.getByText("reviewed brief")).toBeInTheDocument();
+      expect(screen.getByText("schedule weekly")).toBeInTheDocument();
+    });
+
+    it("edits with the loaded recipe revision as the CAS guard and surfaces conflicts inside the wizard", async () => {
+      apiMocks.briefsUpdate.mockRejectedValueOnce(
+        briefApiError("brief recipe revision conflict", "BRIEF_REVISION_CONFLICT", 409),
+      );
+      render(<AutomationsView />);
+
+      fireEvent.click(await screen.findByRole("button", { name: "Manage" }));
+      fireEvent.click(await screen.findByRole("button", { name: /Edit/ }));
+
+      // The edit wizard is seeded from the server detail (revision 4).
+      expect(await screen.findByRole("heading", { name: "Edit “Weekly finance”" })).toBeInTheDocument();
+      await screen.findByRole("checkbox", { name: "Source ledger.csv" });
+      fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+
+      await waitFor(() =>
+        expect(apiMocks.briefsUpdate).toHaveBeenCalledWith(
+          "brief-1",
+          expect.objectContaining({ expected_revision: 4, source_ids: ["src-a"] }),
+          expect.any(AbortSignal),
+        ),
+      );
+      expect(await screen.findByText(/This recipe changed since you opened it/)).toBeInTheDocument();
+      expect(screen.getByRole("heading", { name: "Edit “Weekly finance”" })).toBeInTheDocument();
+
+      apiMocks.briefsUpdate.mockResolvedValue({ ...briefRecipeDetail, revision: 5 });
+      fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+      await waitFor(() => expect(apiMocks.briefsUpdate).toHaveBeenCalledTimes(2));
+      await waitFor(() =>
+        expect(screen.queryByRole("heading", { name: "Edit “Weekly finance”" })).not.toBeInTheDocument(),
+      );
+    });
+
+    it("shows the server's next three resolved run times and the running-app caveat in the schedule editor", async () => {
+      render(<AutomationsView />);
+
+      fireEvent.click(await screen.findByRole("button", { name: "Manage" }));
+      fireEvent.click(await screen.findByRole("button", { name: /Edit/ }));
+      await screen.findByText("ledger.csv");
+
+      expect(screen.getByText("2026-09-07 09:00")).toBeInTheDocument();
+      expect(screen.getByText("2026-09-14 09:00")).toBeInTheDocument();
+      expect(screen.getByText("2026-09-21 09:00")).toBeInTheDocument();
+      expect(screen.getByText("2026-09-07 07:00:00Z")).toBeInTheDocument();
+      expect(
+        screen.getByText("The app/server must be running for schedules to fire — there is no OS scheduler."),
+      ).toBeInTheDocument();
+    });
+
+    it("mirrors the server's membership-equality error and never sends a widened source set", async () => {
+      apiMocks.briefsCreate.mockRejectedValueOnce(
+        briefApiError(
+          "recipe source membership must equal the bound analysis revision's selected source set",
+          "BRIEF_RECIPE_VALIDATION",
+        ),
+      );
+      render(<AutomationsView />);
+
+      fireEvent.click(await screen.findByRole("button", { name: "New brief" }));
+      fireEvent.change(screen.getByLabelText("Brief name"), { target: { value: "Monday brief" } });
+      await screen.findByRole("option", { name: "Monthly spend (rev 2)" });
+      fireEvent.change(screen.getByLabelText("Saved analysis"), { target: { value: "analysis-1" } });
+      fireEvent.change(screen.getByLabelText("Report title"), { target: { value: "Monday brief" } });
+      fireEvent.change(screen.getByLabelText("Draft instruction"), { target: { value: "Sum it up." } });
+
+      // Membership is locked to the bound revision's selected set.
+      const membershipCheckbox = await screen.findByRole("checkbox", { name: "Source ledger.csv" });
+      expect(membershipCheckbox).toBeChecked();
+      expect(membershipCheckbox).toBeDisabled();
+
+      fireEvent.click(screen.getByRole("button", { name: "Create brief" }));
+      await waitFor(() =>
+        expect(apiMocks.briefsCreate).toHaveBeenCalledWith(
+          expect.objectContaining({
+            name: "Monday brief",
+            analysis_id: "analysis-1",
+            source_ids: ["src-a"],
+            report_title: expect.any(String),
+            report_instruction: expect.any(String),
+            schedule: expect.objectContaining({ kind: "weekly", weekday: 1 }),
+          }),
+          expect.any(AbortSignal),
+        ),
+      );
+      // The wizard mirrors the exact server contract violation.
+      expect(
+        await screen.findByText(
+          "recipe source membership must equal the bound analysis revision's selected source set",
+        ),
+      ).toBeInTheDocument();
+      expect(screen.getByRole("heading", { name: "New reviewed brief" })).toBeInTheDocument();
+
+      apiMocks.briefsCreate.mockResolvedValue({ ...briefRecipe, id: "brief-2", name: "Monday brief" });
+      fireEvent.click(screen.getByRole("button", { name: "Create brief" }));
+      await waitFor(() => expect(apiMocks.briefsCreate).toHaveBeenCalledTimes(2));
+      expect(await screen.findByText("Monday brief")).toBeInTheDocument();
+    });
+
+    it("reuses the same client-generated idempotency key when Run now is retried after a lost response", async () => {
+      const pending = deferred<{ items: Array<typeof briefRun>; next_cursor: null }>();
+      apiMocks.briefsListRuns.mockReturnValue(pending.promise);
+      apiMocks.briefsRun.mockRejectedValueOnce(new Error("network down"));
+      render(<AutomationsView />);
+
+      fireEvent.click(await screen.findByRole("button", { name: "Manage" }));
+      fireEvent.click(await screen.findByRole("button", { name: "Run now" }));
+      await waitFor(() => expect(apiMocks.briefsRun).toHaveBeenCalledTimes(1));
+      expect(await screen.findByText(/Retry replays the same request/)).toBeInTheDocument();
+      await act(async () => pending.resolve({ items: [], next_cursor: null }));
+
+      apiMocks.briefsRun.mockResolvedValueOnce({ run: briefRun, replayed: false });
+      fireEvent.click(screen.getByRole("button", { name: "Run now" }));
+      await waitFor(() => expect(apiMocks.briefsRun).toHaveBeenCalledTimes(2));
+
+      // Same durable intent → same UUID key: a retry can never double-run.
+      const firstKey = apiMocks.briefsRun.mock.calls[0][1].operation_id;
+      const secondKey = apiMocks.briefsRun.mock.calls[1][1].operation_id;
+      expect(firstKey).toMatch(/^[0-9a-f-]{36}$/);
+      expect(secondKey).toBe(firstKey);
+      expect(await screen.findByText("queued")).toBeInTheDocument();
+    });
+
+    it("states the pending-review preservation default in the delete dialog and stops the brief", async () => {
+      const stale = deferred<{ items: Array<typeof briefRecipe>; next_cursor: null }>();
+      apiMocks.briefsList
+        .mockResolvedValueOnce({ items: [briefRecipe], next_cursor: null })
+        .mockReturnValueOnce(stale.promise);
+      apiMocks.briefsRemove.mockResolvedValue({ ok: true });
+      render(<AutomationsView />);
+
+      expect(await screen.findByText("Weekly finance")).toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: "Refresh briefs" }));
+      await waitFor(() => expect(apiMocks.briefsList).toHaveBeenCalledTimes(2));
+
+      fireEvent.click(screen.getByTitle("Delete brief"));
+      expect(await screen.findByText(/Pending and rejected drafts are preserved \(default\)/)).toBeInTheDocument();
+      fireEvent.click(await screen.findByRole("button", { name: "Delete" }));
+      await waitFor(() => expect(apiMocks.briefsRemove).toHaveBeenCalledWith("brief-1", expect.any(AbortSignal)));
+      await waitFor(() => expect(screen.queryByText("Weekly finance")).not.toBeInTheDocument());
+
+      // A stale brief catalog response cannot resurrect the deleted recipe.
+      await act(async () => stale.resolve({ items: [briefRecipe], next_cursor: null }));
+      expect(screen.queryByText("Weekly finance")).not.toBeInTheDocument();
+    });
+
+    it("pauses a brief through the durable pause route", async () => {
+      let pausedNow = false;
+      apiMocks.briefsList.mockImplementation(async () => ({
+        items: [pausedNow ? { ...briefRecipe, state: "paused", paused_reason: "paused manually" } : briefRecipe],
+        next_cursor: null,
+      }));
+      apiMocks.briefsPause.mockImplementation(async () => {
+        pausedNow = true;
+        return { ...briefRecipe, state: "paused", paused_reason: "paused manually" };
+      });
+      render(<AutomationsView />);
+
+      fireEvent.click(await screen.findByTitle("Pause brief"));
+      await waitFor(() => expect(apiMocks.briefsPause).toHaveBeenCalledWith("brief-1", expect.any(AbortSignal)));
+      expect(await screen.findByText(/paused: paused manually/)).toBeInTheDocument();
+    });
+  });
 
   it("keeps different-row mutations concurrent and aborts all of them on unmount", async () => {
     const toggle = deferred<Awaited<ReturnType<typeof apiMocks.update>>>();
