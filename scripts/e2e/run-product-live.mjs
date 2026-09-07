@@ -651,7 +651,7 @@ async function main() {
       });
       const started = await session.apiFetch(`/api/research/${defId}/runs`, {
         method: "POST",
-        expectStatus: 202,
+        expectStatus: 201,
         body: {},
       });
       const runId = started.body?.run?.id ?? started.body?.run_id;
